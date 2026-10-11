@@ -1,0 +1,97 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import {
+	approveGate,
+	bashFlowGuard,
+	cleanupAssess,
+	DEFAULTS,
+	mergeConfig,
+	newState,
+	pathFlowGuard,
+	releaseGate,
+	stateTamper,
+	verifyGate,
+} from "../src/core.ts";
+
+const cfg = structuredClone(DEFAULTS);
+
+test("mergeConfig fills defaults and merges partial overrides", () => {
+	const c = mergeConfig({ defaultBranch: "master", commands: { test: "bun test" }, release: { changelog: "CHANGELOG.md" } });
+	assert.equal(c.defaultBranch, "master");
+	assert.equal(c.commands.test, "bun test");
+	assert.equal(c.commands.build, undefined);
+	assert.equal(c.release.changelog, "CHANGELOG.md");
+	assert.equal(c.release.review, "/ponytail-review"); // kept from defaults
+	assert.equal(mergeConfig(null).defaultBranch, "main");
+});
+
+test("approveGate requires plan.md, mockups when ui", () => {
+	const s = newState("f", false);
+	assert.ok(approveGate(s, cfg, []).length > 0);
+	assert.equal(approveGate(s, cfg, ["plan.md"]).length, 0);
+	const su = newState("f", true);
+	assert.ok(approveGate(su, cfg, ["plan.md"]).length > 0, "ui feature without mockup must not pass");
+	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/desktop.html"]).length, 0);
+	const done = { ...s, stage: "release" as const };
+	assert.ok(approveGate(done, cfg, ["plan.md"]).length > 0, "wrong stage must not pass");
+});
+
+test("verifyGate requires green test check when configured", () => {
+	const s = { ...newState("f", false), stage: "implement" as const };
+	assert.ok(verifyGate(s, cfg).length === 0, "no test command configured → gate open (ui confirm covers)");
+	const c2 = mergeConfig({ commands: { test: "x" } });
+	assert.ok(verifyGate(s, c2).length > 0);
+	s.checks.test = { ok: true, at: "" };
+	assert.equal(verifyGate(s, c2).length, 0);
+	s.checks.test = { ok: false, at: "" };
+	assert.ok(verifyGate(s, c2).length > 0);
+});
+
+test("releaseGate requires verify approval and release stage", () => {
+	const s = newState("f", false);
+	assert.ok(releaseGate(s).length === 2);
+	s.approvals.verify = "now";
+	assert.ok(releaseGate(s).length === 1, "still wrong stage");
+});
+
+test("bashFlowGuard: main protection and release-stage release", () => {
+	const base = { branch: "main", stage: null as "plan" | null, defaultBranch: "main" };
+	assert.ok(bashFlowGuard({ ...base, command: "git commit -m x" }));
+	assert.equal(bashFlowGuard({ ...base, branch: "feat/x", command: "git commit -m x" }), null);
+	assert.ok(bashFlowGuard({ ...base, command: "git push origin main" }));
+	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git push origin main" }), null);
+	assert.ok(bashFlowGuard({ ...base, stage: null, branch: "feat/x", command: "git push --tags" }));
+	assert.equal(bashFlowGuard({ ...base, stage: "release", branch: "feat/x", command: "git push --tags" }), null);
+	assert.equal(bashFlowGuard({ ...base, branch: "feat/x", command: "git push origin feat/x" }), null);
+	assert.ok(bashFlowGuard({ ...base, command: "git merge feat/x" }));
+	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git merge feat/x" }), null);
+	assert.equal(bashFlowGuard({ ...base, command: "git status" }), null);
+});
+
+test("stateTamper catches direct state.json writes", () => {
+	assert.ok(stateTamper("echo x > .dev-flow/f/state.json"));
+	assert.ok(stateTamper("rm .dev-flow/f/state.json"));
+	assert.equal(stateTamper("cat .dev-flow/f/state.json"), false);
+	assert.equal(stateTamper("git status"), false);
+});
+
+test("pathFlowGuard: plan is read-only for code; implement confined to worktree", () => {
+	const df = "/repo/.dev-flow";
+	const plan = newState("f", false);
+	assert.ok(pathFlowGuard({ abs: "/repo/src/app.ts", dfDir: df, state: plan, worktreeAbs: null }));
+	assert.equal(pathFlowGuard({ abs: "/repo/.dev-flow/f/plan/plan.md", dfDir: df, state: plan, worktreeAbs: null }), null);
+	const impl = { ...plan, stage: "implement" as const, worktree: ".dev-flow/f/worktree" };
+	assert.ok(pathFlowGuard({ abs: "/repo/src/app.ts", dfDir: df, state: impl, worktreeAbs: "/repo/.dev-flow/f/worktree" }));
+	assert.equal(pathFlowGuard({ abs: "/repo/.dev-flow/f/worktree/src/app.ts", dfDir: df, state: impl, worktreeAbs: "/repo/.dev-flow/f/worktree" }), null);
+	// flow-owned files are untouchable even inside .dev-flow
+	assert.ok(pathFlowGuard({ abs: "/repo/.dev-flow/f/state.json", dfDir: df, state: impl, worktreeAbs: null }));
+	assert.ok(pathFlowGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, state: null, worktreeAbs: null }));
+	// no active feature → guard off
+	assert.equal(pathFlowGuard({ abs: "/repo/src/app.ts", dfDir: df, state: null, worktreeAbs: null }), null);
+});
+
+test("cleanupAssess flags dirty worktree and lists unmerged", () => {
+	assert.deepEqual(cleanupAssess("", []), { errors: [], unmerged: [] });
+	assert.ok(cleanupAssess(" M file.ts", []).errors.length === 1);
+	assert.deepEqual(cleanupAssess("", ["abc msg", ""]).unmerged, ["abc msg"]);
+});
