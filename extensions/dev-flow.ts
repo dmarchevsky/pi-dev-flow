@@ -18,7 +18,7 @@
  * Inactive (fully pass-through) in repos without a .dev-flow/ directory.
  */
 import { exec } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
@@ -33,14 +33,15 @@ import {
 	listFiles,
 	newState,
 	nextHint,
-	pathFlowGuard,
 	releaseGate,
 	stateTamper,
 	statusCompact,
 	subst,
 	validSlug,
 	verifyGate,
+	writeGuard,
 	type Config,
+	type FeatureRef,
 	type FlowState,
 	type Stage,
 } from "../src/core.ts";
@@ -68,7 +69,6 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 const dfDir = (root: string) => path.join(root, ".dev-flow");
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
-const currentFile = (root: string) => path.join(dfDir(root), ".current");
 
 function readState(root: string, slug: string): FlowState | null {
 	try {
@@ -82,17 +82,31 @@ function writeState(root: string, state: FlowState): void {
 	writeFileSync(stateFile(root, state.slug), `${JSON.stringify(state, null, "\t")}\n`);
 }
 
-function currentSlug(root: string): string | null {
-	try {
-		return readFileSync(currentFile(root), "utf8").trim() || null;
-	} catch {
-		return null;
-	}
+/** Session bindings: one flow per pi session; persisted per session branch via appendEntry. */
+const bindings = new Map<string, string | null>();
+const sessionKey = (ctx: { cwd: string; sessionManager?: { getSessionId(): string } }) => ctx.sessionManager?.getSessionId() ?? ctx.cwd;
+
+function unfinishedStates(root: string): FlowState[] {
+	if (!existsSync(dfDir(root))) return [];
+	return readdirSync(dfDir(root), { withFileTypes: true })
+		.filter((d) => d.isDirectory())
+		.map((d) => readState(root, d.name))
+		.filter((s): s is FlowState => !!s && s.stage !== "done");
 }
 
-function activeState(root: string): FlowState | null {
-	const slug = currentSlug(root);
-	return slug ? readState(root, slug) : null;
+/** The session's feature: explicit binding, else the single unfinished feature (auto-bind). */
+function boundFeature(root: string, key: string): FlowState | null {
+	const bound = bindings.get(key);
+	if (bound) {
+		const s = readState(root, bound);
+		if (s && s.stage !== "done") return s;
+	}
+	const un = unfinishedStates(root);
+	return un.length === 1 ? un[0] : null;
+}
+
+function featureRefs(root: string): FeatureRef[] {
+	return unfinishedStates(root).map((s) => ({ state: s, worktreeAbs: s.worktree ? path.resolve(root, s.worktree) : null }));
 }
 
 function worktreeAbs(root: string, cfg: Config, state: FlowState): string | null {
@@ -106,8 +120,13 @@ interface RunResult {
 	isError?: boolean;
 }
 
+interface Session {
+	slug: string | null;
+	bind: (slug: string | null) => void;
+}
+
 /** Single runner for both the /flow command and the flow tool. */
-async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult> {
+async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Promise<RunResult> {
 	const [sub = "status", ...rest] = args;
 	if (!existsSync(dfDir(root)) && sub !== "init") return { text: "no .dev-flow/ in this repo — run /flow init first", isError: true };
 	const cfg = loadConfig(dfDir(root));
@@ -120,6 +139,7 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 			const notes: string[] = [`.dev-flow/ created in ${root}`];
 			// self-ignoring folder: nothing under .dev-flow/ ever enters git, without touching tracked files
 			writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n");
+			rmSync(path.join(dfDir(root), ".current"), { force: true }); // migrate away the legacy repo-global pointer
 			const cfgFile = path.join(dfDir(root), "project.json");
 			if (existsSync(cfgFile)) {
 				notes.push("project.json already exists — kept (operator-owned)");
@@ -153,14 +173,15 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 			const state = newState(slugArg, flag("ui"));
 			mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
 			writeState(root, state);
-			writeFileSync(currentFile(root), slugArg);
+			sess.bind(slugArg);
 			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}).\n${nextHint(state, cfg)}` };
 		}
 
 		case "status": {
 			const slugs = slugArg ? [slugArg] : existsSync(dfDir(root)) ? (await listDirs(dfDir(root))).filter((s) => readState(root, s)) : [];
 			if (!slugs.length) return { text: "no features — start one: flow start <slug> [--ui]" };
-			const cur = currentSlug(root);
+			const un0 = unfinishedStates(root);
+			const cur = sess.slug ?? (un0.length === 1 ? un0[0].slug : null);
 			const lines = slugs.flatMap((s) => {
 				const st = readState(root, s);
 				if (!st) return [];
@@ -174,7 +195,7 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 		}
 
 		case "approve": {
-			const { state, err } = needState(root, slugArg);
+			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			const errs = approveGate(state!, cfg, listFiles(path.join(featDir(root, state!.slug), "plan")));
 			if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
@@ -197,7 +218,7 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 		}
 
 		case "test": {
-			const { state, err } = needState(root, slugArg);
+			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (!cfg.commands.test) return { text: "no commands.test configured in .dev-flow/project.json", isError: true };
 			const res = await sh(cfg.commands.test, root);
@@ -207,7 +228,7 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 		}
 
 		case "verify": {
-			const { state, err } = needState(root, slugArg);
+			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			const errs = verifyGate(state!, cfg);
 			if (errs.length) return { text: `verify gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
@@ -230,7 +251,7 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 		}
 
 		case "release-done": {
-			const { state, err } = needState(root, slugArg);
+			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			const errs = releaseGate(state!);
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
@@ -241,7 +262,7 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 		}
 
 		case "cleanup": {
-			const { state, err } = needState(root, slugArg);
+			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (state!.stage !== "cleanup") return { text: `stage is "${state!.stage}", cleanup only applies after release-done`, isError: true };
 			const wt = worktreeAbs(root, cfg, state!);
@@ -261,7 +282,7 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 		}
 
 		case "deploy": {
-			const { state, err } = needState(root, slugArg);
+			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (state!.stage !== "deploy") return { text: `stage is "${state!.stage}", deploy only applies after cleanup`, isError: true };
 			const note = cfg.commands.deployNote ?? "Manual deployment: deploy the released tag to production yourself.";
@@ -269,21 +290,28 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 			const ok = await ui.confirm("Manual production deploy", `${note}\n\nWas the deploy completed (or intentionally skipped)?`);
 			if (!ok) return { text: "deploy still pending — run flow deploy again afterwards" };
 			rmSync(featDir(root, state!.slug), { recursive: true, force: true });
-			if (currentSlug(root) === state!.slug) rmSync(currentFile(root), { force: true });
+			if (sess.slug === state!.slug) sess.bind(null);
 			return { text: `feature ${state!.slug} done — .dev-flow/${state!.slug}/ removed.` };
 		}
 
+		case "use": {
+			if (!slugArg) return { text: "usage: flow use <slug>", isError: true };
+			const st = readState(root, slugArg);
+			if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
+			sess.bind(slugArg);
+			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})` };
+		}
+
 		case "abort": {
-			// Clears the active pointer only; state and worktree stay for manual recovery.
-			if (slugArg && existsSync(currentFile(root)) && currentSlug(root) === slugArg) rmSync(currentFile(root), { force: true });
-			else if (slugArg) return { text: `no active feature ${slugArg}` };
-			else if (existsSync(currentFile(root))) rmSync(currentFile(root), { force: true });
-			else return { text: "no active feature" };
-			return { text: `active pointer cleared for ${slugArg ?? "last feature"} — remove any worktree/branch manually` };
+			// Unbinds the session only; state and worktree stay for manual recovery.
+			const target = slugArg ?? sess.slug;
+			if (!target) return { text: "nothing bound — pass a slug", isError: true };
+			if (sess.slug === target) sess.bind(null);
+			return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/ — remove any worktree/branch manually` };
 		}
 
 		default:
-			return { text: `unknown subcommand "${sub}" — init | start <slug> [--ui] | status | approve | test | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
+			return { text: `unknown subcommand "${sub}" — init | start <slug> [--ui] | use <slug> | status | approve | test | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
 	}
 }
 
@@ -292,9 +320,14 @@ async function currentBranch(root: string): Promise<string> {
 	return r.ok ? r.out.split("\n")[0] : "";
 }
 
-function needState(root: string, slugArg?: string): { state: FlowState | null; err?: RunResult } {
-	const slug = slugArg ?? currentSlug(root);
-	if (!slug) return { state: null, err: { text: "no active feature — flow start <slug> [--ui]", isError: true } };
+function needState(root: string, sess: Session, slugArg?: string): { state: FlowState | null; err?: RunResult } {
+	let slug = slugArg ?? sess.slug;
+	if (!slug) {
+		const un = unfinishedStates(root);
+		if (un.length === 1) slug = un[0].slug;
+		else if (!un.length) return { state: null, err: { text: "no unfinished features — flow start <slug> [--ui]", isError: true } };
+		else return { state: null, err: { text: `multiple unfinished features (${un.map((s) => s.slug).join(", ")}) — flow use <slug> or pass an explicit slug`, isError: true } };
+	}
 	const state = readState(root, slug);
 	if (!state) return { state: null, err: { text: `no state for feature ${slug}`, isError: true } };
 	return { state };
@@ -358,7 +391,7 @@ class FlowPanel {
 /** Compact footer status: slug ▸ stage, ✗ on failing checks, cleared when no active feature. */
 function refreshStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
-	const st = existsSync(dfDir(ctx.cwd)) ? activeState(ctx.cwd) : null;
+	const st = existsSync(dfDir(ctx.cwd)) ? boundFeature(ctx.cwd, sessionKey(ctx)) : null;
 	if (!st || st.stage === "done") {
 		ctx.ui.setStatus("dev-flow", undefined);
 		return;
@@ -380,10 +413,32 @@ export default function devFlow(pi: ExtensionAPI) {
 		confirm: async (title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
 	});
 
+	const sessFor = (ctx: ExtensionContext): Session => {
+		const key = sessionKey(ctx);
+		return {
+			slug: bindings.get(key) ?? null,
+			bind: (slug) => {
+				bindings.set(key, slug);
+				pi.appendEntry("dev-flow-bind", { slug });
+			},
+		};
+	};
+
+	/** Restore this session's binding from its branch history (survives resume/fork). */
+	const rebuildBinding = (ctx: ExtensionContext) => {
+		let slug: string | null = null;
+		for (const e of ctx.sessionManager?.getBranch() ?? []) {
+			// SAFETY: narrow structural view of the SessionEntry union; we only read entries whose type/customType match our own appendEntry writes.
+			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null } };
+			if (ce.type === "custom" && ce.customType === "dev-flow-bind") slug = ce.data?.slug ?? null;
+		}
+		bindings.set(sessionKey(ctx), slug);
+	};
+
 	pi.registerCommand("flow", {
-		description: "dev-flow gates: init | start <slug> [--ui] | status | approve | test | verify | release-done | cleanup | deploy | abort",
+		description: "dev-flow gates: init | start <slug> [--ui] | use <slug> | status | approve | test | verify | release-done | cleanup | deploy | abort",
 		handler: async (args, ctx) => {
-			const res = await runFlow(parse(args), ctx.cwd, uiFrom(ctx));
+			const res = await runFlow(parse(args), ctx.cwd, uiFrom(ctx), sessFor(ctx));
 			ctx.ui.notify(res.text, res.isError ? "error" : "info");
 			refreshStatus(ctx);
 		},
@@ -398,14 +453,18 @@ export default function devFlow(pi: ExtensionAPI) {
 			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug", "--ui"]' }),
 		}),
 		execute: async (_id, params, _signal, _onUpdate, ctx) => {
-			const res = await runFlow(params.args, ctx.cwd, uiFrom(ctx));
+			const res = await runFlow(params.args, ctx.cwd, uiFrom(ctx), sessFor(ctx));
 			return { content: [{ type: "text", text: res.text }], details: undefined, isError: res.isError };
 		},
 	});
 	pi.registerTool(flowTool);
 
 	// Agent-run gates refresh at turn_end (tool ctx lacks setStatus; turn_end catches them).
-	pi.on("session_start", async (_event, ctx) => refreshStatus(ctx));
+	pi.on("session_start", async (_event, ctx) => {
+		rebuildBinding(ctx);
+		refreshStatus(ctx);
+	});
+	pi.on("session_tree", async (_event, ctx) => rebuildBinding(ctx));
 	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
 
 	pi.registerShortcut("ctrl+,", {
@@ -415,7 +474,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				if (ctx.hasUI) ctx.ui.notify("flow panel requires interactive mode", "warning");
 				return;
 			}
-			const st = existsSync(dfDir(ctx.cwd)) ? activeState(ctx.cwd) : null;
+			const st = existsSync(dfDir(ctx.cwd)) ? boundFeature(ctx.cwd, sessionKey(ctx)) : null;
 			if (!st || st.stage === "done") {
 				ctx.ui.notify("dev-flow: no active feature", "info");
 				return;
@@ -427,17 +486,19 @@ export default function devFlow(pi: ExtensionAPI) {
 	pi.on("tool_call", async (event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
 		const cfg = loadConfig(dfDir(ctx.cwd));
-		const state = activeState(ctx.cwd);
+		const key = sessionKey(ctx);
 
 		if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
 			const abs = path.resolve(ctx.cwd, String(event.input.path ?? ""));
-			const reason = pathFlowGuard({ abs, dfDir: dfDir(ctx.cwd), state, worktreeAbs: state ? worktreeAbs(ctx.cwd, cfg, state) : null });
+			const feats = featureRefs(ctx.cwd);
+			const bound = boundFeature(ctx.cwd, key);
+			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null });
 			if (reason) return { block: true, reason };
-			// Editing the worktree invalidates a passing test check until flow test reruns.
-			const wt = state ? worktreeAbs(ctx.cwd, cfg, state) : null;
-			if (state && state.stage === "implement" && state.checks.test?.ok && wt && abs.startsWith(wt + path.sep)) {
-				delete state.checks.test;
-				writeState(ctx.cwd, state);
+			// Editing a worktree invalidates that feature's passing test check until flow test reruns.
+			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
+			if (owner && owner.state.stage === "implement" && owner.state.checks.test?.ok) {
+				delete owner.state.checks.test;
+				writeState(ctx.cwd, owner.state);
 			}
 			return undefined;
 		}
@@ -447,7 +508,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (stateTamper(command)) return { block: true, reason: "state.json is dev-flow-owned — advance stages with the flow tool only" };
 			if (!/\bgit\b/.test(command)) return undefined;
 			const branch = (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] ?? "";
-			const reason = bashFlowGuard({ command, branch, stage: state?.stage ?? null, defaultBranch: cfg.defaultBranch });
+			const bound = boundFeature(ctx.cwd, key);
+			const reason = bashFlowGuard({ command, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch });
 			if (reason) return { block: true, reason };
 		}
 		return undefined;
@@ -455,14 +517,14 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
-		const state = activeState(ctx.cwd);
+		const state = boundFeature(ctx.cwd, sessionKey(ctx));
 		if (!state || state.stage === "done") return undefined;
 		const cfg = loadConfig(dfDir(ctx.cwd));
 		return {
 			message: {
 				customType: "dev-flow-context",
 				display: false,
-				content: `[dev-flow] active feature: ${state.slug} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
+				content: `[dev-flow] this session is bound to: ${state.slug} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
 Next: ${nextHint(state, cfg)}.
 Rules: follow the dev-flow skill playbook; drive gates with the flow tool (/flow as user); stage guards block out-of-stage edits and main-branch git ops — do not work around them.`,
 			},

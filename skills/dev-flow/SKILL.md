@@ -17,10 +17,11 @@ The user can run the same things as `/flow ...`.
 
 Ground rules:
 
+- A pi session is bound to exactly one feature (flow + branch + worktree). Parallel sessions, one feature each, are the model. The binding is automatic when one unfinished feature exists, set by `flow start`, and switched with `flow use <slug>`; with several unfinished features and no binding, gates demand an explicit slug and main-checkout writes stay blocked.
 - Never read/write `.dev-flow/<slug>/state.json` yourself — it is flow-owned (the guard blocks it anyway). `flow status` is your view.
 - `.dev-flow/project.json` is operator-owned: read it for commands (test/build/run), the default branch, worktree path — never edit it; ask the user.
 - Also obey the repo's own AGENTS.md and project skills; dev-flow sequences stages, the project defines its conventions.
-- If a guard blocks you, you are trying to skip a stage. Stop and run the gate instead of working around it.
+- If a guard blocks you, you are trying to skip a stage or write outside your session's feature. Stop and run the gate instead of working around it.
 
 ## Start
 
@@ -44,7 +45,7 @@ Approval creates the worktree and branch. Until then no code edits are possible.
 
 ## Stage: implement
 
-Work happens **only in the worktree** the gate created (path in `flow status` or the injection line). Edit and write outside it are blocked.
+Work happens **only in the worktree** the gate created (path in `flow status` or the injection line). Edit and write outside it are blocked. When other sessions hold other features, their worktrees are theirs — never edit them; attribution guards judge every path by its owning feature.
 
 1. Implement per the approved plan, following project conventions.
 2. Write appropriate tests for the change as you go (project test framework — see project.json `commands.test`).
@@ -70,5 +71,5 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 
 ## When things go sideways
 
-- User wants to abandon a feature: `flow abort <slug>` clears the pointer; remove the worktree/branch manually.
+- User wants to abandon a feature: `flow abort <slug>` unbinds the session; remove the worktree/branch manually.
 - A gate refuses: read its reasons — they list exactly what is missing. Fix that, rerun the gate.

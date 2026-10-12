@@ -32,6 +32,7 @@ function makePi(): Stub & ((...a: never[]) => void) {
 			return () => {};
 		},
 		registerShortcut: () => {},
+		appendEntry: () => {},
 	};
 	devFlow(api as never);
 	return stub as never;
@@ -98,6 +99,24 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	// the model-facing tool routes through the same runner
 	const res = await pi.tools.flow.execute("id", { args: ["status"] }, undefined, undefined, ctx);
 	assert.match(res.content[0].text, /demo-feature/);
+});
+
+test("session binding: use/abort/ambiguity", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	await pi.cmds.flow.handler("init", ctx);
+	await pi.cmds.flow.handler("start a-one", ctx);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", ".current")), "no legacy .current file");
+	await pi.cmds.flow.handler("start b-two", ctx); // start binds b-two
+	await pi.cmds.flow.handler("use nope", ctx);
+	assert.ok(ctx.notices.at(-1)?.includes("no unfinished feature"), "use validates slug");
+	await pi.cmds.flow.handler("abort b-two", ctx);
+	await pi.cmds.flow.handler("approve", ctx);
+	assert.ok(ctx.notices.at(-1)?.includes("multiple unfinished"), "ambiguous without binding must refuse");
+	await pi.cmds.flow.handler("use a-one", ctx);
+	await pi.cmds.flow.handler("approve", ctx);
+	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "bound gate runs on the bound feature");
 });
 
 test("status bar: compact refresh follows the gates", async () => {
