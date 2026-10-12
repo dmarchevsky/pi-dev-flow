@@ -25,13 +25,16 @@ test("mergeConfig fills defaults and merges partial overrides", () => {
 	assert.equal(mergeConfig(null).defaultBranch, "main");
 });
 
-test("approveGate requires plan.md, mockups when ui", () => {
+test("approveGate requires plan.md, rendered mockups when ui", () => {
 	const s = newState("f", false);
 	assert.ok(approveGate(s, cfg, []).length > 0);
 	assert.equal(approveGate(s, cfg, ["plan.md"]).length, 0);
 	const su = newState("f", true);
-	assert.ok(approveGate(su, cfg, ["plan.md"]).length > 0, "ui feature without mockup must not pass");
-	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/desktop.html"]).length, 0);
+	assert.ok(approveGate(su, cfg, ["plan.md"]).length > 0, "ui feature without a render must not pass");
+	assert.ok(approveGate(su, cfg, ["plan.md", "mockups/screen.html"]).length > 0, "html source alone is not evidence of a render");
+	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"]).length, 0);
+	const htmlCfg = mergeConfig({ mockupGlobs: ["*.html"] });
+	assert.equal(approveGate(su, htmlCfg, ["plan.md", "mockups/screen.html"]).length, 0, "configured glob overrides the png default");
 	const done = { ...s, stage: "release" as const };
 	assert.ok(approveGate(done, cfg, ["plan.md"]).length > 0, "wrong stage must not pass");
 });
