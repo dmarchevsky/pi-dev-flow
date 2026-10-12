@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-05
+
+### Added
+
+- `flow init --force`: overwrite an existing `project.json` with fresh detection (silent fast path; destructive reset for a misconfigured repo)
+
+### Changed
+
+- `flow init --yes` never overwrites an existing config, even headless; the "already exists" note now advertises `--force`
+
 ## [0.7.0] - 2026-08-04
 
 ### Added
