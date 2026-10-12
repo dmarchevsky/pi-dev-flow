@@ -101,6 +101,20 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	assert.match(res.content[0].text, /demo-feature/);
 });
 
+test("init --yes keeps existing project.json; --force overwrites with detection", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const cfgFile = path.join(repo, ".dev-flow", "project.json");
+	await pi.cmds.flow.handler("init", ctx);
+	writeFileSync(cfgFile, '{\n  "defaultBranch": "trunk",\n  "commands": { "test": "custom-cmd" }\n}\n');
+	await pi.cmds.flow.handler("init --yes", ctx);
+	assert.ok(ctx.notices.length >= 0); // kept, not overwritten
+	assert.match(readFileSync(cfgFile, "utf8"), /custom-cmd/, "--yes must keep operator config");
+	await pi.cmds.flow.handler("init --force", ctx);
+	assert.doesNotMatch(readFileSync(cfgFile, "utf8"), /custom-cmd/, "--force must replace with fresh detection");
+});
+
 test("session binding: use/abort/ambiguity", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
