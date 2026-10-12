@@ -39,8 +39,9 @@ completely inert in repos without `.dev-flow/`.
 | `use <slug>` | — (binds this session to a feature) | slug unfinished |
 | `approve` | plan → implement (creates worktree + branch) | `plan/*.md` exists; if `--ui`, rendered mockup screenshots (per `mockupGlobs`, default `*.png`) exist under `plan/` — headless chromium renders embedded in plan.md; **you confirm interactively** |
 | `test` | records a check | — (runs `commands.test`, records pass/fail) |
-| `verify` | implement → release | test check green, build (if configured) green, **you confirm it works locally** |
-| `release-done` | release → cleanup | verify approval recorded |
+| `health` | records a check | — (runs `commands.seedData` + `commands.health`; app must be up locally with real data) |
+| `verify` | implement → release | test green, health green (when configured), build (if configured) green, **you confirm it works locally** |
+| `release-done` | release → cleanup | verify approval; with `versioning.file`: tag rendered from the manifest version exists and is reachable from the default branch |
 | `cleanup` | cleanup → deploy | worktree clean, no unmerged commits (squash-merges need your explicit confirm), **you confirm removal** |
 | `deploy` | → done (deletes `.dev-flow/<slug>/`) | **you confirm the manual deploy happened or was skipped** |
 | `status` / `abort [slug]` | — | — |
@@ -81,6 +82,8 @@ Optional, gitignored, **edited only by you** (the agent is blocked from it). Def
     "setup": "npm ci",
     "test": "npm test",
     "build": "npm run build",
+    "seedData": "./scripts/seed-dev-data.sh",
+    "health": "curl -fs localhost:3000/healthz",
     "run": "npm run dev",
     "deployNote": "Manual: ssh prod && ./deploy.sh <tag>"
   },
@@ -93,7 +96,7 @@ Optional, gitignored, **edited only by you** (the agent is blocked from it). Def
 }
 ```
 
-`{slug}` is substituted in `branchPattern`/`worktreeDir`. Point `worktreeDir` elsewhere (e.g. `.worktrees/{slug}`) if the project has its own convention. Project conventions themselves stay in the repo's `AGENTS.md`/skills — dev-flow sequences stages, it doesn't duplicate project rules. Releases bump the project's own version manifest (`package.json`/`pyproject.toml`/`Cargo.toml`/`VERSION`) to the exact tagged version — manifest and tag must never diverge.
+`{slug}` is substituted in `branchPattern`/`worktreeDir`. Point `worktreeDir` elsewhere (e.g. `.worktrees/{slug}`) if the project has its own convention. Project conventions themselves stay in the repo's `AGENTS.md`/skills — dev-flow sequences stages, it doesn't duplicate project rules. Releases derive their tag from the version manifest named in `versioning.file` (`flow init` detects it; otherwise pick one with the operator) — `flow release-done` refuses when manifest and tag disagree.
 
 ## Layout in a project
 

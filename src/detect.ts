@@ -7,9 +7,10 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { parseVersion } from "./core.ts";
 
 export interface Detection {
-	partial: { defaultBranch: string; commands: Record<string, string> };
+	partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string } };
 	report: string[]; // human lines: what was detected
 	missing: string[]; // command keys left empty (excluding setup)
 }
@@ -38,7 +39,24 @@ export function detectProject(root: string, defaultBranch: string): Detection {
 	if (!detected) report.push("no supported manifest found — fill in commands yourself (see README)");
 	if (Object.keys(commands).length) report.push(`commands: ${Object.entries(commands).map(([k, v]) => `${k}="${v}"`).join(", ")}`);
 	const missing = ["test", "build", "run"].filter((k) => !commands[k]);
-	return { partial: { defaultBranch, commands }, report, missing };
+	const versioning = detectVersioning(root, report);
+	return { partial: { defaultBranch, commands, ...(versioning ? { versioning } : {}) }, report, missing };
+}
+
+/** Version manifest probe: first of VERSION / package.json / Cargo.toml / pyproject.toml holding a version. */
+function detectVersioning(root: string, report: string[]): { file: string } | null {
+	const candidates = ["VERSION", "package.json", "Cargo.toml", "pyproject.toml"];
+	for (const file of candidates) {
+		const raw = read(path.join(root, file));
+		if (!raw) continue;
+		const v = parseVersion(file, raw);
+		if (v) {
+			report.push(`versioning: ${file} (current ${v}) — release tags must match this manifest`);
+			return { file };
+		}
+	}
+	report.push("versioning: none found — ask the operator to pick/create a version manifest (VERSION recommended), then set versioning.file");
+	return null;
 }
 
 function detectCommands(root: string, c: Record<string, string>, report: string[]): boolean {
