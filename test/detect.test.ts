@@ -37,6 +37,17 @@ test("rust, go, python ecosystems", () => {
 	assert.equal(uv.partial.commands.setup, "uv sync");
 });
 
+test("versioning detection: VERSION wins, then package.json, then reports none", () => {
+	const both = detectProject(fixture({ VERSION: "9.9.9\n", "package.json": '{"version":"1.1.1"}' }), "main");
+	assert.equal(both.partial.versioning?.file, "VERSION");
+	assert.ok(both.report.some((l) => l.includes("versioning: VERSION (current 9.9.9)")));
+	const pkg = detectProject(fixture({ "package.json": '{"version":"2.2.2"}' }), "main");
+	assert.equal(pkg.partial.versioning?.file, "package.json");
+	const none = detectProject(fixture({ README: "hi" }), "main");
+	assert.equal(none.partial.versioning, undefined);
+	assert.ok(none.report.some((l) => l.includes("versioning: none found")));
+});
+
 test("unknown repo: empty commands with a warning", () => {
 	const d = detectProject(fixture({ README: "hi" }), "main");
 	assert.deepEqual(d.partial.commands, {});

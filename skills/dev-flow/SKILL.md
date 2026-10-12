@@ -31,8 +31,7 @@ Ground rules:
 
 1. Research the code needed for the plan (reads are always allowed).
 2. Write the plan to `.dev-flow/<slug>/plan/plan.md`: problem, approach, files to touch, test strategy, risks. Keep it reviewable, not exhaustive.
-3. **UI flag set?** Build the mockups in `plan/mockups/` and render them — a mockup that was never rendered is not a mockup:
-   - Write one HTML per screen/state at `plan/mockups/<screen>.html`. Reuse the project's real stylesheet and class names where it exists (relative links work from inside `.dev-flow/`) — fidelity by construction.
+3. **UI flag set?** Build the mockups in `plan/mockups/` and render them — a mockup that was never rendered is not a mockup:   - Write one HTML per screen/state at `plan/mockups/<screen>.html`. Reuse the project's real stylesheet and class names where it exists (relative links work from inside `.dev-flow/`) — fidelity by construction.
    - Find a headless chromium: probe `chromium`, `chromium-browser`, `google-chrome` on PATH; else playwright's shell at `~/.cache/ms-playwright/*/chrome-headless-shell-linux64/chrome-headless-shell`.
    - Render each screen at the widths the project cares for (default: phone 390, desktop 1280):
      `<binary> --no-sandbox --disable-gpu --hide-scrollbars --virtual-time-budget=5000 --window-size=<width>,<height> --screenshot=plan/mockups/<screen>-<width>.png file://<absolute path to html>`
@@ -49,17 +48,22 @@ Work happens **only in the worktree** the gate created (path in `flow status` or
 
 1. Implement per the approved plan, following project conventions.
 2. Write appropriate tests for the change as you go (project test framework — see project.json `commands.test`).
-3. Run `flow test` — it runs the project's test command and records the result. Any later edit in the worktree invalidates the check; rerun before verify.
+3. Run `flow test` — it runs the project's test command and records the result. Any later edit in the worktree invalidates the checks; rerun before verify.
 4. UI flag set? Perform an actual visual check with a browser (screenshot or automated visual pass per the project's tooling) — not just a typecheck.
-5. Build (`commands.build`) and run locally (`commands.run`), then **ask the user to verify** and stop. They run `/flow verify`; only they can confirm it works.
+5. Done means **running and healthy, with pre-existing data** — not "compiles":
+   - run project.json `commands.seedData` (if set) so real data is in place, then start the app with `commands.run`;
+   - if `commands.health` is set, run `flow health` — it runs seedData + the health command and records the check; it must pass;
+   - then **ask the user to verify** and stop. They run `/flow verify`; only they can confirm it works.
+
+`flow verify` re-runs build and demands green test (and health, when configured) checks before it even asks the operator — the criteria are programmatic, not honor-system.
 
 ## Stage: release
 
-You are now cleared to touch main-repo git state (merge/tag/push on the default branch is allowed only here). Recommended sequence — run it in the worktree unless noted:
+You are now cleared to touch main-repo git state (merge/tag/push on the default branch is allowed only here). **Versioning:** the version manifest in project.json `versioning.file` is the single source of truth; tags are always `versioning.pattern` rendered from it — one number everywhere. If `versioning.file` is unset, stop and clarify the scheme with the user before touching any version; never invent one mid-release. Recommended sequence — run it in the worktree unless noted:
 
 1. `/ponytail-review` the change; fix every **must-have** and **should-have** finding; `flow test` again if code changed.
 2. Update documentation to reflect the change.
-3. Update the changelog and bump the version if configured (project.json `release.changelog` / `release.tagPattern`). Bump the project's own version manifest to the exact version you will tag — `package.json` `version`, `pyproject.toml`, `Cargo.toml`, or a `VERSION` file, whatever this repo uses. The manifest and the tag must never diverge; cut them from the same number in the same release.
+3. Update the changelog and bump the version manifest (`versioning.file`) to the exact version you will tag — manifest, changelog, and tag must all agree; `flow release-done` verifies the tag exists and is reachable from the default branch.
 4. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
 5. `git fetch` and confirm the merge landed, create the release tag (after merge — a tag points at what actually shipped) and push it.
 6. Run the flow tool with `["release-done"]`.

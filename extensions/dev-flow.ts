@@ -34,11 +34,13 @@ import {
 	newState,
 	nextHint,
 	releaseGate,
+	parseVersion,
 	stateTamper,
 	statusCompact,
 	subst,
 	validSlug,
 	verifyGate,
+	versionTagGate,
 	writeGuard,
 	type Config,
 	type FeatureRef,
@@ -241,7 +243,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (!ui.hasUI) return { text: "verification requires the operator to confirm interactively", isError: true };
 			const ok = await ui.confirm(
 				"Operator verification",
-				`Build passed. The app should be running locally (${cfg.commands.run ?? "no run command configured"}).\nHas the operator tested it and confirmed it works?`,
+				`Build passed${cfg.commands.health ? ", health check green" : ""}. The app should be running locally with real data (${cfg.commands.run ?? "no run command configured"}).\nHas the operator tested it and confirmed it works?`,
 			);
 			if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
 			state!.approvals.verify = now();
@@ -250,10 +252,39 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			return { text: `verified — entering release stage.\n${nextHint(state!, cfg)}` };
 		}
 
+		case "health": {
+			const { state, err } = needState(root, sess, slugArg);
+			if (err) return err;
+			if (!cfg.commands.health) return { text: "no commands.health configured in .dev-flow/project.json", isError: true };
+			if (cfg.commands.seedData) {
+				const seed = await sh(cfg.commands.seedData, root);
+				state!.checks.seedData = { ok: seed.ok, at: now() };
+				writeState(root, state!);
+				if (!seed.ok) return { text: `seedData FAILED:\n${tail(seed.out)}`, isError: true };
+			}
+			const res = await sh(cfg.commands.health, root);
+			state!.checks.health = { ok: res.ok, at: now() };
+			writeState(root, state!);
+			return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health})\n${tail(res.out)}` };
+		}
+
 		case "release-done": {
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			const errs = releaseGate(state!);
+			if (cfg.versioning.file) {
+				const manifestPath = path.join(root, cfg.versioning.file);
+				if (!existsSync(manifestPath)) errs.push(`versioning.file "${cfg.versioning.file}" does not exist — fix project.json`);
+				const manifest = existsSync(manifestPath) ? parseVersion(cfg.versioning.file, readFileSync(manifestPath, "utf8")) : null;
+				const tags = (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
+				const verrs = versionTagGate(manifest, cfg.versioning.pattern, tags);
+				errs.push(...verrs);
+				if (!verrs.length) {
+					const expected = cfg.versioning.pattern.replace("{version}", manifest!);
+					const reach = await sh(`git merge-base --is-ancestor ${JSON.stringify(expected)} origin/${cfg.defaultBranch} 2>/dev/null || git merge-base --is-ancestor ${JSON.stringify(expected)} ${cfg.defaultBranch}`, root);
+					if (!reach.ok) errs.push(`tag ${expected} is not reachable from ${cfg.defaultBranch} — tag what actually shipped on ${cfg.defaultBranch}`);
+				}
+			}
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 			state!.approvals.release = now();
 			state!.stage = "cleanup";
@@ -311,7 +342,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		}
 
 		default:
-			return { text: `unknown subcommand "${sub}" — init | start <slug> [--ui] | use <slug> | status | approve | test | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
+			return { text: `unknown subcommand "${sub}" — init | start <slug> [--ui] | use <slug> | status | approve | test | health | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
 	}
 }
 
@@ -494,11 +525,19 @@ export default function devFlow(pi: ExtensionAPI) {
 			const bound = boundFeature(ctx.cwd, key);
 			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null });
 			if (reason) return { block: true, reason };
-			// Editing a worktree invalidates that feature's passing test check until flow test reruns.
+			// Editing a worktree invalidates that feature's test/health checks until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
-			if (owner && owner.state.stage === "implement" && owner.state.checks.test?.ok) {
-				delete owner.state.checks.test;
-				writeState(ctx.cwd, owner.state);
+			if (owner && owner.state.stage === "implement") {
+				let dirty = false;
+				if (owner.state.checks.test?.ok) {
+					delete owner.state.checks.test;
+					dirty = true;
+				}
+				if (owner.state.checks.health?.ok) {
+					delete owner.state.checks.health;
+					dirty = true;
+				}
+				if (dirty) writeState(ctx.cwd, owner.state);
 			}
 			return undefined;
 		}

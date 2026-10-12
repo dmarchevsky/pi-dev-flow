@@ -7,10 +7,12 @@ import {
 	DEFAULTS,
 	mergeConfig,
 	newState,
+	parseVersion,
 	releaseGate,
 	stateTamper,
 	statusCompact,
 	verifyGate,
+	versionTagGate,
 	writeGuard,
 } from "../src/core.ts";
 
@@ -106,6 +108,32 @@ test("statusCompact: slug ▸ stage with failing-check marker", () => {
 	assert.equal(statusCompact(s).failed, true);
 	s.checks.test = { ok: true, at: "2026-01-01T10:00:00Z" };
 	assert.equal(statusCompact(s).failed, false);
+});
+
+test("verifyGate requires health check when configured", () => {
+	const s = { ...newState("f", false), stage: "implement" as const };
+	const c = mergeConfig({ commands: { health: "curl -fs localhost:3000/healthz" } });
+	assert.ok(verifyGate(s, c).some((e) => e.includes("health")));
+	s.checks.health = { ok: false, at: "" };
+	assert.ok(verifyGate(s, c).some((e) => e.includes("health")));
+	s.checks.health = { ok: true, at: "" };
+	assert.equal(verifyGate(s, c).length, 0);
+});
+
+test("parseVersion: all supported manifest formats", () => {
+	assert.equal(parseVersion("VERSION", " v0.13.1-letta_0.34.9 \n"), "v0.13.1-letta_0.34.9");
+	assert.equal(parseVersion("package.json", '{"version":"1.2.3"}'), "1.2.3");
+	assert.equal(parseVersion("package.json", "{broken"), null);
+	assert.equal(parseVersion("Cargo.toml", '[package]\nname = "x"\nversion = "2.0.1"\n'), "2.0.1");
+	assert.equal(parseVersion("pyproject.toml", '[project]\nversion = "0.4.0"\n'), "0.4.0");
+	assert.equal(parseVersion("Cargo.toml", '[package]\nname = "x"\n'), null);
+});
+
+test("versionTagGate: manifest and tag must agree", () => {
+	assert.deepEqual(versionTagGate("1.2.3", "v{version}", ["v1.2.3", "v1.2.2"]), []);
+	assert.match(versionTagGate("1.2.3", "v{version}", ["v1.2.2"])[0], /expected release tag "v1\.2\.3"/);
+	assert.ok(versionTagGate(null, "v{version}", []).length === 1);
+	assert.deepEqual(versionTagGate("0.13.1-letta_0.34.9", "{version}", ["0.13.1-letta_0.34.9"]), [], "suffix-style patterns");
 });
 
 test("cleanupAssess flags dirty worktree and lists unmerged", () => {

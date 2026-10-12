@@ -31,8 +31,18 @@ export interface Commands {
 	setup?: string;
 	test?: string;
 	build?: string;
+	seedData?: string;
+	/** Must exit 0 only when the app is up locally AND its data looks real. */
+	health?: string;
 	run?: string;
 	deployNote?: string;
+}
+
+export interface Versioning {
+	/** Repo-relative manifest holding the version: VERSION | package.json | Cargo.toml | pyproject.toml. */
+	file?: string;
+	/** Tag template; {version} substituted from the manifest. */
+	pattern: string;
 }
 
 export interface Config {
@@ -41,6 +51,7 @@ export interface Config {
 	worktreeDir: string; // {slug} substituted, relative to repo root
 	mockupGlobs: string[]; // suffix globs required in plan/ when ui (default: rendered screenshots)
 	commands: Commands;
+	versioning: Versioning;
 	release: { review: string; changelog?: string; tagPattern?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 }
@@ -51,6 +62,7 @@ export const DEFAULTS: Config = {
 	worktreeDir: ".dev-flow/{slug}/worktree",
 	mockupGlobs: ["*.png"],
 	commands: {},
+	versioning: { pattern: "v{version}" },
 	release: { review: "/ponytail-review" },
 	mainHook: true,
 };
@@ -66,6 +78,11 @@ export function mergeConfig(raw: unknown): Config {
 	if (r.commands && typeof r.commands === "object")
 		for (const [k, v] of Object.entries(r.commands as Record<string, unknown>)) if (typeof v === "string") (c.commands as Record<string, string>)[k] = v;
 	if (r.release && typeof r.release === "object") Object.assign(c.release, r.release);
+	if (r.versioning && typeof r.versioning === "object") {
+		const v = r.versioning as Record<string, unknown>;
+		if (typeof v.file === "string") c.versioning.file = v.file;
+		if (typeof v.pattern === "string") c.versioning.pattern = v.pattern;
+	}
 	return c;
 }
 
@@ -111,7 +128,31 @@ export function verifyGate(state: FlowState, cfg: Config): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "implement") errs.push(`stage is "${state.stage}", verify only applies to "implement"`);
 	if (cfg.commands.test && !state.checks.test?.ok) errs.push("test check has not passed — run flow test first");
+	if (cfg.commands.health && !state.checks.health?.ok) errs.push("health check has not passed — seed data, start the app locally, and run flow health");
 	return errs;
+}
+
+/** Read the version out of a manifest file's content; null when unparseable. */
+export function parseVersion(file: string, content: string): string | null {
+	if (file.endsWith("VERSION")) return content.trim() || null;
+	if (file.endsWith("package.json")) {
+		try {
+			const v = (JSON.parse(content) as { version?: string }).version;
+			return typeof v === "string" && v ? v : null;
+		} catch {
+			return null;
+		}
+	}
+	// Cargo.toml / pyproject.toml style: version = "x.y.z"
+	return content.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null;
+}
+
+/** Gate: the tag derived from the manifest version must exist among local tags. */
+export function versionTagGate(manifestVersion: string | null, tagPattern: string, tags: string[]): string[] {
+	if (!manifestVersion) return ["versioning.file is set but its version could not be parsed — fix versioning config"];
+	const expected = tagPattern.replace("{version}", manifestVersion);
+	if (tags.includes(expected)) return [];
+	return [`expected release tag "${expected}" (from manifest version ${manifestVersion}) not found; recent tags: ${tags.slice(0, 5).join(", ") || "none"}`];
 }
 
 /** Gate: release → cleanup (the release playbook was run to completion). */
@@ -211,9 +252,9 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "plan":
 			return `write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator to run /flow approve`;
 		case "implement":
-			return `implement in the worktree ${state.worktree}, add tests, run flow test, build + run locally, then ask the operator to run /flow verify`;
+			return `implement in the worktree ${state.worktree}, add tests, run flow test; then seed data, start the app locally${cfg.commands.health ? " and run flow health" : ""}, then ask the operator to run /flow verify`;
 		case "release":
-			return `run the release playbook (${cfg.release.review} → fix → docs${cfg.release.changelog ? ` → ${cfg.release.changelog}` : ""}${cfg.release.tagPattern ? ` → tag ${cfg.release.tagPattern}` : ""} → PR → merge), then run flow release-done`;
+			return `run the release playbook (${cfg.release.review} → fix → docs${cfg.release.changelog ? ` → ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}, tag ${cfg.versioning.pattern.replace("{version}", "<version>")} from it` : cfg.release.tagPattern ? ` → tag ${cfg.release.tagPattern}` : ""} → PR → merge), then run flow release-done`;
 		case "cleanup":
 			return "run flow cleanup (safety-checked worktree/branch removal)";
 		case "deploy":
