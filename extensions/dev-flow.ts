@@ -26,9 +26,13 @@ import { defineTool, isToolCallEventType, type ExtensionContext, type Theme } fr
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
+	applyAnswer,
 	approveGate,
 	bashFlowGuard,
 	cleanupAssess,
+	diffAnswers,
+	getPath,
+	initPlan,
 	loadConfig,
 	listFiles,
 	newState,
@@ -54,6 +58,8 @@ const execAsync = promisify(exec);
 interface Ui {
 	hasUI: boolean;
 	confirm: (title: string, message: string) => Promise<boolean>;
+	select: (title: string, options: string[]) => Promise<string | undefined>;
+	input: (title: string, placeholder?: string) => Promise<string | undefined>;
 }
 
 const now = () => new Date().toISOString();
@@ -143,15 +149,71 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n");
 			rmSync(path.join(dfDir(root), ".current"), { force: true }); // migrate away the legacy repo-global pointer
 			const cfgFile = path.join(dfDir(root), "project.json");
+			let existingRaw: Record<string, unknown> | null = null;
 			if (existsSync(cfgFile)) {
-				notes.push("project.json already exists — kept (operator-owned)");
+				try {
+					existingRaw = JSON.parse(readFileSync(cfgFile, "utf8")) as Record<string, unknown>;
+				} catch {
+					notes.push("existing project.json is not valid JSON — the wizard will rewrite it");
+				}
+			}
+			const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
+			const curBr = await currentBranch(root);
+			// never propose a feature branch (contains "/") as the default branch
+			const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
+			const det = detectProject(root, branch);
+			if (flag("yes") || !ui.hasUI) {
+				if (existingRaw) notes.push("project.json already exists — kept (operator-owned)");
+				else {
+					writeFileSync(cfgFile, `${JSON.stringify(det.partial, null, 2)}\n`);
+					notes.push("project.json written from detection (--yes/non-interactive) — review it (operator-owned):", ...det.report.map((r) => `  ${r}`));
+					if (det.missing.length) notes.push(`  not detected (gates fall back to defaults): ${det.missing.join(", ")}`);
+				}
 			} else {
-				const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
-				const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (await currentBranch(root)) || "main";
-				const det = detectProject(root, branch);
-				writeFileSync(cfgFile, `${JSON.stringify(det.partial, null, 2)}\n`);
-				notes.push("project.json written from detection — review it (operator-owned):", ...det.report.map((r) => `  ${r}`));
-				if (det.missing.length) notes.push(`  not detected (gates fall back to defaults): ${det.missing.join(", ")}`);
+				// interactive wizard: confirm or change every setting, nothing is written before the final confirm
+				const answers: Record<string, unknown> = structuredClone(existingRaw ?? {});
+				const eff = loadConfig(dfDir(root));
+				let aborted = false;
+				for (const step of initPlan(existingRaw, det.partial, eff)) {
+					if (step.dependsOn && getPath(answers, step.dependsOn) === undefined) continue;
+					const label = `${step.title}${step.value ? ` = "${step.value}"` : " (unset)"} [${step.source}]`;
+					if (step.kind === "confirm") {
+						applyAnswer(answers, step.key, await ui.confirm(`flow init — ${step.title}`, `Currently: ${step.value === "true" ? "yes" : "no"}. Enable?`));
+						continue;
+					}
+					const opts = step.options ?? (step.value ? (step.optional ? ["keep", "change", "remove"] : ["keep", "change"]) : ["set now", "leave unset"]);
+					const choice = await ui.select(`flow init — ${label}`, opts);
+					if (choice === undefined) {
+						aborted = true;
+						break;
+					}
+					if (choice === "keep" || choice === "leave unset") {
+						// "keep" on a DETECTED value must materialize it — detection is init-only, gates read only the file
+						if (choice === "keep" && step.source === "detected") applyAnswer(answers, step.key, step.value);
+						continue;
+					}
+					if (choice === "remove" || choice === "(none)") {
+						applyAnswer(answers, step.key, null);
+						continue;
+					}
+					if (step.kind === "select" && choice !== "other…") {
+						applyAnswer(answers, step.key, choice);
+						continue;
+					}
+					const v = await ui.input(step.title, step.value || undefined);
+					if (v === undefined) {
+						aborted = true;
+						break;
+					}
+					applyAnswer(answers, step.key, v);
+				}
+				if (aborted) return { text: "flow init cancelled — project.json unchanged" };
+				const lines = diffAnswers(existingRaw ?? {}, answers);
+				if (!lines.length) notes.push(existingRaw ? "reviewed project.json — nothing changed" : "no settings configured — edit project.json by hand or rerun with answers");
+				else if (existingRaw === null || (await ui.confirm("flow init — write project.json?", `${lines.join("\n")}\n\n${JSON.stringify(answers, null, 2)}`))) {
+					writeFileSync(cfgFile, `${JSON.stringify(answers, null, 2)}\n`);
+					notes.push(`project.json ${existingRaw ? "updated" : "written"} (operator-owned):`, ...lines.map((l) => `  ${l}`));
+				} else notes.push("declined — project.json unchanged");
 			}
 			const initCfg = loadConfig(dfDir(root));
 			if (initCfg.mainHook) {
@@ -442,6 +504,8 @@ export default function devFlow(pi: ExtensionAPI) {
 	const uiFrom = (ctx: ExtensionContext): Ui => ({
 		hasUI: ctx.hasUI,
 		confirm: async (title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
+		select: async (title, options) => (ctx.hasUI ? ctx.ui.select(title, options) : Promise.resolve(undefined)),
+		input: async (title, placeholder) => (ctx.hasUI ? ctx.ui.input(title, placeholder) : Promise.resolve(undefined)),
 	});
 
 	const sessFor = (ctx: ExtensionContext): Session => {

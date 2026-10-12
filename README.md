@@ -21,13 +21,16 @@ In each project repo, once:
 ```
 
 Creates `.dev-flow/` — which **ignores itself and everything under it** via its own
-`.dev-flow/.gitignore` containing `*` (no tracked file is touched) — and **analyzes the project to
-write a starter `.dev-flow/project.json`** (detected: default branch from git, package manager from
-`packageManager`/lockfiles, test/build/run from npm scripts, or cargo/go/python conventions —
-anything not confidently detected is reported and left empty for you to fill). An existing
-`project.json` is never overwritten. It also installs a `pre-commit` hook that rejects direct
-commits to the main branch (the hook lives in `.git/hooks`, nothing is committed). The flow is
-completely inert in repos without `.dev-flow/`.
+`.dev-flow/.gitignore` containing `*` (no tracked file is touched) — and **walks you through the
+project configuration step by step**: it analyzes the project (default branch from git, package
+manager from `packageManager`/lockfiles, test/build/run from npm scripts, or cargo/go/python
+conventions, version manifest) and asks you to **confirm, change, or clear** each setting —
+detection is a suggestion, the answers are yours. Nothing is written until you confirm the final
+diff. Running `/flow init` again on an initialized project reviews and edits the existing
+`project.json` the same way (your values win over re-detection; Esc anywhere aborts unchanged).
+`/flow init --yes` keeps the silent fast path for CI. It also installs a `pre-commit` hook that
+rejects direct commits to the main branch (the hook lives in `.git/hooks`, nothing is committed).
+The flow is completely inert in repos without `.dev-flow/`.
 
 ## Commands
 

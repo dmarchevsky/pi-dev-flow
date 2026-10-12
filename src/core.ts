@@ -264,6 +264,117 @@ export function nextHint(state: FlowState, cfg: Config): string {
 	}
 }
 
+/** Interactive `flow init` wizard: pure question plan + answer application (no UI here). */
+export interface WizardStep {
+	key: string; // dot path in project.json, e.g. "commands.test"
+	title: string;
+	kind: "input" | "confirm" | "select";
+	value: string; // current effective value ("" = unset)
+	source: "configured" | "detected" | "default";
+	options?: string[]; // select choices
+	optional?: boolean; // may stay unset
+	dependsOn?: string; // skip step when this dot path is unset
+}
+
+export interface DetectedPartial {
+	defaultBranch: string;
+	commands: Record<string, string>;
+	versioning?: { file: string };
+}
+
+const WIZARD_CMDS: Array<[string, boolean]> = [
+	["setup", true],
+	["test", false],
+	["build", false],
+	["run", false],
+	["seedData", true],
+	["health", true],
+	["deployNote", true],
+];
+
+export function getPath(obj: Record<string, unknown>, key: string): unknown {
+	let cur: unknown = obj;
+	for (const seg of key.split(".")) {
+		if (typeof cur !== "object" || cur === null) return undefined;
+		cur = (cur as Record<string, unknown>)[seg];
+	}
+	return cur;
+}
+
+/** Write (or delete, on null) a dot-path value in a partial project.json object. */
+export function applyAnswer(partial: Record<string, unknown>, key: string, value: string | boolean | null): void {
+	const segs = key.split(".");
+	const leaf = segs.pop()!;
+	const chain: Record<string, unknown>[] = [partial];
+	for (const s of segs) {
+		const next = chain[chain.length - 1][s];
+		if (typeof next !== "object" || next === null) {
+			const created: Record<string, unknown> = {};
+			chain[chain.length - 1][s] = created;
+			chain.push(created);
+		} else chain.push(next as Record<string, unknown>);
+	}
+	const holder = chain[chain.length - 1];
+	if (value === null || value === "" || value === "(none)") delete holder[leaf];
+	else holder[leaf] = value;
+	for (let i = chain.length - 2; i >= 0; i--) {
+		const child = chain[i][segs[i]] as Record<string, unknown>;
+		if (child && Object.keys(child).length === 0) delete chain[i][segs[i]];
+	}
+}
+
+/** Question sequence for init: existing file wins over detection, detection over defaults. */
+export function initPlan(existing: Record<string, unknown> | null, detected: DetectedPartial, eff: Config): WizardStep[] {
+	const steps: WizardStep[] = [];
+	const cur = (key: string, detVal?: string, defVal = ""): { value: string; source: WizardStep["source"] } => {
+		const ex = getPath(existing ?? {}, key);
+		if (typeof ex === "boolean") return { value: String(ex), source: "configured" };
+		if (typeof ex === "string" && ex) return { value: ex, source: "configured" };
+		if (detVal) return { value: detVal, source: "detected" };
+		return { value: defVal, source: "default" };
+	};
+	steps.push({ key: "defaultBranch", title: "default branch", kind: "input", ...cur("defaultBranch", detected.defaultBranch, eff.defaultBranch) });
+	for (const [cmd, optional] of WIZARD_CMDS) {
+		steps.push({ key: `commands.${cmd}`, title: `command: ${cmd}`, kind: "input", ...cur(`commands.${cmd}`, detected.commands[cmd]), optional });
+	}
+	const vf = cur("versioning.file", detected.versioning?.file);
+	const vopts = ["VERSION", "package.json", "Cargo.toml", "pyproject.toml", "(none)", "other…"];
+	if (vf.value && !vopts.includes(vf.value)) vopts.unshift(vf.value);
+	steps.push({ key: "versioning.file", title: "version manifest file", kind: "select", options: vopts, ...vf, optional: true });
+	steps.push({
+		key: "versioning.pattern",
+		title: "release tag pattern ({version} substituted)",
+		kind: "input",
+		...cur("versioning.pattern", undefined, eff.versioning.pattern),
+		dependsOn: "versioning.file",
+	});
+	steps.push({ key: "worktreeDir", title: "worktree directory ({slug} substituted)", kind: "input", ...cur("worktreeDir", undefined, eff.worktreeDir) });
+	steps.push({
+		key: "mainHook",
+		title: "install git hook blocking direct commits to the default branch",
+		kind: "confirm",
+		...cur("mainHook", undefined, String(eff.mainHook)),
+	});
+	return steps;
+}
+
+/** Lines describing what an answered wizard changed vs the previous file. */
+export function diffAnswers(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
+	const flat = (o: Record<string, unknown>, pre = "", out = new Map<string, string>()) => {
+		for (const [k, v] of Object.entries(o)) {
+			if (v && typeof v === "object") flat(v as Record<string, unknown>, `${pre}${k}.`, out);
+			else out.set(`${pre}${k}`, String(v));
+		}
+		return out;
+	};
+	const b = flat(before);
+	const a = flat(after);
+	const lines: string[] = [];
+	for (const [k, v] of a) if (b.get(k) !== v) lines.push(`${k}: ${b.has(k) ? `${b.get(k)} → ` : ""}${v}`);
+	for (const k of b.keys()) if (!a.has(k)) lines.push(`${k}: ${b.get(k)} → (unset)`);
+	return lines;
+}
+
 export function loadConfig(dfDir: string): Config {
 	const file = path.join(dfDir, "project.json");
 	if (!existsSync(file)) return structuredClone(DEFAULTS);

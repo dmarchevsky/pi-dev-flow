@@ -123,7 +123,7 @@ test("status bar: compact refresh follows the gates", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const statuses: (string | undefined)[] = [];
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (_m: string) => {}, confirm: async () => true, setStatus: (_k: string, t?: string) => statuses.push(t), theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (_m: string) => {}, confirm: async () => true, select: async (_t: string, opts: string[]) => opts.find((o) => o === "keep") ?? opts.find((o) => o === "leave unset") ?? opts.find((o) => o === "(none)") ?? opts[0], input: async () => "", setStatus: (_k: string, t?: string) => statuses.push(t), theme: { fg: (_c: string, s: string) => s } } };
 	await pi.cmds.flow.handler("init", ctx);
 	await pi.cmds.flow.handler("start demo-feature", ctx);
 	assert.equal(statuses.at(-1), "◆ demo-feature ▸ plan");

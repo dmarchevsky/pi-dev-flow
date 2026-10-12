@@ -25,6 +25,8 @@ Ground rules:
 
 ## Start
 
+Repo without `.dev-flow/`? Run `flow init` — it walks the operator through every setting (confirm/change each detected value); never hand-edit `project.json`, run the wizard instead.
+
 `flow start <slug> --ui` when the work touches anything user-visible, else `flow start <slug>`. Slug: lowercase words-dashed. Check `flow status` first to see whether one is already active.
 
 ## Stage: plan
