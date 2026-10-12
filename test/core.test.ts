@@ -10,6 +10,7 @@ import {
 	pathFlowGuard,
 	releaseGate,
 	stateTamper,
+	statusCompact,
 	verifyGate,
 } from "../src/core.ts";
 
@@ -91,6 +92,15 @@ test("pathFlowGuard: plan is read-only for code; implement confined to worktree"
 	assert.ok(pathFlowGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, state: null, worktreeAbs: null }));
 	// no active feature → guard off
 	assert.equal(pathFlowGuard({ abs: "/repo/src/app.ts", dfDir: df, state: null, worktreeAbs: null }), null);
+});
+
+test("statusCompact: slug ▸ stage with failing-check marker", () => {
+	const s = newState("f", false);
+	assert.deepEqual(statusCompact(s), { text: "f ▸ plan", failed: false });
+	s.checks.test = { ok: false, at: "2026-01-01T10:00:00Z" };
+	assert.equal(statusCompact(s).failed, true);
+	s.checks.test = { ok: true, at: "2026-01-01T10:00:00Z" };
+	assert.equal(statusCompact(s).failed, false);
 });
 
 test("cleanupAssess flags dirty worktree and lists unmerged", () => {

@@ -53,6 +53,7 @@ While a feature is active, the extension intercepts every tool call:
 - **Work stays in the worktree**: at stages implement+ edits outside the worktree (or `.dev-flow/`) are blocked.
 - **Gates can't be skipped**: `state.json` is untouchable by the agent (edit tool and bash); `project.json` is operator-owned; editing worktree code invalidates a passing test check until `flow test` reruns.
 - The active stage is injected into the model's context every turn; the bundled `dev-flow` skill is the agent's playbook, including the recommended release sequence: review (`/ponytail-review`) → fixes → docs → changelog/version → PR → merge → tag → `release-done`.
+- **Status bar**: while a feature is active the pi footer shows `◆ <slug> ▸ <stage>` (stage-colored, `✗` on failing checks); press `ctrl+,` for the detail panel (approvals, checks, branch/worktree, next step).
 
 ## Project configuration — `.dev-flow/project.json`
 
