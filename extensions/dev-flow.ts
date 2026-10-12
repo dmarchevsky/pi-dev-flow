@@ -158,7 +158,9 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				}
 			}
 			const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
-			const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (await currentBranch(root)) || "main";
+			const curBr = await currentBranch(root);
+			// never propose a feature branch (contains "/") as the default branch
+			const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
 			const det = detectProject(root, branch);
 			if (flag("yes") || !ui.hasUI) {
 				if (existingRaw) notes.push("project.json already exists — kept (operator-owned)");

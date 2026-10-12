@@ -34,7 +34,9 @@ function pkgManager(root: string, field?: string): string {
 
 export function detectProject(root: string, defaultBranch: string): Detection {
 	const commands: Record<string, string> = {};
-	const report: string[] = [`default branch: ${defaultBranch} (guessed from git)`];
+	const report: string[] = [];
+	const guessed = /^(main|master|develop|trunk)$/.test(defaultBranch);
+	report.push(guessed ? `default branch: ${defaultBranch} (guessed from git)` : `default branch: "${defaultBranch}" looks like a working branch — confirm or correct it below`);
 	const detected = detectCommands(root, commands, report);
 	if (!detected) report.push("no supported manifest found — fill in commands yourself (see README)");
 	if (Object.keys(commands).length) report.push(`commands: ${Object.entries(commands).map(([k, v]) => `${k}="${v}"`).join(", ")}`);
