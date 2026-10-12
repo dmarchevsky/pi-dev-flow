@@ -3,8 +3,15 @@
 Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
-### Changed
-- Release playbook now requires the project's version manifest (`package.json`/`pyproject`/`Cargo.toml`/`VERSION`) to be bumped to the tagged version in the same release — dev-flow's own manifest was drifting (0.1.0 vs tags up to 0.4.1) and is re-synced in 0.5.0.
+
+## [0.5.0]
+### Added
+- Session-scoped flows: a pi session binds to one feature (persisted per session branch, restored on resume/fork). `flow start` binds, new `flow use <slug>` switches; a lone unfinished feature binds automatically, ambiguous sessions must bind or pass explicit slugs. One feature per session, many sessions per repo, is now the supported concurrency model.
+- Write enforcement is by path attribution: every write is judged by the stage of the feature owning that worktree, whichever session attempts it — parallel sessions cannot clobber each other or write into plan-stage features.
+- Release playbook requires the project's version manifest (`package.json`/`pyproject`/`Cargo.toml`/`VERSION`) to be bumped to the exact tagged version in the same release; dev-flow's own manifest (drifting at 0.1.0) is re-synced here.
+
+### Removed
+- `.dev-flow/.current` (repo-global pointer) — superseded by session bindings; `flow init` migrates it away.
 
 ## [0.4.1]
 ### Fixed

@@ -178,13 +178,15 @@ const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs
 export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null }): string | null {
 	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is operator-owned — ask the user to change it";
 	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
-	if (within(o.abs, o.dfDir)) return null;
+	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
+	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
 	const owner = o.features.find((f) => within(o.abs, f.worktreeAbs));
 	if (owner) {
 		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
 		if (owner.state.stage === "done") return `feature ${owner.state.slug} is done`;
 		return null; // implement/release/cleanup/deploy: own worktree is the working area
 	}
+	if (within(o.abs, o.dfDir)) return null;
 	if (!o.features.length) return null;
 	if (o.boundSlug) {
 		const bound = o.features.find((f) => f.state.slug === o.boundSlug);
