@@ -28,7 +28,8 @@ conventions, version manifest) and asks you to **confirm, change, or clear** eac
 detection is a suggestion, the answers are yours. Nothing is written until you confirm the final
 diff. Running `/flow init` again on an initialized project reviews and edits the existing
 `project.json` the same way (your values win over re-detection; Esc anywhere aborts unchanged).
-`/flow init --yes` keeps the silent fast path for CI. It also installs a `pre-commit` hook that
+`/flow init --yes` keeps the silent fast path for CI; `/flow init --force` overwrites an existing
+`project.json` with fresh detection (destructive reset — never done by `--yes`). It also installs a `pre-commit` hook that
 rejects direct commits to the main branch (the hook lives in `.git/hooks`, nothing is committed).
 The flow is completely inert in repos without `.dev-flow/`.
 

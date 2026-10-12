@@ -162,11 +162,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			// never propose a feature branch (contains "/") as the default branch
 			const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
 			const det = detectProject(root, branch);
-			if (flag("yes") || !ui.hasUI) {
-				if (existingRaw) notes.push("project.json already exists — kept (operator-owned)");
+			if (flag("yes") || flag("force") || !ui.hasUI) {
+				// --force overwrites existing operator config with fresh detection; --yes never does (even headless)
+				if (existingRaw && !flag("force")) notes.push("project.json already exists — kept (operator-owned; --force to overwrite)");
 				else {
 					writeFileSync(cfgFile, `${JSON.stringify(det.partial, null, 2)}\n`);
-					notes.push("project.json written from detection (--yes/non-interactive) — review it (operator-owned):", ...det.report.map((r) => `  ${r}`));
+					notes.push(`project.json ${existingRaw ? "OVERWRITTEN (--force)" : "written from detection"} — review it (operator-owned):`, ...det.report.map((r) => `  ${r}`));
 					if (det.missing.length) notes.push(`  not detected (gates fall back to defaults): ${det.missing.join(", ")}`);
 				}
 			} else {
