@@ -162,23 +162,41 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 	return null;
 }
 
-export interface PathGuardCtx {
-	abs: string; // resolved path of the edit/write target
-	dfDir: string; // <root>/.dev-flow
-	state: FlowState | null;
+export interface FeatureRef {
+	state: FlowState;
 	worktreeAbs: string | null;
 }
 
-/** Guard: decide whether an edit/write path violates the flow. Returns a reason or null. */
-export function pathFlowGuard(o: PathGuardCtx): string | null {
+const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs.startsWith(dir + path.sep));
+
+/**
+ * Write guard with per-path attribution: writes inside a worktree are judged by that
+ * worktree's own feature; main-checkout writes are judged by the session's bound feature
+ * (release+ may touch it; plan/implement may not); with no binding and unfinished features
+ * the session must bind first (`flow use`). Returns a reason or null (allowed).
+ */
+export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null }): string | null {
 	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is operator-owned — ask the user to change it";
 	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
-	if (!o.state || o.state.stage === "done") return null;
-	const under = (dir: string | null) => !!dir && (o.abs === dir || o.abs.startsWith(dir + path.sep));
-	if (under(o.dfDir)) return null;
-	if (o.state.stage === "plan") return `stage plan is code read-only — write the plan under .dev-flow/${o.state.slug}/plan/`;
-	if (!under(o.worktreeAbs)) return `stage "${o.state.stage}" may only edit the feature worktree (${o.worktreeAbs ?? "worktree not created yet"}) or .dev-flow/`;
-	return null;
+	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
+	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
+	const owner = o.features.find((f) => within(o.abs, f.worktreeAbs));
+	if (owner) {
+		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
+		if (owner.state.stage === "done") return `feature ${owner.state.slug} is done`;
+		return null; // implement/release/cleanup/deploy: own worktree is the working area
+	}
+	if (within(o.abs, o.dfDir)) return null;
+	if (!o.features.length) return null;
+	if (o.boundSlug) {
+		const bound = o.features.find((f) => f.state.slug === o.boundSlug);
+		if (bound) {
+			if (bound.state.stage === "implement") return `bound feature ${o.boundSlug} is at implement — edit its worktree (${bound.state.worktree}), not the main checkout`;
+			if (bound.state.stage === "plan") return `bound feature ${o.boundSlug} is in plan — code is read-only until approved`;
+			return null; // release/cleanup/deploy: release chores may touch the main checkout
+		}
+	}
+	return `unfinished features: ${o.features.map((f) => f.state.slug).join(", ")} — bind this session with flow use <slug> (or pass an explicit slug to gates)`;
 }
 
 /** Compact footer status text; coloring/theme is the extension's business. */

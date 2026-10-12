@@ -7,11 +7,11 @@ import {
 	DEFAULTS,
 	mergeConfig,
 	newState,
-	pathFlowGuard,
 	releaseGate,
 	stateTamper,
 	statusCompact,
 	verifyGate,
+	writeGuard,
 } from "../src/core.ts";
 
 const cfg = structuredClone(DEFAULTS);
@@ -79,19 +79,24 @@ test("stateTamper catches direct state.json writes", () => {
 	assert.equal(stateTamper("git status"), false);
 });
 
-test("pathFlowGuard: plan is read-only for code; implement confined to worktree", () => {
+test("writeGuard: path attribution + session binding rules", () => {
 	const df = "/repo/.dev-flow";
-	const plan = newState("f", false);
-	assert.ok(pathFlowGuard({ abs: "/repo/src/app.ts", dfDir: df, state: plan, worktreeAbs: null }));
-	assert.equal(pathFlowGuard({ abs: "/repo/.dev-flow/f/plan/plan.md", dfDir: df, state: plan, worktreeAbs: null }), null);
-	const impl = { ...plan, stage: "implement" as const, worktree: ".dev-flow/f/worktree" };
-	assert.ok(pathFlowGuard({ abs: "/repo/src/app.ts", dfDir: df, state: impl, worktreeAbs: "/repo/.dev-flow/f/worktree" }));
-	assert.equal(pathFlowGuard({ abs: "/repo/.dev-flow/f/worktree/src/app.ts", dfDir: df, state: impl, worktreeAbs: "/repo/.dev-flow/f/worktree" }), null);
-	// flow-owned files are untouchable even inside .dev-flow
-	assert.ok(pathFlowGuard({ abs: "/repo/.dev-flow/f/state.json", dfDir: df, state: impl, worktreeAbs: null }));
-	assert.ok(pathFlowGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, state: null, worktreeAbs: null }));
-	// no active feature → guard off
-	assert.equal(pathFlowGuard({ abs: "/repo/src/app.ts", dfDir: df, state: null, worktreeAbs: null }), null);
+	const plan = newState("a", false);
+	const impl = { ...newState("b", false), stage: "implement" as const, worktree: ".worktrees/b" };
+	const wtB = "/repo/.worktrees/b";
+	const feats = [{ state: plan, worktreeAbs: null }, { state: impl, worktreeAbs: wtB }];
+	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: feats, boundSlug: null }) ?? "", /flow use/);
+	assert.ok(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: feats, boundSlug: "a" }));
+	assert.equal(writeGuard({ abs: "/repo/.dev-flow/a/plan/plan.md", dfDir: df, features: feats, boundSlug: "a" }), null);
+	assert.ok(writeGuard({ abs: "/repo/wt-a/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/wt-a" }], boundSlug: "b" }), "plan-owned worktree stays closed even when bound elsewhere");
+	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/worktree/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/.dev-flow/a/worktree" }], boundSlug: null }), "default worktreeDir inside .dev-flow is still stage-gated by its owner");
+	assert.equal(writeGuard({ abs: `${wtB}/src/app.ts`, dfDir: df, features: feats, boundSlug: "a" }), null, "b implement worktree open even when bound to a");
+	assert.ok(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: feats, boundSlug: "b" }), "implement-bound session confined to its worktree");
+	const rel = { ...impl, stage: "release" as const };
+	assert.equal(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: [{ state: rel, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores may touch main checkout");
+	assert.equal(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null }), null, "no unfinished features: guard off");
+	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
+	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
 });
 
 test("statusCompact: slug ▸ stage with failing-check marker", () => {
