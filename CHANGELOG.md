@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.4.1]
+### Fixed
+- Detail panel check timestamps now show local time instead of UTC.
+
 ## [0.4.0]
 ### Added
 - Flow status in the pi status bar: `◆ <slug> ▸ <stage>` in the footer, stage-colored, `✗` when a recorded check is failing; cleared when no feature is active. Refreshed at session start, every turn end, and after each gate.
