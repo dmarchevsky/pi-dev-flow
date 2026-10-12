@@ -36,7 +36,7 @@ completely inert in repos without `.dev-flow/`.
 | Gate | Advances | Refuses unless |
 |---|---|---|
 | `start <slug> [--ui]` | → plan | slug is new |
-| `approve` | plan → implement (creates worktree + branch) | `plan/*.md` exists; if `--ui`, mockups (per `mockupGlobs`) exist in `plan/`; **you confirm interactively** |
+| `approve` | plan → implement (creates worktree + branch) | `plan/*.md` exists; if `--ui`, rendered mockup screenshots (per `mockupGlobs`, default `*.png`) exist under `plan/` — headless chromium renders embedded in plan.md; **you confirm interactively** |
 | `test` | records a check | — (runs `commands.test`, records pass/fail) |
 | `verify` | implement → release | test check green, build (if configured) green, **you confirm it works locally** |
 | `release-done` | release → cleanup | verify approval recorded |
@@ -63,7 +63,7 @@ Optional, gitignored, **edited only by you** (the agent is blocked from it). Def
   "defaultBranch": "main",
   "branchPattern": "feat/{slug}",
   "worktreeDir": ".dev-flow/{slug}/worktree",
-  "mockupGlobs": ["*.html"],
+  "mockupGlobs": ["*.png"],
   "commands": {
     "setup": "npm ci",
     "test": "npm test",
@@ -89,7 +89,9 @@ Optional, gitignored, **edited only by you** (the agent is blocked from it). Def
   project.json                operator-owned config
   .current                    active feature pointer
   <slug>/
-    plan/                     plan.md + mockups   ← plan stage output
+    plan/
+      plan.md                 the review document (embeds the renders)
+      mockups/                mockup HTML + chromium renders (*.png)  ← UI plan output
     worktree/                 feature worktree    ← implement/release work
     state.json                stage, approvals, checks (agent cannot write)
 ```

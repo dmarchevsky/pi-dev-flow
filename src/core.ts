@@ -39,7 +39,7 @@ export interface Config {
 	defaultBranch: string;
 	branchPattern: string; // {slug} substituted
 	worktreeDir: string; // {slug} substituted, relative to repo root
-	mockupGlobs: string[]; // suffix globs (*.html) required in plan/ when ui
+	mockupGlobs: string[]; // suffix globs required in plan/ when ui (default: rendered screenshots)
 	commands: Commands;
 	release: { review: string; changelog?: string; tagPattern?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
@@ -49,7 +49,7 @@ export const DEFAULTS: Config = {
 	defaultBranch: "main",
 	branchPattern: "feat/{slug}",
 	worktreeDir: ".dev-flow/{slug}/worktree",
-	mockupGlobs: ["*.html"],
+	mockupGlobs: ["*.png"],
 	commands: {},
 	release: { review: "/ponytail-review" },
 	mainHook: true,
@@ -102,7 +102,7 @@ export function approveGate(state: FlowState, cfg: Config, planFiles: string[]):
 	if (state.stage !== "plan") errs.push(`stage is "${state.stage}", approval only applies to "plan"`);
 	if (!planFiles.some((f) => f.endsWith(".md"))) errs.push("plan/ must contain the written plan (*.md)");
 	if (state.ui && !planFiles.some((f) => matchesGlob(f, cfg.mockupGlobs)))
-		errs.push(`UI feature: plan/ must contain mockups matching ${cfg.mockupGlobs.join(", ")}`);
+		errs.push(`UI feature: plan/mockups/ must contain rendered screenshots matching ${cfg.mockupGlobs.join(", ")} (headless chromium, embedded in plan.md)`);
 	return errs;
 }
 
@@ -185,7 +185,7 @@ export function pathFlowGuard(o: PathGuardCtx): string | null {
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
-			return `write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` including mockups (${cfg.mockupGlobs.join(", ")})` : ""}, then ask the operator to run /flow approve`;
+			return `write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator to run /flow approve`;
 		case "implement":
 			return `implement in the worktree ${state.worktree}, add tests, run flow test, build + run locally, then ask the operator to run /flow verify`;
 		case "release":

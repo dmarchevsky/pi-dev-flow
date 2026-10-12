@@ -30,7 +30,14 @@ Ground rules:
 
 1. Research the code needed for the plan (reads are always allowed).
 2. Write the plan to `.dev-flow/<slug>/plan/plan.md`: problem, approach, files to touch, test strategy, risks. Keep it reviewable, not exhaustive.
-3. **UI flag set?** Add mockups to `plan/` too — static HTML (any `*.html`, per `mockupGlobs` in project.json) using the real stylesheet/tokens when the project has them, rendered per variant and width the project expects.
+3. **UI flag set?** Build the mockups in `plan/mockups/` and render them — a mockup that was never rendered is not a mockup:
+   - Write one HTML per screen/state at `plan/mockups/<screen>.html`. Reuse the project's real stylesheet and class names where it exists (relative links work from inside `.dev-flow/`) — fidelity by construction.
+   - Find a headless chromium: probe `chromium`, `chromium-browser`, `google-chrome` on PATH; else playwright's shell at `~/.cache/ms-playwright/*/chrome-headless-shell-linux64/chrome-headless-shell`.
+   - Render each screen at the widths the project cares for (default: phone 390, desktop 1280):
+     `<binary> --no-sandbox --disable-gpu --hide-scrollbars --virtual-time-budget=5000 --window-size=<width>,<height> --screenshot=plan/mockups/<screen>-<width>.png file://<absolute path to html>`
+     (height: pick per-screen, re-render if content clips).
+   - Embed every render in plan.md under its section: `![<screen> — phone](mockups/<screen>-390.png)`. The plan is then one self-contained reviewable document.
+   - No chromium anywhere? Tell the user and ask — fall back to `*.html`-only plans only with their OK (they can set `mockupGlobs`); never fake or skip a screenshot silently.
 4. Tell the user the plan is ready and **stop**. They review and run `/flow approve` themselves — you may run `flow approve` only when the user explicitly told you they approve; the gate still asks them to confirm interactively.
 
 Approval creates the worktree and branch. Until then no code edits are possible.
