@@ -115,9 +115,8 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 		case "init": {
 			mkdirSync(dfDir(root), { recursive: true });
 			const notes: string[] = [`.dev-flow/ created in ${root}`];
-			const gi = path.join(root, ".gitignore");
-			const body = existsSync(gi) ? readFileSync(gi, "utf8") : "";
-			if (!body.split("\n").some((l) => l.trim() === ".dev-flow/")) writeFileSync(gi, `${body.trimEnd()}\n\n# dev-flow state (flow-owned, gitignored)\n.dev-flow/\n`.replace(/^\n+/, ""));
+			// self-ignoring folder: nothing under .dev-flow/ ever enters git, without touching tracked files
+			writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n");
 			const cfgFile = path.join(dfDir(root), "project.json");
 			if (existsSync(cfgFile)) {
 				notes.push("project.json already exists — kept (operator-owned)");
