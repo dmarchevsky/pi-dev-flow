@@ -341,7 +341,7 @@ class FlowPanel {
 	render(width: number): string[] {
 		const th = this.theme;
 		const s = this.state;
-		const at = (iso: string) => iso.slice(11, 16);
+		const at = (iso: string) => new Date(iso).toTimeString().slice(0, 5); // local wall-clock HH:MM
 		const checks = Object.entries(s.checks).map(([k, c]) => (c.ok ? th.fg("success", `${k} ok ${at(c.at)}`) : th.fg("error", `${k} FAILED ${at(c.at)}`)));
 		return [
 			"",
