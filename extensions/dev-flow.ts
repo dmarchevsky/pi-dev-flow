@@ -273,7 +273,9 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (err) return err;
 			const errs = releaseGate(state!);
 			if (cfg.versioning.file) {
-				const manifest = parseVersion(cfg.versioning.file, readFileSync(path.join(root, cfg.versioning.file), "utf8"));
+				const manifestPath = path.join(root, cfg.versioning.file);
+				if (!existsSync(manifestPath)) errs.push(`versioning.file "${cfg.versioning.file}" does not exist — fix project.json`);
+				const manifest = existsSync(manifestPath) ? parseVersion(cfg.versioning.file, readFileSync(manifestPath, "utf8")) : null;
 				const tags = (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
 				const verrs = versionTagGate(manifest, cfg.versioning.pattern, tags);
 				errs.push(...verrs);
