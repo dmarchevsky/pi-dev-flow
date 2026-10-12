@@ -20,7 +20,13 @@ In each project repo, once:
 /flow init
 ```
 
-Creates `.dev-flow/`, adds it to `.gitignore`, and installs a `pre-commit` hook that rejects direct commits to the main branch (the hook lives in `.git/hooks`, nothing is committed). The flow is completely inert in repos without `.dev-flow/`.
+Creates `.dev-flow/`, adds it to `.gitignore`, and **analyzes the project to write a starter
+`.dev-flow/project.json`** (detected: default branch from git, package manager from
+`packageManager`/lockfiles, test/build/run from npm scripts, or cargo/go/python conventions —
+anything not confidently detected is reported and left empty for you to fill). An existing
+`project.json` is never overwritten. It also installs a `pre-commit` hook that rejects direct
+commits to the main branch (the hook lives in `.git/hooks`, nothing is committed). The flow is
+completely inert in repos without `.dev-flow/`.
 
 ## Commands
 

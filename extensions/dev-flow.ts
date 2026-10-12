@@ -41,6 +41,7 @@ import {
 	type Config,
 	type FlowState,
 } from "../src/core.ts";
+import { detectProject } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
 
@@ -117,19 +118,30 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 			const gi = path.join(root, ".gitignore");
 			const body = existsSync(gi) ? readFileSync(gi, "utf8") : "";
 			if (!body.split("\n").some((l) => l.trim() === ".dev-flow/")) writeFileSync(gi, `${body.trimEnd()}\n\n# dev-flow state (flow-owned, gitignored)\n.dev-flow/\n`.replace(/^\n+/, ""));
-			if (cfg.mainHook) {
+			const cfgFile = path.join(dfDir(root), "project.json");
+			if (existsSync(cfgFile)) {
+				notes.push("project.json already exists — kept (operator-owned)");
+			} else {
+				const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
+				const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (await currentBranch(root)) || "main";
+				const det = detectProject(root, branch);
+				writeFileSync(cfgFile, `${JSON.stringify(det.partial, null, 2)}\n`);
+				notes.push("project.json written from detection — review it (operator-owned):", ...det.report.map((r) => `  ${r}`));
+				if (det.missing.length) notes.push(`  not detected (gates fall back to defaults): ${det.missing.join(", ")}`);
+			}
+			const initCfg = loadConfig(dfDir(root));
+			if (initCfg.mainHook) {
 				const hookDir = path.join(root, ".git", "hooks");
 				const hook = path.join(hookDir, "pre-commit");
 				if (existsSync(hookDir) && !existsSync(hook)) {
 					writeFileSync(
 						hook,
-						`#!/bin/sh\n# installed by dev-flow: direct commits to ${cfg.defaultBranch} are forbidden (override: DEV_FLOW_ALLOW_MAIN=1)\nbranch=$(git rev-parse --abbrev-ref HEAD)\nif [ "$branch" = "${cfg.defaultBranch}" ] && [ -z "$DEV_FLOW_ALLOW_MAIN" ]; then\n  echo "dev-flow: direct commits to ${cfg.defaultBranch} are forbidden — use a feature worktree and a PR" >&2\n  exit 1\nfi\n`,
+						`#!/bin/sh\n# installed by dev-flow: direct commits to ${initCfg.defaultBranch} are forbidden (override: DEV_FLOW_ALLOW_MAIN=1)\nbranch=$(git rev-parse --abbrev-ref HEAD)\nif [ "$branch" = "${initCfg.defaultBranch}" ] && [ -z "$DEV_FLOW_ALLOW_MAIN" ]; then\n  echo "dev-flow: direct commits to ${initCfg.defaultBranch} are forbidden — use a feature worktree and a PR" >&2\n  exit 1\nfi\n`,
 						{ mode: 0o755 },
 					);
 					notes.push("pre-commit hook installed (blocks commits on main)");
 				}
 			}
-			notes.push(`project config: ${existsSync(path.join(dfDir(root), "project.json")) ? ".dev-flow/project.json (operator-owned)" : "none — defaults in use, see README"}`);
 			return { text: notes.join("\n") };
 		}
 
@@ -271,6 +283,11 @@ async function runFlow(args: string[], root: string, ui: Ui): Promise<RunResult>
 		default:
 			return { text: `unknown subcommand "${sub}" — init | start <slug> [--ui] | status | approve | test | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
 	}
+}
+
+async function currentBranch(root: string): Promise<string> {
+	const r = await sh("git branch --show-current", root);
+	return r.ok ? r.out.split("\n")[0] : "";
 }
 
 function needState(root: string, slugArg?: string): { state: FlowState | null; err?: RunResult } {

@@ -57,6 +57,10 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	assert.ok(existsSync(path.join(repo, ".dev-flow")), "init created .dev-flow/");
 	assert.ok(existsSync(path.join(repo, ".git", "hooks", "pre-commit")), "pre-commit hook installed");
 	assert.ok(readFileSync(path.join(repo, ".gitignore"), "utf8").includes(".dev-flow/"), "gitignore updated");
+	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.json"), "utf8").includes('"defaultBranch"'), "init wrote detected project.json");
+	writeFileSync(path.join(repo, ".dev-flow", "project.json"), '{"defaultBranch":"main","_marker":"kept"}');
+	await pi.cmds.flow.handler("init", ctx);
+	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.json"), "utf8").includes("kept"), "re-init must not overwrite operator config");
 
 	await pi.cmds.flow.handler("start demo-feature", ctx);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "demo-feature", "state.json")));
