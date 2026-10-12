@@ -31,6 +31,7 @@ function makePi(): Stub & ((...a: never[]) => void) {
 			(stub.handlers[e] ??= []).push(h);
 			return () => {};
 		},
+		registerShortcut: () => {},
 	};
 	devFlow(api as never);
 	return stub as never;
@@ -97,6 +98,16 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	// the model-facing tool routes through the same runner
 	const res = await pi.tools.flow.execute("id", { args: ["status"] }, undefined, undefined, ctx);
 	assert.match(res.content[0].text, /demo-feature/);
+});
+
+test("status bar: compact refresh follows the gates", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const statuses: (string | undefined)[] = [];
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (_m: string) => {}, confirm: async () => true, setStatus: (_k: string, t?: string) => statuses.push(t), theme: { fg: (_c: string, s: string) => s } } };
+	await pi.cmds.flow.handler("init", ctx);
+	await pi.cmds.flow.handler("start demo-feature", ctx);
+	assert.equal(statuses.at(-1), "◆ demo-feature ▸ plan");
 });
 
 test("extension is pass-through without .dev-flow", async () => {

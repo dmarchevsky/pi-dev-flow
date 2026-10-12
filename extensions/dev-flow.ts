@@ -22,8 +22,9 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, isToolCallEventType, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { defineTool, isToolCallEventType, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	approveGate,
 	bashFlowGuard,
@@ -35,11 +36,13 @@ import {
 	pathFlowGuard,
 	releaseGate,
 	stateTamper,
+	statusCompact,
 	subst,
 	validSlug,
 	verifyGate,
 	type Config,
 	type FlowState,
+	type Stage,
 } from "../src/core.ts";
 import { detectProject } from "../src/detect.ts";
 
@@ -309,6 +312,62 @@ function tail(out: string, n = 15): string {
 
 // ------------------------------------------------------------------ extension
 
+const STAGE_COLORS: Partial<Record<Stage, "warning" | "accent" | "success" | "dim">> = {
+	plan: "warning",
+	implement: "accent",
+	release: "success",
+	cleanup: "dim",
+	deploy: "dim",
+};
+
+/** Expand overlay: full flow state, Esc-closable (pi todo-example pattern). */
+class FlowPanel {
+	private state: FlowState;
+	private cfg: Config;
+	private theme: Theme;
+	private onClose: () => void;
+	constructor(state: FlowState, cfg: Config, theme: Theme, onClose: () => void) {
+		this.state = state;
+		this.cfg = cfg;
+		this.theme = theme;
+		this.onClose = onClose;
+	}
+	handleInput(data: string): void {
+		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.onClose();
+	}
+	invalidate(): void {
+		// state is read fresh at render time; nothing cached to invalidate
+	}
+	render(width: number): string[] {
+		const th = this.theme;
+		const s = this.state;
+		const at = (iso: string) => iso.slice(11, 16);
+		const checks = Object.entries(s.checks).map(([k, c]) => (c.ok ? th.fg("success", `${k} ok ${at(c.at)}`) : th.fg("error", `${k} FAILED ${at(c.at)}`)));
+		return [
+			"",
+			truncateToWidth(`  ${th.fg("accent", `dev-flow — ${s.slug}${s.ui ? " (UI)" : ""}`)} ${th.fg(STAGE_COLORS[s.stage] ?? "muted", s.stage)}`, width),
+			truncateToWidth(`  ${th.fg("muted", `branch ${s.branch || "-"}  ·  worktree ${s.worktree || "-"}`)}`, width),
+			truncateToWidth(`  ${th.fg("muted", `approvals: ${Object.keys(s.approvals).join(", ") || "none"}`)}  ${checks.join(" ")}`, width),
+			truncateToWidth(`  ${th.fg("dim", `next: ${nextHint(s, this.cfg)}`)}`, width),
+			truncateToWidth(`  ${th.fg("dim", "Esc to close")}`, width),
+			"",
+		];
+	}
+}
+
+/** Compact footer status: slug ▸ stage, ✗ on failing checks, cleared when no active feature. */
+function refreshStatus(ctx: ExtensionContext): void {
+	if (!ctx.hasUI) return;
+	const st = existsSync(dfDir(ctx.cwd)) ? activeState(ctx.cwd) : null;
+	if (!st || st.stage === "done") {
+		ctx.ui.setStatus("dev-flow", undefined);
+		return;
+	}
+	const { text, failed } = statusCompact(st);
+	ctx.ui.setStatus("dev-flow", ctx.ui.theme.fg(STAGE_COLORS[st.stage] ?? "muted", `◆ ${text}`) + (failed ? ctx.ui.theme.fg("error", " ✗") : ""));
+}
+
+
 export default function devFlow(pi: ExtensionAPI) {
 	/** Parse "flow <sub> [slug] [--flags]" args shared by command and tool. */
 	const parse = (input: unknown): string[] => {
@@ -326,6 +385,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const res = await runFlow(parse(args), ctx.cwd, uiFrom(ctx));
 			ctx.ui.notify(res.text, res.isError ? "error" : "info");
+			refreshStatus(ctx);
 		},
 	});
 
@@ -343,6 +403,26 @@ export default function devFlow(pi: ExtensionAPI) {
 		},
 	});
 	pi.registerTool(flowTool);
+
+	// Agent-run gates refresh at turn_end (tool ctx lacks setStatus; turn_end catches them).
+	pi.on("session_start", async (_event, ctx) => refreshStatus(ctx));
+	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
+
+	pi.registerShortcut("ctrl+,", {
+		description: "Show the dev-flow detail panel (stage, approvals, checks, next step)",
+		handler: async (ctx) => {
+			if (ctx.mode !== "tui") {
+				if (ctx.hasUI) ctx.ui.notify("flow panel requires interactive mode", "warning");
+				return;
+			}
+			const st = existsSync(dfDir(ctx.cwd)) ? activeState(ctx.cwd) : null;
+			if (!st || st.stage === "done") {
+				ctx.ui.notify("dev-flow: no active feature", "info");
+				return;
+			}
+			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new FlowPanel(st, loadConfig(dfDir(ctx.cwd)), theme, () => done()));
+		},
+	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;

@@ -181,6 +181,12 @@ export function pathFlowGuard(o: PathGuardCtx): string | null {
 	return null;
 }
 
+/** Compact footer status text; coloring/theme is the extension's business. */
+export function statusCompact(state: FlowState): { text: string; failed: boolean } {
+	const failed = Object.values(state.checks).some((c) => !c.ok);
+	return { text: `${state.slug} ▸ ${state.stage}`, failed };
+}
+
 /** What the agent/user should do next, per stage. */
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
