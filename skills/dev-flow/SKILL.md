@@ -59,7 +59,7 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 
 1. `/ponytail-review` the change; fix every **must-have** and **should-have** finding; `flow test` again if code changed.
 2. Update documentation to reflect the change.
-3. Update the changelog and bump the version if configured (project.json `release.changelog` / `release.tagPattern`).
+3. Update the changelog and bump the version if configured (project.json `release.changelog` / `release.tagPattern`). Bump the project's own version manifest to the exact version you will tag — `package.json` `version`, `pyproject.toml`, `Cargo.toml`, or a `VERSION` file, whatever this repo uses. The manifest and the tag must never diverge; cut them from the same number in the same release.
 4. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
 5. `git fetch` and confirm the merge landed, create the release tag (after merge — a tag points at what actually shipped) and push it.
 6. Run the flow tool with `["release-done"]`.

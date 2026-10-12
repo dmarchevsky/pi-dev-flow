@@ -93,7 +93,7 @@ Optional, gitignored, **edited only by you** (the agent is blocked from it). Def
 }
 ```
 
-`{slug}` is substituted in `branchPattern`/`worktreeDir`. Point `worktreeDir` elsewhere (e.g. `.worktrees/{slug}`) if the project has its own convention. Project conventions themselves stay in the repo's `AGENTS.md`/skills — dev-flow sequences stages, it doesn't duplicate project rules.
+`{slug}` is substituted in `branchPattern`/`worktreeDir`. Point `worktreeDir` elsewhere (e.g. `.worktrees/{slug}`) if the project has its own convention. Project conventions themselves stay in the repo's `AGENTS.md`/skills — dev-flow sequences stages, it doesn't duplicate project rules. Releases bump the project's own version manifest (`package.json`/`pyproject.toml`/`Cargo.toml`/`VERSION`) to the exact tagged version — manifest and tag must never diverge.
 
 ## Layout in a project
 

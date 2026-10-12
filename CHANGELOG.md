@@ -3,6 +3,8 @@
 Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
+### Changed
+- Release playbook now requires the project's version manifest (`package.json`/`pyproject`/`Cargo.toml`/`VERSION`) to be bumped to the tagged version in the same release — dev-flow's own manifest was drifting (0.1.0 vs tags up to 0.4.1) and is re-synced in 0.5.0.
 
 ## [0.4.1]
 ### Fixed

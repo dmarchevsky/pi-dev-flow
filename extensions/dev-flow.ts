@@ -109,7 +109,7 @@ function featureRefs(root: string): FeatureRef[] {
 	return unfinishedStates(root).map((s) => ({ state: s, worktreeAbs: s.worktree ? path.resolve(root, s.worktree) : null }));
 }
 
-function worktreeAbs(root: string, cfg: Config, state: FlowState): string | null {
+function worktreeAbs(root: string, state: FlowState): string | null {
 	return state.worktree ? path.resolve(root, state.worktree) : null;
 }
 
@@ -265,7 +265,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (state!.stage !== "cleanup") return { text: `stage is "${state!.stage}", cleanup only applies after release-done`, isError: true };
-			const wt = worktreeAbs(root, cfg, state!);
+			const wt = worktreeAbs(root, state!);
 			const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
 			const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 			const assess = cleanupAssess(status.out, unmerged.out.split("\n"));

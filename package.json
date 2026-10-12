@@ -1,6 +1,6 @@
 {
   "name": "pi-dev-flow",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Enforced plan → implement → verify → release → cleanup → deploy flow for Pi, as a pi package",
   "type": "module",
   "keywords": [
