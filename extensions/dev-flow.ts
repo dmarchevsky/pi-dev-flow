@@ -34,6 +34,7 @@ import {
 	cleanupAssess,
 	featureBranchPrefix,
 	gitInvocation,
+	parsePushRefs,
 
 	listFiles,
 	newState,
@@ -50,6 +51,7 @@ import {
 	type Config,
 	type FeatureRef,
 	type FlowState,
+	type PushRef,
 	type Stage,
 } from "../src/core.ts";
 import { buildDraft, doctorFindings, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
@@ -718,10 +720,21 @@ export default function devFlow(pi: ExtensionAPI) {
 			// Judge by the branch of the directory git actually runs in (git -C / preceding cd target),
 			// not the session root — a bound session's work happens in the feature worktree.
 			const gitDir = inv.dir ? path.resolve(ctx.cwd, inv.dir) : ctx.cwd;
+			// push targets are judged by ref; bare names disambiguated against the repo's own tags (read-only probe)
+			let pushRefs: PushRef[] | undefined;
+			if (inv.pushes.length) {
+				pushRefs = await Promise.all(
+					parsePushRefs(inv.pushes).map(async (r) => {
+						if (r.kind !== "branch" || !r.name || r.name === "*") return r;
+						const tag = await sh(`git rev-parse --verify -q refs/tags/${JSON.stringify(r.name)}`, gitDir);
+						return tag.ok ? { kind: "tag" as const, name: r.name } : r;
+					})
+				);
+			}
 			const br = await sh(`git -C ${JSON.stringify(gitDir)} branch --show-current`, ctx.cwd);
 			const branch = (br.ok ? br.out : "").trim().split("\n")[0] || (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] || "";
 			const bound = boundFeature(ctx.cwd, key);
-			const reason = bashFlowGuard({ command, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch });
+			const reason = bashFlowGuard({ command, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs });
 			if (reason) return { block: true, reason };
 			// Branch discipline: feature branches live in their worktree — never checked out in the main checkout by the agent.
 			const target = checkoutTarget(command);

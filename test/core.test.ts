@@ -12,6 +12,7 @@ import {
 	DEFAULTS,
 	getPath,
 	mergeConfig,
+	parsePushRefs,
 	newState,
 	parseVersion,
 	releaseGate,
@@ -72,9 +73,17 @@ test("bashFlowGuard: main protection and release-stage release", () => {
 	assert.equal(bashFlowGuard({ ...base, branch: "feat/x", command: "git commit -m x" }), null);
 	assert.ok(bashFlowGuard({ ...base, command: "git push origin main" }));
 	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git push origin main" }), null);
-	assert.ok(bashFlowGuard({ ...base, stage: null, branch: "feat/x", command: "git push --tags" }));
+	// ref-aware: tag writes never touch branches — stage-free
+	assert.equal(bashFlowGuard({ ...base, command: "git push --tags" }), null);
+	assert.equal(bashFlowGuard({ ...base, command: "git push origin v0.9.0", pushRefs: [{ kind: "tag", name: "v0.9.0" }] }), null);
+	assert.equal(bashFlowGuard({ ...base, command: "git push origin --delete feat/x", pushRefs: [{ kind: "branch", name: "feat/x" }] }), null);
+	assert.equal(bashFlowGuard({ ...base, command: "git push origin v0.9.0" }), null, "unresolved bare name is only dangerous if it names the default branch");
+	assert.ok(bashFlowGuard({ ...base, command: "git push" }), "bare push on default branch needs release");
+	assert.equal(bashFlowGuard({ ...base, branch: "feat/x", command: "git push" }), null, "bare push off default is the feature branch");
+	assert.equal(bashFlowGuard({ ...base, command: "gh pr create -B main && git push origin feat/x" }), null, "no substring false positives anymore");
 	assert.equal(bashFlowGuard({ ...base, stage: "release", branch: "feat/x", command: "git push --tags" }), null);
 	assert.equal(bashFlowGuard({ ...base, branch: "feat/x", command: "git push origin feat/x" }), null);
+	assert.ok(bashFlowGuard({ ...base, command: "git push --mirror" }), "mirror rewrites everything — worst case");
 	assert.ok(bashFlowGuard({ ...base, command: "git merge feat/x" }));
 	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git merge feat/x" }), null);
 	assert.equal(bashFlowGuard({ ...base, command: "git status" }), null);
@@ -94,14 +103,28 @@ test("bashFlowGuard: only real git invocations are judged", () => {
 });
 
 test("gitInvocation: subcommands and effective directory", () => {
-	assert.deepEqual(gitInvocation("cat .git/hooks/pre-commit"), { subs: [], dir: null });
-	assert.deepEqual(gitInvocation("git commit -m x"), { subs: ["commit"], dir: null });
-	assert.deepEqual(gitInvocation("cd .dev-flow/f/worktree && git commit -m x"), { subs: ["commit"], dir: ".dev-flow/f/worktree" });
-	assert.deepEqual(gitInvocation("git -C /tmp/wt push origin feat/x"), { subs: ["push"], dir: "/tmp/wt" });
-	assert.deepEqual(gitInvocation("git -C=/tmp/wt commit"), { subs: ["commit"], dir: "/tmp/wt" });
-	assert.deepEqual(gitInvocation("/usr/bin/git branch --show-current"), { subs: ["branch"], dir: null });
-	assert.deepEqual(gitInvocation("cd wt; git status; git push"), { subs: ["status", "push"], dir: "wt" });
-	assert.deepEqual(gitInvocation("sudo git commit -m x"), { subs: ["commit"], dir: null });
+	assert.deepEqual(gitInvocation("cat .git/hooks/pre-commit"), { subs: [], dir: null, pushes: [] });
+	assert.deepEqual(gitInvocation("git commit -m x"), { subs: ["commit"], dir: null, pushes: [] });
+	assert.deepEqual(gitInvocation("cd .dev-flow/f/worktree && git commit -m x"), { subs: ["commit"], dir: ".dev-flow/f/worktree", pushes: [] });
+	assert.deepEqual(gitInvocation("git -C /tmp/wt push origin feat/x"), { subs: ["push"], dir: "/tmp/wt", pushes: [["origin", "feat/x"]] });
+	assert.deepEqual(gitInvocation("git -C=/tmp/wt commit"), { subs: ["commit"], dir: "/tmp/wt", pushes: [] });
+	assert.deepEqual(gitInvocation("/usr/bin/git branch --show-current"), { subs: ["branch"], dir: null, pushes: [] });
+	assert.deepEqual(gitInvocation("cd wt; git status; git push"), { subs: ["status", "push"], dir: "wt", pushes: [[]] });
+	assert.deepEqual(gitInvocation("sudo git commit -m x"), { subs: ["commit"], dir: null, pushes: [] });
+});
+
+test("parsePushRefs: what does each push actually write", () => {
+	assert.deepEqual(parsePushRefs([[]]), [{ kind: "current", name: "" }]);
+	assert.deepEqual(parsePushRefs([["origin"]]), [{ kind: "current", name: "" }]);
+	assert.deepEqual(parsePushRefs([["origin", "main"]]), [{ kind: "branch", name: "main" }]);
+	assert.deepEqual(parsePushRefs([["origin", "HEAD:refs/tags/v1.0"]]), [{ kind: "tag", name: "v1.0" }]);
+	assert.deepEqual(parsePushRefs([["origin", "refs/tags/v1.0"]]), [{ kind: "tag", name: "v1.0" }]);
+	assert.deepEqual(parsePushRefs([["--delete", "origin", "feat/x"]]), [{ kind: "branch", name: "feat/x" }]);
+	assert.deepEqual(parsePushRefs([["origin", "main:"]]), [{ kind: "branch", name: "main" }], "src: deletes remote src — judged by src");
+	assert.deepEqual(parsePushRefs([["origin", "HEAD"]]), [{ kind: "current", name: "" }]);
+	assert.deepEqual(parsePushRefs([["--tags"]]), [{ kind: "tag", name: "*" }]);
+	assert.deepEqual(parsePushRefs([["--mirror", "origin"]]), [{ kind: "branch", name: "*" }]);
+	assert.deepEqual(parsePushRefs([["origin", "v1.0", "v1.1"]]), [{ kind: "branch", name: "v1.0" }, { kind: "branch", name: "v1.1" }]);
 });
 
 test("stateTamper catches direct state.json writes", () => {

@@ -55,7 +55,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 
 While a feature is active, the extension intercepts every tool call:
 
-- **Nothing on main, ever**: `git commit` on the default branch is blocked; `git push`/`git merge` onto it requires stage `release`; tag pushes require stage `release`. Plus the standalone pre-commit hook for commits made outside Pi.
+- **Nothing on main, ever**: `git commit` on the default branch is blocked; pushes are judged by the ref they write — only pushing *to* the default branch (or a bare push while on it) requires stage `release`, so tag pushes and feature-branch pushes pass from any stage; `git merge` onto the default branch also requires stage `release`. Plus the standalone pre-commit hook for commits made outside Pi.
 - **No code before an approved plan**: at stage `plan`, edits are confined to `.dev-flow/<slug>/`.
 - **Work stays in the worktree**: at stage `implement`, edits are confined to that feature's worktree — judged per-path by the owning feature, so one session can never write into another session's worktree or into the main checkout.
 - **Flow by default**: in a repo with `.dev-flow/`, an unbound session cannot touch source files at all — every request goes through `flow start`/`flow use`, unless the *operator* exempts the session (`/flow exempt <reason>`; status bar shows `◆ exempt`). `flow start` refuses when the main checkout isn't on the default branch, worktrees are always created from the default branch, and the agent cannot check feature branches out in the main checkout.

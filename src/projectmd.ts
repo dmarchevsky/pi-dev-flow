@@ -251,7 +251,15 @@ export function buildDraft(det: { report: string[]; partial: { defaultBranch: st
 	L.push("## implement", "", "```flow");
 	for (const k of ["setup", "test", "build", "run", "seedData"]) if (cmd(k)) L.push(`${k} = ${cmd(k)}`);
 	L.push("```", "");
-	L.push("```flow-check health", "curl -fs localhost:3000/healthz", "```", "");
+	const healthCmd = cmd("health") || (fresh ? undefined : c.checkList.find((x) => x.name === "health")?.cmd);
+	// never invent a health check: a placeholder that can't pass blocks verify forever (dogfooded: curl localhost:3000 in a library repo)
+	if (healthCmd) L.push("```flow-check health", healthCmd, "```", "");
+	else L.push("<!-- optional tier-1: add a flow-check 'health' block once the app exposes a health endpoint -->", "");
+	// carry every other explicit check through a refresh, or regeneration would silently drop teeth
+	for (const x of fresh ? [] : c.checkList) {
+		if (x.name === "test" || x.name === "health") continue; // implicit ones ride the flow key block / healthCmd above
+		L.push("```flow-check " + x.name, x.cmd, "```", "");
+	}
 	L.push("- [ ] app runs locally with real data; visual pass: no overflows or stray scrollbars", "", "<!-- tier-3: standing guidance for this stage -->", "");
 	L.push("## release", "", "<!-- e.g. semver rules, changelog policy, who confirms the version -->", "", "```flow", `versionFile = ${verFile}`, "versionTag = v{version}", "```", "");
 	if (cmd("deployNote")) L.push("## deploy", "", cmd("deployNote"), "");

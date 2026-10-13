@@ -4,6 +4,18 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-12
+
+### Changed
+
+- Push guard is now ref-aware: each push's refspec is parsed (deletes judged by source, `HEAD` = current branch, `--mirror` worst-case) and bare names resolved against `refs/tags` — only pushes that write the default branch require stage `release`; tag pushes and feature-branch pushes pass from any stage. The old substring heuristic (which blocked `git push origin v1.0` and anything mentioning `main` in a chained command) and the park-`.dev-flow` tag-push workaround are gone
+
+### Fixed
+
+- Draft playbooks no longer inject a placeholder health check (`curl localhost:3000/healthz`) — in repos without a server it was an always-red tier-1 gate blocking verify forever
+- Doctor refresh no longer drops explicit `flow-check` blocks — every tier-1 check is carried through regeneration (previously the refreshed playbook silently lost teeth)
+- `.gitignore` entry `node_modules` matches symlinked `node_modules` (trailing-slash pattern didn't)
+
 ## [0.10.0] - 2026-10-12
 
 ### Added
