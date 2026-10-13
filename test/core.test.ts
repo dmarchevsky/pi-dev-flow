@@ -192,15 +192,18 @@ test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
 	assert.equal(getPath(p, "mainHook"), false);
 });
 
-test("verifyGate: tier-1 checks green + tier-2 checklist confirmed", () => {
+test("verifyGate: tier-1 checks green + tier-2 checklist confirmed (ui-aware)", () => {
 	const s = { ...newState("f", false), stage: "implement" as const };
-	const c = { ...mergeConfig({}), checkList: [{ name: "health", cmd: "curl -fs localhost:3000/healthz" }], checklist: { implement: ["visual pass ok"] } };
+	const items = [{ text: "visual pass ok", uiOnly: true }, { text: "docs updated", uiOnly: false }];
+	const c = { ...mergeConfig({}), checkList: [{ name: "health", cmd: "curl x" }], checklist: { implement: items } };
 	assert.ok(verifyGate(s, c).some((e) => e.includes('check "health"')));
-	assert.ok(verifyGate(s, c).some((e) => e.includes("checklist")));
+	assert.match(verifyGate(s, c).join(" "), /checklist not confirmed \(1 item/, "non-UI feature sees only the non-ui item");
 	s.checks.health = { ok: true, at: "" };
-	assert.match(verifyGate(s, c).join(" "), /checklist not confirmed/);
-	s.confirmations = { implement: { hash: checklistHash(c.checklist.implement), at: "" } };
-	assert.equal(verifyGate(s, c).length, 0);
+	s.confirmations = { implement: { hash: checklistHash([{ text: "docs updated", uiOnly: false }]), at: "" } };
+	assert.equal(verifyGate(s, c).length, 0, "non-UI feature satisfied without the ui item");
+	assert.match(verifyGate({ ...s, ui: true }, c).join(" "), /checklist not confirmed \(2 item/, "UI feature must confirm both");
+	s.confirmations = { implement: { hash: checklistHash(items), at: "" } };
+	assert.equal(verifyGate({ ...s, ui: true }, c).length, 0);
 });
 
 test("parseVersion: all supported manifest formats", () => {

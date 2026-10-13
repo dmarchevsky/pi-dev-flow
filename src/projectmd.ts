@@ -7,7 +7,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type Config, DEFAULTS, mergeConfig, parseVersion } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, mergeConfig, parseVersion } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "release", "cleanup", "deploy"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
@@ -23,7 +23,7 @@ export interface ParsedMd {
 	global: Record<string, string>;
 	flow: Record<MdStage, Record<string, string>>;
 	checks: StageCheck[];
-	checklist: Record<string, string[]>;
+	checklist: Record<string, ChecklistItem[]>;
 	prose: Record<string, string>;
 }
 
@@ -48,6 +48,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		run: "commands.run",
 		seedData: "commands.seedData",
 		health: "commands.health",
+		dev: "commands.dev",
 	},
 	release: {
 		versionFile: "versioning.file",
@@ -119,7 +120,9 @@ export function parseProjectMd(text: string): ParsedMd {
 		if (!stage || stage === "global" || !MD_STAGES.includes(stage as MdStage)) return; // preamble/unknown → not injected
 		const item = line.match(CHECK_ITEM);
 		if (item) {
-			(p.checklist[stage] ??= []).push(item[1].trim());
+			const rawItem = item[1].trim();
+			const uiOnly = rawItem.startsWith("(ui) ");
+			(p.checklist[stage] ??= []).push({ text: uiOnly ? rawItem.slice(5).trim() : rawItem, uiOnly });
 			return;
 		}
 		if (/^(#|```|\s*$)/.test(line) && !line.startsWith("### ")) return; // h1/comments/blank not prose
@@ -249,7 +252,7 @@ export function buildDraft(det: { report: string[]; partial: { defaultBranch: st
 	L.push("## global", "", "```flow", `defaultBranch = ${branch}`, "```", "");
 	L.push("## plan", "", "- [ ] rendered mockups attached for every changed screen", "", "<!-- what the plan must contain, UI expectations -->", "");
 	L.push("## implement", "", "```flow");
-	for (const k of ["setup", "test", "build", "run", "seedData"]) if (cmd(k)) L.push(`${k} = ${cmd(k)}`);
+	for (const k of ["setup", "test", "build", "run", "seedData", "dev"]) if (cmd(k)) L.push(`${k} = ${cmd(k)}`);
 	L.push("```", "");
 	const healthCmd = cmd("health") || (fresh ? undefined : c.checkList.find((x) => x.name === "health")?.cmd);
 	// never invent a health check: a placeholder that can't pass blocks verify forever (dogfooded: curl localhost:3000 in a library repo)

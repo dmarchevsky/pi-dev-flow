@@ -34,6 +34,12 @@ export interface FlowState {
 	confirmations?: Record<string, { hash: string; at: string }>;
 }
 
+/** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
+export interface ChecklistItem {
+	text: string;
+	uiOnly: boolean;
+}
+
 export interface Commands {
 	setup?: string;
 	test?: string;
@@ -42,6 +48,8 @@ export interface Commands {
 	/** Must exit 0 only when the app is up locally AND its data looks real. */
 	health?: string;
 	run?: string;
+	/** Deploy to a dev/staging environment before verification — operator reviews the running dev app. */
+	dev?: string;
 	deployNote?: string;
 }
 
@@ -59,7 +67,7 @@ export interface Config {
 	mockupGlobs: string[]; // suffix globs required in plan/ when ui (default: rendered screenshots)
 	commands: Commands;
 	checkList: StageCheck[]; // tier-1 executable checks (project.md flow blocks)
-	checklist: Record<string, string[]>; // tier-2 operator items per stage
+	checklist: Record<string, ChecklistItem[]>; // tier-2 operator items per stage
 	prose: Record<string, string>; // tier-3 guidance per stage
 	versioning: Versioning;
 	release: { review: string; changelog?: string; tagPattern?: string };
@@ -151,13 +159,21 @@ export function verifyGate(state: FlowState, cfg: Config): string[] {
 	return errs;
 }
 
-export function checklistHash(items: string[]): string {
-	return createHash("sha1").update(items.join("\n")).digest("hex").slice(0, 12);
+export function checklistHash(items: ChecklistItem[]): string {
+	return createHash("sha1")
+		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.text}`).join("\n"))
+		.digest("hex")
+		.slice(0, 12);
+}
+
+/** Items that apply to this feature — "(ui)" items only when the UI flag is set. */
+export function applicableItems(cfg: Config, state: FlowState, stage: string): ChecklistItem[] {
+	return (cfg.checklist[stage] ?? []).filter((i) => !i.uiOnly || state.ui);
 }
 
 /** Items exist for the stage and current confirmation does not match their hash; returns pending count or 0. */
 export function checklistPending(cfg: Config, state: FlowState, stage: string): number {
-	const items = cfg.checklist[stage] ?? [];
+	const items = applicableItems(cfg, state, stage);
 	if (!items.length) return 0;
 	return state.confirmations?.[stage]?.hash === checklistHash(items) ? 0 : items.length;
 }
@@ -389,9 +405,9 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "release":
 			return `run the release playbook (${cfg.release.review} → fix → docs${cfg.release.changelog ? ` → ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}, tag ${cfg.versioning.pattern.replace("{version}", "<version>")} from it` : cfg.release.tagPattern ? ` → tag ${cfg.release.tagPattern}` : ""} → PR → merge), then run flow release-done`;
 		case "cleanup":
-			return "run flow cleanup (safety-checked worktree/branch removal)";
+			return "run flow cleanup — silent when the worktree is safe, asks only if commits look unmerged";
 		case "deploy":
-			return "run flow deploy for the manual production deployment";
+			return "run flow deploy to close out (production deploy is manual, never asked about)";
 		default:
 			return "feature finished";
 	}

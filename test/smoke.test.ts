@@ -93,7 +93,7 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	mkdirSync(path.join(repo, ".dev-flow", "demo-feature", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "demo-feature", "plan", "plan.md"), "# plan\n");
 	await pi.cmds.flow.handler("approve", ctx);
-	assert.ok(ctx.notices.at(-1)?.includes("requires the operator"), "approve without UI refuses interactively");
+	assert.ok(ctx.notices.at(-1)?.includes("needs the operator"), "approve without an operator answer refuses");
 
 	// stage context injection
 	const inj = (await pi.handlers.before_agent_start[0]({}, ctx)) as { message?: { content: string } };
@@ -264,4 +264,35 @@ test("reflect queue: append, list, check-off semantics, status surfacing", async
 	assert.ok(!listed2.content[0].text.includes("handled"), "checked-off items are not open");
 	const st = await flow(["status"]);
 	assert.match(st.content[0].text, /↻ 2 reflection\(s\) open/);
+});
+
+test("checkpoint contract: --confirmed walks every gate with zero dialogs", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	let dialogs = 0;
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--yes"]);
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\ndev = touch dev-up\n```\n\n- [ ] operator item\n- [ ] (ui) mockup item\n"]);
+	await flow(["start", "ck"]);
+	mkdirSync(path.join(repo, ".dev-flow", "ck", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "ck", "plan", "plan.md"), "# plan\n");
+	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved \(confirmed by operator instruction\)/);
+	await flow(["check"]);
+	const v = await flow(["verify", "--confirmed"]);
+	assert.match(v.content[0].text, /verified \(confirmed by operator instruction\) — entering release/);
+	assert.equal(dialogs, 0, "operator answered in chat — gates must not ask again");
+	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ck", "state.json"), "utf8"));
+	assert.ok(st.checks.dev?.ok, "dev deploy ran and recorded before verification");
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "ck", "worktree", "dev-up")), "dev deploy ran in the worktree");
+	// ui-only item stayed out of the non-UI feature's hash: implement confirm hashed exactly 1 item
+	assert.equal(st.confirmations.implement.hash.length, 12);
+	const cwt = path.join(repo, ".dev-flow", "ck", "worktree");
+	execFileSync("git", ["-C", cwt, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"]);
+	execFileSync("git", ["-C", cwt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "dev artifact"]);
+	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /release recorded as complete \(confirmed by operator instruction\)/);
+	assert.match((await flow(["cleanup", "--confirmed"])).content[0].text, /removed/);
+	const d = await flow(["deploy"]);
+	assert.match(d.content[0].text, /done/);
+	assert.equal(dialogs, 0, "still zero dialogs at the end");
 });

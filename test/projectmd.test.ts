@@ -46,8 +46,8 @@ test("parseProjectMd: tiers, key maps, prose per stage", () => {
 	assert.equal(p.flow.implement["commands.test"], "npm test");
 	assert.equal(p.flow.release["versioning.file"], "VERSION");
 	assert.deepEqual(p.checks, [{ name: "overflow", cmd: "node scripts/check-overflow.mjs" }]);
-	assert.deepEqual(p.checklist.plan, ["mockups rendered"]);
-	assert.deepEqual(p.checklist.implement, ["visual pass at both widths"]);
+	assert.deepEqual(p.checklist.plan, [{ text: "mockups rendered", uiOnly: false }]);
+	assert.deepEqual(p.checklist.implement, [{ text: "visual pass at both widths", uiOnly: false }]);
 	assert.equal(p.prose.implement, "Prefer feature flags for risky paths.");
 	assert.equal(p.prose.release, "version rules here");
 });
@@ -125,4 +125,9 @@ test("buildDraft: fresh is detection-driven; refresh keeps configured values", (
 	assert.match(kept, /```flow-check overflow\nnode scripts\/check-overflow\.mjs/, "refresh carries explicit checks");
 	const withHealth = mdToConfig(parseProjectMd(`${MD.replace("## release", "```flow-check health\ncurl -sf :4000/health\n```\n\n## release")}`));
 	assert.match(buildDraft(det, withHealth), /```flow-check health\ncurl -sf :4000\/health/, "health check carried, exactly once");
+});
+
+test("parseProjectMd: (ui) marker splits tier-2 items", () => {
+	const p = parseProjectMd("## plan\n- [ ] (ui) mockups only\n- [ ] both\n");
+	assert.deepEqual(p.checklist.plan, [{ text: "mockups only", uiOnly: true }, { text: "both", uiOnly: false }]);
 });
