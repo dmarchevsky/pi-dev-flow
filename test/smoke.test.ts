@@ -288,11 +288,32 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	// ui-only item stayed out of the non-UI feature's hash: implement confirm hashed exactly 1 item
 	assert.equal(st.confirmations.implement.hash.length, 12);
 	const cwt = path.join(repo, ".dev-flow", "ck", "worktree");
-	execFileSync("git", ["-C", cwt, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"]);
+	execFileSync("git", ["-C", cwt, "add", "-A"]);
 	execFileSync("git", ["-C", cwt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "dev artifact"]);
-	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /release recorded as complete \(confirmed by operator instruction\)/);
-	assert.match((await flow(["cleanup", "--confirmed"])).content[0].text, /removed/);
-	const d = await flow(["deploy"]);
-	assert.match(d.content[0].text, /done/);
+	execFileSync("git", ["-C", repo, "merge", "-q", "--ff", "feat/ck"]); // simulate the merge landing on main
+	const rd = await flow(["release-done", "--confirmed"]);
+	assert.match(rd.content[0].text, /release recorded as complete \(confirmed by operator instruction\)/);
+	assert.match(rd.content[0].text, /worktree and branch removed — feature ck done/, "clean worktree auto-closes the feature");
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ck")), "feature dir gone after release");
 	assert.equal(dialogs, 0, "still zero dialogs at the end");
+});
+
+test("release tail: dirty worktree keeps the operator in the loop", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n"]);
+	await flow(["start", "dirt"]);
+	mkdirSync(path.join(repo, ".dev-flow", "dirt", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "dirt", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	await flow(["verify", "--confirmed"]);
+	writeFileSync(path.join(repo, ".dev-flow", "dirt", "worktree", "loose.txt"), "uncommitted\n");
+	const rd = await flow(["release-done", "--confirmed"]);
+	assert.match(rd.content[0].text, /worktree was not clean after release/, "not-clean falls back to manual cleanup");
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "dirt", "state.json")), "feature stays until the operator sorts it out");
+	const cl = await flow(["cleanup"]);
+	assert.ok(cl.isError && cl.content[0].text.includes("uncommitted"), "cleanup reports why it refuses");
 });
