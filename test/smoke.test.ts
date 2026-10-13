@@ -232,3 +232,15 @@ test("extension is pass-through without .dev-flow", async () => {
 	const r = await pi.handlers.tool_call[0]({ toolName: "write", input: { path: "anything.ts" } }, ctx);
 	assert.equal(r, undefined);
 });
+
+test("ref-aware push guard end-to-end: tags pass from main, default branch refused", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	const ctx = makeCtx(repo);
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "tag", "v9.9.9"]);
+	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command } }, ctx);
+	assert.equal(await bash("git push origin v9.9.9"), undefined, "tag name resolves to refs/tags — stage-free");
+	assert.match((await bash("git push origin main"))?.reason ?? "", /requires stage "release"/);
+	assert.equal(await bash("git push origin main:refs/heads/main-backup"), undefined, "explicit non-default dest passes");
+});

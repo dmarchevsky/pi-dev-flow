@@ -208,6 +208,7 @@ export interface GuardCtx {
 	branch: string; // branch of the directory the git commands run in (feature worktree or main checkout)
 	stage: Stage | null; // active feature stage, null when no active feature
 	defaultBranch: string;
+	pushRefs?: PushRef[]; // caller-resolved push targets (bare names disambiguated tag vs branch); omit = guard parses raw command
 }
 
 const unquote = (s: string): string => s.replace(/^(['"])(.*)\1$/, "$2");
@@ -218,8 +219,9 @@ const unquote = (s: string): string => s.replace(/^(['"])(.*)\1$/, "$2");
  *  git runs in (last preceding `cd` target or `git -C` target; null = session cwd).
  *  shortcut: naive segment split, subshells/backticks not tracked; the pre-commit
  *  hook still covers what slips past this advisory guard. */
-export function gitInvocation(command: string): { subs: string[]; dir: string | null } {
+export function gitInvocation(command: string): { subs: string[]; dir: string | null; pushes: string[][] } {
 	const subs: string[] = [];
+	const pushes: string[][] = [];
 	let dir: string | null = null;
 	// global git options that consume a following value
 	const OPT_VAL = new Set(["-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace", "--super-prefix"]);
@@ -237,6 +239,7 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 			const t = tok[i];
 			if (!t.startsWith("-")) {
 				subs.push(t);
+				if (t === "push") pushes.push(tok.slice(i + 1).filter((x) => x !== "&&"));
 				break;
 			}
 			const eq = t.indexOf("=");
@@ -248,7 +251,43 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 			if (OPT_VAL.has(name) && eq === -1) i++;
 		}
 	}
-	return { subs, dir };
+	return { subs, dir, pushes };
+}
+
+export type PushRef = { kind: "tag" | "branch" | "current"; name: string };
+
+/** Refspecs of each `git push` (from gitInvocation.pushes): what ref does each push actually write?
+ *  bare names come back "branch" (conservative) — the caller resolves tags via git. */
+export function parsePushRefs(pushes: string[][]): PushRef[] {
+	const out: PushRef[] = [];
+	for (const toks of pushes) {
+		if (toks.includes("--mirror")) {
+			out.push({ kind: "branch", name: "*" }); // mirror rewrites every branch, assume the worst
+			continue;
+		}
+		if (toks.includes("--tags")) {
+			out.push({ kind: "tag", name: "*" });
+			continue;
+		}
+		const bare = toks.filter((t) => !t.startsWith("-")).map(unquote);
+		const specs = bare.slice(1); // first bare token is the remote
+		if (!specs.length) {
+			out.push({ kind: "current", name: "" });
+			continue;
+		}
+		for (const s of specs) {
+			const [src, dest] = s.split(":");
+			// 'src:' deletes remote src → judge src; ':dest' pushes local dest; otherwise dest is what lands remotely
+			const target = dest === undefined ? src : dest || src;
+			if (target === "HEAD") {
+				out.push({ kind: "current", name: "" });
+				continue;
+			}
+			const kind = target.startsWith("refs/tags/") ? "tag" : "branch";
+			out.push({ kind, name: target.replace(/^refs\/(heads|tags)\//, "") });
+		}
+	}
+	return out;
 }
 
 /** True when a bash command looks like a direct write to flow state. */
@@ -267,9 +306,11 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 
 	if (git("commit") && onMain) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree`;
 	if (git("push")) {
-		const targetsMain = onMain || c.includes(o.defaultBranch);
-		if (targetsMain && o.stage !== "release") return `pushing to ${o.defaultBranch} requires stage "release" (verified feature)`;
-		if (/--tags|push\s+\S+\s+v\d/.test(c) && o.stage !== "release") return `pushing release tags requires stage "release"`;
+		// ref-aware: only pushes that WRITE the default branch need stage release — tags and other branches pass.
+		// unresolved bare names arrive pre-resolved by the caller (tag vs branch); no parse info → conservative onMain.
+		const refs = o.pushRefs ?? parsePushRefs(gitInvocation(c).pushes);
+		const writesDefault = refs.some((r) => (r.kind === "branch" && (r.name === o.defaultBranch || r.name === "*")) || (r.kind === "current" && onMain));
+		if (writesDefault && o.stage !== "release") return `pushing to ${o.defaultBranch} requires stage "release" (verified feature)`;
 	}
 	if (git("merge") && onMain && o.stage !== "release") return `merging into ${o.defaultBranch} requires stage "release"`;
 	return null;
