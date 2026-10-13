@@ -118,7 +118,9 @@ sessions the agent presents it (`--draft`), takes your feedback conversationally
 back validated (`--write <content>`); **existing file** → doctor mode (drift, dead commands/scripts,
 unparseable manifest, dual configs — it never runs your commands) offering a refresh. At any time
 you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doctor) validates and
-flags problems. `--yes` silent draft for CI; `--force` rewrites from fresh detection.
+flags problems. `--yes` silent draft for CI; `--force` rewrites from fresh detection. Improvement
+ideas the agent notices along the way queue up in `.dev-flow/reflections.md` (`flow reflect
+"<note>" [--to playbook|plugin|doctor]`) — you decide what gets folded in; nothing there ever gates.
 
 
 ## Layout in a project

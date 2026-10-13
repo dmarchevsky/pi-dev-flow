@@ -81,3 +81,11 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 
 - User wants to abandon a feature: `flow abort <slug>` unbinds the session and prints the exact commands to remove the worktree/branch; state stays for manual recovery.
 - A gate refuses: read its reasons — they list exactly what is missing. Fix that, rerun the gate.
+
+## Reflect (your suggestion queue)
+
+When you notice something the playbook or the plugin should improve — drifted commands, gate friction, a plugin bug — park it instead of complaining in chat: `flow reflect "<one-line note>" [--to playbook|plugin|doctor]` (default `playbook`). The operator sees the open count in status and stage context and decides what happens next:
+
+- Only reflect real friction, one line each; never reflect the same issue twice.
+- `flow reflect` lists open items. When the operator says "fold them in": draft the playbook update (`flow init --draft` → adjust → `flow init --write`), then check items off (`- [x]`) in `.dev-flow/reflections.md` with a normal edit — that file is your queue; `project.md` is not.
+- `to=plugin` items: offer to file a GitHub issue against dev-flow; the operator confirms.

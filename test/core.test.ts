@@ -18,6 +18,7 @@ import {
 	releaseGate,
 	stateTamper,
 	statusCompact,
+	openReflections,
 	verifyGate,
 	versionTagGate,
 	writeGuard,
@@ -160,6 +161,11 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.equal(checkoutTarget("git checkout -- src/app.ts"), "--");
 	assert.equal(checkoutTarget("git commit -m x"), null);
 	assert.equal(featureBranchPrefix({ ...DEFAULTS, branchPattern: "feat/{slug}" }), "feat/");
+});
+
+test("openReflections: unchecked items only", () => {
+	assert.deepEqual(openReflections("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
+	assert.deepEqual(openReflections(""), []);
 });
 
 test("statusCompact: slug ▸ stage with failing-check marker", () => {

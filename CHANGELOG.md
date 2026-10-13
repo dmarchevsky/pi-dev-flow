@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-12
+
+### Added
+
+- `reflect` — the agent's suggestion queue: `flow reflect "<note>" [--to playbook|plugin|doctor]` appends one line to `.dev-flow/reflections.md` (drifted commands, gate friction, plugin bugs), `flow reflect` lists open items. The open count surfaces in `flow status`, stage injections and the init doctor; fold-in goes through the existing validated `playbook --write` path and items are checked off with a normal edit. Advisory by design — reflections never gate anything, and `project.md` keeps its operator-only contract
+
 ## [0.11.0] - 2026-10-12
 
 ### Changed
