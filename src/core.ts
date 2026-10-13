@@ -286,9 +286,11 @@ const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs
  * Write guard with per-path attribution: writes inside a worktree are judged by that
  * worktree's own feature; main-checkout writes are judged by the session's bound feature
  * (release+ may touch it; plan/implement may not); with no binding and unfinished features
- * the session must bind first (`flow use`). Returns a reason or null (allowed).
+ * the session must bind first (`flow use`). Flow-by-default: a session with no flow may not
+ * touch the checkout at all — only an operator-granted exemption (`flow exempt`) opens it.
+ * Returns a reason or null (allowed).
  */
-export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null }): string | null {
+export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; exempt?: boolean }): string | null {
 	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is operator-owned — ask the user to change it";
 	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
@@ -300,7 +302,8 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 		return null; // implement/release/cleanup/deploy: own worktree is the working area
 	}
 	if (within(o.abs, o.dfDir)) return null;
-	if (!o.features.length) return null;
+	// Flow-by-default: the operator's exemption lifts binding requirements wholesale (user override).
+	if (o.exempt) return null;
 	if (o.boundSlug) {
 		const bound = o.features.find((f) => f.state.slug === o.boundSlug);
 		if (bound) {
@@ -309,7 +312,19 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 			return null; // release/cleanup/deploy: release chores may touch the main checkout
 		}
 	}
+	if (!o.features.length) return "no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature; only the operator can exempt (\"/flow exempt <reason>\")";
 	return `unfinished features: ${o.features.map((f) => f.state.slug).join(", ")} — bind this session with flow use <slug> (or pass an explicit slug to gates)`;
+}
+
+/** Branch targeted by a `git checkout`/`git switch` in the command, or null. */
+export function checkoutTarget(command: string): string | null {
+	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\s+(?:-c\s+)?([^\s;|&]+)/);
+	return m ? m[1] : null;
+}
+
+/** Prefix feature branches match: branchPattern up to `{slug}` — used to keep feature branches out of the main checkout. */
+export function featureBranchPrefix(cfg: Config): string {
+	return cfg.branchPattern.split("{")[0];
 }
 
 /** Compact footer status text; coloring/theme is the extension's business. */

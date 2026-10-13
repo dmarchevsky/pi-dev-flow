@@ -163,6 +163,41 @@ test("interactive first init reviews the draft in the editor when the client has
 	assert.match(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8"), /operator edited/, "editor output is what lands on disk");
 });
 
+test("flow-by-default: unbound writes blocked; operator exempt lifts; start needs default branch; feature checkouts stay in worktrees", async () => {
+	const pi = makePi();
+	const repo = makeRepo(); // on main, no features
+	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const edit = () => pi.handlers.tool_call[0]({ toolName: "edit", input: { path: "src/app.ts" } }, ctx);
+	assert.match((await edit())?.reason ?? "", /no active flow/, "clean repo still requires a flow");
+	await flow(["exempt", "quick", "docs", "fix"]);
+	assert.equal(await edit(), undefined, "exemption opens the checkout");
+	await flow(["exempt", "off"]);
+	assert.match((await edit())?.reason ?? "", /no active flow/, "exemption ends on off");
+	const r1 = await flow(["start", "x"]);
+	assert.ok(!r1.isError, "start on main works");
+	execFileSync("git", ["-C", repo, "checkout", "-qb", "work/two"]);
+	assert.match((await flow(["start", "y"])).content[0].text, /not main/, "start refuses off the default branch");
+	execFileSync("git", ["-C", repo, "checkout", "-q", "main"]);
+	const chk = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/z" } }, ctx);
+	assert.match(chk?.reason ?? "", /worktree/, "feature branches stay out of the main checkout");
+});
+
+test("feature-branch checkout allowed inside its own worktree", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const wt = path.join(repo, ".wt", "z");
+	execFileSync("git", ["-C", repo, "worktree", "add", "-b", "feat/z", wt]);
+	const st = { slug: "z", stage: "implement", ui: false, branch: "feat/z", worktree: ".wt/z", approvals: {}, checks: {} };
+	mkdirSync(path.join(repo, ".dev-flow", "z"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "project.json"), JSON.stringify({ defaultBranch: "main", worktreeDir: ".wt" }));
+	writeFileSync(path.join(repo, ".dev-flow", "z", "state.json"), JSON.stringify(st));
+	const ctx = { cwd: wt, hasUI: false, notices: [] as string[], ui: { notify: () => {} } };
+	const res = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/z" } }, ctx);
+	assert.equal(res, undefined, "checkout inside the owning worktree passes");
+});
+
 test("session binding: use/abort/ambiguity", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

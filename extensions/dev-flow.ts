@@ -30,7 +30,9 @@ import {
 	bashFlowGuard,
 	checklistHash,
 	checklistPending,
+	checkoutTarget,
 	cleanupAssess,
+	featureBranchPrefix,
 	gitInvocation,
 
 	listFiles,
@@ -92,6 +94,8 @@ function writeState(root: string, state: FlowState): void {
 
 /** Session bindings: one flow per pi session; persisted per session branch via appendEntry. */
 const bindings = new Map<string, string | null>();
+/** Operator-granted session exemptions: reason string, or null/undefined when not exempt. */
+const exemptions = new Map<string, string | null>();
 const sessionKey = (ctx: { cwd: string; sessionManager?: { getSessionId(): string } }) => ctx.sessionManager?.getSessionId() ?? ctx.cwd;
 
 function unfinishedStates(root: string): FlowState[] {
@@ -121,6 +125,29 @@ function worktreeAbs(root: string, state: FlowState): string | null {
 	return state.worktree ? path.resolve(root, state.worktree) : null;
 }
 
+/** Git-level consistency probes for the doctor: orphan worktrees/branches, features missing their worktree. */
+async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
+	const feats = unfinishedStates(root);
+	const out: string[] = [];
+	const wtRoot = path.resolve(root, cfg.worktreeDir.split("{")[0]);
+	const owned = new Set(feats.map((f) => (f.worktree ? path.resolve(root, f.worktree) : "")));
+	const wtRaw = await sh("git worktree list --porcelain", root);
+	if (wtRaw.ok)
+		for (const line of wtRaw.out.split("\n")) {
+			if (!line.startsWith("worktree ")) continue;
+			const abs = path.resolve(line.slice(9).trim());
+			if (abs !== path.resolve(root) && abs.startsWith(wtRoot) && !owned.has(abs)) out.push(`orphan worktree ${path.relative(root, abs)} — no feature owns it (git worktree remove)`);
+		}
+	const ownedBr = new Set(feats.map((f) => f.branch));
+	const brRaw = await sh(`git branch --list ${JSON.stringify(`${featureBranchPrefix(cfg)}*`)}`, root);
+	if (brRaw.ok)
+		for (const b of brRaw.out.split("\n").map((x) => x.replace(/^\*?\s+/, "").trim()).filter(Boolean)) {
+			if (!ownedBr.has(b)) out.push(`orphan branch ${b} — no unfinished feature owns it (git branch -D ${b})`);
+		}
+	for (const f of feats) if (f.worktree && !existsSync(path.resolve(root, f.worktree))) out.push(`feature ${f.slug} (${f.stage}) has no worktree at ${f.worktree}`);
+	return out;
+}
+
 /** Where feature commands run: the feature worktree once it exists (that is where the
  *  code under test lives), else the main checkout. Keeps gates off the main branch. */
 function gateCwd(root: string, state: FlowState): string {
@@ -138,6 +165,8 @@ interface RunResult {
 interface Session {
 	slug: string | null;
 	bind: (slug: string | null) => void;
+	exempt: string | null;
+	setExempt: (reason: string | null) => void;
 }
 
 /** Single runner for both the /flow command and the flow tool. */
@@ -190,6 +219,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			} else if (existsSync(mdFile)) {
 				// doctor mode: cheap consistency probes only — never runs project commands
 				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
+				findings.push(...(await gitConsistency(root, loaded.cfg)));
 				if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
 				else {
 					const edited = ui.editor
@@ -237,6 +267,9 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		case "start": {
 			if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] (slug: lowercase, dashes)", isError: true };
 			if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
+			// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
+			const curBr = await currentBranch(root);
+			if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
 			const state = newState(slugArg, flag("ui"));
 			mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
 			writeState(root, state);
@@ -280,7 +313,9 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const wtRel = subst(cfg.worktreeDir, state!.slug);
 			const wt = path.resolve(root, wtRel);
 			if (!existsSync(wt)) {
-				const res = await sh(`git worktree add ${JSON.stringify(wt)} -b ${branch}`, root);
+				// branch discipline: features branch off the default branch — never from a stale checkout HEAD
+				const base = (await sh(`git rev-parse --verify -q origin/${cfg.defaultBranch}`, root)).ok ? `origin/${cfg.defaultBranch}` : cfg.defaultBranch;
+				const res = await sh(`git worktree add ${JSON.stringify(wt)} -b ${branch} ${base}`, root);
 				if (!res.ok) return { text: `worktree creation failed:\n${res.out}`, isError: true };
 			}
 			state!.branch = branch;
@@ -444,19 +479,35 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const st = readState(root, slugArg);
 			if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
 			sess.bind(slugArg);
-			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})` };
+			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}` };
+		}
+
+		case "exempt": {
+			// Operator valve for "do this without the flow" — the agent may only surface it, never self-grant (see SKILL).
+			if (rest[0] === "off") {
+				if (!sess.exempt) return { text: "session is not exempt" };
+				sess.setExempt(null);
+				return { text: "exemption cleared — flow rules apply again" };
+			}
+			if (!rest.length) return { text: sess.exempt ? `session is flow-exempt: ${sess.exempt}` : "session is not exempt — flow start <slug> to begin work" };
+			if (sess.exempt) return { text: `already exempt: ${sess.exempt}` };
+			const reason = rest.join(" ");
+			if (ui.hasUI && !(await ui.confirm("Exempt session from flow?", `Reason: ${reason}\n\nFlow binding rules are lifted for this session (project.md and state.json stay protected). Ends with "flow exempt off" or a new session.`))) return { text: "declined — no exemption" };
+			sess.setExempt(reason);
+			return { text: `session is flow-exempt: ${reason} — run "flow exempt off" when done` };
 		}
 
 		case "abort": {
 			// Unbinds the session only; state and worktree stay for manual recovery.
 			const target = slugArg ?? sess.slug;
 			if (!target) return { text: "nothing bound — pass a slug", isError: true };
+			const st = readState(root, target);
 			if (sess.slug === target) sess.bind(null);
-			return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/ — remove any worktree/branch manually` };
+			return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
 		}
 
 		default:
-			return { text: `unknown subcommand "${sub}" — init [--yes|--force|--write <text>] | start <slug> [--ui] | use <slug> | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
+			return { text: `unknown subcommand "${sub}" — init [--yes|--force|--write <text>] | start <slug> [--ui] | use <slug> | exempt [off|<reason>] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
 	}
 }
 
@@ -538,7 +589,8 @@ function refreshStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
 	const st = existsSync(dfDir(ctx.cwd)) ? boundFeature(ctx.cwd, sessionKey(ctx)) : null;
 	if (!st || st.stage === "done") {
-		ctx.ui.setStatus("dev-flow", undefined);
+		const ex = exemptions.get(sessionKey(ctx));
+		ctx.ui.setStatus("dev-flow", ex ? ctx.ui.theme.fg("warning", `◆ exempt: ${ex.slice(0, 40)}`) : undefined);
 		return;
 	}
 	const { text, failed } = statusCompact(st);
@@ -567,18 +619,26 @@ export default function devFlow(pi: ExtensionAPI) {
 				bindings.set(key, slug);
 				pi.appendEntry("dev-flow-bind", { slug });
 			},
+			exempt: exemptions.get(key) ?? null,
+			setExempt: (reason) => {
+				exemptions.set(key, reason);
+				pi.appendEntry("dev-flow-exempt", { reason });
+			},
 		};
 	};
 
-	/** Restore this session's binding from its branch history (survives resume/fork). */
-	const rebuildBinding = (ctx: ExtensionContext) => {
+	/** Restore this session's binding + exemption from its branch history (survives resume/fork). */
+	const rebuildSession = (ctx: ExtensionContext) => {
 		let slug: string | null = null;
+		let exempt: string | null = null;
 		for (const e of ctx.sessionManager?.getBranch() ?? []) {
 			// SAFETY: narrow structural view of the SessionEntry union; we only read entries whose type/customType match our own appendEntry writes.
-			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null } };
+			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null; reason?: string | null } };
 			if (ce.type === "custom" && ce.customType === "dev-flow-bind") slug = ce.data?.slug ?? null;
+			if (ce.type === "custom" && ce.customType === "dev-flow-exempt") exempt = ce.data?.reason ?? null;
 		}
 		bindings.set(sessionKey(ctx), slug);
+		exemptions.set(sessionKey(ctx), exempt);
 	};
 
 	pi.registerCommand("flow", {
@@ -607,10 +667,10 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	// Agent-run gates refresh at turn_end (tool ctx lacks setStatus; turn_end catches them).
 	pi.on("session_start", async (_event, ctx) => {
-		rebuildBinding(ctx);
+		rebuildSession(ctx);
 		refreshStatus(ctx);
 	});
-	pi.on("session_tree", async (_event, ctx) => rebuildBinding(ctx));
+	pi.on("session_tree", async (_event, ctx) => rebuildSession(ctx));
 	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
 
 	pi.registerShortcut("ctrl+,", {
@@ -638,7 +698,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const abs = path.resolve(ctx.cwd, String(event.input.path ?? ""));
 			const feats = featureRefs(ctx.cwd);
 			const bound = boundFeature(ctx.cwd, key);
-			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null });
+			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null, exempt: !!exemptions.get(key) });
 			if (reason) return { block: true, reason };
 			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
@@ -663,15 +723,34 @@ export default function devFlow(pi: ExtensionAPI) {
 			const bound = boundFeature(ctx.cwd, key);
 			const reason = bashFlowGuard({ command, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch });
 			if (reason) return { block: true, reason };
+			// Branch discipline: feature branches live in their worktree — never checked out in the main checkout by the agent.
+			const target = checkoutTarget(command);
+			if (target && target.startsWith(featureBranchPrefix(cfg))) {
+				const gitAbs = path.resolve(gitDir);
+				const inWorktree = featureRefs(ctx.cwd).some((f) => f.worktreeAbs && (gitAbs === f.worktreeAbs || gitAbs.startsWith(f.worktreeAbs + path.sep)));
+				if (!inWorktree) return { block: true, reason: `branch ${target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };
+			}
 		}
 		return undefined;
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
-		const state = boundFeature(ctx.cwd, sessionKey(ctx));
-		if (!state || state.stage === "done") return undefined;
 		const cfg = loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg;
+		const state = boundFeature(ctx.cwd, sessionKey(ctx));
+		if (!state || state.stage === "done") {
+			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
+			const ex = exemptions.get(sessionKey(ctx));
+			let content: string;
+			if (ex) {
+				content = `[dev-flow] session is flow-exempt: ${ex} — work directly without a flow. Suggest the operator run "/flow exempt off" once this work is done.`;
+			} else {
+				const curBr = await currentBranch(ctx.cwd);
+				content = `[dev-flow] no flow bound. Every request goes through flow unless the OPERATOR exempts it (/flow exempt <reason> — you may mention it, never run it for yourself). New work: flow start <slug>; unfinished feature: flow use <slug>.`;
+				if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
+			}
+			return { message: { customType: "dev-flow-context", display: false, content } };
+		}
 		const guidance: string[] = [];
 		if (cfg.prose[state.stage]) guidance.push(`Stage guidance (project.md): ${cfg.prose[state.stage]}`);
 		const pend = checklistPending(cfg, state, state.stage);
