@@ -70,11 +70,11 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 3. Update the changelog and bump the version manifest (`versioning.file`) to the exact version you will tag — manifest, changelog, and tag must all agree; `flow release-done` verifies the tag exists and is reachable from the default branch.
 4. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
 5. `git fetch` and confirm the merge landed, create the release tag (after merge — a tag points at what actually shipped) and push it.
-6. Ask the operator the **one release question** — "confirm release <name> v<version>?" — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together).
+6. Ask the operator the **one release question** — "confirm release <name> v<version>?" — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and, when the worktree is clean and merged, removes worktree + branch + feature dir itself: the release is the end of the flow.
 
-## Stage: cleanup + deploy
+## Stage: cleanup + deploy (only when release-done couldn't auto-close)
 
-- `["cleanup"]` removes worktree + branch silently when the worktree is clean and commits are merged; it asks the operator only when commits look unmerged (possible squash merge) — if it reports that and you have no operator answer, stop and show them.
+- `["cleanup"]` is reached when the worktree was dirty or commits looked unmerged (squash merges). Fix what it reports, then run it; it asks the operator only on unmerged-looking commits — if it reports those and you have no operator answer, stop and show them.
 - `["deploy"]` closes the feature — no questions. Production deployment is manual and out of scope; if the playbook defines a `commands.deployNote` runbook it is printed for reference. Never ask the operator whether a prod deploy happened.
 
 ## When things go sideways

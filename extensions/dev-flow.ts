@@ -160,6 +160,25 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 
 /** Where feature commands run: the feature worktree once it exists (that is where the
  *  code under test lives), else the main checkout. Keeps gates off the main branch. */
+/** Auto-tail after release: when the worktree is safe, remove worktree + branch and report how; null when the operator must handle it (dirty or unmerged-looking). */
+async function autoClose(root: string, state: FlowState, cfg: Config): Promise<string | null> {
+	const wt = worktreeAbs(root, state);
+	if (!wt || !existsSync(wt)) {
+		await sh("git worktree prune", root);
+		if (state.branch && (await sh(`git rev-parse --verify --quiet refs/heads/${state.branch}`, root)).ok) {
+			const del = await sh(`git branch -d ${JSON.stringify(state.branch)}`, root);
+			if (!del.ok) return null;
+		}
+		return "worktree and branch removed";
+	}
+	const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
+	const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
+	const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
+	if (assess.errors.length || assess.unmerged.length) return null;
+	const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${state.branch}`, root);
+	return rm.ok ? "worktree and branch removed" : null;
+}
+
 function gateCwd(root: string, state: FlowState): string {
 	const wt = worktreeAbs(root, state);
 	return wt && existsSync(wt) ? wt : root;
@@ -455,9 +474,24 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				if (!ok) return { text: "release confirmation declined — finish the release chores first" };
 			}
 			state!.approvals.release = now();
+			let ghNote = "";
+			if (manifestVer) {
+				// advisory: GitHub release for the verified tag — a note on failure, never a block
+				const tag = cfg.versioning.pattern.replace("{version}", manifestVer);
+				const notes = (await sh(`git tag -l --format=%(contents) ${JSON.stringify(tag)}`, root)).out.trim();
+				const gr = await sh(`gh release create ${JSON.stringify(tag)} --title ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`, root);
+				ghNote = gr.ok ? `GitHub release ${tag} created.` : `GitHub release skipped: ${tail(gr.out)}`;
+			}
+			const closed = await autoClose(root, state!, cfg);
+			if (closed) {
+				const note = cfg.commands.deployNote ? ` deploy runbook (manual): ${cfg.commands.deployNote}.` : "";
+				rmSync(featDir(root, state!.slug), { recursive: true, force: true });
+				if (sess.slug === state!.slug) sess.bind(null);
+				return { text: `release recorded as complete${audit}.${ghNote ? ` ${ghNote}` : ""}\n${closed} — feature ${state!.slug} done.${note}` };
+			}
 			state!.stage = "cleanup";
 			writeState(root, state!);
-			return { text: `release recorded as complete${audit}.\n${nextHint(state!, cfg)}` };
+			return { text: `release recorded as complete${audit}.${ghNote ? ` ${ghNote}` : ""}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "cleanup": {

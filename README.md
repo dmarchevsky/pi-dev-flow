@@ -46,7 +46,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `check` | records all tier-1 checks | — (runs every `flow-check`/test/health from project.md `## implement`) |
 | `health` | records a check | — (runs `seedData` + the health command; app must be up locally with real data) |
 | `verify` | implement → release | all tier-1 checks green, build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app, tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; **one question** — or `--confirmed` |
-| `release-done` | release → cleanup | verify approval; with `versioning.file`: tag rendered from the manifest version exists and is reachable from the default branch; **the one release question** (changelog+tag+PR) — or `--confirmed` |
+| `release-done` | release → cleanup | verify approval; with `versioning.file`: tag rendered from the manifest version exists and is reachable from the default branch; **the one release question** (changelog+tag+PR) — or `--confirmed` · creates the GitHub release from the tag (advisory — needs gh + GitHub remote) · **auto-removes worktree/branch/feature dir when clean** — cleanup+deploy only exist for the not-clean path |
 | `cleanup` | cleanup → deploy | worktree clean, no unmerged commits — **silent when safe**; asks only when commits look unmerged (squash merges) |
 | `deploy` | → done (deletes `.dev-flow/<slug>/`) | no questions — production deploy is manual and out of scope; a configured `deployNote` runbook is printed for reference |
 | `reflect ["<note>" [--to playbook\|plugin\|doctor]]` | — | queues an agent suggestion for the operator (never gates) |

@@ -405,7 +405,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "release":
 			return `run the release playbook (${cfg.release.review} → fix → docs${cfg.release.changelog ? ` → ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}, tag ${cfg.versioning.pattern.replace("{version}", "<version>")} from it` : cfg.release.tagPattern ? ` → tag ${cfg.release.tagPattern}` : ""} → PR → merge), then run flow release-done`;
 		case "cleanup":
-			return "run flow cleanup — silent when the worktree is safe, asks only if commits look unmerged";
+			return "worktree was not clean after release — fix it, then run flow cleanup (it asks you only if commits look unmerged)";
 		case "deploy":
 			return "run flow deploy to close out (production deploy is manual, never asked about)";
 		default:
