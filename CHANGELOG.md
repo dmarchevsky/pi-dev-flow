@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-10-12
+
+### Changed
+
+- SKILL: handling additions mid-implement — same-feature scope grows in place (plan.md amended with an "Added mid-stage:" line, stay at implement; edit invalidation makes verify re-cover it); a different problem becomes a new flow instead of a folded second feature; formal re-review of an amended plan is a chat re-approval — no reopen gate by design
+
 ## [0.14.0] - 2026-10-12
 
 ### Changed
