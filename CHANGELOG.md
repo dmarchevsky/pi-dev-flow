@@ -4,6 +4,20 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-12
+
+### Added
+
+- **Flow by default**: in a repo with `.dev-flow/`, an unbound session can no longer touch source files — every request goes through `flow start`/`flow use` unless the operator exempts the session with `/flow exempt <reason>` (session-scoped, survives resume, `flow exempt off` clears, `◆ exempt` shown in the status bar; `project.md`/`state.json` stay protected even when exempt). Unbound sessions get the posture injected at turn start, including a flag when the main checkout isn't on the default branch
+- Doctor (init) git-consistency findings: orphan worktrees, orphan feature branches, and features whose worktree vanished; `flow abort` now prints the exact commands to remove worktree + branch
+
+### Changed
+
+- `flow start` refuses when the main checkout is on another branch (`--force` to override) — features must base on the default branch
+- Worktrees are created from `origin/<default>` explicitly (fallback `<default>`) — never from whatever HEAD the main checkout happened to sit on
+- The agent cannot check feature-pattern branches out in the main checkout; feature branches are only usable inside their own worktree
+- `flow use` prints the bound feature's worktree path
+
 ## [0.9.0] - 2026-10-12
 
 ### Added
