@@ -41,9 +41,9 @@ Repo without `.dev-flow/`? Run `flow init` — run `flow init --draft`, discuss 
      (height: pick per-screen, re-render if content clips).
    - Embed every render in plan.md under its section: `![<screen> — phone](mockups/<screen>-390.png)`. The plan is then one self-contained reviewable document.
    - No chromium anywhere? Tell the user and ask — fall back to `*.html`-only plans only with their OK (they can set `mockupGlobs`); never fake or skip a screenshot silently.
-4. Tell the user the plan is ready and **stop**. They review and run `/flow approve` themselves — you may run `flow approve` only when the user explicitly told you they approve; the gate still asks them to confirm interactively.
+4. Tell the user the plan is ready and **stop** — one question: "approve?". They answer in chat (or run `/flow approve` themselves). When they answered, run `flow approve --confirmed` — **exactly one checkpoint per stage**: a chat "approved" must never trigger a second dialog. `--confirmed` is only for a literal operator answer, never your inference; without an answer and without interactive UI the gate refuses.
 
-Approval creates the worktree and branch. Until then no code edits are possible.
+Approval creates the worktree and branch. Until then no code edits are possible. `(ui)`-marked playbook checklist items do not apply to non-UI features — they never appear in prompts or confirmations.
 
 ## Stage: implement
 
@@ -57,9 +57,9 @@ Work happens **only in the worktree** the gate created (path in `flow status` or
    - `commands.seedData` (if set) puts real data in place; start the app with the `run` command;
    - the health check (tier 1) must pass — `flow check` covers it (it runs seedData before health);
    - walk the **tier-2 checklist** (`- [ ]` items) with the operator honestly — those can't be scripted;
-   - then **ask the user to verify** and stop. They run `/flow verify`; only they can confirm it works.
+   - then **ask the user to verify** — one question: "tested and works?". When they answer, run `flow verify --confirmed` (no second dialog); interactively they can run `/flow verify` themselves. Fixes requested = iterate and re-verify; that loop is free.
 
-`flow verify` re-runs build and demands every tier-1 check green before it even asks the operator; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — the criteria are structured, not honor-system.
+`flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — absent config means dev-flow says nothing about dev) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal.
 
 ## Stage: release
 
@@ -70,12 +70,12 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 3. Update the changelog and bump the version manifest (`versioning.file`) to the exact version you will tag — manifest, changelog, and tag must all agree; `flow release-done` verifies the tag exists and is reachable from the default branch.
 4. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
 5. `git fetch` and confirm the merge landed, create the release tag (after merge — a tag points at what actually shipped) and push it.
-6. Run the flow tool with `["release-done"]`.
+6. Ask the operator the **one release question** — "confirm release <name> v<version>?" — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together).
 
 ## Stage: cleanup + deploy
 
-- `["cleanup"]` safety-checks the worktree (clean, no unmerged commits) and removes worktree + branch after operator confirmation. If it reports unmerged commits, stop and show the user — do not force.
-- `["deploy"]` prints the manual deploy runbook (project.json `commands.deployNote`) and records the operator's confirmation; then the feature directory is deleted. Deployment itself is manual and is the user's action.
+- `["cleanup"]` removes worktree + branch silently when the worktree is clean and commits are merged; it asks the operator only when commits look unmerged (possible squash merge) — if it reports that and you have no operator answer, stop and show them.
+- `["deploy"]` closes the feature — no questions. Production deployment is manual and out of scope; if the playbook defines a `commands.deployNote` runbook it is printed for reference. Never ask the operator whether a prod deploy happened.
 
 ## When things go sideways
 

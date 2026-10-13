@@ -27,6 +27,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	approveGate,
+	applicableItems,
 	bashFlowGuard,
 	checklistHash,
 	checklistPending,
@@ -316,10 +317,13 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (err) return err;
 			const errs = approveGate(state!, cfg, listFiles(path.join(featDir(root, state!.slug), "plan")));
 			if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
-			if (!ui.hasUI) return { text: "plan approval requires the operator in an interactive session", isError: true };
-			const planItems = cfg.checklist.plan ?? [];
-			const ok = await ui.confirm("Approve plan", `Feature ${state!.slug}${state!.ui ? " (UI — mockups included)" : ""}.${planItems.length ? `\nConfirm plan items:\n${planItems.map((it) => `  [ ] ${it}`).join("\n")}` : ""}\nApprove the plan and create the feature worktree?`);
-			if (!ok) return { text: "approval declined — keep iterating on the plan" };
+			const planItems = applicableItems(cfg, state!, "plan");
+			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
+			if (!flag("confirmed")) {
+				if (!ui.hasUI) return { text: "plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
+				const ok = await ui.confirm("Approve plan", `Approve plan for ${state!.slug}${state!.ui ? " (UI)" : ""}? Worktree and branch will be created.`);
+				if (!ok) return { text: "approval declined — keep iterating on the plan" };
+			}
 			if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
 			const branch = subst(cfg.branchPattern, state!.slug);
 			const wtRel = subst(cfg.worktreeDir, state!.slug);
@@ -335,7 +339,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			state!.stage = "implement";
 			state!.approvals.plan = now();
 			writeState(root, state!);
-			return { text: `plan approved; worktree ${wtRel} on branch ${branch}.\n${nextHint(state!, cfg)}` };
+			return { text: `plan approved${audit}; worktree ${wtRel} on branch ${branch}.\n${nextHint(state!, cfg)}` };
 		}
 
 		case "test": {
@@ -351,7 +355,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		case "verify": {
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
-			const items = cfg.checklist.implement ?? [];
+			const items = applicableItems(cfg, state!, "implement");
 			// tier-1 gate first (tier-2 confirmation is recorded by this very command, so it is excluded here)
 			const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg);
 			if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
@@ -361,19 +365,26 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				writeState(root, state!);
 				if (!res.ok) return { text: `build FAILED:\n${tail(res.out)}`, isError: true };
 			}
-			if (!ui.hasUI) return { text: "verification requires the operator to confirm interactively", isError: true };
-			const ok = await ui.confirm(
-				"Operator verification",
-				`Build passed, all tier-1 checks green. App should be running locally with real data (${cfg.commands.run ?? "no run command configured"}).\n${items.length ? `Confirm every item below is satisfied (any later edit resets this):\n${items.map((it) => `  [ ] ${it}`).join("\n")}\n\n` : ""}Has the operator tested it and confirmed it works?`,
-			);
-			if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
+			// deploy to dev before asking — the operator reviews the running dev app, not a promise
+			if (cfg.commands.dev) {
+				const res = await sh(cfg.commands.dev, gateCwd(root, state!));
+				state!.checks.dev = { ok: res.ok, at: now() };
+				writeState(root, state!);
+				if (!res.ok) return { text: `dev deploy FAILED:\n${tail(res.out)}`, isError: true };
+			}
+			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
+			if (!flag("confirmed")) {
+				if (!ui.hasUI) return { text: "verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
+				const ok = await ui.confirm("Operator verification", `All checks green${cfg.commands.dev ? "; dev deploy is up for review" : ""}. Have you tested it and confirm it works?`);
+				if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
+			}
 			state!.confirmations = { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } };
 			const final = verifyGate(state!, cfg);
 			if (final.length) return { text: `verify gate FAILED:\n- ${final.join("\n- ")}`, isError: true };
 			state!.approvals.verify = now();
 			state!.stage = "release";
 			writeState(root, state!);
-			return { text: `verified — entering release stage.\n${nextHint(state!, cfg)}` };
+			return { text: `verified${audit} — entering release stage.\n${nextHint(state!, cfg)}` };
 		}
 
 		case "check": {
@@ -420,10 +431,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			const errs = releaseGate(state!);
+			let manifestVer: string | null = null;
 			if (cfg.versioning.file) {
 				const manifestPath = path.join(root, cfg.versioning.file);
 				if (!existsSync(manifestPath)) errs.push(`versioning.file "${cfg.versioning.file}" does not exist — fix project.json`);
 				const manifest = existsSync(manifestPath) ? parseVersion(cfg.versioning.file, readFileSync(manifestPath, "utf8")) : null;
+				if (manifest) manifestVer = manifest;
 				const tags = (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
 				const verrs = versionTagGate(manifest, cfg.versioning.pattern, tags);
 				errs.push(...verrs);
@@ -434,10 +447,17 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				}
 			}
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
+			// the one release question — changelog, tag and PR are all covered by this answer
+			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
+			if (!flag("confirmed")) {
+				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
+				const ok = await ui.confirm("Confirm release", `Confirm release: ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Changelog, tag and merged PR are covered by this.`);
+				if (!ok) return { text: "release confirmation declined — finish the release chores first" };
+			}
 			state!.approvals.release = now();
 			state!.stage = "cleanup";
 			writeState(root, state!);
-			return { text: `release recorded as complete.\n${nextHint(state!, cfg)}` };
+			return { text: `release recorded as complete${audit}.\n${nextHint(state!, cfg)}` };
 		}
 
 		case "cleanup": {
@@ -462,10 +482,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 			const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
 			if (assess.errors.length) return { text: `cleanup blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
-			if (!ui.hasUI) return { text: "cleanup requires operator confirmation", isError: true };
-			const warn = assess.unmerged.length ? `\nWARNING — commits not on ${cfg.defaultBranch} (squash merge?):\n${assess.unmerged.slice(0, 10).join("\n")}\n` : "";
-			const ok = await ui.confirm("Cleanup feature", `Remove worktree ${state!.worktree} and branch ${state!.branch}?${warn}`);
-			if (!ok) return { text: "cleanup declined" };
+			// silent when safe — the operator is only asked when commits look unmerged (possible squash merge)
+			if (assess.unmerged.length && !flag("confirmed")) {
+				if (!ui.hasUI) return { text: `cleanup needs an operator OK — ${assess.unmerged.length} commit(s) not on ${cfg.defaultBranch} (squash merge?). Re-run with --confirmed once checked.`, isError: true };
+				const ok = await ui.confirm("Cleanup feature", `${assess.unmerged.length} commit(s) not on ${cfg.defaultBranch}. Remove worktree and branch ${state!.branch} anyway?`);
+				if (!ok) return { text: "cleanup declined" };
+			}
 			const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${state!.branch}`, root);
 			if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow cleanup`, isError: true };
 			state!.stage = "deploy";
@@ -477,13 +499,11 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (state!.stage !== "deploy") return { text: `stage is "${state!.stage}", deploy only applies after cleanup`, isError: true };
-			const note = cfg.commands.deployNote ?? "Manual deployment: deploy the released tag to production yourself.";
-			if (!ui.hasUI) return { text: `deploy runbook:\n${note}\n(confirmation requires an interactive session)` };
-			const ok = await ui.confirm("Manual production deploy", `${note}\n\nWas the deploy completed (or intentionally skipped)?`);
-			if (!ok) return { text: "deploy still pending — run flow deploy again afterwards" };
+			// production deploys are manual and out of scope — never ask whether they happened
+			const note = cfg.commands.deployNote ? `\ndeploy runbook (manual): ${cfg.commands.deployNote}` : "";
 			rmSync(featDir(root, state!.slug), { recursive: true, force: true });
 			if (sess.slug === state!.slug) sess.bind(null);
-			return { text: `feature ${state!.slug} done — .dev-flow/${state!.slug}/ removed.` };
+			return { text: `feature ${state!.slug} done — .dev-flow/${state!.slug}/ removed.${note}` };
 		}
 
 		case "use": {
@@ -796,7 +816,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		const guidance: string[] = [];
 		if (cfg.prose[state.stage]) guidance.push(`Stage guidance (project.md): ${cfg.prose[state.stage]}`);
 		const pend = checklistPending(cfg, state, state.stage);
-		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${cfg.checklist[state.stage].join(" | ")}`);
+		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}`);
 		const refl = readReflections(ctx.cwd);
 		if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — mention to the operator; fold in only on request.`);
 		return {

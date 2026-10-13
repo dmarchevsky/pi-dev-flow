@@ -41,15 +41,18 @@ The flow is completely inert in repos without `.dev-flow/`.
 |---|---|---|
 | `start <slug> [--ui]` | → plan | slug is new (binds the session) |
 | `use <slug>` | — (binds this session to a feature) | slug unfinished |
-| `approve` | plan → implement (creates worktree + branch) | `plan/*.md` exists; if `--ui`, rendered mockup screenshots (per `mockupGlobs`, default `*.png`) exist under `plan/` — headless chromium renders embedded in plan.md; **you confirm interactively** |
+| `approve` | plan → implement (creates worktree + branch) | `plan/*.md` exists; if `--ui`, rendered mockup screenshots (per `mockupGlobs`, default `*.png`) exist under `plan/` — headless chromium renders embedded in plan.md; **one question** — or `--confirmed` after you answered in chat |
 | `test` | records a check | — (runs the `test` command/check, records pass/fail) |
 | `check` | records all tier-1 checks | — (runs every `flow-check`/test/health from project.md `## implement`) |
 | `health` | records a check | — (runs `seedData` + the health command; app must be up locally with real data) |
-| `verify` | implement → release | all tier-1 checks green, tier-2 checklist confirmed as a set, build (if configured) green, **you confirm it works locally** |
-| `release-done` | release → cleanup | verify approval; with `versioning.file`: tag rendered from the manifest version exists and is reachable from the default branch |
-| `cleanup` | cleanup → deploy | worktree clean, no unmerged commits (squash-merges need your explicit confirm), **you confirm removal** |
-| `deploy` | → done (deletes `.dev-flow/<slug>/`) | **you confirm the manual deploy happened or was skipped** |
+| `verify` | implement → release | all tier-1 checks green, build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app, tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; **one question** — or `--confirmed` |
+| `release-done` | release → cleanup | verify approval; with `versioning.file`: tag rendered from the manifest version exists and is reachable from the default branch; **the one release question** (changelog+tag+PR) — or `--confirmed` |
+| `cleanup` | cleanup → deploy | worktree clean, no unmerged commits — **silent when safe**; asks only when commits look unmerged (squash merges) |
+| `deploy` | → done (deletes `.dev-flow/<slug>/`) | no questions — production deploy is manual and out of scope; a configured `deployNote` runbook is printed for reference |
+| `reflect ["<note>" [--to playbook\|plugin\|doctor]]` | — | queues an agent suggestion for the operator (never gates) |
 | `status` / `abort [slug]` | — | — |
+
+`--confirmed` is the operator-presence flag: pass it only after the operator literally answered the stage question in chat — one checkpoint per stage, no second dialog.
 
 ## Enforcement (the teeth)
 
@@ -85,7 +88,7 @@ directly; it goes through `flow init --write` which validates). Content is organ
 | Tier | Notation | Enforcement |
 |---|---|---|
 | 1 — executable | ` ```flow` (`key = value`) config blocks; ` ```flow-check <name>` command blocks | gates run every check, record pass/fail, worktree edits invalidate — hard |
-| 2 — checklist | `- [ ] item` lines | listed in the gate's confirm dialog, confirmed as a set (hashed, invalidated on edits) — structured honesty |
+| 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features) | gate confirms cover them as a set (hashed, invalidated on edits); `(ui)` items never appear for non-UI features |
 | 3 — prose | any other text | injected to the agent when its stage begins — advisory |
 
 Example `## implement` section:
@@ -108,9 +111,10 @@ Prefer feature flags for risky paths.
 otherwise; confirm the number before tagging” live — the agent sees them at stage entry, and
 `flow release-done` still hard-checks the manifest↔tag agreement. `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `release.review`,
-`release.changelog`; the release stage takes `versionFile`/`versionTag` (defaults
-`v{version}`), `## deploy` a `note =` line. A legacy `project.json` still works — project.md
-overrides it, and the doctor flags having both.
+`release.changelog`; the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
+`dev` (dev deploy run by `flow verify` before the operator question), the release stage takes
+`versionFile`/`versionTag` (defaults `v{version}`), `## deploy` a `note =` line. A legacy
+`project.json` still works — project.md overrides it, and the doctor flags having both.
 
 `flow init` is the dialogue around this file: **fresh repo** → drafts from detection; in a TUI the
 draft opens in a multi-line editor so you review *and* edit before anything is written, in agent
