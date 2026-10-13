@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-12
+
+### Changed
+
+- `flow release-done` creates the GitHub release for the verified tag (title = tag, notes = tag annotation) — advisory: missing gh, no GitHub remote or an existing release prints a note and never blocks
+- A clean release now closes itself: when the worktree has no uncommitted changes and nothing unmerged, `release-done` removes worktree, branch and feature dir in one step — zero operator actions after merge; dirty or unmerged-looking worktrees still stop at `flow cleanup` and ask
+- `flow cleanup`/`flow deploy` remain as the not-clean / manual path
+
 ## [0.13.0] - 2026-10-12
 
 ### Changed
