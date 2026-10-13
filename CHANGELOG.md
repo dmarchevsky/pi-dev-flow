@@ -4,6 +4,21 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-12
+
+### Changed
+
+- One crisp question per checkpoint: gate confirms are single-line questions (multi-line markdown blobs rendered unreadably where clients collapse newlines); plan and checklist detail live in files
+- Tier-2 checklist items support a `(ui)` marker in project.md — UI-only items vanish entirely (dialog, injection, confirmation hash) for non-UI features; non-UI work is no longer asked about mockups or visual passes
+- `--confirmed` operator-presence flag (approve/verify/release-done/cleanup): when the operator answered the stage question in chat, gates proceed without a second dialog and record the audit line — one checkpoint per stage
+- New `dev` implement-stage command: `flow verify` deploys to dev first (recorded tier-1 check) so the operator reviews the running app; unconfigured verify says nothing about dev (the dead "no run command configured" text is gone)
+- `flow release-done` asks the single release question (changelog, tag and merged PR covered by one answer)
+- `flow cleanup` is silent when the worktree is safe and asks only when commits look unmerged; `flow deploy` never asks — production deploy is manual and out of scope
+
+### Fixed
+
+- Approve/verify dialogs no longer present UI checklist items to non-UI features
+
 ## [0.12.0] - 2026-10-12
 
 ### Added
