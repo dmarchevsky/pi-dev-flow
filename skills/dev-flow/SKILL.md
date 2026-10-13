@@ -18,6 +18,7 @@ The user can run the same things as `/flow ...`.
 Ground rules:
 
 - A pi session is bound to exactly one feature (flow + branch + worktree). Parallel sessions, one feature each, are the model. The binding is automatic when one unfinished feature exists, set by `flow start`, and switched with `flow use <slug>`; with several unfinished features and no binding, gates demand an explicit slug and main-checkout writes stay blocked.
+- **Flow is the default for all work.** An unbound session cannot edit source files — start a feature (`flow start <slug>`, main checkout must be on the default branch) or bind an unfinished one (`flow use <slug>`). The only bypass is the operator running `/flow exempt <reason>` themselves: you may *mention* it when a task seems flow-worthy-exempt, never run it for yourself, and suggest `flow exempt off` when exempted work finishes.
 - Never read/write `.dev-flow/<slug>/state.json` yourself — it is flow-owned (the guard blocks it anyway). `flow status` is your view.
 - `.dev-flow/project.json` is operator-owned: read it for commands (test/build/run), the default branch, worktree path — never edit it; ask the user.
 - Also obey the repo's own AGENTS.md and project skills; dev-flow sequences stages, the project defines its conventions.
@@ -78,5 +79,5 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 
 ## When things go sideways
 
-- User wants to abandon a feature: `flow abort <slug>` unbinds the session; remove the worktree/branch manually.
+- User wants to abandon a feature: `flow abort <slug>` unbinds the session and prints the exact commands to remove the worktree/branch; state stays for manual recovery.
 - A gate refuses: read its reasons — they list exactly what is missing. Fix that, rerun the gate.

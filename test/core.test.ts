@@ -4,6 +4,8 @@ import {
 	applyAnswer,
 	approveGate,
 	bashFlowGuard,
+	checkoutTarget,
+	featureBranchPrefix,
 	gitInvocation,
 	checklistHash,
 	cleanupAssess,
@@ -124,9 +126,17 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.ok(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: feats, boundSlug: "b" }), "implement-bound session confined to its worktree");
 	const rel = { ...impl, stage: "release" as const };
 	assert.equal(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: [{ state: rel, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores may touch main checkout");
-	assert.equal(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null }), null, "no unfinished features: guard off");
+	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null }) ?? "", /no active flow/, "flow-by-default: clean repo still requires a flow");
+	assert.equal(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null, exempt: true }), null, "operator exemption opens the checkout");
+	assert.equal(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: feats, boundSlug: "b", exempt: true }), null, "exemption lifts stage confinement too (user override)");
+	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null, exempt: true }), "exempt never touches dev-flow-owned files");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
+	assert.equal(checkoutTarget("git checkout feat/x"), "feat/x");
+	assert.equal(checkoutTarget("git switch -c feat/y && make"), "feat/y");
+	assert.equal(checkoutTarget("git checkout -- src/app.ts"), "--");
+	assert.equal(checkoutTarget("git commit -m x"), null);
+	assert.equal(featureBranchPrefix({ ...DEFAULTS, branchPattern: "feat/{slug}" }), "feat/");
 });
 
 test("statusCompact: slug ▸ stage with failing-check marker", () => {

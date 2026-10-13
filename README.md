@@ -58,6 +58,7 @@ While a feature is active, the extension intercepts every tool call:
 - **Nothing on main, ever**: `git commit` on the default branch is blocked; `git push`/`git merge` onto it requires stage `release`; tag pushes require stage `release`. Plus the standalone pre-commit hook for commits made outside Pi.
 - **No code before an approved plan**: at stage `plan`, edits are confined to `.dev-flow/<slug>/`.
 - **Work stays in the worktree**: at stage `implement`, edits are confined to that feature's worktree — judged per-path by the owning feature, so one session can never write into another session's worktree or into the main checkout.
+- **Flow by default**: in a repo with `.dev-flow/`, an unbound session cannot touch source files at all — every request goes through `flow start`/`flow use`, unless the *operator* exempts the session (`/flow exempt <reason>`; status bar shows `◆ exempt`). `flow start` refuses when the main checkout isn't on the default branch, worktrees are always created from the default branch, and the agent cannot check feature branches out in the main checkout.
 - **Gates can't be skipped**: `state.json` is untouchable by the agent (edit tool and bash); `project.json` is operator-owned; editing worktree code invalidates a passing test check until `flow test` reruns.
 - The active stage is injected into the model's context every turn; the bundled `dev-flow` skill is the agent's playbook, including the recommended release sequence: review (`/ponytail-review`) → fixes → docs → changelog/version → PR → merge → tag → `release-done`.
 - **Status bar**: while a feature is active the pi footer shows `◆ <slug> ▸ <stage>` (stage-colored, `✗` on failing checks); press `ctrl+,` for the detail panel (approvals, checks, branch/worktree, next step).
@@ -69,7 +70,9 @@ features, worked by separate sessions in parallel — that is the supported shap
 case. The binding lives with the session (persisted via session entries, restored on
 resume/fork), so nothing is repo-global. One unfinished feature binds automatically and the
 single-session case needs no ceremony; `flow use <slug>` switches, and ambiguous sessions must
-bind or pass explicit slugs. Enforcement is by attribution: a write inside worktree X is judged
+bind or pass explicit slugs. With nothing unfinished and no binding, the session must start a
+flow or be exempted by the operator — work does not happen outside the flow by default.
+Enforcement is by attribution: a write inside worktree X is judged
 by X's own feature stage no matter which session touches it; main-checkout code stays closed
 while your bound feature is in `plan`/`implement` and while any feature is unbound-and-ambiguous.
 
