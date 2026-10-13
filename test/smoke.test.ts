@@ -60,10 +60,10 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	assert.ok(existsSync(path.join(repo, ".git", "hooks", "pre-commit")), "pre-commit hook installed");
 	assert.equal(readFileSync(path.join(repo, ".dev-flow", ".gitignore"), "utf8").trim(), "*", "self-ignoring .dev-flow/");
 	execFileSync("git", ["-C", repo, "check-ignore", "-q", ".dev-flow/whatever/file.txt"]); // throws when not ignored
-	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.json"), "utf8").includes('"defaultBranch"'), "init wrote detected project.json");
-	writeFileSync(path.join(repo, ".dev-flow", "project.json"), '{"defaultBranch":"main","_marker":"kept"}');
+	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8").includes("## global"), "init drafted project.md");
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n<!-- kept -->\n");
 	await pi.cmds.flow.handler("init", ctx);
-	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.json"), "utf8").includes("kept"), "re-init must not overwrite operator config");
+	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8").includes("kept"), "re-init must not overwrite operator config");
 
 	await pi.cmds.flow.handler("start demo-feature", ctx);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "demo-feature", "state.json")));
@@ -101,18 +101,32 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	assert.match(res.content[0].text, /demo-feature/);
 });
 
-test("init --yes keeps existing project.json; --force overwrites with detection", async () => {
+test("init --yes keeps existing project.md; --force rewrites from fresh detection", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
-	const cfgFile = path.join(repo, ".dev-flow", "project.json");
+	const mdFile = path.join(repo, ".dev-flow", "project.md");
 	await pi.cmds.flow.handler("init", ctx);
-	writeFileSync(cfgFile, '{\n  "defaultBranch": "trunk",\n  "commands": { "test": "custom-cmd" }\n}\n');
+	writeFileSync(mdFile, "# dev-flow\n\n## implement\n\n```flow\ntest = custom-cmd\n```\n");
 	await pi.cmds.flow.handler("init --yes", ctx);
-	assert.ok(ctx.notices.length >= 0); // kept, not overwritten
-	assert.match(readFileSync(cfgFile, "utf8"), /custom-cmd/, "--yes must keep operator config");
+	assert.match(readFileSync(mdFile, "utf8"), /custom-cmd/, "--yes must keep operator config");
 	await pi.cmds.flow.handler("init --force", ctx);
-	assert.doesNotMatch(readFileSync(cfgFile, "utf8"), /custom-cmd/, "--force must replace with fresh detection");
+	assert.match(readFileSync(mdFile, "utf8"), /## implement/, "--force writes a full draft");
+});
+
+test("init --write stores validated project.md (tool path)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const mdFile = path.join(repo, ".dev-flow", "project.md");
+	await pi.cmds.flow.handler("init", ctx);
+	const ok = await pi.tools.flow.execute("id", { args: ["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = x\n```\n"] }, undefined, undefined, ctx);
+	assert.match(ok.content[0].text, /project.md written/);
+	assert.match(readFileSync(mdFile, "utf8"), /test = x/);
+	const bad = (await pi.tools.flow.execute("id", { args: ["init", "--write", "## implement\n```flow\nbroken line\n```"] }, undefined, undefined, ctx)) as { content: { text: string }[]; isError?: boolean };
+	assert.ok(bad.isError);
+	assert.match(bad.content[0].text, /REJECTED/);
+	assert.match(readFileSync(mdFile, "utf8"), /test = x/, "rejected write must not touch the file");
 });
 
 test("session binding: use/abort/ambiguity", async () => {

@@ -25,7 +25,7 @@ Ground rules:
 
 ## Start
 
-Repo without `.dev-flow/`? Run `flow init` — it walks the operator through every setting (confirm/change each detected value); never hand-edit `project.json`, run the wizard instead. `flow init --yes` takes detected values silently; `flow init --force` overwrites the existing project.json with fresh detection (destructive, for resetting a misconfigured repo).
+Repo without `.dev-flow/`? Run `flow init` — run `flow init --draft`, discuss the draft with the operator (it is their playbook: commands, tier-2 checklist items, prose rules), then write it with `flow init --write "<content>"`. Never hand-edit `project.md` or `project.json`. With an existing config, `flow init` acts as a **doctor** — discuss its findings and fix them via the same write path. `--yes` = silent draft (CI), `--force` = rewrite from fresh detection.
 
 `flow start <slug> --ui` when the work touches anything user-visible, else `flow start <slug>`. Slug: lowercase words-dashed. Check `flow status` first to see whether one is already active.
 
@@ -48,16 +48,17 @@ Approval creates the worktree and branch. Until then no code edits are possible.
 
 Work happens **only in the worktree** the gate created (path in `flow status` or the injection line). Edit and write outside it are blocked. When other sessions hold other features, their worktrees are theirs — never edit them; attribution guards judge every path by its owning feature.
 
-1. Implement per the approved plan, following project conventions.
-2. Write appropriate tests for the change as you go (project test framework — see project.json `commands.test`).
-3. Run `flow test` — it runs the project's test command and records the result. Any later edit in the worktree invalidates the checks; rerun before verify.
+1. Implement per the approved plan, following project conventions and the **stage guidance injected at stage start** (tier-3 prose from project.md).
+2. Write appropriate tests for the change as you go (project test framework — see the `test` key / `flow-check` blocks).
+3. Run `flow check` — it runs every tier-1 check (test, health, named `flow-check` blocks) and records each. Any later edit in the worktree invalidates checks and the tier-2 confirmation; rerun before verify.
 4. UI flag set? Perform an actual visual check with a browser (screenshot or automated visual pass per the project's tooling) — not just a typecheck.
 5. Done means **running and healthy, with pre-existing data** — not "compiles":
-   - run project.json `commands.seedData` (if set) so real data is in place, then start the app with `commands.run`;
-   - if `commands.health` is set, run `flow health` — it runs seedData + the health command and records the check; it must pass;
+   - `commands.seedData` (if set) puts real data in place; start the app with the `run` command;
+   - the health check (tier 1) must pass — `flow check` covers it (it runs seedData before health);
+   - walk the **tier-2 checklist** (`- [ ]` items) with the operator honestly — those can't be scripted;
    - then **ask the user to verify** and stop. They run `/flow verify`; only they can confirm it works.
 
-`flow verify` re-runs build and demands green test (and health, when configured) checks before it even asks the operator — the criteria are programmatic, not honor-system.
+`flow verify` re-runs build and demands every tier-1 check green before it even asks the operator; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — the criteria are structured, not honor-system.
 
 ## Stage: release
 

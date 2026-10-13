@@ -21,15 +21,15 @@ In each project repo, once:
 ```
 
 Creates `.dev-flow/` — which **ignores itself and everything under it** via its own
-`.dev-flow/.gitignore` containing `*` (no tracked file is touched) — and **walks you through the
-project configuration step by step**: it analyzes the project (default branch from git, package
-manager from `packageManager`/lockfiles, test/build/run from npm scripts, or cargo/go/python
-conventions, version manifest) and asks you to **confirm, change, or clear** each setting —
-detection is a suggestion, the answers are yours. Nothing is written until you confirm the final
-diff. Running `/flow init` again on an initialized project reviews and edits the existing
-`project.json` the same way (your values win over re-detection; Esc anywhere aborts unchanged).
-`/flow init --yes` keeps the silent fast path for CI; `/flow init --force` overwrites an existing
-`project.json` with fresh detection (destructive reset — never done by `--yes`). It also installs a `pre-commit` hook that
+`.dev-flow/.gitignore` containing `*` (no tracked file is touched) — and **drafts a project.md
+playbook from analysis** (default branch from git, package manager from `packageManager`/lockfiles,
+test/build/run from npm scripts, or cargo/go/python conventions, version manifest) and asks you to
+confirm it in one step — inside an agent session, `flow init --draft` + discussion + `--write` is
+the richer path. Running `/flow init` again with an existing project.md runs the **doctor**: cheap
+consistency probes (command drift, dead scripts, unparseable manifest, dual configs) with an offer
+to refresh — it never runs your commands and never rewrites without your confirm.
+`/flow init --yes` keeps the silent fast path for CI; `/flow init --force` rewrites from fresh
+detection (destructive reset — never done by `--yes`). It also installs a `pre-commit` hook that
 rejects direct commits to the main branch (the hook lives in `.git/hooks`, nothing is committed).
 The flow is completely inert in repos without `.dev-flow/`.
 
@@ -42,9 +42,10 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `start <slug> [--ui]` | → plan | slug is new (binds the session) |
 | `use <slug>` | — (binds this session to a feature) | slug unfinished |
 | `approve` | plan → implement (creates worktree + branch) | `plan/*.md` exists; if `--ui`, rendered mockup screenshots (per `mockupGlobs`, default `*.png`) exist under `plan/` — headless chromium renders embedded in plan.md; **you confirm interactively** |
-| `test` | records a check | — (runs `commands.test`, records pass/fail) |
-| `health` | records a check | — (runs `commands.seedData` + `commands.health`; app must be up locally with real data) |
-| `verify` | implement → release | test green, health green (when configured), build (if configured) green, **you confirm it works locally** |
+| `test` | records a check | — (runs the `test` command/check, records pass/fail) |
+| `check` | records all tier-1 checks | — (runs every `flow-check`/test/health from project.md `## implement`) |
+| `health` | records a check | — (runs `seedData` + the health command; app must be up locally with real data) |
+| `verify` | implement → release | all tier-1 checks green, tier-2 checklist confirmed as a set, build (if configured) green, **you confirm it works locally** |
 | `release-done` | release → cleanup | verify approval; with `versioning.file`: tag rendered from the manifest version exists and is reachable from the default branch |
 | `cleanup` | cleanup → deploy | worktree clean, no unmerged commits (squash-merges need your explicit confirm), **you confirm removal** |
 | `deploy` | → done (deletes `.dev-flow/<slug>/`) | **you confirm the manual deploy happened or was skipped** |
@@ -72,35 +73,47 @@ bind or pass explicit slugs. Enforcement is by attribution: a write inside workt
 by X's own feature stage no matter which session touches it; main-checkout code stays closed
 while your bound feature is in `plan`/`implement` and while any feature is unbound-and-ambiguous.
 
-## Project configuration — `.dev-flow/project.json`
+## Project configuration — `.dev-flow/project.md`
 
-Optional, gitignored, **edited only by you** (the agent is blocked from it). Defaults shown:
+The operator-owned playbook, gitignored, edited by you (the agent is blocked from writing it
+directly; it goes through `flow init --write` which validates). Content is organized per stage
+(`## plan`, `## implement`, `## release`, `## deploy`…) in **three tiers**:
 
-```json
-{
-  "defaultBranch": "main",
-  "branchPattern": "feat/{slug}",
-  "worktreeDir": ".dev-flow/{slug}/worktree",
-  "mockupGlobs": ["*.png"],
-  "commands": {
-    "setup": "npm ci",
-    "test": "npm test",
-    "build": "npm run build",
-    "seedData": "./scripts/seed-dev-data.sh",
-    "health": "curl -fs localhost:3000/healthz",
-    "run": "npm run dev",
-    "deployNote": "Manual: ssh prod && ./deploy.sh <tag>"
-  },
-  "release": {
-    "review": "/ponytail-review",
-    "changelog": "CHANGELOG.md",
-    "tagPattern": "v{version}"
-  },
-  "mainHook": true
-}
+| Tier | Notation | Enforcement |
+|---|---|---|
+| 1 — executable | ` ```flow` (`key = value`) config blocks; ` ```flow-check <name>` command blocks | gates run every check, record pass/fail, worktree edits invalidate — hard |
+| 2 — checklist | `- [ ] item` lines | listed in the gate's confirm dialog, confirmed as a set (hashed, invalidated on edits) — structured honesty |
+| 3 — prose | any other text | injected to the agent when its stage begins — advisory |
+
+Example `## implement` section:
+
+````markdown
+## implement
+```flow
+test = npm test
+run = npm run dev
+health = curl -fs localhost:3000/healthz
 ```
+```flow-check overflow
+node scripts/check-overflow.mjs
+```
+- [ ] visual pass at 390px and 1280px: no overflows, no stray scrollbars
+Prefer feature flags for risky paths.
+````
 
-`{slug}` is substituted in `branchPattern`/`worktreeDir`. Point `worktreeDir` elsewhere (e.g. `.worktrees/{slug}`) if the project has its own convention. Project conventions themselves stay in the repo's `AGENTS.md`/skills — dev-flow sequences stages, it doesn't duplicate project rules. Releases derive their tag from the version manifest named in `versioning.file` (`flow init` detects it; otherwise pick one with the operator) — `flow release-done` refuses when manifest and tag disagree.
+`## release` prose is where rules like “follow semver: minor for user-facing features, patch
+otherwise; confirm the number before tagging” live — the agent sees them at stage entry, and
+`flow release-done` still hard-checks the manifest↔tag agreement. `## global` holds
+`defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `release.review`,
+`release.changelog`; the release stage takes `versionFile`/`versionTag` (defaults
+`v{version}`), `## deploy` a `note =` line. A legacy `project.json` still works — project.md
+overrides it, and the doctor flags having both.
+
+`flow init` is the dialogue around this file: **fresh repo** → drafts from detection and asks
+one confirm (`--yes` silent; `--write <content>` is the validated agent path); **existing
+file** → doctor mode (drift, dead commands/scripts, unparseable manifest, dual configs — it
+never runs your commands) offering a refresh; `--force` rewrites from fresh detection.
+
 
 ## Layout in a project
 

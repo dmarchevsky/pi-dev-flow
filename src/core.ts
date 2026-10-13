@@ -5,6 +5,7 @@
  * `node --test`. The extension in extensions/dev-flow.ts is thin wiring.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 export type Stage = "plan" | "implement" | "release" | "cleanup" | "deploy" | "done";
@@ -16,6 +17,11 @@ export interface Check {
 	note?: string;
 }
 
+export interface StageCheck {
+	name: string;
+	cmd: string;
+}
+
 export interface FlowState {
 	slug: string;
 	stage: Stage;
@@ -25,6 +31,7 @@ export interface FlowState {
 	createdAt: string;
 	approvals: Record<string, string>;
 	checks: Record<string, Check>;
+	confirmations?: Record<string, { hash: string; at: string }>;
 }
 
 export interface Commands {
@@ -51,6 +58,9 @@ export interface Config {
 	worktreeDir: string; // {slug} substituted, relative to repo root
 	mockupGlobs: string[]; // suffix globs required in plan/ when ui (default: rendered screenshots)
 	commands: Commands;
+	checkList: StageCheck[]; // tier-1 executable checks (project.md flow blocks)
+	checklist: Record<string, string[]>; // tier-2 operator items per stage
+	prose: Record<string, string>; // tier-3 guidance per stage
 	versioning: Versioning;
 	release: { review: string; changelog?: string; tagPattern?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
@@ -62,6 +72,9 @@ export const DEFAULTS: Config = {
 	worktreeDir: ".dev-flow/{slug}/worktree",
 	mockupGlobs: ["*.png"],
 	commands: {},
+	checkList: [],
+	checklist: {},
+	prose: {},
 	versioning: { pattern: "v{version}" },
 	release: { review: "/ponytail-review" },
 	mainHook: true,
@@ -83,6 +96,11 @@ export function mergeConfig(raw: unknown): Config {
 		if (typeof v.file === "string") c.versioning.file = v.file;
 		if (typeof v.pattern === "string") c.versioning.pattern = v.pattern;
 	}
+	// tier-1 checks from plain commands so legacy project.json keeps the same teeth as project.md
+	c.checkList = [
+		...(c.commands.test ? [{ name: "test", cmd: c.commands.test }] : []),
+		...(c.commands.health ? [{ name: "health", cmd: c.commands.health }] : []),
+	];
 	return c;
 }
 
@@ -123,13 +141,25 @@ export function approveGate(state: FlowState, cfg: Config, planFiles: string[]):
 	return errs;
 }
 
-/** Gate: implement → release. */
+/** Gate: implement → release. Tier 1: every parsed check green; tier 2: checklist confirmed. */
 export function verifyGate(state: FlowState, cfg: Config): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "implement") errs.push(`stage is "${state.stage}", verify only applies to "implement"`);
-	if (cfg.commands.test && !state.checks.test?.ok) errs.push("test check has not passed — run flow test first");
-	if (cfg.commands.health && !state.checks.health?.ok) errs.push("health check has not passed — seed data, start the app locally, and run flow health");
+	for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
+	const pend = checklistPending(cfg, state, "implement");
+	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow verify after ticking them off`);
 	return errs;
+}
+
+export function checklistHash(items: string[]): string {
+	return createHash("sha1").update(items.join("\n")).digest("hex").slice(0, 12);
+}
+
+/** Items exist for the stage and current confirmation does not match their hash; returns pending count or 0. */
+export function checklistPending(cfg: Config, state: FlowState, stage: string): number {
+	const items = cfg.checklist[stage] ?? [];
+	if (!items.length) return 0;
+	return state.confirmations?.[stage]?.hash === checklistHash(items) ? 0 : items.length;
 }
 
 /** Read the version out of a manifest file's content; null when unparseable. */
@@ -252,7 +282,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "plan":
 			return `write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator to run /flow approve`;
 		case "implement":
-			return `implement in the worktree ${state.worktree}, add tests, run flow test; then seed data, start the app locally${cfg.commands.health ? " and run flow health" : ""}, then ask the operator to run /flow verify`;
+			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
 		case "release":
 			return `run the release playbook (${cfg.release.review} → fix → docs${cfg.release.changelog ? ` → ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}, tag ${cfg.versioning.pattern.replace("{version}", "<version>")} from it` : cfg.release.tagPattern ? ` → tag ${cfg.release.tagPattern}` : ""} → PR → merge), then run flow release-done`;
 		case "cleanup":
@@ -263,34 +293,6 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return "feature finished";
 	}
 }
-
-/** Interactive `flow init` wizard: pure question plan + answer application (no UI here). */
-export interface WizardStep {
-	key: string; // dot path in project.json, e.g. "commands.test"
-	title: string;
-	kind: "input" | "confirm" | "select";
-	value: string; // current effective value ("" = unset)
-	source: "configured" | "detected" | "default";
-	options?: string[]; // select choices
-	optional?: boolean; // may stay unset
-	dependsOn?: string; // skip step when this dot path is unset
-}
-
-export interface DetectedPartial {
-	defaultBranch: string;
-	commands: Record<string, string>;
-	versioning?: { file: string };
-}
-
-const WIZARD_CMDS: Array<[string, boolean]> = [
-	["setup", true],
-	["test", false],
-	["build", false],
-	["run", false],
-	["seedData", true],
-	["health", true],
-	["deployNote", true],
-];
 
 export function getPath(obj: Record<string, unknown>, key: string): unknown {
 	let cur: unknown = obj;
@@ -321,58 +323,6 @@ export function applyAnswer(partial: Record<string, unknown>, key: string, value
 		const child = chain[i][segs[i]] as Record<string, unknown>;
 		if (child && Object.keys(child).length === 0) delete chain[i][segs[i]];
 	}
-}
-
-/** Question sequence for init: existing file wins over detection, detection over defaults. */
-export function initPlan(existing: Record<string, unknown> | null, detected: DetectedPartial, eff: Config): WizardStep[] {
-	const steps: WizardStep[] = [];
-	const cur = (key: string, detVal?: string, defVal = ""): { value: string; source: WizardStep["source"] } => {
-		const ex = getPath(existing ?? {}, key);
-		if (typeof ex === "boolean") return { value: String(ex), source: "configured" };
-		if (typeof ex === "string" && ex) return { value: ex, source: "configured" };
-		if (detVal) return { value: detVal, source: "detected" };
-		return { value: defVal, source: "default" };
-	};
-	steps.push({ key: "defaultBranch", title: "default branch", kind: "input", ...cur("defaultBranch", detected.defaultBranch, eff.defaultBranch) });
-	for (const [cmd, optional] of WIZARD_CMDS) {
-		steps.push({ key: `commands.${cmd}`, title: `command: ${cmd}`, kind: "input", ...cur(`commands.${cmd}`, detected.commands[cmd]), optional });
-	}
-	const vf = cur("versioning.file", detected.versioning?.file);
-	const vopts = ["VERSION", "package.json", "Cargo.toml", "pyproject.toml", "(none)", "other…"];
-	if (vf.value && !vopts.includes(vf.value)) vopts.unshift(vf.value);
-	steps.push({ key: "versioning.file", title: "version manifest file", kind: "select", options: vopts, ...vf, optional: true });
-	steps.push({
-		key: "versioning.pattern",
-		title: "release tag pattern ({version} substituted)",
-		kind: "input",
-		...cur("versioning.pattern", undefined, eff.versioning.pattern),
-		dependsOn: "versioning.file",
-	});
-	steps.push({ key: "worktreeDir", title: "worktree directory ({slug} substituted)", kind: "input", ...cur("worktreeDir", undefined, eff.worktreeDir) });
-	steps.push({
-		key: "mainHook",
-		title: "install git hook blocking direct commits to the default branch",
-		kind: "confirm",
-		...cur("mainHook", undefined, String(eff.mainHook)),
-	});
-	return steps;
-}
-
-/** Lines describing what an answered wizard changed vs the previous file. */
-export function diffAnswers(before: Record<string, unknown>, after: Record<string, unknown>): string[] {
-	const flat = (o: Record<string, unknown>, pre = "", out = new Map<string, string>()) => {
-		for (const [k, v] of Object.entries(o)) {
-			if (v && typeof v === "object") flat(v as Record<string, unknown>, `${pre}${k}.`, out);
-			else out.set(`${pre}${k}`, String(v));
-		}
-		return out;
-	};
-	const b = flat(before);
-	const a = flat(after);
-	const lines: string[] = [];
-	for (const [k, v] of a) if (b.get(k) !== v) lines.push(`${k}: ${b.has(k) ? `${b.get(k)} → ` : ""}${v}`);
-	for (const k of b.keys()) if (!a.has(k)) lines.push(`${k}: ${b.get(k)} → (unset)`);
-	return lines;
 }
 
 export function loadConfig(dfDir: string): Config {
