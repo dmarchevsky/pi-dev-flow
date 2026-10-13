@@ -120,4 +120,9 @@ test("buildDraft: fresh is detection-driven; refresh keeps configured values", (
 	assert.match(kept, /defaultBranch = trunk/);
 	assert.match(kept, /test = npm test/);
 	assert.match(kept, /versionFile = VERSION/);
+	assert.ok(!fresh.includes("```flow-check"), "no phantom health placeholder in fresh drafts");
+	assert.match(fresh, /optional tier-1/, "hint where a health check would go");
+	assert.match(kept, /```flow-check overflow\nnode scripts\/check-overflow\.mjs/, "refresh carries explicit checks");
+	const withHealth = mdToConfig(parseProjectMd(`${MD.replace("## release", "```flow-check health\ncurl -sf :4000/health\n```\n\n## release")}`));
+	assert.match(buildDraft(det, withHealth), /```flow-check health\ncurl -sf :4000\/health/, "health check carried, exactly once");
 });
