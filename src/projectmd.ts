@@ -220,6 +220,23 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, h
 	return f;
 }
 
+/** Compact per-stage digest of project.md content for dialog display (raw md walls are unreadable). */
+export function mdDigest(text: string): string {
+	const p = parseProjectMd(text);
+	const rows: string[] = [];
+	for (const s of MD_STAGES) {
+		const bits: string[] = [];
+		const keys = Object.keys(p.flow[s]).map((k) => k.split(".").pop()!);
+		if (keys.length) bits.push(`set: ${keys.join(", ")}`);
+		if (s === "implement" && p.checks.length) bits.push(`checks: ${p.checks.map((c) => c.name).join(", ")}`);
+		const n = (p.checklist[s] ?? []).length;
+		if (n) bits.push(`checklist: ${n}`);
+		if (p.prose[s]) bits.push("prose");
+		if (bits.length) rows.push(`## ${s} — ${bits.join(" \u00b7 ")}`);
+	}
+	return rows.join("\n") || "(empty)";
+}
+
 /** Draft project.md: fresh = pure detection (first init, --force); otherwise a refresh keeping configured values. */
 export function buildDraft(det: { report: string[]; partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string } } }, cfg?: Config): string {
 	const fresh = cfg === undefined;

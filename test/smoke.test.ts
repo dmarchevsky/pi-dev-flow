@@ -153,6 +153,16 @@ test("init --write stores validated project.md (tool path)", async () => {
 	assert.match(readFileSync(mdFile, "utf8"), /test = x/, "rejected write must not touch the file");
 });
 
+test("interactive first init reviews the draft in the editor when the client has one", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const seen: string[] = [];
+	const ctx = { cwd: repo, hasUI: true, mode: "tui", notices: [] as string[], ui: { notify: (_m: string) => {}, setStatus: (_k: string, _t?: string) => {}, confirm: async () => true, editor: async (_t: string, prefill?: string) => { seen.push(prefill ?? ""); return `${prefill}<!-- operator edited -->\n`; } } };
+	await pi.cmds.flow.handler("init", ctx);
+	assert.match(seen[0], /## implement/, "draft offered for editing");
+	assert.match(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8"), /operator edited/, "editor output is what lands on disk");
+});
+
 test("session binding: use/abort/ambiguity", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

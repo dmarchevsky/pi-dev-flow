@@ -50,7 +50,7 @@ import {
 	type FlowState,
 	type Stage,
 } from "../src/core.ts";
-import { buildDraft, doctorFindings, loadProject, parseProjectMd } from "../src/projectmd.ts";
+import { buildDraft, doctorFindings, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
 import { detectProject } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
@@ -58,8 +58,8 @@ const execAsync = promisify(exec);
 interface Ui {
 	hasUI: boolean;
 	confirm: (title: string, message: string) => Promise<boolean>;
-	select: (title: string, options: string[]) => Promise<string | undefined>;
-	input: (title: string, placeholder?: string) => Promise<string | undefined>;
+	/** Multi-line review/edit dialog where the client has one (TUI); undefined elsewhere. */
+	editor?: (title: string, prefill?: string) => Promise<string | undefined>;
 }
 
 const now = () => new Date().toISOString();
@@ -165,12 +165,19 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const loaded = loadProject(root, dfDir(root));
 			const draftFresh = buildDraft(det);
 			const draftRefresh = buildDraft(det, loaded.cfg);
+			const editHint = "to change anything: edit .dev-flow/project.md directly (flow init = doctor revalidates), or from an agent session: flow init --draft → discuss → --write";
+			const writeMd = (text: string): RunResult | null => {
+				const parsed = parseProjectMd(text);
+				if (parsed.hard.length) return { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true };
+				writeFileSync(mdFile, text.endsWith("\n") ? text : `${text}\n`);
+				return null;
+			};
 			if (flag("write")) {
 				const content = rest[rest.indexOf("--write") + 1];
 				if (!content || content.startsWith("--")) return { text: 'usage: flow init --write "<full project.md content>"', isError: true };
 				const parsed = parseProjectMd(content);
-				if (parsed.hard.length) return { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true };
-				writeFileSync(mdFile, content.endsWith("\n") ? content : `${content}\n`);
+				const rej = writeMd(content);
+				if (rej) return rej;
 				notes.push("project.md written (operator-owned playbook)");
 				if (parsed.warn.length) notes.push("warnings:", ...parsed.warn.map((w) => `  ${w}`));
 			} else if (flag("yes") || flag("force") || !ui.hasUI) {
@@ -184,14 +191,33 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				// doctor mode: cheap consistency probes only — never runs project commands
 				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
 				if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
-				else if (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}\n\nWrite refreshed project.md (detection + current values)?`)) {
-					writeFileSync(mdFile, draftRefresh);
-					notes.push("project.md refreshed — findings addressed:", ...findings.map((f) => `  ${f}`));
-				} else notes.push("declined — project.md unchanged", ...findings.map((f) => `  ${f}`));
-			} else if (await ui.confirm("flow init — write project.md?", draftFresh)) {
-				writeFileSync(mdFile, draftFresh);
-				notes.push("project.md written from detection:", ...det.report.map((r) => `  ${r}`));
-			} else notes.push("declined — nothing written");
+				else {
+					const edited = ui.editor
+						? await ui.editor(`flow init — doctor: ${findings.length} finding(s) — edit & save to apply, Esc skips`, draftRefresh)
+						: (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}\n\nWrite refreshed project.md?\n${mdDigest(draftRefresh)}`))
+							? draftRefresh
+							: undefined;
+					if (edited === undefined) notes.push("declined — project.md unchanged", ...findings.map((f) => `  ${f}`));
+					else {
+						const rej = writeMd(edited);
+						if (rej) return rej;
+						notes.push("project.md refreshed — findings addressed:", ...findings.map((f) => `  ${f}`), editHint);
+					}
+				}
+			} else {
+				// first init: TUI gets the draft in a real editor (review AND edit there); elsewhere confirm the digest, full file lands on disk
+				const edited = ui.editor
+					? await ui.editor("flow init — review & edit project.md, save to write, Esc cancels", draftFresh)
+					: (await ui.confirm("flow init — write project.md?", `drafted from detection:\n${mdDigest(draftFresh)}\n\nfull content goes to .dev-flow/project.md — review/edit it there after`))
+						? draftFresh
+						: undefined;
+				if (edited === undefined) notes.push("declined — nothing written");
+				else {
+					const rej = writeMd(edited);
+					if (rej) return rej;
+					notes.push("project.md written from detection:", ...det.report.map((r) => `  ${r}`), editHint);
+				}
+			}
 			const initCfg = loadProject(root, dfDir(root)).cfg;
 			if (initCfg.mainHook) {
 				const hookDir = path.join(root, ".git", "hooks");
@@ -530,8 +556,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	const uiFrom = (ctx: ExtensionContext): Ui => ({
 		hasUI: ctx.hasUI,
 		confirm: async (title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
-		select: async (title, options) => (ctx.hasUI ? ctx.ui.select(title, options) : Promise.resolve(undefined)),
-		input: async (title, placeholder) => (ctx.hasUI ? ctx.ui.input(title, placeholder) : Promise.resolve(undefined)),
+		editor: ctx.mode === "tui" ? (title: string, prefill?: string) => ctx.ui.editor(title, prefill) : undefined,
 	});
 
 	const sessFor = (ctx: ExtensionContext): Session => {

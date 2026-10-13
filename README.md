@@ -109,10 +109,13 @@ otherwise; confirm the number before tagging” live — the agent sees them at 
 `v{version}`), `## deploy` a `note =` line. A legacy `project.json` still works — project.md
 overrides it, and the doctor flags having both.
 
-`flow init` is the dialogue around this file: **fresh repo** → drafts from detection and asks
-one confirm (`--yes` silent; `--write <content>` is the validated agent path); **existing
-file** → doctor mode (drift, dead commands/scripts, unparseable manifest, dual configs — it
-never runs your commands) offering a refresh; `--force` rewrites from fresh detection.
+`flow init` is the dialogue around this file: **fresh repo** → drafts from detection; in a TUI the
+draft opens in a multi-line editor so you review *and* edit before anything is written, in agent
+sessions the agent presents it (`--draft`), takes your feedback conversationally and writes it
+back validated (`--write <content>`); **existing file** → doctor mode (drift, dead commands/scripts,
+unparseable manifest, dual configs — it never runs your commands) offering a refresh. At any time
+you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doctor) validates and
+flags problems. `--yes` silent draft for CI; `--force` rewrites from fresh detection.
 
 
 ## Layout in a project
