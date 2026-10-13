@@ -42,6 +42,9 @@ function makeRepo(): string {
 	const dir = mkdtempSync(path.join(tmpdir(), "devflow-"));
 	execFileSync("git", ["init", "-b", "main", dir]);
 	writeFileSync(path.join(dir, "README.md"), "# scratch\n");
+	const id = ["-c", "user.email=t@t", "-c", "user.name=t"];
+	execFileSync("git", ["-C", dir, ...id, "add", "-A"]);
+	execFileSync("git", ["-C", dir, ...id, "commit", "-qm", "init"]);
 	return dir;
 }
 
@@ -60,10 +63,10 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	assert.ok(existsSync(path.join(repo, ".git", "hooks", "pre-commit")), "pre-commit hook installed");
 	assert.equal(readFileSync(path.join(repo, ".dev-flow", ".gitignore"), "utf8").trim(), "*", "self-ignoring .dev-flow/");
 	execFileSync("git", ["-C", repo, "check-ignore", "-q", ".dev-flow/whatever/file.txt"]); // throws when not ignored
-	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.json"), "utf8").includes('"defaultBranch"'), "init wrote detected project.json");
-	writeFileSync(path.join(repo, ".dev-flow", "project.json"), '{"defaultBranch":"main","_marker":"kept"}');
+	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8").includes("## global"), "init drafted project.md");
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n<!-- kept -->\n");
 	await pi.cmds.flow.handler("init", ctx);
-	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.json"), "utf8").includes("kept"), "re-init must not overwrite operator config");
+	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8").includes("kept"), "re-init must not overwrite operator config");
 
 	await pi.cmds.flow.handler("start demo-feature", ctx);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "demo-feature", "state.json")));
@@ -101,18 +104,63 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	assert.match(res.content[0].text, /demo-feature/);
 });
 
-test("init --yes keeps existing project.json; --force overwrites with detection", async () => {
+test("worktree isolation: commit guards follow the command's directory", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	await pi.cmds.flow.handler("init", ctx);
+	await pi.cmds.flow.handler("start wt-feature", ctx);
+	mkdirSync(path.join(repo, ".dev-flow", "wt-feature", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "wt-feature", "plan", "plan.md"), "# plan\n");
+	await pi.cmds.flow.handler("approve", ctx); // creates the worktree (branch feat/wt-feature)
+	const guard = pi.handlers.tool_call[0];
+	// commit at the session root (main checkout on main) stays blocked
+	assert.ok(await guard({ toolName: "bash", input: { command: "git commit -m x" } }, ctx), "commit on main must be blocked");
+	// commit inside the feature worktree passes however the command gets there
+	const wt = path.join(repo, ".dev-flow", "wt-feature", "worktree");
+	assert.equal(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(wt)} && git commit -m x` } }, ctx), undefined, "worktree commit via cd must pass");
+	assert.equal(await guard({ toolName: "bash", input: { command: `git -C ${JSON.stringify(wt)} commit -m x` } }, ctx), undefined, "worktree commit via -C must pass");
+	// reads are never misguarded
+	assert.equal(await guard({ toolName: "bash", input: { command: "cat .git/hooks/pre-commit" } }, ctx), undefined, "reading the hook is not a commit");
+	assert.equal(await guard({ toolName: "bash", input: { command: "git log --oneline" } }, ctx), undefined, "git log is not a commit");
+});
+
+test("init --yes keeps existing project.md; --force rewrites from fresh detection", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
-	const cfgFile = path.join(repo, ".dev-flow", "project.json");
+	const mdFile = path.join(repo, ".dev-flow", "project.md");
 	await pi.cmds.flow.handler("init", ctx);
-	writeFileSync(cfgFile, '{\n  "defaultBranch": "trunk",\n  "commands": { "test": "custom-cmd" }\n}\n');
+	writeFileSync(mdFile, "# dev-flow\n\n## implement\n\n```flow\ntest = custom-cmd\n```\n");
 	await pi.cmds.flow.handler("init --yes", ctx);
-	assert.ok(ctx.notices.length >= 0); // kept, not overwritten
-	assert.match(readFileSync(cfgFile, "utf8"), /custom-cmd/, "--yes must keep operator config");
+	assert.match(readFileSync(mdFile, "utf8"), /custom-cmd/, "--yes must keep operator config");
 	await pi.cmds.flow.handler("init --force", ctx);
-	assert.doesNotMatch(readFileSync(cfgFile, "utf8"), /custom-cmd/, "--force must replace with fresh detection");
+	assert.match(readFileSync(mdFile, "utf8"), /## implement/, "--force writes a full draft");
+});
+
+test("init --write stores validated project.md (tool path)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const mdFile = path.join(repo, ".dev-flow", "project.md");
+	await pi.cmds.flow.handler("init", ctx);
+	const ok = await pi.tools.flow.execute("id", { args: ["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = x\n```\n"] }, undefined, undefined, ctx);
+	assert.match(ok.content[0].text, /project.md written/);
+	assert.match(readFileSync(mdFile, "utf8"), /test = x/);
+	const bad = (await pi.tools.flow.execute("id", { args: ["init", "--write", "## implement\n```flow\nbroken line\n```"] }, undefined, undefined, ctx)) as { content: { text: string }[]; isError?: boolean };
+	assert.ok(bad.isError);
+	assert.match(bad.content[0].text, /REJECTED/);
+	assert.match(readFileSync(mdFile, "utf8"), /test = x/, "rejected write must not touch the file");
+});
+
+test("interactive first init reviews the draft in the editor when the client has one", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const seen: string[] = [];
+	const ctx = { cwd: repo, hasUI: true, mode: "tui", notices: [] as string[], ui: { notify: (_m: string) => {}, setStatus: (_k: string, _t?: string) => {}, confirm: async () => true, editor: async (_t: string, prefill?: string) => { seen.push(prefill ?? ""); return `${prefill}<!-- operator edited -->\n`; } } };
+	await pi.cmds.flow.handler("init", ctx);
+	assert.match(seen[0], /## implement/, "draft offered for editing");
+	assert.match(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8"), /operator edited/, "editor output is what lands on disk");
 });
 
 test("session binding: use/abort/ambiguity", async () => {

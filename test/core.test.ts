@@ -4,11 +4,11 @@ import {
 	applyAnswer,
 	approveGate,
 	bashFlowGuard,
+	gitInvocation,
+	checklistHash,
 	cleanupAssess,
 	DEFAULTS,
-	diffAnswers,
 	getPath,
-	initPlan,
 	mergeConfig,
 	newState,
 	parseVersion,
@@ -78,6 +78,30 @@ test("bashFlowGuard: main protection and release-stage release", () => {
 	assert.equal(bashFlowGuard({ ...base, command: "git status" }), null);
 });
 
+test("bashFlowGuard: only real git invocations are judged", () => {
+	const base = { branch: "main", stage: null as "plan" | null, defaultBranch: "main" };
+	// reading .git paths or messages must not read as a commit
+	assert.equal(bashFlowGuard({ ...base, command: "cat .git/hooks/pre-commit" }), null);
+	assert.equal(bashFlowGuard({ ...base, command: "git log --oneline --grep=commit" }), null);
+	assert.equal(bashFlowGuard({ ...base, command: "git branch --show-current" }), null);
+	// real invocations still bite, including path prefixes and env wrappers
+	assert.ok(bashFlowGuard({ ...base, command: "/usr/bin/git commit -m x" }));
+	assert.ok(bashFlowGuard({ ...base, command: "FOO=1 git commit -m x" }));
+	assert.ok(bashFlowGuard({ ...base, command: "echo hi && git commit -m x" }));
+	assert.ok(bashFlowGuard({ ...base, command: "git -c user.name=x commit -m y" }));
+});
+
+test("gitInvocation: subcommands and effective directory", () => {
+	assert.deepEqual(gitInvocation("cat .git/hooks/pre-commit"), { subs: [], dir: null });
+	assert.deepEqual(gitInvocation("git commit -m x"), { subs: ["commit"], dir: null });
+	assert.deepEqual(gitInvocation("cd .dev-flow/f/worktree && git commit -m x"), { subs: ["commit"], dir: ".dev-flow/f/worktree" });
+	assert.deepEqual(gitInvocation("git -C /tmp/wt push origin feat/x"), { subs: ["push"], dir: "/tmp/wt" });
+	assert.deepEqual(gitInvocation("git -C=/tmp/wt commit"), { subs: ["commit"], dir: "/tmp/wt" });
+	assert.deepEqual(gitInvocation("/usr/bin/git branch --show-current"), { subs: ["branch"], dir: null });
+	assert.deepEqual(gitInvocation("cd wt; git status; git push"), { subs: ["status", "push"], dir: "wt" });
+	assert.deepEqual(gitInvocation("sudo git commit -m x"), { subs: ["commit"], dir: null });
+});
+
 test("stateTamper catches direct state.json writes", () => {
 	assert.ok(stateTamper("echo x > .dev-flow/f/state.json"));
 	assert.ok(stateTamper("rm .dev-flow/f/state.json"));
@@ -114,28 +138,6 @@ test("statusCompact: slug ▸ stage with failing-check marker", () => {
 	assert.equal(statusCompact(s).failed, false);
 });
 
-test("initPlan: detected fills gaps, existing wins, defaults for layout", () => {
-	const det = { defaultBranch: "trunk", commands: { test: "npm test" }, versioning: { file: "package.json" } };
-	const eff = mergeConfig({});
-	const byKey = Object.fromEntries(initPlan(null, det, eff).map((s) => [s.key, s]));
-	assert.equal(byKey["defaultBranch"].value, "trunk");
-	assert.equal(byKey["defaultBranch"].source, "detected");
-	assert.equal(byKey["commands.test"].source, "detected");
-	assert.equal(byKey["commands.build"].value, "");
-	assert.equal(byKey["commands.build"].source, "default");
-	assert.equal(byKey["versioning.file"].value, "package.json");
-	assert.equal(byKey["versioning.pattern"].dependsOn, "versioning.file");
-	assert.equal(byKey["versioning.pattern"].value, "v{version}");
-	assert.equal(byKey["worktreeDir"].source, "default");
-	assert.equal(byKey["mainHook"].value, "true");
-	const existing = { commands: { test: "bun test" }, versioning: { file: "VERSION" }, mainHook: false };
-	const byKey2 = Object.fromEntries(initPlan(existing, det, mergeConfig({})).map((s) => [s.key, s]));
-	assert.equal(byKey2["commands.test"].value, "bun test", "existing wins over detected");
-	assert.equal(byKey2["commands.test"].source, "configured");
-	assert.equal(byKey2["mainHook"].value, "false", "booleans surface as configured");
-	assert.ok(byKey2["versioning.file"].options?.includes("VERSION"), "custom current value offered in select");
-});
-
 test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
 	const p: Record<string, unknown> = {};
 	applyAnswer(p, "commands.test", "npm test");
@@ -151,19 +153,14 @@ test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
 	assert.equal(getPath(p, "mainHook"), false);
 });
 
-test("diffAnswers reports changed, added and removed settings", () => {
-	const lines = diffAnswers({ commands: { test: "a", run: "r" }, mainHook: true }, { commands: { test: "b" }, mainHook: true });
-	assert.deepEqual(lines, ["commands.test: a → b", "commands.run: r → (unset)"]);
-	assert.equal(diffAnswers({ a: 1 }, { a: 1 }).length, 0);
-});
-
-test("verifyGate requires health check when configured", () => {
+test("verifyGate: tier-1 checks green + tier-2 checklist confirmed", () => {
 	const s = { ...newState("f", false), stage: "implement" as const };
-	const c = mergeConfig({ commands: { health: "curl -fs localhost:3000/healthz" } });
-	assert.ok(verifyGate(s, c).some((e) => e.includes("health")));
-	s.checks.health = { ok: false, at: "" };
-	assert.ok(verifyGate(s, c).some((e) => e.includes("health")));
+	const c = { ...mergeConfig({}), checkList: [{ name: "health", cmd: "curl -fs localhost:3000/healthz" }], checklist: { implement: ["visual pass ok"] } };
+	assert.ok(verifyGate(s, c).some((e) => e.includes('check "health"')));
+	assert.ok(verifyGate(s, c).some((e) => e.includes("checklist")));
 	s.checks.health = { ok: true, at: "" };
+	assert.match(verifyGate(s, c).join(" "), /checklist not confirmed/);
+	s.confirmations = { implement: { hash: checklistHash(c.checklist.implement), at: "" } };
 	assert.equal(verifyGate(s, c).length, 0);
 });
 

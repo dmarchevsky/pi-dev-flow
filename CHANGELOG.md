@@ -4,6 +4,24 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-12
+
+### Added
+
+- `project.md` — the operator playbook in Markdown, three tiers by notation: ` ```flow key = value ` blocks and named ` ```flow-check <name> ` blocks are tier 1 (gates run every check via `flow check`, record pass/fail, worktree edits invalidate); `- [ ]` checklist items are tier 2 (confirmed as a hashed set in gate confirms — edits reset the confirmation); stage prose is tier 3 (injected to the agent at stage entry). Unknown stages/keys warn, never fail; broken syntax rejects with line numbers. `project.json` remains as legacy base (project.md overrides; doctor flags having both)
+- `flow init` v2 — advisory dialogue instead of the scripted wizard: fresh repos draft from detection and confirm once; `--draft` / `--write "<content>"` is the validated agent path (line-pointed rejection); on an existing file init becomes the **doctor** (command drift, dead script files, missing/unparseable version manifest, dual configs, missing health check — file probes only, never runs project commands) offering a refresh that keeps configured values
+- Init review UX: TUI opens the draft in a multi-line editor (review *and* edit before anything is written); elsewhere a per-stage digest confirms instead of a raw markdown dump; every write prints how to change the playbook afterwards
+- `flow check` runs the whole tier-1 set (auto-includes configured test/health commands) and records each result
+
+### Changed
+
+- Gates generalize to named checks: `flow verify` demands every tier-1 check green plus the tier-2 confirmation before asking the operator; `flow status` flags pending doctor findings
+- Git ops in bash gates are judged by the branch of the directory git actually runs in (`git -C`, preceding `cd`), so worktree work no longer misjudges against the session root; cleanup unstuck for worktree-hosted releases
+
+### Removed
+
+- The interactive init wizard (`--step` machinery) — replaced by draft/discuss/write; `flow init --yes` and `--force` keep the scripted fast paths
+
 ## [0.8.0] - 2026-08-05
 
 ### Added

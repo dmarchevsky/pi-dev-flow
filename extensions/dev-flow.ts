@@ -26,14 +26,13 @@ import { defineTool, isToolCallEventType, type ExtensionContext, type Theme } fr
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
-	applyAnswer,
 	approveGate,
 	bashFlowGuard,
+	checklistHash,
+	checklistPending,
 	cleanupAssess,
-	diffAnswers,
-	getPath,
-	initPlan,
-	loadConfig,
+	gitInvocation,
+
 	listFiles,
 	newState,
 	nextHint,
@@ -51,6 +50,7 @@ import {
 	type FlowState,
 	type Stage,
 } from "../src/core.ts";
+import { buildDraft, doctorFindings, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
 import { detectProject } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
@@ -58,8 +58,8 @@ const execAsync = promisify(exec);
 interface Ui {
 	hasUI: boolean;
 	confirm: (title: string, message: string) => Promise<boolean>;
-	select: (title: string, options: string[]) => Promise<string | undefined>;
-	input: (title: string, placeholder?: string) => Promise<string | undefined>;
+	/** Multi-line review/edit dialog where the client has one (TUI); undefined elsewhere. */
+	editor?: (title: string, prefill?: string) => Promise<string | undefined>;
 }
 
 const now = () => new Date().toISOString();
@@ -121,6 +121,13 @@ function worktreeAbs(root: string, state: FlowState): string | null {
 	return state.worktree ? path.resolve(root, state.worktree) : null;
 }
 
+/** Where feature commands run: the feature worktree once it exists (that is where the
+ *  code under test lives), else the main checkout. Keeps gates off the main branch. */
+function gateCwd(root: string, state: FlowState): string {
+	const wt = worktreeAbs(root, state);
+	return wt && existsSync(wt) ? wt : root;
+}
+
 // ---------------------------------------------------------------- gate runner
 
 interface RunResult {
@@ -137,7 +144,7 @@ interface Session {
 async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Promise<RunResult> {
 	const [sub = "status", ...rest] = args;
 	if (!existsSync(dfDir(root)) && sub !== "init") return { text: "no .dev-flow/ in this repo — run /flow init first", isError: true };
-	const cfg = loadConfig(dfDir(root));
+	const cfg = loadProject(root, dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
 	const slugArg = rest.find((a) => !a.startsWith("--"));
 
@@ -148,75 +155,70 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			// self-ignoring folder: nothing under .dev-flow/ ever enters git, without touching tracked files
 			writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n");
 			rmSync(path.join(dfDir(root), ".current"), { force: true }); // migrate away the legacy repo-global pointer
-			const cfgFile = path.join(dfDir(root), "project.json");
-			let existingRaw: Record<string, unknown> | null = null;
-			if (existsSync(cfgFile)) {
-				try {
-					existingRaw = JSON.parse(readFileSync(cfgFile, "utf8")) as Record<string, unknown>;
-				} catch {
-					notes.push("existing project.json is not valid JSON — the wizard will rewrite it");
-				}
-			}
+			const mdFile = path.join(dfDir(root), "project.md");
+			const jsonFile = path.join(dfDir(root), "project.json");
 			const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
 			const curBr = await currentBranch(root);
 			// never propose a feature branch (contains "/") as the default branch
 			const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
 			const det = detectProject(root, branch);
-			if (flag("yes") || flag("force") || !ui.hasUI) {
-				// --force overwrites existing operator config with fresh detection; --yes never does (even headless)
-				if (existingRaw && !flag("force")) notes.push("project.json already exists — kept (operator-owned; --force to overwrite)");
+			const loaded = loadProject(root, dfDir(root));
+			const draftFresh = buildDraft(det);
+			const draftRefresh = buildDraft(det, loaded.cfg);
+			const editHint = "to change anything: edit .dev-flow/project.md directly (flow init = doctor revalidates), or from an agent session: flow init --draft → discuss → --write";
+			const writeMd = (text: string): RunResult | null => {
+				const parsed = parseProjectMd(text);
+				if (parsed.hard.length) return { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true };
+				writeFileSync(mdFile, text.endsWith("\n") ? text : `${text}\n`);
+				return null;
+			};
+			if (flag("write")) {
+				const content = rest[rest.indexOf("--write") + 1];
+				if (!content || content.startsWith("--")) return { text: 'usage: flow init --write "<full project.md content>"', isError: true };
+				const parsed = parseProjectMd(content);
+				const rej = writeMd(content);
+				if (rej) return rej;
+				notes.push("project.md written (operator-owned playbook)");
+				if (parsed.warn.length) notes.push("warnings:", ...parsed.warn.map((w) => `  ${w}`));
+			} else if (flag("yes") || flag("force") || !ui.hasUI) {
+				// scripted paths: --force overwrites existing; --yes and headless never do
+				if (existsSync(mdFile) && !flag("force")) notes.push("project.md already exists — kept (run flow init for the doctor; --force to overwrite)");
 				else {
-					writeFileSync(cfgFile, `${JSON.stringify(det.partial, null, 2)}\n`);
-					notes.push(`project.json ${existingRaw ? "OVERWRITTEN (--force)" : "written from detection"} — review it (operator-owned):`, ...det.report.map((r) => `  ${r}`));
-					if (det.missing.length) notes.push(`  not detected (gates fall back to defaults): ${det.missing.join(", ")}`);
+					writeFileSync(mdFile, flag("force") || !existsSync(mdFile) ? draftFresh : draftRefresh);
+					notes.push(`project.md ${existsSync(mdFile) ? "OVERWRITTEN (--force)" : "drafted from detection"}:`, ...det.report.map((r) => `  ${r}`));
+				}
+			} else if (existsSync(mdFile)) {
+				// doctor mode: cheap consistency probes only — never runs project commands
+				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
+				if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
+				else {
+					const edited = ui.editor
+						? await ui.editor(`flow init — doctor: ${findings.length} finding(s) — edit & save to apply, Esc skips`, draftRefresh)
+						: (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}\n\nWrite refreshed project.md?\n${mdDigest(draftRefresh)}`))
+							? draftRefresh
+							: undefined;
+					if (edited === undefined) notes.push("declined — project.md unchanged", ...findings.map((f) => `  ${f}`));
+					else {
+						const rej = writeMd(edited);
+						if (rej) return rej;
+						notes.push("project.md refreshed — findings addressed:", ...findings.map((f) => `  ${f}`), editHint);
+					}
 				}
 			} else {
-				// interactive wizard: confirm or change every setting, nothing is written before the final confirm
-				const answers: Record<string, unknown> = structuredClone(existingRaw ?? {});
-				const eff = loadConfig(dfDir(root));
-				let aborted = false;
-				for (const step of initPlan(existingRaw, det.partial, eff)) {
-					if (step.dependsOn && getPath(answers, step.dependsOn) === undefined) continue;
-					const label = `${step.title}${step.value ? ` = "${step.value}"` : " (unset)"} [${step.source}]`;
-					if (step.kind === "confirm") {
-						applyAnswer(answers, step.key, await ui.confirm(`flow init — ${step.title}`, `Currently: ${step.value === "true" ? "yes" : "no"}. Enable?`));
-						continue;
-					}
-					const opts = step.options ?? (step.value ? (step.optional ? ["keep", "change", "remove"] : ["keep", "change"]) : ["set now", "leave unset"]);
-					const choice = await ui.select(`flow init — ${label}`, opts);
-					if (choice === undefined) {
-						aborted = true;
-						break;
-					}
-					if (choice === "keep" || choice === "leave unset") {
-						// "keep" on a DETECTED value must materialize it — detection is init-only, gates read only the file
-						if (choice === "keep" && step.source === "detected") applyAnswer(answers, step.key, step.value);
-						continue;
-					}
-					if (choice === "remove" || choice === "(none)") {
-						applyAnswer(answers, step.key, null);
-						continue;
-					}
-					if (step.kind === "select" && choice !== "other…") {
-						applyAnswer(answers, step.key, choice);
-						continue;
-					}
-					const v = await ui.input(step.title, step.value || undefined);
-					if (v === undefined) {
-						aborted = true;
-						break;
-					}
-					applyAnswer(answers, step.key, v);
+				// first init: TUI gets the draft in a real editor (review AND edit there); elsewhere confirm the digest, full file lands on disk
+				const edited = ui.editor
+					? await ui.editor("flow init — review & edit project.md, save to write, Esc cancels", draftFresh)
+					: (await ui.confirm("flow init — write project.md?", `drafted from detection:\n${mdDigest(draftFresh)}\n\nfull content goes to .dev-flow/project.md — review/edit it there after`))
+						? draftFresh
+						: undefined;
+				if (edited === undefined) notes.push("declined — nothing written");
+				else {
+					const rej = writeMd(edited);
+					if (rej) return rej;
+					notes.push("project.md written from detection:", ...det.report.map((r) => `  ${r}`), editHint);
 				}
-				if (aborted) return { text: "flow init cancelled — project.json unchanged" };
-				const lines = diffAnswers(existingRaw ?? {}, answers);
-				if (!lines.length) notes.push(existingRaw ? "reviewed project.json — nothing changed" : "no settings configured — edit project.json by hand or rerun with answers");
-				else if (existingRaw === null || (await ui.confirm("flow init — write project.json?", `${lines.join("\n")}\n\n${JSON.stringify(answers, null, 2)}`))) {
-					writeFileSync(cfgFile, `${JSON.stringify(answers, null, 2)}\n`);
-					notes.push(`project.json ${existingRaw ? "updated" : "written"} (operator-owned):`, ...lines.map((l) => `  ${l}`));
-				} else notes.push("declined — project.json unchanged");
 			}
-			const initCfg = loadConfig(dfDir(root));
+			const initCfg = loadProject(root, dfDir(root)).cfg;
 			if (initCfg.mainHook) {
 				const hookDir = path.join(root, ".git", "hooks");
 				const hook = path.join(hookDir, "pre-commit");
@@ -252,10 +254,15 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				if (!st) return [];
 				return [
 					`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}`,
-					`  approvals: ${Object.keys(st.approvals).join(", ") || "none"} | checks: ${Object.entries(st.checks).map(([k, v]) => `${k}:${v.ok ? "ok" : "FAILED"}`).join(", ") || "none"}`,
+					`  approvals: ${Object.keys(st.approvals).join(", ") || "none"} | checks: ${Object.entries(st.checks).map(([k, v]) => `${k}:${v.ok ? "ok" : "FAILED"}`).join(", ") || "none"}${st.confirmations?.implement ? " | checklist: confirmed" : ""}`,
 					`  next: ${nextHint(st, cfg)}`,
 				];
 			});
+			const { md } = loadProject(root, dfDir(root));
+			if (md) {
+				const findings = doctorFindings(root, cfg, md, existsSync(path.join(dfDir(root), "project.json")), true);
+				if (findings.length) lines.push(`⚠ project.md: ${findings.length} finding(s) — run flow init`);
+			}
 			return { text: lines.join("\n") || "no features" };
 		}
 
@@ -265,8 +272,10 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const errs = approveGate(state!, cfg, listFiles(path.join(featDir(root, state!.slug), "plan")));
 			if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 			if (!ui.hasUI) return { text: "plan approval requires the operator in an interactive session", isError: true };
-			const ok = await ui.confirm("Approve plan", `Feature ${state!.slug}${state!.ui ? " (UI — mockups included)" : ""}.\nApprove the plan and create the feature worktree?`);
+			const planItems = cfg.checklist.plan ?? [];
+			const ok = await ui.confirm("Approve plan", `Feature ${state!.slug}${state!.ui ? " (UI — mockups included)" : ""}.${planItems.length ? `\nConfirm plan items:\n${planItems.map((it) => `  [ ] ${it}`).join("\n")}` : ""}\nApprove the plan and create the feature worktree?`);
 			if (!ok) return { text: "approval declined — keep iterating on the plan" };
+			if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
 			const branch = subst(cfg.branchPattern, state!.slug);
 			const wtRel = subst(cfg.worktreeDir, state!.slug);
 			const wt = path.resolve(root, wtRel);
@@ -286,7 +295,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (!cfg.commands.test) return { text: "no commands.test configured in .dev-flow/project.json", isError: true };
-			const res = await sh(cfg.commands.test, root);
+			const res = await sh(cfg.commands.test, gateCwd(root, state!));
 			state!.checks.test = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			return { text: `test: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.test})\n${tail(res.out)}` };
@@ -295,10 +304,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		case "verify": {
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
-			const errs = verifyGate(state!, cfg);
-			if (errs.length) return { text: `verify gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
+			const items = cfg.checklist.implement ?? [];
+			// tier-1 gate first (tier-2 confirmation is recorded by this very command, so it is excluded here)
+			const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg);
+			if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
 			if (cfg.commands.build) {
-				const res = await sh(cfg.commands.build, root);
+				const res = await sh(cfg.commands.build, gateCwd(root, state!));
 				state!.checks.build = { ok: res.ok, at: now() };
 				writeState(root, state!);
 				if (!res.ok) return { text: `build FAILED:\n${tail(res.out)}`, isError: true };
@@ -306,13 +317,40 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (!ui.hasUI) return { text: "verification requires the operator to confirm interactively", isError: true };
 			const ok = await ui.confirm(
 				"Operator verification",
-				`Build passed${cfg.commands.health ? ", health check green" : ""}. The app should be running locally with real data (${cfg.commands.run ?? "no run command configured"}).\nHas the operator tested it and confirmed it works?`,
+				`Build passed, all tier-1 checks green. App should be running locally with real data (${cfg.commands.run ?? "no run command configured"}).\n${items.length ? `Confirm every item below is satisfied (any later edit resets this):\n${items.map((it) => `  [ ] ${it}`).join("\n")}\n\n` : ""}Has the operator tested it and confirmed it works?`,
 			);
 			if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
+			state!.confirmations = { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } };
+			const final = verifyGate(state!, cfg);
+			if (final.length) return { text: `verify gate FAILED:\n- ${final.join("\n- ")}`, isError: true };
 			state!.approvals.verify = now();
 			state!.stage = "release";
 			writeState(root, state!);
 			return { text: `verified — entering release stage.\n${nextHint(state!, cfg)}` };
+		}
+
+		case "check": {
+			const { state, err } = needState(root, sess, slugArg);
+			if (err) return err;
+			if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
+			const lines: string[] = [];
+			let failed = false;
+			for (const c of cfg.checkList) {
+				if (c.name === "health" && cfg.commands.seedData) {
+					const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
+					if (!seed.ok) {
+						lines.push(`seedData FAILED:\n${tail(seed.out)}`);
+						failed = true;
+						break;
+					}
+				}
+				const res = await sh(c.cmd, gateCwd(root, state!));
+				state!.checks[c.name] = { ok: res.ok, at: now() };
+				lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd})${res.ok ? "" : `\n${tail(res.out)}`}`);
+				if (!res.ok) failed = true;
+			}
+			writeState(root, state!);
+			return { text: `tier-1 checks:\n${lines.join("\n")}`, isError: failed };
 		}
 
 		case "health": {
@@ -320,12 +358,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (err) return err;
 			if (!cfg.commands.health) return { text: "no commands.health configured in .dev-flow/project.json", isError: true };
 			if (cfg.commands.seedData) {
-				const seed = await sh(cfg.commands.seedData, root);
+				const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
 				state!.checks.seedData = { ok: seed.ok, at: now() };
 				writeState(root, state!);
 				if (!seed.ok) return { text: `seedData FAILED:\n${tail(seed.out)}`, isError: true };
 			}
-			const res = await sh(cfg.commands.health, root);
+			const res = await sh(cfg.commands.health, gateCwd(root, state!));
 			state!.checks.health = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health})\n${tail(res.out)}` };
@@ -360,6 +398,19 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (err) return err;
 			if (state!.stage !== "cleanup") return { text: `stage is "${state!.stage}", cleanup only applies after release-done`, isError: true };
 			const wt = worktreeAbs(root, state!);
+			if (!wt || !existsSync(wt)) {
+				// worktree already gone (manually removed or pruned): that IS the cleanup — prune,
+				// drop the branch if safe and advance; never inspect the main checkout for dirt.
+				await sh("git worktree prune", root);
+				let brNote = "branch already gone";
+				if (state!.branch && (await sh(`git rev-parse --verify --quiet refs/heads/${state!.branch}`, root)).ok) {
+					const del = await sh(`git branch -d ${JSON.stringify(state!.branch)}`, root);
+					brNote = del.ok ? `branch ${state!.branch} deleted` : `branch ${state!.branch} kept (not fully merged — git branch -D if sure)`;
+				}
+				state!.stage = "deploy";
+				writeState(root, state!);
+				return { text: `worktree already removed; ${brNote}.\n${nextHint(state!, cfg)}` };
+			}
 			const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
 			const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 			const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
@@ -369,7 +420,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const ok = await ui.confirm("Cleanup feature", `Remove worktree ${state!.worktree} and branch ${state!.branch}?${warn}`);
 			if (!ok) return { text: "cleanup declined" };
 			const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${state!.branch}`, root);
-			if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}`, isError: true };
+			if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow cleanup`, isError: true };
 			state!.stage = "deploy";
 			writeState(root, state!);
 			return { text: `worktree and branch removed.\n${nextHint(state!, cfg)}` };
@@ -405,7 +456,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		}
 
 		default:
-			return { text: `unknown subcommand "${sub}" — init | start <slug> [--ui] | use <slug> | status | approve | test | health | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
+			return { text: `unknown subcommand "${sub}" — init [--yes|--force|--write <text>] | start <slug> [--ui] | use <slug> | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
 	}
 }
 
@@ -505,8 +556,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	const uiFrom = (ctx: ExtensionContext): Ui => ({
 		hasUI: ctx.hasUI,
 		confirm: async (title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
-		select: async (title, options) => (ctx.hasUI ? ctx.ui.select(title, options) : Promise.resolve(undefined)),
-		input: async (title, placeholder) => (ctx.hasUI ? ctx.ui.input(title, placeholder) : Promise.resolve(undefined)),
+		editor: ctx.mode === "tui" ? (title: string, prefill?: string) => ctx.ui.editor(title, prefill) : undefined,
 	});
 
 	const sessFor = (ctx: ExtensionContext): Session => {
@@ -575,13 +625,13 @@ export default function devFlow(pi: ExtensionAPI) {
 				ctx.ui.notify("dev-flow: no active feature", "info");
 				return;
 			}
-			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new FlowPanel(st, loadConfig(dfDir(ctx.cwd)), theme, () => done()));
+			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new FlowPanel(st, loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg, theme, () => done()));
 		},
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
-		const cfg = loadConfig(dfDir(ctx.cwd));
+		const cfg = loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg;
 		const key = sessionKey(ctx);
 
 		if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
@@ -590,19 +640,12 @@ export default function devFlow(pi: ExtensionAPI) {
 			const bound = boundFeature(ctx.cwd, key);
 			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null });
 			if (reason) return { block: true, reason };
-			// Editing a worktree invalidates that feature's test/health checks until they rerun.
+			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
-			if (owner && owner.state.stage === "implement") {
-				let dirty = false;
-				if (owner.state.checks.test?.ok) {
-					delete owner.state.checks.test;
-					dirty = true;
-				}
-				if (owner.state.checks.health?.ok) {
-					delete owner.state.checks.health;
-					dirty = true;
-				}
-				if (dirty) writeState(ctx.cwd, owner.state);
+			if (owner && owner.state.stage === "implement" && (Object.keys(owner.state.checks).length || owner.state.confirmations?.implement)) {
+				owner.state.checks = {};
+				delete owner.state.confirmations?.implement;
+				writeState(ctx.cwd, owner.state);
 			}
 			return undefined;
 		}
@@ -610,8 +653,13 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (isToolCallEventType("bash", event)) {
 			const command = String(event.input.command ?? "");
 			if (stateTamper(command)) return { block: true, reason: "state.json is dev-flow-owned — advance stages with the flow tool only" };
-			if (!/\bgit\b/.test(command)) return undefined;
-			const branch = (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] ?? "";
+			const inv = gitInvocation(command);
+			if (!inv.subs.length) return undefined; // git is not invoked as a command — nothing to guard
+			// Judge by the branch of the directory git actually runs in (git -C / preceding cd target),
+			// not the session root — a bound session's work happens in the feature worktree.
+			const gitDir = inv.dir ? path.resolve(ctx.cwd, inv.dir) : ctx.cwd;
+			const br = await sh(`git -C ${JSON.stringify(gitDir)} branch --show-current`, ctx.cwd);
+			const branch = (br.ok ? br.out : "").trim().split("\n")[0] || (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] || "";
 			const bound = boundFeature(ctx.cwd, key);
 			const reason = bashFlowGuard({ command, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch });
 			if (reason) return { block: true, reason };
@@ -623,14 +671,18 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
 		const state = boundFeature(ctx.cwd, sessionKey(ctx));
 		if (!state || state.stage === "done") return undefined;
-		const cfg = loadConfig(dfDir(ctx.cwd));
+		const cfg = loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg;
+		const guidance: string[] = [];
+		if (cfg.prose[state.stage]) guidance.push(`Stage guidance (project.md): ${cfg.prose[state.stage]}`);
+		const pend = checklistPending(cfg, state, state.stage);
+		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${cfg.checklist[state.stage].join(" | ")}`);
 		return {
 			message: {
 				customType: "dev-flow-context",
 				display: false,
 				content: `[dev-flow] this session is bound to: ${state.slug} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
 Next: ${nextHint(state, cfg)}.
-Rules: follow the dev-flow skill playbook; drive gates with the flow tool (/flow as user); stage guards block out-of-stage edits and main-branch git ops — do not work around them.`,
+${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: follow the dev-flow skill playbook; drive gates with the flow tool (/flow as user); stage guards block out-of-stage edits and main-branch git ops — do not work around them.`,
 			},
 		};
 	});
