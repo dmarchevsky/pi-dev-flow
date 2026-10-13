@@ -61,6 +61,14 @@ Work happens **only in the worktree** the gate created (path in `flow status` or
 
 `flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — absent config means dev-flow says nothing about dev) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal.
 
+### Handling additions mid-implement
+
+The operator asks for something extra while you are implementing. Do not bounce the flow and do not grow it silently:
+
+- **Same feature, grown scope** → stay at implement. Append to `plan.md` a `**Added mid-stage:**` line describing what was asked and how, then implement it and `flow check` again. Any edit invalidates checks and the tier-2 confirmation, so verify re-covers the addition — nothing can slip past the gate.
+- **Different problem** → finish the current feature; it is a new flow (`flow start <new-slug>` after this one ships). Never fold a second feature into one plan, PR and verify — the audit trail is the point.
+- **Heavily amended plan needs formal re-review** → show the operator the amended plan and ask them to re-approve it in chat; the verify gate remains the checkpoint. There is no reopen command by design.
+
 ## Stage: release
 
 You are now cleared to touch main-repo git state (merge/tag/push on the default branch is allowed only here). **Versioning:** the version manifest in project.json `versioning.file` is the single source of truth; tags are always `versioning.pattern` rendered from it — one number everywhere. If `versioning.file` is unset, stop and clarify the scheme with the user before touching any version; never invent one mid-release. Recommended sequence — run it in the worktree unless noted:
