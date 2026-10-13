@@ -39,6 +39,7 @@ import {
 	listFiles,
 	newState,
 	nextHint,
+	openReflections,
 	releaseGate,
 	parseVersion,
 	stateTamper,
@@ -107,6 +108,12 @@ function unfinishedStates(root: string): FlowState[] {
 		.map((d) => readState(root, d.name))
 		.filter((s): s is FlowState => !!s && s.stage !== "done");
 }
+
+/** Open items of the agent's suggestion queue (.dev-flow/reflections.md). */
+const readReflections = (root: string): string[] => {
+	const f = path.join(dfDir(root), "reflections.md");
+	return existsSync(f) ? openReflections(readFileSync(f, "utf8")) : [];
+};
 
 /** The session's feature: explicit binding, else the single unfinished feature (auto-bind). */
 function boundFeature(root: string, key: string): FlowState | null {
@@ -222,6 +229,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				// doctor mode: cheap consistency probes only — never runs project commands
 				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
 				findings.push(...(await gitConsistency(root, loaded.cfg)));
+				for (const l of readReflections(root)) findings.push(`open reflection: ${l.slice(6)}`);
 				if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
 				else {
 					const edited = ui.editor
@@ -298,6 +306,8 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				const findings = doctorFindings(root, cfg, md, existsSync(path.join(dfDir(root), "project.json")), true);
 				if (findings.length) lines.push(`⚠ project.md: ${findings.length} finding(s) — run flow init`);
 			}
+			const refl = readReflections(root);
+			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — flow reflect`);
 			return { text: lines.join("\n") || "no features" };
 		}
 
@@ -499,6 +509,23 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			return { text: `session is flow-exempt: ${reason} — run "flow exempt off" when done` };
 		}
 
+		case "reflect": {
+			// Advisory queue: agent appends, operator decides. Never gates anything.
+			const reflFile = path.join(dfDir(root), "reflections.md");
+			const text = existsSync(reflFile) ? readFileSync(reflFile, "utf8") : "";
+			const open = openReflections(text);
+			const toIdx = rest.indexOf("--to");
+			const to = toIdx >= 0 ? rest[toIdx + 1] ?? "" : "playbook";
+			const note = toIdx >= 0 ? rest.filter((_, i) => i !== toIdx && i !== toIdx + 1) : rest;
+			if (!note.length)
+				return { text: open.length ? `open reflections:\n${open.map((l, i) => `  ${i + 1}. ${l.slice(6)}`).join("\n")}` : 'no open reflections — flow reflect "<note>" parks a suggestion for the operator' };
+			if (!["playbook", "plugin", "doctor"].includes(to)) return { text: "--to must be playbook, plugin or doctor", isError: true };
+			const line = `- [ ] (${to}) ${note.join(" ")} — ${sess.slug ?? "-"} ${new Date().toISOString().slice(0, 10)}`;
+			const header = "# dev-flow reflections\n\n<!-- Suggestions queued by the agent; the operator decides. Fold playbook items in via flow init --write, file plugin items as issues; check off when handled. -->\n";
+			writeFileSync(reflFile, (text || header) + (text && !text.endsWith("\n") ? "\n" : "") + line + "\n");
+			return { text: `reflected: ${line}\n${open.length + 1} item(s) open — list: flow reflect` };
+		}
+
 		case "abort": {
 			// Unbinds the session only; state and worktree stay for manual recovery.
 			const target = slugArg ?? sess.slug;
@@ -509,7 +536,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		}
 
 		default:
-			return { text: `unknown subcommand "${sub}" — init [--yes|--force|--write <text>] | start <slug> [--ui] | use <slug> | exempt [off|<reason>] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
+			return { text: `unknown subcommand "${sub}" — init [--yes|--force|--write <text>] | start <slug> [--ui] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
 	}
 }
 
@@ -762,12 +789,16 @@ export default function devFlow(pi: ExtensionAPI) {
 				content = `[dev-flow] no flow bound. Every request goes through flow unless the OPERATOR exempts it (/flow exempt <reason> — you may mention it, never run it for yourself). New work: flow start <slug>; unfinished feature: flow use <slug>.`;
 				if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
 			}
+			const refl0 = readReflections(ctx.cwd);
+			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open (flow reflect).`;
 			return { message: { customType: "dev-flow-context", display: false, content } };
 		}
 		const guidance: string[] = [];
 		if (cfg.prose[state.stage]) guidance.push(`Stage guidance (project.md): ${cfg.prose[state.stage]}`);
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${cfg.checklist[state.stage].join(" | ")}`);
+		const refl = readReflections(ctx.cwd);
+		if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — mention to the operator; fold in only on request.`);
 		return {
 			message: {
 				customType: "dev-flow-context",

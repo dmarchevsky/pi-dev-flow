@@ -369,6 +369,11 @@ export function featureBranchPrefix(cfg: Config): string {
 }
 
 /** Compact footer status text; coloring/theme is the extension's business. */
+/** Open (unchecked) reflection items in reflections.md content — the agent's suggestion queue. */
+export function openReflections(text: string): string[] {
+	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));
+}
+
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
 	const failed = Object.values(state.checks).some((c) => !c.ok);
 	return { text: `${state.slug} ▸ ${state.stage}`, failed };

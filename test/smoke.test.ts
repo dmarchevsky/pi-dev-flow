@@ -244,3 +244,24 @@ test("ref-aware push guard end-to-end: tags pass from main, default branch refus
 	assert.match((await bash("git push origin main"))?.reason ?? "", /requires stage "release"/);
 	assert.equal(await bash("git push origin main:refs/heads/main-backup"), undefined, "explicit non-default dest passes");
 });
+
+test("reflect queue: append, list, check-off semantics, status surfacing", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--yes"]);
+	await flow(["start", "rfeat"]);
+	await flow(["reflect", "test", "cmd", "is", "stale"]);
+	const r2 = await flow(["reflect", "ui", "panels", "ugly", "--to", "plugin"]);
+	assert.match(r2.content[0].text, /\(plugin\) ui panels ugly — rfeat \d{4}-\d{2}-\d{2}/);
+	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
+	assert.match(readFileSync(reflFile, "utf8"), /- \[ \] \(playbook\) test cmd is stale — rfeat \d{4}-\d{2}-\d{2}/);
+	const listed = await flow(["reflect"]);
+	assert.match(listed.content[0].text, /1\. \(playbook\) test cmd is stale/);
+	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + "- [x] (doctor) already handled\n");
+	const listed2 = await flow(["reflect"]);
+	assert.ok(!listed2.content[0].text.includes("handled"), "checked-off items are not open");
+	const st = await flow(["status"]);
+	assert.match(st.content[0].text, /↻ 2 reflection\(s\) open/);
+});
