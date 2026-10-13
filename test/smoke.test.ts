@@ -42,6 +42,9 @@ function makeRepo(): string {
 	const dir = mkdtempSync(path.join(tmpdir(), "devflow-"));
 	execFileSync("git", ["init", "-b", "main", dir]);
 	writeFileSync(path.join(dir, "README.md"), "# scratch\n");
+	const id = ["-c", "user.email=t@t", "-c", "user.name=t"];
+	execFileSync("git", ["-C", dir, ...id, "add", "-A"]);
+	execFileSync("git", ["-C", dir, ...id, "commit", "-qm", "init"]);
 	return dir;
 }
 
@@ -99,6 +102,27 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	// the model-facing tool routes through the same runner
 	const res = await pi.tools.flow.execute("id", { args: ["status"] }, undefined, undefined, ctx);
 	assert.match(res.content[0].text, /demo-feature/);
+});
+
+test("worktree isolation: commit guards follow the command's directory", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	await pi.cmds.flow.handler("init", ctx);
+	await pi.cmds.flow.handler("start wt-feature", ctx);
+	mkdirSync(path.join(repo, ".dev-flow", "wt-feature", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "wt-feature", "plan", "plan.md"), "# plan\n");
+	await pi.cmds.flow.handler("approve", ctx); // creates the worktree (branch feat/wt-feature)
+	const guard = pi.handlers.tool_call[0];
+	// commit at the session root (main checkout on main) stays blocked
+	assert.ok(await guard({ toolName: "bash", input: { command: "git commit -m x" } }, ctx), "commit on main must be blocked");
+	// commit inside the feature worktree passes however the command gets there
+	const wt = path.join(repo, ".dev-flow", "wt-feature", "worktree");
+	assert.equal(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(wt)} && git commit -m x` } }, ctx), undefined, "worktree commit via cd must pass");
+	assert.equal(await guard({ toolName: "bash", input: { command: `git -C ${JSON.stringify(wt)} commit -m x` } }, ctx), undefined, "worktree commit via -C must pass");
+	// reads are never misguarded
+	assert.equal(await guard({ toolName: "bash", input: { command: "cat .git/hooks/pre-commit" } }, ctx), undefined, "reading the hook is not a commit");
+	assert.equal(await guard({ toolName: "bash", input: { command: "git log --oneline" } }, ctx), undefined, "git log is not a commit");
 });
 
 test("init --yes keeps existing project.md; --force rewrites from fresh detection", async () => {

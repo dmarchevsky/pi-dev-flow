@@ -31,6 +31,7 @@ import {
 	checklistHash,
 	checklistPending,
 	cleanupAssess,
+	gitInvocation,
 
 	listFiles,
 	newState,
@@ -118,6 +119,13 @@ function featureRefs(root: string): FeatureRef[] {
 
 function worktreeAbs(root: string, state: FlowState): string | null {
 	return state.worktree ? path.resolve(root, state.worktree) : null;
+}
+
+/** Where feature commands run: the feature worktree once it exists (that is where the
+ *  code under test lives), else the main checkout. Keeps gates off the main branch. */
+function gateCwd(root: string, state: FlowState): string {
+	const wt = worktreeAbs(root, state);
+	return wt && existsSync(wt) ? wt : root;
 }
 
 // ---------------------------------------------------------------- gate runner
@@ -261,7 +269,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (!cfg.commands.test) return { text: "no commands.test configured in .dev-flow/project.json", isError: true };
-			const res = await sh(cfg.commands.test, root);
+			const res = await sh(cfg.commands.test, gateCwd(root, state!));
 			state!.checks.test = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			return { text: `test: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.test})\n${tail(res.out)}` };
@@ -275,7 +283,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg);
 			if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
 			if (cfg.commands.build) {
-				const res = await sh(cfg.commands.build, root);
+				const res = await sh(cfg.commands.build, gateCwd(root, state!));
 				state!.checks.build = { ok: res.ok, at: now() };
 				writeState(root, state!);
 				if (!res.ok) return { text: `build FAILED:\n${tail(res.out)}`, isError: true };
@@ -303,14 +311,14 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			let failed = false;
 			for (const c of cfg.checkList) {
 				if (c.name === "health" && cfg.commands.seedData) {
-					const seed = await sh(cfg.commands.seedData, root);
+					const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
 					if (!seed.ok) {
 						lines.push(`seedData FAILED:\n${tail(seed.out)}`);
 						failed = true;
 						break;
 					}
 				}
-				const res = await sh(c.cmd, root);
+				const res = await sh(c.cmd, gateCwd(root, state!));
 				state!.checks[c.name] = { ok: res.ok, at: now() };
 				lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd})${res.ok ? "" : `\n${tail(res.out)}`}`);
 				if (!res.ok) failed = true;
@@ -324,12 +332,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (err) return err;
 			if (!cfg.commands.health) return { text: "no commands.health configured in .dev-flow/project.json", isError: true };
 			if (cfg.commands.seedData) {
-				const seed = await sh(cfg.commands.seedData, root);
+				const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
 				state!.checks.seedData = { ok: seed.ok, at: now() };
 				writeState(root, state!);
 				if (!seed.ok) return { text: `seedData FAILED:\n${tail(seed.out)}`, isError: true };
 			}
-			const res = await sh(cfg.commands.health, root);
+			const res = await sh(cfg.commands.health, gateCwd(root, state!));
 			state!.checks.health = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health})\n${tail(res.out)}` };
@@ -364,6 +372,19 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (err) return err;
 			if (state!.stage !== "cleanup") return { text: `stage is "${state!.stage}", cleanup only applies after release-done`, isError: true };
 			const wt = worktreeAbs(root, state!);
+			if (!wt || !existsSync(wt)) {
+				// worktree already gone (manually removed or pruned): that IS the cleanup — prune,
+				// drop the branch if safe and advance; never inspect the main checkout for dirt.
+				await sh("git worktree prune", root);
+				let brNote = "branch already gone";
+				if (state!.branch && (await sh(`git rev-parse --verify --quiet refs/heads/${state!.branch}`, root)).ok) {
+					const del = await sh(`git branch -d ${JSON.stringify(state!.branch)}`, root);
+					brNote = del.ok ? `branch ${state!.branch} deleted` : `branch ${state!.branch} kept (not fully merged — git branch -D if sure)`;
+				}
+				state!.stage = "deploy";
+				writeState(root, state!);
+				return { text: `worktree already removed; ${brNote}.\n${nextHint(state!, cfg)}` };
+			}
 			const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
 			const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 			const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
@@ -373,7 +394,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const ok = await ui.confirm("Cleanup feature", `Remove worktree ${state!.worktree} and branch ${state!.branch}?${warn}`);
 			if (!ok) return { text: "cleanup declined" };
 			const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${state!.branch}`, root);
-			if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}`, isError: true };
+			if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow cleanup`, isError: true };
 			state!.stage = "deploy";
 			writeState(root, state!);
 			return { text: `worktree and branch removed.\n${nextHint(state!, cfg)}` };
@@ -607,8 +628,13 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (isToolCallEventType("bash", event)) {
 			const command = String(event.input.command ?? "");
 			if (stateTamper(command)) return { block: true, reason: "state.json is dev-flow-owned — advance stages with the flow tool only" };
-			if (!/\bgit\b/.test(command)) return undefined;
-			const branch = (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] ?? "";
+			const inv = gitInvocation(command);
+			if (!inv.subs.length) return undefined; // git is not invoked as a command — nothing to guard
+			// Judge by the branch of the directory git actually runs in (git -C / preceding cd target),
+			// not the session root — a bound session's work happens in the feature worktree.
+			const gitDir = inv.dir ? path.resolve(ctx.cwd, inv.dir) : ctx.cwd;
+			const br = await sh(`git -C ${JSON.stringify(gitDir)} branch --show-current`, ctx.cwd);
+			const branch = (br.ok ? br.out : "").trim().split("\n")[0] || (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] || "";
 			const bound = boundFeature(ctx.cwd, key);
 			const reason = bashFlowGuard({ command, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch });
 			if (reason) return { block: true, reason };

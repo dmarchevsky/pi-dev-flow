@@ -4,6 +4,7 @@ import {
 	applyAnswer,
 	approveGate,
 	bashFlowGuard,
+	gitInvocation,
 	checklistHash,
 	cleanupAssess,
 	DEFAULTS,
@@ -75,6 +76,30 @@ test("bashFlowGuard: main protection and release-stage release", () => {
 	assert.ok(bashFlowGuard({ ...base, command: "git merge feat/x" }));
 	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git merge feat/x" }), null);
 	assert.equal(bashFlowGuard({ ...base, command: "git status" }), null);
+});
+
+test("bashFlowGuard: only real git invocations are judged", () => {
+	const base = { branch: "main", stage: null as "plan" | null, defaultBranch: "main" };
+	// reading .git paths or messages must not read as a commit
+	assert.equal(bashFlowGuard({ ...base, command: "cat .git/hooks/pre-commit" }), null);
+	assert.equal(bashFlowGuard({ ...base, command: "git log --oneline --grep=commit" }), null);
+	assert.equal(bashFlowGuard({ ...base, command: "git branch --show-current" }), null);
+	// real invocations still bite, including path prefixes and env wrappers
+	assert.ok(bashFlowGuard({ ...base, command: "/usr/bin/git commit -m x" }));
+	assert.ok(bashFlowGuard({ ...base, command: "FOO=1 git commit -m x" }));
+	assert.ok(bashFlowGuard({ ...base, command: "echo hi && git commit -m x" }));
+	assert.ok(bashFlowGuard({ ...base, command: "git -c user.name=x commit -m y" }));
+});
+
+test("gitInvocation: subcommands and effective directory", () => {
+	assert.deepEqual(gitInvocation("cat .git/hooks/pre-commit"), { subs: [], dir: null });
+	assert.deepEqual(gitInvocation("git commit -m x"), { subs: ["commit"], dir: null });
+	assert.deepEqual(gitInvocation("cd .dev-flow/f/worktree && git commit -m x"), { subs: ["commit"], dir: ".dev-flow/f/worktree" });
+	assert.deepEqual(gitInvocation("git -C /tmp/wt push origin feat/x"), { subs: ["push"], dir: "/tmp/wt" });
+	assert.deepEqual(gitInvocation("git -C=/tmp/wt commit"), { subs: ["commit"], dir: "/tmp/wt" });
+	assert.deepEqual(gitInvocation("/usr/bin/git branch --show-current"), { subs: ["branch"], dir: null });
+	assert.deepEqual(gitInvocation("cd wt; git status; git push"), { subs: ["status", "push"], dir: "wt" });
+	assert.deepEqual(gitInvocation("sudo git commit -m x"), { subs: ["commit"], dir: null });
 });
 
 test("stateTamper catches direct state.json writes", () => {

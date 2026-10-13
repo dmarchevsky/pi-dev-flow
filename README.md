@@ -132,9 +132,9 @@ never runs your commands) offering a refresh; `--force` rewrites from fresh dete
 ## Limitations (deliberate, v1)
 
 - Deploy is manual by design (phase 2 automation).
-- Bash git-guard matching is regex-based: an exotic shell wrapper around `git commit` could slip past; the `.git` hook covers plain commits outside Pi too, but neither is a security sandbox.
+- Bash git-guard parses shell segments to find real `git` invocations (honoring `cd … &&`, `git -C`, full paths) and judges them by the branch of the directory the command runs in — the feature worktree when you work there. An exotic shell wrapper (subshell, variable) around `git commit` could still slip past; the `.git` hook covers plain commits outside Pi too, but neither is a security sandbox.
 - ~~One active feature per pointer~~ — replaced by session bindings (v0.5.0): one feature per pi session, parallel sessions supported; `abort` unbinds.
-- `flow test` runs in the main checkout; if tests must run inside the worktree, make `commands.test` cd-aware (`cd {…}` yourself) — no templating provided.
+- Gate commands (`test`, `check`, `verify` build, `health`) run inside the feature worktree once it exists — the code under test lives there; before the worktree exists they run in the main checkout.
 
 ## Development
 

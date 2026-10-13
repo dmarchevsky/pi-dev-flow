@@ -205,9 +205,50 @@ export function cleanupAssess(porcelain: string, unmerged: string[]): { errors: 
 
 export interface GuardCtx {
 	command: string;
-	branch: string; // current branch of the main checkout
+	branch: string; // branch of the directory the git commands run in (feature worktree or main checkout)
 	stage: Stage | null; // active feature stage, null when no active feature
 	defaultBranch: string;
+}
+
+const unquote = (s: string): string => s.replace(/^(['"])(.*)\1$/, "$2");
+
+/** git usage in a bash command, parsed per shell segment (split on ; | & newline):
+ *  the git subcommands invoked — empty when git is not a command, so paths like
+ *  .git/hooks or words like pre-commit never trigger the guard — and the directory
+ *  git runs in (last preceding `cd` target or `git -C` target; null = session cwd).
+ *  shortcut: naive segment split, subshells/backticks not tracked; the pre-commit
+ *  hook still covers what slips past this advisory guard. */
+export function gitInvocation(command: string): { subs: string[]; dir: string | null } {
+	const subs: string[] = [];
+	let dir: string | null = null;
+	// global git options that consume a following value
+	const OPT_VAL = new Set(["-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace", "--super-prefix"]);
+	for (const seg of command.split(/[\n;|&]+/)) {
+		const tok = seg.trim().split(/\s+/).filter(Boolean);
+		let i = 0;
+		while (i < tok.length && /^[\w.]+=/.test(tok[i])) i++; // leading ENV=val prefixes
+		if (tok[i] === "sudo") i++;
+		if (tok[i] === "cd" && tok[i + 1]) {
+			dir = unquote(tok[i + 1]);
+			continue;
+		}
+		if (!/(^|\/)git$/.test(tok[i] ?? "")) continue; // git must be the command (git, /usr/bin/git)
+		for (i++; i < tok.length; i++) {
+			const t = tok[i];
+			if (!t.startsWith("-")) {
+				subs.push(t);
+				break;
+			}
+			const eq = t.indexOf("=");
+			const name = eq === -1 ? t : t.slice(0, eq);
+			if (name === "-C") {
+				dir = eq === -1 ? unquote(tok[++i] ?? "") : unquote(t.slice(eq + 1));
+				continue;
+			}
+			if (OPT_VAL.has(name) && eq === -1) i++;
+		}
+	}
+	return { subs, dir };
 }
 
 /** True when a bash command looks like a direct write to flow state. */
@@ -219,9 +260,10 @@ export function stateTamper(command: string): boolean {
 /** Guard: decide whether a git bash command violates the flow. Returns a reason or null. */
 export function bashFlowGuard(o: GuardCtx): string | null {
 	const c = o.command;
-	if (!/\bgit\b/.test(c)) return null;
+	const { subs } = gitInvocation(c);
+	if (!subs.length) return null;
 	const onMain = o.branch === o.defaultBranch;
-	const git = (word: string) => new RegExp(`\\bgit\\b[^|;&]*\\b${word}\\b`).test(c);
+	const git = (word: string) => subs.includes(word);
 
 	if (git("commit") && onMain) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree`;
 	if (git("push")) {
