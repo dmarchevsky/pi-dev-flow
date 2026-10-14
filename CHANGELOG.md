@@ -4,6 +4,18 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-14
+
+### Added
+
+- **`flow-guard` — the playbook carries the project's own safety rules**, so an adopting project can delete its own guard extension. A ` ```flow-guard ` block in `## global` of project.md holds `deny`/`confirm` rules (JS regex over one shell segment of a bash command) and `protect`/`forbid` rules (a repo-relative edit/write path; a directory covers its subtree, files that do not exist yet included). `deny`/`forbid` block outright; `confirm`/`protect` ask the operator and block when no UI is present — a hidden confirmation is not a confirmation. Every rule carries a ` :: <why>` reason that shows up verbatim in the block, and a bad regex is a hard finding so `flow init --write` refuses the file. Enforcement reuses the existing tool-call guards (rules cover `docker`/`gh`/everything, not only git), runs at every stage, and is not lifted by `flow exempt`. Read-only segments are skipped, so `grep "git push --force" docs/` searches instead of pushing.
+
+### Fixed
+
+- **`flow init` no longer destroys a hand-written project.md.** The doctor's refresh regenerated the file from detection + config, which silently reverted hand-set keys (`versionTag = {version}` → `v{version}`) and deleted every tier-3 prose line and extra checklist item — and its confirm could be answered by an agent driving `flow init` through the `flow` tool. The refresh is now refused outright when the current file has lines a regenerated draft cannot reproduce: it prints the findings plus the lines it would drop. `--force` stays the deliberate overwrite.
+- **`commands.setup` now runs** — once, inside a freshly created worktree at `approve`, which is where `cp docker/.env` + `bun install` belong; a failing setup fails the gate instead of approving an unusable worktree. `commands.run` was documented as if executed and never is: it is now documented as advisory (the agent starts the app with it for the running-and-healthy walk).
+- **Doctor stopped flagging worktree-relative paths forever**: command arguments are only probed as repo-root paths, so `cp -n ../../docker/.env` — correct relative to the worktree the check runs in — is no longer reported as a missing file.
+
 ## [0.18.0] - 2026-10-13
 
 ### Added

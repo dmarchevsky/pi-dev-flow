@@ -19,6 +19,7 @@ Ground rules:
 
 - A pi session is bound to exactly one feature (flow + branch + worktree). Parallel sessions, one feature each, are the model. The binding is automatic when one unfinished feature exists, set by `flow start`, and switched with `flow use <slug>`; with several unfinished features and no binding, gates demand an explicit slug and main-checkout writes stay blocked.
 - **Flow is the default for all work.** An unbound session cannot edit source files — start a feature (`flow start <slug>`, main checkout must be on the default branch) or bind an unfinished one (`flow use <slug>`). The only bypass is the operator running `/flow exempt <reason>` themselves: you may *mention* it when a task seems flow-worthy-exempt, never run it for yourself, and suggest `flow exempt off` when exempted work finishes.
+- **A project's own `flow-guard` rules** (`deny`/`confirm`/`protect`/`forbid` in project.md `## global`) apply at **every** stage and are not lifted by `flow exempt` — they are the operator's safety rules, not flow discipline. When one fires, its reason is the answer: stop, show it, and let the operator decide; never route around it.
 - Never read/write `.dev-flow/<slug>/state.json` yourself — it is flow-owned (the guard blocks it anyway). `flow status` is your view.
 - `.dev-flow/project.json` is operator-owned: read it for commands (test/build/run), the default branch, worktree path — never edit it; ask the user.
 - Also obey the repo's own AGENTS.md and project skills; dev-flow sequences stages, the project defines its conventions.
@@ -46,7 +47,7 @@ Repo without `.dev-flow/`? Run `flow init` — it writes `.dev-flow/project.md` 
    - No chromium anywhere? Tell the user and ask — fall back to `*.html`-only plans only with their OK (they can set `mockupGlobs`); never fake or skip a screenshot silently.
 4. Tell the user the plan is ready and **stop** — one word: **Approve?** They answer in chat (or run `/flow approve` themselves). When they answered, run `flow approve --confirmed` — **exactly one checkpoint per stage**: a chat answer must never trigger a second dialog. `--confirmed` is only for a literal operator answer, never your inference; without an answer and without interactive UI the gate refuses.
 
-Approval creates the worktree and branch. Until then no code edits are possible. `(ui)`-marked playbook checklist items do not apply to non-UI features — they never appear in prompts or confirmations.
+Approval creates the worktree and branch (running `commands.setup` inside it when configured — a failing setup fails the gate). Until then no code edits are possible. `(ui)`-marked playbook checklist items do not apply to non-UI features — they never appear in prompts or confirmations.
 
 ## Stage: implement
 

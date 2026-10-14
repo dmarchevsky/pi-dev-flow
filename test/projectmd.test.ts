@@ -155,3 +155,84 @@ test("mdDigest: human phase-grouped summary with real values, nothing truncated"
 	assert.ok(!d.includes("set:") && !/\bprose\b/.test(d), "no internal notation left");
 	assert.match(d, /nothing is executed or uploaded now/);
 });
+
+// ---------------------------------------------------------------- flow-guard block
+
+const GUARD_LINES = [
+	"```flow-guard",
+	"deny    \\bgit\\b[^]*--force(?!\\w)              :: history stays linear",
+	"confirm \\bgit\\b[^]*\\bworktree remove\\b       :: a script checks PR state first",
+	"protect docker/.env                             :: gitignored live secrets",
+	"forbid  docker/secrets                          :: gitignored secret storage",
+	"```",
+];
+const GUARD_MD = ["# dev-flow", "", "## global", "", ...GUARD_LINES, ""].join("\n");
+
+test("flow-guard block: each verb maps to its rule list", () => {
+	const p = parseProjectMd(GUARD_MD);
+	assert.deepEqual(p.hard, []);
+	assert.deepEqual(p.warn, []);
+	assert.deepEqual(p.guard.deny, [{ pattern: "\\bgit\\b[^]*--force(?!\\w)", why: "history stays linear" }]);
+	assert.equal(p.guard.confirm.length, 1);
+	assert.equal(p.guard.protect[0].pattern, "docker/.env");
+	assert.equal(p.guard.forbid[0].pattern, "docker/secrets");
+	assert.equal(p.guard.forbid[0].why, "gitignored secret storage", "reason is free text");
+	const cfg = mdToConfig(p);
+	assert.equal(cfg.guard.deny[0].why, "history stays linear");
+	assert.equal(mdToConfig(parseProjectMd("## global\n"), mergeConfig({ guard: { forbid: ["docker/secrets"] } })).guard.forbid.length, 1, "no block must not erase the project.json base");
+});
+
+test("flow-guard block: hard findings and warnings", () => {
+	assert.ok(parseProjectMd("## global\n```flow-guard\ndeny git push :: \n```\n").hard.length === 0, "empty reason is allowed (free text)");
+	assert.ok(parseProjectMd("## global\n```flow-guard\ndeny git push\n```\n").hard.some((h) => h.includes("::")), "missing separator is hard");
+	assert.ok(parseProjectMd("## global\n```flow-guard\ndeny    :: why\n```\n").hard.some((h) => h.includes("no pattern")), "empty pattern is hard");
+	assert.ok(parseProjectMd("## global\n```flow-guard\ndeny (unclosed[ :: why\n```\n").hard.some((h) => h.includes("regular expression")), "bad regex is hard so init --write refuses");
+	assert.ok(parseProjectMd("## global\n```flow-guard\nblock docker/.env :: why\n```\n").warn.some((w) => w.includes('unknown flow-guard verb "block"')), "unknown verb warns");
+	assert.ok(!parseProjectMd("## global\n```flow-guard\nblock docker/.env :: why\n```\n").hard.length, "unknown verb is not a hard finding");
+});
+
+test("flow-guard rules belong to ## global — a stage-scoped block warns and applies nothing", () => {
+	const p = parseProjectMd(["## implement", ...GUARD_LINES, ""].join("\n"));
+	assert.ok(p.warn.some((w) => w.includes("flow-guard rules belong to ## global")), p.warn.join("; "));
+	assert.deepEqual(p.guard.deny, []);
+	assert.equal(mdToConfig(p).guard.forbid.length, 0);
+});
+
+test("flow-guard acceptance: the adopting project's real rule set parses clean", () => {
+	const md = [
+		"# dev-flow",
+		"",
+		"## global",
+		"",
+		"```flow-guard",
+		"deny    \\bgit\\b[^\\n]*--force(?!\\w)                        :: history stays linear — PRs squash-merge, update a branch by merging main into it",
+		"deny    \\bgit\\b[^\\n]*\\bpush\\b(?!\\w)[^\\n]*\\s-f(?!\\w)        :: the short spelling of the force push above",
+		"deny    \\bgit\\b[^\\n]*\\bworktree\\s+prune\\b                 :: prunes other sessions' worktrees",
+		"confirm \\bgit\\b[^\\n]*\\bworktree remove\\b                  :: a script checks PR state and live sessions first",
+		"confirm \\bgit\\b[^\\n]*\\bbranch\\s+(?:-d\\b|--delete\\b)        :: report the branch instead; a checked script does the checking",
+		"confirm \\bgit\\b[^\\n]*\\bbranch\\s+(?:-D\\b|--delete\\s+--force|--force\\s+--delete) :: deletes a squash-merged branch that git cannot see as merged",
+		"confirm \\bgh\\b[^\\n]*\\bpr\\s+merge\\b                        :: the operator merges, or names this specific PR",
+		"confirm \\bgh\\b[^\\n]*\\bpr\\s+review\\b[^\\n]*(?:--approve|\\bapprove\\b) :: an approval is a human statement that they ran it",
+		"confirm \\bgh\\b[^\\n]*\\bapi\\b[^\\n]*\\/merges?\\b              :: the same merge through the raw API",
+		"confirm \\bdocker\\b[^\\n]*\\bcompose\\b[^\\n]*\\b(?:rm|down|stop|kill)\\b :: stops running containers",
+		"confirm \\bdocker\\b[^\\n]*\\bcompose\\b[^\\n]*\\brestart\\b      :: drops a permanent upstream connection and any turn in flight",
+		"confirm \\bdocker\\b[^\\n]*\\bcompose\\b[^\\n]*\\bup\\b[^\\n]*(?:^|\\s)app-server(?=\\s|$) :: service shares a network namespace with two others",
+		"protect docker/.env                                       :: gitignored live secrets — never echo the values",
+		"forbid  docker/secrets                                    :: gitignored secret storage",
+		"```",
+		"",
+	].join("\n");
+	const p = parseProjectMd(md);
+	assert.deepEqual(p.hard, []);
+	assert.deepEqual(p.warn, []);
+	assert.deepEqual([p.guard.deny.length, p.guard.confirm.length, p.guard.protect.length, p.guard.forbid.length], [3, 9, 1, 1]);
+	for (const r of [...p.guard.deny, ...p.guard.confirm]) new RegExp(r.pattern); // every rule compiles
+});
+
+test("doctorFindings probes only root-relative paths — worktree-relative ones are not its business", () => {
+	const root = fixtureRoot({ "package.json": '{"name":"x","version":"1.0.0"}' });
+	const wtRelative = mdToConfig(parseProjectMd("## implement\n```flow\ntest = cp -n ../../docker/.env .\n```\n"));
+	assert.ok(!doctorFindings(root, wtRelative, null, false, true).some((f) => f.includes("missing file")), "a path above the repo root is resolved by the shell in the gate cwd");
+	const rootRelative = mdToConfig(parseProjectMd("## implement\n```flow\ntest = node scripts/nope.mjs\n```\n"));
+	assert.ok(doctorFindings(root, rootRelative, null, false, true).some((f) => f.includes("missing file scripts/nope.mjs")), "root-relative probes still work");
+});

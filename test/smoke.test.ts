@@ -453,3 +453,67 @@ test("first init writes project.md immediately and hands it over for review", as
 	assert.match(text, /wrote \.dev-flow\/project\.md from detection/);
 	assert.match(text, /confirm as-is, or edit it/);
 });
+
+const GUARD_MD = ["# dev-flow", "", "## global", "", "```flow-guard", "deny    \\bgit\\b[^]*--force(?!\\w)      :: history stays linear", "deny    \\bgit\\b[^]*\\bworktree\\s+prune\\b :: prunes other sessions' worktrees", "confirm \\bdocker\\b[^]*\\bcompose\\b[^]*\\brestart\\b :: drops the upstream connection", "protect docker/.env                     :: gitignored live secrets", "forbid  docker/secrets                  :: gitignored secret storage", "```", "", "## implement", "", "```flow", "test = node --version", "```", ""].join("\n");
+
+test("flow-guard wiring: deny blocks with the operator's reason, confirm needs a live operator, exempt never lifts it", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", GUARD_MD]);
+	await flow(["start", "gf"]);
+	const guard = pi.handlers.tool_call[0];
+	const bash = (command: string) => guard({ toolName: "bash", input: { command } }, ctx);
+	assert.match((await bash("git push --force-with-lease origin feat/x"))?.reason ?? "", /history stays linear/);
+	assert.match((await bash("docker compose restart app"))?.reason ?? "", /needs an operator confirmation/, "without UI a confirm rule is a block, never a silent pass");
+	assert.equal(await bash("git push origin feat/x"), undefined, "commands no rule matches pass");
+	await flow(["exempt", "one-off fix"]);
+	assert.match((await bash("git worktree prune"))?.reason ?? "", /prunes other sessions/, "flow exemption lifts flow discipline, never project safety rules");
+	assert.match((await guard({ toolName: "write", input: { path: path.join(repo, "docker", "secrets", "new-key.pem") } }, ctx))?.reason ?? "", /gitignored secret storage/, "forbid covers a path that does not exist yet");
+	assert.match((await guard({ toolName: "edit", input: { path: path.join(repo, "docker", ".env") } }, ctx))?.reason ?? "", /gitignored live secrets/, "protect without UI is a block");
+
+	const declined = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false } };
+	assert.match((await guard({ toolName: "bash", input: { command: "docker compose restart app" } }, declined))?.reason ?? "", /operator declined/);
+	const approved = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true } };
+	assert.equal(await guard({ toolName: "bash", input: { command: "docker compose restart app" } }, approved), undefined, "an operator OK lets a confirm rule through");
+	assert.equal(await guard({ toolName: "edit", input: { path: path.join(repo, "docker", ".env") } }, approved), undefined);
+});
+
+test("approve runs commands.setup in the fresh worktree; a failing setup fails the gate", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\nsetup = touch setup-ran\ntest = node --version\n```\n"]);
+	await flow(["start", "su"]);
+	mkdirSync(path.join(repo, ".dev-flow", "su", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "su", "plan", "plan.md"), "# plan\n");
+	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /setup ran in the worktree/);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "su", "worktree", "setup-ran")), "setup ran inside the worktree, not the checkout");
+
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\nsetup = exit 1\ntest = node --version\n```\n"]);
+	await flow(["start", "sub"]);
+	mkdirSync(path.join(repo, ".dev-flow", "sub", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "sub", "plan", "plan.md"), "# plan\n");
+	const bad = await flow(["approve", "--confirmed"]);
+	assert.ok(bad.isError && bad.content[0].text.includes("setup failed"), "a broken worktree must not be approved as ready");
+});
+
+test("init doctor refuses a refresh that would drop hand-written project.md", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	// confirm always answers yes: the point is that the refresh cannot be talked into destroying anything
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const mdFile = path.join(repo, ".dev-flow", "project.md");
+	const hand = ["# dev-flow", "", "## global", "", "Only ship from a green main.", "", "## implement", "", "```flow", "test = node --version", "```", "", "```flow-check overflow", "node scripts/check-overflow.mjs", "```", "", "## release", "", "```flow", "versionFile = package.json", "versionTag = {version}", "```", ""].join("\n");
+	await pi.cmds.flow.handler("init", ctx);
+	writeFileSync(mdFile, hand);
+	await pi.cmds.flow.handler("init", ctx);
+	assert.match(ctx.notices.at(-1) ?? "", /refresh refused/, "doctor must not overwrite a hand-written playbook");
+	assert.match(ctx.notices.at(-1) ?? "", /Only ship from a green main/, "it names what a draft cannot reproduce");
+	const after = readFileSync(mdFile, "utf8");
+	assert.match(after, /Only ship from a green main/, "tier-3 prose survives");
+	assert.match(after, /versionTag = \{version\}/, "a hand-set tag pattern survives");
+	assert.match(after, /flow-check overflow/, "hand-written checks survive");
+});
