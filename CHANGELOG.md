@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-14
+
+### Changed
+
+- First `flow init` writes `.dev-flow/project.md` immediately — the pre-write editor/confirm dialogs are gone. The review loop moved onto the file: confirm as-is, or say what to change; the skill tells the agent to ask one short question per knob, apply answers via `flow init --write`, and re-present until confirmed
+
+### Kept
+
+- Doctor mode (existing playbook) still confirms before refreshing — it must never silently overwrite hand edits; `--draft` prints without writing; `--force` remains the deliberate overwrite
+
 ## [0.16.1] - 2026-10-14
 
 ### Fixed

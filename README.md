@@ -23,11 +23,12 @@ In each project repo, once:
 Creates `.dev-flow/` — which **ignores itself and everything under it** via its own
 `.dev-flow/.gitignore` containing `*` (no tracked file is touched) — and **drafts a project.md
 playbook from analysis** (default branch from git, package manager from `packageManager`/lockfiles,
-test/build/run from npm scripts, or cargo/go/python conventions, version manifest) and asks you to
-confirm it in one step — inside an agent session, `flow init --draft` + discussion + `--write` is
-the richer path. Running `/flow init` again with an existing project.md runs the **doctor**: cheap
+test/build/run from npm scripts, or cargo/go/python conventions, version manifest), **writes it
+straight to `.dev-flow/project.md`**, and hands it to you: confirm as-is, or say what to change —
+the agent then walks you through the knobs conversationally and writes your answers back validated
+(`--write <content>`). Running `/flow init` again with an existing project.md runs the **doctor**: cheap
 consistency probes (command drift, dead scripts, unparseable manifest, dual configs) with an offer
-to refresh — it never runs your commands and never rewrites without your confirm.
+to refresh — it never runs your commands and never rewrites your hand-edited file without your confirm.
 `/flow init --yes` keeps the silent fast path for CI; `/flow init --force` rewrites from fresh
 detection (destructive reset — never done by `--yes`). It also installs a `pre-commit` hook that
 rejects direct commits to the main branch (the hook lives in `.git/hooks`, nothing is committed).
@@ -117,10 +118,10 @@ e.g. `docker compose up -d .`), the release stage takes
 `versionFile`/`versionTag` (defaults `v{version}`), `## deploy` a `note =` line. A legacy
 `project.json` still works — project.md overrides it, and the doctor flags having both.
 
-`flow init` is the dialogue around this file: **fresh repo** → drafts from detection; in a TUI the
-draft opens in a multi-line editor so you review *and* edit before anything is written, in agent
-sessions the agent presents it (`--draft`), takes your feedback conversationally and writes it
-back validated (`--write <content>`); **existing file** → doctor mode (drift, dead commands/scripts,
+`flow init` is the dialogue around this file: **fresh repo** → writes the detection draft
+immediately, then asks you to confirm the file or change it — the agent asks one short question per
+knob you want adjusted and writes your answers back validated (`--write <content>`; `--draft` prints
+the current file whenever you'd rather read raw); **existing file** → doctor mode (drift, dead commands/scripts,
 unparseable manifest, dual configs — it never runs your commands) offering a refresh. At any time
 you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doctor) validates and
 flags problems. `--yes` silent draft for CI; `--force` rewrites from fresh detection. Improvement

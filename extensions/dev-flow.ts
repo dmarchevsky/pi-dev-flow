@@ -240,13 +240,15 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				if (rej) return rej;
 				notes.push("project.md written (operator-owned playbook)");
 				if (parsed.warn.length) notes.push("warnings:", ...parsed.warn.map((w) => `  ${w}`));
-			} else if (flag("yes") || flag("force") || !ui.hasUI) {
-				// scripted paths: --force overwrites existing; --yes and headless never do
-				if (existsSync(mdFile) && !flag("force")) notes.push("project.md already exists — kept (run flow init for the doctor; --force to overwrite)");
-				else {
-					writeFileSync(mdFile, flag("force") || !existsSync(mdFile) ? draftFresh : draftRefresh);
-					notes.push(`project.md ${existsSync(mdFile) ? "OVERWRITTEN (--force)" : "drafted from detection"}:`, ...det.report.map((r) => `  ${r}`));
-				}
+			} else if (!existsSync(mdFile)) {
+				// first init: write immediately — the review happens on the file, not in a dialog
+				writeFileSync(mdFile, draftFresh);
+				notes.push("wrote .dev-flow/project.md from detection:", ...det.report.map((r) => `  ${r}`), "review `.dev-flow/project.md` — confirm as-is, or edit it; agent: if the operator wants changes, ask one short question per unclear knob, apply answers with flow init --write, re-present until confirmed");
+			} else if (flag("force")) {
+				writeFileSync(mdFile, draftFresh);
+				notes.push("project.md OVERWRITTEN (--force):", ...det.report.map((r) => `  ${r}`));
+			} else if (!ui.hasUI) {
+				notes.push("project.md already exists — kept (flow init runs the doctor; --force to overwrite, --write to edit)");
 			} else if (existsSync(mdFile)) {
 				// doctor mode: cheap consistency probes only — never runs project commands
 				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
@@ -268,21 +270,6 @@ ${mdDigest(draftRefresh)}`))
 						if (rej) return rej;
 						notes.push("project.md refreshed — findings addressed:", ...findings.map((f) => `  ${f}`), editHint);
 					}
-				}
-			} else {
-				// first init: TUI gets the draft in a real editor (review AND edit there); elsewhere confirm the digest, full file lands on disk
-				const edited = ui.editor
-					? await ui.editor("flow init — review & edit project.md, save to write, Esc cancels", draftFresh)
-					: (await ui.confirm("Write the playbook draft?", `${mdDigest(draftFresh)}
-
-writes .dev-flow/project.md — your file; edit or delete it anytime. Cancel writes nothing; run flow init --draft to read the full draft first.`))
-						? draftFresh
-						: undefined;
-				if (edited === undefined) notes.push("declined — nothing written");
-				else {
-					const rej = writeMd(edited);
-					if (rej) return rej;
-					notes.push("project.md written from detection:", ...det.report.map((r) => `  ${r}`), editHint);
 				}
 			}
 			const initCfg = loadProject(root, dfDir(root)).cfg;
