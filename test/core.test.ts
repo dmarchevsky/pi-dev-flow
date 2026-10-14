@@ -5,6 +5,7 @@ import {
 	approveGate,
 	bashFlowGuard,
 	checkoutTarget,
+	compactionReflectionLine,
 	featureBranchPrefix,
 	gitInvocation,
 	checklistHash,
@@ -16,6 +17,7 @@ import {
 	newState,
 	parseVersion,
 	releaseGate,
+	shouldSelfCompact,
 	stateTamper,
 	statusCompact,
 	openReflections,
@@ -234,4 +236,28 @@ test("approveGate: patch features skip the plan document, gates stay", () => {
 	assert.equal(approveGate(p, mergeConfig({}), []).length, 0, "patch: empty plan/ passes the gate");
 	assert.equal(approveGate(newState("p", false), mergeConfig({}), []).length, 1, "non-patch still requires plan/*.md");
 	assert.ok(statusCompact(p).text.includes("⚡"), "status marks patch features");
+});
+
+test("shouldSelfCompact: only near pi's threshold and only when no chat-only state is pending", () => {
+	// 200k window, default reserve 16384 + margin 16384 → trigger above 167232 tokens
+	const base = { tokens: 190_000, contextWindow: 200_000, stage: "implement" as const, planFiles: 1, checklistPending: 0, compacting: false };
+	assert.equal(shouldSelfCompact(base), true);
+	assert.equal(shouldSelfCompact({ ...base, tokens: 167_232 }), false, "at threshold-minus-margin is still too early");
+	assert.equal(shouldSelfCompact({ ...base, tokens: 167_233 }), true, "one over threshold-minus-margin triggers");
+	assert.equal(shouldSelfCompact({ ...base, tokens: null }), false, "unknown usage");
+	assert.equal(shouldSelfCompact({ ...base, stage: null }), false, "no flow bound");
+	assert.equal(shouldSelfCompact({ ...base, stage: "done" }), false, "finished feature");
+	assert.equal(shouldSelfCompact({ ...base, checklistPending: 2 }), false, "operator dialog in flight — chat is the state");
+	assert.equal(shouldSelfCompact({ ...base, stage: "plan", planFiles: 0 }), false, "undigested plan discussion");
+	assert.equal(shouldSelfCompact({ ...base, stage: "plan", planFiles: 1 }), true, "plan on disk is safe to summarize");
+	assert.equal(shouldSelfCompact({ ...base, planFiles: 0 }), true, "planFiles only matter at plan stage");
+	assert.equal(shouldSelfCompact({ ...base, compacting: true }), false, "no stacked compactions");
+	assert.equal(shouldSelfCompact({ ...base, tokens: 968_000, contextWindow: 1_000_000 }), true, "big window uses the same absolute margin");
+	assert.equal(shouldSelfCompact({ ...base, tokens: 850_000, contextWindow: 1_000_000 }), false, "85% of a 1M window is still comfortable");
+});
+
+test("compactionReflectionLine is a valid open reflection item", () => {
+	const line = compactionReflectionLine("compact-aware", "implement", "threshold", "2025-10-13");
+	assert.deepEqual(openReflections(line).length, 1);
+	assert.match(line, /\(plugin\) pi auto-compacted \(threshold\) at stage implement .* — compact-aware 2025-10-13$/);
 });
