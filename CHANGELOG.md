@@ -4,6 +4,24 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-14
+
+### Removed
+
+- **`flow exempt` — there is no bypass any more.** In a repo with a `.dev-flow/`, every request goes through `flow start`/`flow use`: the command, the `◆ exempt` status marker and the write-guard hole it opened are gone. The `flow-guard` rules in project.md `## global` remain the operator's valve, and they now run **ahead of** dev-flow's own verdicts on edit paths too (they already did on bash) — so a `protect`/`forbid` rule reports the reason you wrote instead of a stage complaint.
+- **The `cleanup` and `deploy` commands, and their stages.** The machine is now `plan → implement → release → done`: `flow finish` closes a released feature in one step, so the flow has one closing door instead of three that had to be walked in order. `release-done` records the release and no longer auto-removes the worktree, branch and feature dir.
+- **`init --yes`** — documented as the CI fast path, never read by the code: a non-interactive session already is the CI path.
+- **`commands.deployNote`** — it lived in the `## deploy` playbook section, which went with the stage. Production deployment stays manual, out of scope and never asked about.
+
+### Added
+
+- **`flow finish [slug]` — the closer.** It refuses until `flow release-done` has recorded a release, then requires the main checkout to be **clean and pushed** to `origin/<default>` (an uncommitted changelog or a local-only release commit is exactly what it protects against), removes the worktree and branch — asking only when commits look unmerged, e.g. after a squash merge — and deletes `.dev-flow/<slug>/`. Abandoning an unreleased feature is still `flow abort`.
+- **`flow doctor reflect "<note>"` — the suggestion queue, filed by target.** `reflections.md` is now a document with up to two sections: `## playbook` (what to change in your playbook) and `## plugin` (what to change in dev-flow). The note's wording decides where it lands, a note about both goes to both, legacy flat `- [ ] (plugin) …` lines are bucketed and their inline marker dropped on the next write, and whatever the operator wrote above the first item is kept verbatim.
+
+### Changed
+
+- Advice is parked where it is reported: the top-level `flow reflect … [--to playbook|plugin|doctor]` is gone, `flow doctor reflect "<note>"` is the one form (`flow doctor` on its own still only reports and never writes).
+
 ## [0.21.0] - 2026-10-14
 
 ### Changed

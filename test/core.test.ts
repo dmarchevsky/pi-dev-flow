@@ -181,6 +181,7 @@ test("reflectSections: plugin wording → plugin, playbook wording → playbook"
 	assert.deepEqual(reflectSections("the checklist item about seeded data is stale"), ["playbook"]);
 	assert.deepEqual(reflectSections("the verify gate should read the health command from project.md"), ["playbook", "plugin"]);
 	assert.deepEqual(reflectSections("typo in the readme"), ["playbook"], "unclear notes land where the operator reads them");
+	assert.deepEqual(reflectSections("the test command drifted, npm test no longer works"), ["playbook"], "a drifted project command is a playbook issue, not a plugin one");
 });
 
 test("appendReflection writes the two sections and migrates a legacy flat file", () => {
@@ -192,6 +193,12 @@ test("appendReflection writes the two sections and migrates a legacy flat file",
 	assert.equal(openReflections(out).length, 3);
 	const both = appendReflection("", ["playbook", "plugin"], "- [ ] both — z 2025-10-02");
 	assert.equal(openReflections(both).length, 2, "a both-sections note is written to each");
+	const noted = "# my notes\n\noperator: triage on Fridays\n\n- [ ] item one\n";
+	assert.equal(
+		appendReflection(noted, ["plugin"], "- [ ] item two"),
+		"# my notes\n\noperator: triage on Fridays\n\n## playbook\n\n- [ ] item one\n\n## plugin\n\n- [ ] item two\n",
+		"the operator's preamble survives a rewrite verbatim",
+	);
 	assert.equal(both.split(/^## /m).length - 1, 2, "both sections written");
 	assert.equal(both.split("- [ ] both").length - 1, 2, "the line is in each section");
 });

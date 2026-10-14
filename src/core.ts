@@ -510,7 +510,7 @@ export const REFLECT_SECTIONS = ["playbook", "plugin"] as const;
 export type ReflectSection = (typeof REFLECT_SECTIONS)[number];
 
 // keyword sets decide the section: plugin = dev-flow's own behaviour, playbook = this project's
-const PLUGIN_HINT = /\b(plugin|extension|dev-flow|gate|guard|command|tool|session|compact\w*|hook|status bar)\b/i;
+const PLUGIN_HINT = /\b(plugin|extension|dev-flow|gate|guard|tool|session|compact\w*|hook|status bar)\b/i;
 const PLAYBOOK_HINT = /\b(project\.md|playbook|checklist|versioning|defaultBranch|prose|setup|health|release rules)\b/i;
 
 /** Which reflections.md section(s) a note belongs to. Both keyword sets → both sections;
@@ -521,20 +521,25 @@ export function reflectSections(note: string): ReflectSection[] {
 }
 
 /**
- * Rewrite reflections.md as a header + one section per non-empty bucket, with `line` appended to
- * each named section. Legacy flat lines carry their target inline (`- [ ] (plugin) …`, `— to
- * playbook`); that marker buckets them and is then dropped, so an old file migrates on next write.
+ * Rewrite reflections.md as a preamble + one section per non-empty bucket, with `line` appended to
+ * each named section. Everything above the first item (title, comment, operator notes) is kept
+ * verbatim. Legacy flat lines carry their target inline (`- [ ] (plugin) …`, `— to playbook`);
+ * that marker buckets them and is then dropped, so an old file migrates on next write.
  */
 export function appendReflection(text: string, sections: ReflectSection[], line: string): string {
+	const lines = text.split("\n");
+	const firstItem = lines.findIndex((l) => l.trim().startsWith("- ["));
+	// shortcut: only the preamble above the first item survives verbatim; hand-written prose below the items is dropped.
+	const preamble = (firstItem < 0 ? lines : lines.slice(0, firstItem)).join("\n").trim();
 	const buckets = Object.fromEntries(REFLECT_SECTIONS.map((s) => [s, [] as string[]])) as Record<ReflectSection, string[]>;
-	for (const raw of text.split("\n")) {
+	for (const raw of firstItem < 0 ? [] : lines.slice(firstItem)) {
 		const l = raw.trim();
 		if (!l.startsWith("- [")) continue;
 		const key: ReflectSection = /\((plugin|doctor)\)/.test(l) || /\bto plugin\b/.test(l) ? "plugin" : "playbook";
 		buckets[key].push(l.replace(/\((plugin|playbook|doctor)\)/, "").replace(/\s*[—-]\s*to\s+(playbook|plugin|doctor)/, "").replace(/\s{2,}/g, " ").trim());
 	}
 	for (const s of sections) buckets[s].push(line.trim());
-	return REFLECT_HEADER + REFLECT_SECTIONS.filter((s) => buckets[s].length).map((s) => `## ${s}\n\n${buckets[s].join("\n")}\n`).join("\n");
+	return `${preamble || REFLECT_HEADER.trimEnd()}\n\n` + REFLECT_SECTIONS.filter((s) => buckets[s].length).map((s) => `## ${s}\n\n${buckets[s].join("\n")}\n`).join("\n");
 }
 
 /** How far before pi's own compaction threshold dev-flow compacts (one fat tool turn). */
