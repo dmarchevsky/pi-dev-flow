@@ -317,3 +317,32 @@ test("release tail: dirty worktree keeps the operator in the loop", async () => 
 	const cl = await flow(["cleanup"]);
 	assert.ok(cl.isError && cl.content[0].text.includes("uncommitted"), "cleanup reports why it refuses");
 });
+
+test("release opt-out: per-release flag and per-project config skip the GitHub release", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const versioned = async (slug: string, mdTail: string) => {
+		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nversionFile = package.json\nversionTag = v{version}\n${mdTail}\`\`\`\n`]);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		await flow(["check"]);
+		await flow(["verify", "--confirmed"]);
+		writeFileSync(path.join(repo, "package.json"), '{"name":"t","version":"9.9.9"}');
+		const wt = path.join(repo, ".dev-flow", slug, "worktree");
+		execFileSync("git", ["-C", repo, "merge", "-q", "--ff", `feat/${slug}`]);
+		try { execFileSync("git", ["-C", repo, "tag", "v9.9.9"]); } catch { /* second feature: tag already on main */ }
+		void wt;
+	};
+	await versioned("optflag", "");
+	const f = await flow(["release-done", "--confirmed", "--no-github-release"]);
+	assert.match(f.content[0].text, /GitHub release skipped \(--no-github-release\)/);
+	assert.match(f.content[0].text, /feature optflag done/);
+	await versioned("optcfg", "github = false\n");
+	const c = await flow(["release-done", "--confirmed"]);
+	assert.ok(!c.content[0].text.includes("GitHub release"), "config-off: no attempt, no note");
+	assert.match(c.content[0].text, /feature optcfg done/);
+});

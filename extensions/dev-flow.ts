@@ -467,15 +467,17 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			}
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 			// the one release question — changelog, tag and PR are all covered by this answer
+			const ghWanted = !!manifestVer && !flag("no-github-release") && cfg.release.githubRelease !== false;
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 			if (!flag("confirmed")) {
 				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
-				const ok = await ui.confirm("Confirm release", `Confirm release: ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Changelog, tag and merged PR are covered by this.`);
+				const ok = await ui.confirm("Confirm release", `Confirm release: ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Changelog, tag and merged PR are covered by this.${ghWanted ? " A GitHub release will be created." : ""}`);
 				if (!ok) return { text: "release confirmation declined — finish the release chores first" };
 			}
 			state!.approvals.release = now();
 			let ghNote = "";
-			if (manifestVer) {
+			if (manifestVer && flag("no-github-release")) ghNote = "GitHub release skipped (--no-github-release).";
+			else if (manifestVer && ghWanted) {
 				// advisory: GitHub release for the verified tag — a note on failure, never a block
 				const tag = cfg.versioning.pattern.replace("{version}", manifestVer);
 				const notes = (await sh(`git tag -l --format=%(contents) ${JSON.stringify(tag)}`, root)).out.trim();

@@ -39,6 +39,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		"versioning.pattern": "versioning.pattern",
 		"release.review": "release.review",
 		"release.changelog": "release.changelog",
+		"release.github": "release.githubRelease",
 	},
 	plan: {},
 	implement: {
@@ -55,6 +56,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		versionTag: "versioning.pattern",
 		review: "release.review",
 		changelog: "release.changelog",
+		github: "release.githubRelease",
 	},
 	cleanup: {},
 	deploy: { note: "commands.deployNote" },
@@ -145,6 +147,8 @@ export function mdToConfig(p: ParsedMd, base?: Config): Config {
 	// flow keys were mapped to dot paths (commands.x, versioning.y, release.z) — rebuild nested
 	const nested: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(raw)) applyAnswer(nested, k, v as string);
+	const rel = (nested as { release?: { githubRelease?: unknown } }).release;
+	if (rel && typeof rel.githubRelease === "string") rel.githubRelease = !/^(no|false)$/i.test(rel.githubRelease);
 	mergeInto(c, nested);
 	c.checkList = [
 		...(c.commands.test ? [{ name: "test", cmd: c.commands.test }] : []),
