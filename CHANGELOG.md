@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-10-12
+
+### Added
+
+- GitHub release opt-out valves: playbook key `release.github = false` never attempts `gh release create` (self-hosted or Releases-unused repos); `flow release-done --no-github-release` skips it once, recorded in the audit line; the single release question states whether a GitHub release will be created; SKILL restricts skipping to explicit operator decisions
+
 ## [0.14.1] - 2026-10-12
 
 ### Changed

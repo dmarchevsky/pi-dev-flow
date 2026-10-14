@@ -131,3 +131,10 @@ test("parseProjectMd: (ui) marker splits tier-2 items", () => {
 	const p = parseProjectMd("## plan\n- [ ] (ui) mockups only\n- [ ] both\n");
 	assert.deepEqual(p.checklist.plan, [{ text: "mockups only", uiOnly: true }, { text: "both", uiOnly: false }]);
 });
+
+test("mdToConfig: release.github toggles the GitHub release", () => {
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nversionFile = package.json\ngithub = false\n```\n")).release.githubRelease, false);
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\ngithub = no\n```\n")).release.githubRelease, false);
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\ngithub = yes\n```\n")).release.githubRelease, true);
+	assert.equal(mdToConfig(parseProjectMd("# dev-flow\n")).release.githubRelease, true);
+});

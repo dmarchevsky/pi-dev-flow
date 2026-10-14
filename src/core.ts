@@ -70,7 +70,7 @@ export interface Config {
 	checklist: Record<string, ChecklistItem[]>; // tier-2 operator items per stage
 	prose: Record<string, string>; // tier-3 guidance per stage
 	versioning: Versioning;
-	release: { review: string; changelog?: string; tagPattern?: string };
+	release: { review: string; changelog?: string; tagPattern?: string; githubRelease?: boolean };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 }
 
@@ -84,7 +84,7 @@ export const DEFAULTS: Config = {
 	checklist: {},
 	prose: {},
 	versioning: { pattern: "v{version}" },
-	release: { review: "/ponytail-review" },
+	release: { review: "/ponytail-review", githubRelease: true },
 	mainHook: true,
 };
 
