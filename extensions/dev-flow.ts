@@ -372,7 +372,7 @@ ${mdDigest(draftRefresh)}`))
 			// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
 			const findings = md ? doctorFindings(root, cfg, md, existsSync(path.join(df, "project.json")), true) : [];
 			const warn = findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : [];
-			const slugs = slugArg ? [slugArg] : existsSync(dfDir(root)) ? (await listDirs(dfDir(root))).filter((s) => readState(root, s)) : [];
+			const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
 			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch]", ...warn].join("\n") };
 			const un0 = unfinishedStates(root);
 			const cur = sess.slug ?? (un0.length === 1 ? un0[0].slug : null);
