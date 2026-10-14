@@ -60,7 +60,7 @@ import {
 	type PushRef,
 	type Stage,
 } from "../src/core.ts";
-import { buildDraft, doctorFindings, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
+import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
 import { detectProject } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
@@ -147,7 +147,7 @@ function maybeCompactNow(ctx: ExtensionContext): void {
 	const key = sessionKey(ctx);
 	const st = boundFeature(ctx.cwd, key);
 	if (!st) return;
-	const cfg = loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg;
+	const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 	const decision = {
 		tokens: u.tokens,
 		contextWindow: u.contextWindow,
@@ -247,7 +247,7 @@ interface Session {
 async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Promise<RunResult> {
 	const [sub = "status", ...rest] = args;
 	if (!existsSync(dfDir(root)) && sub !== "init") return { text: "no .dev-flow/ in this repo — run /flow init first", isError: true };
-	const cfg = loadProject(root, dfDir(root)).cfg;
+	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
 	const slugArg = rest.find((a) => !a.startsWith("--"));
 
@@ -265,10 +265,19 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			// never propose a feature branch (contains "/") as the default branch
 			const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
 			const det = detectProject(root, branch);
-			const loaded = loadProject(root, dfDir(root));
+			const loaded = loadProject(dfDir(root));
 			const draftFresh = buildDraft(det);
 			const draftRefresh = buildDraft(det, loaded.cfg);
 			const editHint = "to change anything: edit .dev-flow/project.md directly (flow init = doctor revalidates), or from an agent session: flow init --draft → discuss → --write";
+			// ghosts: feature dirs whose state.json is gone — inert, invisible to status and guards, and only findable by eye
+			const ghosts = ghostFeatureDirs(root);
+			if (ghosts.length) {
+				if (!ui.hasUI) notes.push(`${ghosts.length} ghost feature dir(s) — a plan/ with no state.json, no flow owns them (${ghosts.join(", ")}); delete them or run flow init interactively`);
+				else if (await ui.confirm("Remove ghost feature dirs?", `${ghosts.map((g) => `${g} — plan/ with no state.json`).join("\n")}\n\nNo flow owns these; their plan/*.md is not recoverable afterwards.`)) {
+					for (const g of ghosts) rmSync(path.join(root, g), { recursive: true, force: true });
+					notes.push(`removed ${ghosts.length} ghost feature dir(s): ${ghosts.map((g) => g.slice(".dev-flow/".length)).join(", ")}`);
+				} else notes.push(`kept ${ghosts.length} ghost feature dir(s) — inert, remove them whenever you like`);
+			}
 			if (flag("draft")) return { text: existsSync(mdFile) ? readFileSync(mdFile, "utf8") : draftFresh }; // read path: prints content, writes nothing
 			const writeMd = (text: string): RunResult | null => {
 				const parsed = parseProjectMd(text);
@@ -323,7 +332,7 @@ ${mdDigest(draftRefresh)}`))
 					}
 				}
 			}
-			const initCfg = loadProject(root, dfDir(root)).cfg;
+			const initCfg = loadProject(dfDir(root)).cfg;
 			if (initCfg.mainHook) {
 				const hookDir = path.join(root, ".git", "hooks");
 				const hook = path.join(hookDir, "pre-commit");
@@ -368,10 +377,10 @@ ${mdDigest(draftRefresh)}`))
 					`  next: ${nextHint(st, cfg)}`,
 				];
 			});
-			const { md } = loadProject(root, dfDir(root));
+			const { md } = loadProject(dfDir(root));
 			if (md) {
 				const findings = doctorFindings(root, cfg, md, existsSync(path.join(dfDir(root), "project.json")), true);
-				if (findings.length) lines.push(`⚠ project.md: ${findings.length} finding(s) — run flow init`);
+				if (findings.length) lines.push(`⚠ doctor: ${findings.length} finding(s) — run flow init`);
 			}
 			const refl = readReflections(root);
 			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — flow reflect`);
@@ -867,13 +876,13 @@ export default function devFlow(pi: ExtensionAPI) {
 				ctx.ui.notify("dev-flow: no active feature", "info");
 				return;
 			}
-			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new FlowPanel(st, loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg, theme, () => done()));
+			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new FlowPanel(st, loadProject(dfDir(ctx.cwd)).cfg, theme, () => done()));
 		},
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
-		const cfg = loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg;
+		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 		const key = sessionKey(ctx);
 
 		if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
@@ -955,7 +964,7 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
-		const cfg = loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg;
+		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 		const state = boundFeature(ctx.cwd, sessionKey(ctx));
 		if (!state || state.stage === "done") {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
