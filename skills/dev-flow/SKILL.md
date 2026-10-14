@@ -27,7 +27,7 @@ Ground rules:
 
 ## Start
 
-Repo without `.dev-flow/`? Run `flow init` — run `flow init --draft`, discuss the draft with the operator (it is their playbook: commands, tier-2 checklist items, prose rules), then write it with `flow init --write "<content>"`. Never hand-edit `project.md` or `project.json`. With an existing config, `flow init` acts as a **doctor** — discuss its findings and fix them via the same write path. `--yes` = silent draft (CI), `--force` = rewrite from fresh detection.
+Repo without `.dev-flow/`? Run `flow init` — it writes `.dev-flow/project.md` from detection immediately, then your job is the review loop: show the operator the file (path + what was detected) and ask **confirm as-is, or change?** If they want changes, ask one short question per unclear knob (default branch, real commands, versioning, checklist items, prose rules — explain each in a line when it isn't obvious), apply their answers with `flow init --write "<content>"` (never hand-edit the file), and re-present until confirmed. With an existing config, `flow init` acts as a **doctor** — discuss its findings and fix them via the same write path; it never overwrites hand edits without confirming. `--yes` = silent draft (CI), `--force` = rewrite from fresh detection, `--draft` = print the file without writing.
 
 `flow start <slug> --ui` when the work touches anything user-visible, else `flow start <slug>`. Slug: lowercase words-dashed. Check `flow status` first to see whether one is already active.
 
@@ -98,5 +98,5 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 When you notice something the playbook or the plugin should improve — drifted commands, gate friction, a plugin bug — park it instead of complaining in chat: `flow reflect "<one-line note>" [--to playbook|plugin|doctor]` (default `playbook`). The operator sees the open count in status and stage context and decides what happens next:
 
 - Only reflect real friction, one line each; never reflect the same issue twice.
-- `flow reflect` lists open items. When the operator says "fold them in": draft the playbook update (`flow init --draft` → adjust → `flow init --write`), then check items off (`- [x]`) in `.dev-flow/reflections.md` with a normal edit — that file is your queue; `project.md` is not.
+- `flow reflect` lists open items. When the operator says "fold them in": draft the playbook update (read current file via `flow init --draft` → adjust → `flow init --write`), then check items off (`- [x]`) in `.dev-flow/reflections.md` with a normal edit — that file is your queue; `project.md` is not.
 - `to=plugin` items: offer to file a GitHub issue against dev-flow; the operator confirms.

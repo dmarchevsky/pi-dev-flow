@@ -157,14 +157,14 @@ test("init --write stores validated project.md (tool path)", async () => {
 	assert.match(readFileSync(mdFile, "utf8"), /test = x/, "rejected write must not touch the file");
 });
 
-test("interactive first init reviews the draft in the editor when the client has one", async () => {
+test("first init writes immediately even in a TUI — no editor or confirm gate", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const seen: string[] = [];
-	const ctx = { cwd: repo, hasUI: true, mode: "tui", notices: [] as string[], ui: { notify: (_m: string) => {}, setStatus: (_k: string, _t?: string) => {}, confirm: async () => true, editor: async (_t: string, prefill?: string) => { seen.push(prefill ?? ""); return `${prefill}<!-- operator edited -->\n`; } } };
+	let dialogs = 0;
+	const ctx = { cwd: repo, hasUI: true, mode: "tui", notices: [] as string[], ui: { notify: (_m: string) => {}, setStatus: (_k: string, _t?: string) => {}, confirm: async () => { dialogs++; return true; }, editor: async () => { dialogs++; return undefined; } } };
 	await pi.cmds.flow.handler("init", ctx);
-	assert.match(seen[0], /## implement/, "draft offered for editing");
-	assert.match(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8"), /operator edited/, "editor output is what lands on disk");
+	assert.equal(dialogs, 0, "first init must not ask before writing");
+	assert.match(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8"), /## implement/, "draft lands on disk directly");
 });
 
 test("flow-by-default: unbound writes blocked; operator exempt lifts; start needs default branch; feature checkouts stay in worktrees", async () => {
@@ -441,4 +441,15 @@ test("flow init --draft prints content and writes nothing", async () => {
 	const d = await flow(["init", "--draft"]);
 	assert.match(d.content[0].text, /defaultBranch/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "project.md")), "--draft must not write");
+});
+
+test("first init writes project.md immediately and hands it over for review", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const r = (await pi.tools.flow.execute("id", { args: ["init"] }, undefined, undefined, ctx)) as { content: [{ text: string }] };
+	const text = r.content[0].text;
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "project.md")), "file written without any dialog");
+	assert.match(text, /wrote \.dev-flow\/project\.md from detection/);
+	assert.match(text, /confirm as-is, or edit it/);
 });
