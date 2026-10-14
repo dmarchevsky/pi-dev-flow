@@ -693,9 +693,10 @@ ${mdDigest(draftRefresh)}`))
 						const pr = await sh(`gh pr list --state merged --head ${JSON.stringify(br)} --json number --jq length`, root);
 						merged = pr.ok && pr.out.trim() !== "0";
 					}
-					let deleted = false;
-					if (merged) deleted = (await sh(`git push origin --delete ${JSON.stringify(`refs/heads/${br}`)}`, root)).ok;
-					remoteNote = deleted ? ` origin/${br} deleted (verified merged)` : ` origin/${br} kept — merged state not verifiable from here (git push origin --delete ${br} when sure)`;
+					if (merged) remoteNote = (await sh(`git push origin --delete ${JSON.stringify(`refs/heads/${br}`)}`, root)).ok
+						? ` origin/${br} deleted (verified merged)`
+						: ` origin/${br} delete failed — git push origin --delete ${br}`;
+					else remoteNote = ` origin/${br} kept — merged state not verifiable from here (git push origin --delete ${br} when sure)`;
 				}
 			}
 			rmSync(featDir(root, state!.slug), { recursive: true, force: true });
