@@ -8,8 +8,8 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
-export type Stage = "plan" | "implement" | "release" | "done";
-export const STAGES: Stage[] = ["plan", "implement", "release", "done"];
+export type Stage = "plan" | "implement" | "pre-release" | "release" | "done";
+export const STAGES: Stage[] = ["plan", "implement", "pre-release", "release", "done"];
 
 export interface Check {
 	ok: boolean;
@@ -164,6 +164,39 @@ export function verifyGate(state: FlowState, cfg: Config): string[] {
 	for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
 	const pend = checklistPending(cfg, state, "implement");
 	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow verify after ticking them off`);
+	return errs;
+}
+
+export interface ReleasePrep {
+	/** Version parsed from the manifest (versioning.file), null when unset/unparsable. */
+	manifestVersion: string | null;
+	/** Local tag names. */
+	localTags: string[];
+	/** Changelog file + content when release.changelog names a file that exists, else null. */
+	changelog: { file: string; content: string } | null;
+}
+
+/**
+ * Gate: pre-release → release ("Release?"). Machine-proves the parts of release prep that can be
+ * proven — checks re-greened after the prep edits, manifest bumped past the last tag, changelog
+ * mentions the version. Review/docs quality stays tier-2 (operator confirms the checklist).
+ */
+export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep): string[] {
+	const errs: string[] = [];
+	if (state.stage !== "pre-release") errs.push(`stage is "${state.stage}", the release gate only applies to "pre-release"`);
+	for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
+	const pend = checklistPending(cfg, state, "pre-release");
+	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow release after ticking them off`);
+	if (cfg.versioning.file) {
+		if (!prep.manifestVersion) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — bump it to the version you will release`);
+		else if (prep.localTags.includes(cfg.versioning.pattern.replace("{version}", prep.manifestVersion)))
+			errs.push(`version ${prep.manifestVersion} is already tagged — bump the manifest to the next version`);
+	}
+	if (cfg.release.changelog) {
+		if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog`);
+		else if (prep.manifestVersion && !prep.changelog.content.includes(prep.manifestVersion))
+			errs.push(`${prep.changelog.file} does not mention version ${prep.manifestVersion} — add its entry before releasing`);
+	}
 	return errs;
 }
 
@@ -470,13 +503,14 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (owner) {
 		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
 		if (owner.state.stage === "done") return `feature ${owner.state.slug} is done`;
-		return null; // implement/release: own worktree is the working area
+		return null; // implement/pre-release/release: own worktree is the working area
 	}
 	if (within(o.abs, o.dfDir)) return null;
 	if (o.boundSlug) {
 		const bound = o.features.find((f) => f.state.slug === o.boundSlug);
 		if (bound) {
-			if (bound.state.stage === "implement") return `bound feature ${o.boundSlug} is at implement — edit its worktree (${bound.state.worktree}), not the main checkout`;
+			if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
+				return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout`;
 			if (bound.state.stage === "plan") return `bound feature ${o.boundSlug} is in plan — code is read-only until approved`;
 			return null; // release: release chores may touch the main checkout
 		}
@@ -581,10 +615,12 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return `write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator to run /flow approve`;
 		case "implement":
 			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
+		case "pre-release":
+			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":
 			return state.approvals.release
-				? "release recorded — commit and push the release chores in the main checkout, then run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
-				: `run the release playbook (${cfg.release.review} → fix → docs${cfg.release.changelog ? ` → ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}, tag ${cfg.versioning.pattern.replace("{version}", "<version>")} from it` : cfg.release.tagPattern ? ` → tag ${cfg.release.tagPattern}` : ""} → PR → merge), then run flow release-done`;
+				? "release recorded — commit and push the release chores in the main checkout, ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
+				: "publish: commit and push the branch, open and merge the PR, create the annotated tag from the manifest version and push it, then run flow release-done";
 		default:
 			return "feature finished";
 	}

@@ -40,6 +40,7 @@ import {
 	guardBash,
 	guardPath,
 	parsePushRefs,
+	preReleaseGate,
 	reflectSections,
 
 	listFiles,
@@ -88,7 +89,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
 const GATE_HELP =
-	"init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch] | use <slug> | test | check | health | approve | verify | release-done | finish <slug> | abort [slug] — state gates take [slug] and --confirmed (the operator already answered in chat)";
+	"init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch] | use <slug> | test | check | health | approve | verify | release | release-done | finish <slug> | abort [slug] — state gates take [slug] and --confirmed (the operator already answered in chat)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 
@@ -474,9 +475,9 @@ ${mdDigest(draftRefresh)}`))
 			const final = verifyGate(state!, cfg);
 			if (final.length) return { text: `verify gate FAILED:\n- ${final.join("\n- ")}`, isError: true };
 			state!.approvals.verify = now();
-			state!.stage = "release";
+			state!.stage = "pre-release";
 			writeState(root, state!);
-			return { text: `verified${audit} — entering release stage.\n${nextHint(state!, cfg)}` };
+			return { text: `verified${audit} — entering pre-release stage.\n${nextHint(state!, cfg)}` };
 		}
 
 		case "check": {
@@ -517,6 +518,37 @@ ${mdDigest(draftRefresh)}`))
 			state!.checks.health = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health})\n${tail(res.out)}` };
+		}
+
+		case "release": {
+			const { state, err } = needState(root, sess, slugArg);
+			if (err) return err;
+			const items = applicableItems(cfg, state!, "pre-release");
+			// prep evidence is read from the worktree: the bump and changelog entry exist on the branch before the PR merges
+			const wtCwd = gateCwd(root, state!);
+			const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
+				? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
+				: null;
+			const localTags = (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
+			const changelog =
+				cfg.release.changelog && existsSync(path.join(wtCwd, cfg.release.changelog))
+					? { file: cfg.release.changelog, content: readFileSync(path.join(wtCwd, cfg.release.changelog), "utf8") }
+					: null;
+			const prep = { manifestVersion: manifestVer, localTags, changelog };
+			// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
+			const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
+			if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
+			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
+			if (!flag("confirmed")) {
+				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat", isError: true };
+				const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Publishing starts: PR, merge, tag.`);
+				if (!ok) return { text: "release declined — keep preparing in pre-release" };
+			}
+			state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
+			state!.approvals["pre-release"] = now();
+			state!.stage = "release";
+			writeState(root, state!);
+			return { text: `release approved${audit} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "release-done": {
@@ -593,17 +625,21 @@ ${mdDigest(draftRefresh)}`))
 			// the cleanup part of closing out: drop the worktree and branch the release consumed
 			const wt = worktreeAbs(root, state!);
 			let closeNote: string;
+			let unmergedNote = "";
 			if (wt && existsSync(wt)) {
 				const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
 				const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 				const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
 				if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
-				// silent when safe — the operator is only asked when commits look unmerged (possible squash merge)
-				if (assess.unmerged.length && !flag("confirmed")) {
-					if (!ui.hasUI) return { text: `finish needs an operator OK — ${assess.unmerged.length} commit(s) in ${state!.worktree} not on ${cfg.defaultBranch} (squash merge?). Re-run with --confirmed once checked.`, isError: true };
-					const ok = await ui.confirm("Finish feature", `${assess.unmerged.length} commit(s) not on ${cfg.defaultBranch}. Remove worktree and branch ${state!.branch} anyway?`);
-					if (!ok) return { text: "finish declined" };
-				}
+				if (assess.unmerged.length) unmergedNote = ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?).`;
+			}
+			// the one finish question — asked after the safety checks so it can never be a wasted question
+			if (!flag("confirmed")) {
+				if (!ui.hasUI) return { text: `finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)`, isError: true };
+				const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
+				if (!ok) return { text: "finish declined" };
+			}
+			if (wt && existsSync(wt)) {
 				const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${JSON.stringify(state!.branch)}`, root);
 				if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow finish`, isError: true };
 				closeNote = `worktree and branch ${state!.branch} removed`;
@@ -681,6 +717,7 @@ function tail(out: string, n = 15): string {
 const STAGE_COLORS: Partial<Record<Stage, "warning" | "accent" | "success" | "dim">> = {
 	plan: "warning",
 	implement: "accent",
+	"pre-release": "dim",
 	release: "success",
 };
 
@@ -788,7 +825,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		name: "flow",
 		label: "Flow",
 		description:
-			"Drive the dev-flow stage gates for the active feature (plan → implement → release → done). Never edit .dev-flow state directly; gates enforce plan/mockup/test/verification criteria and confirm with the operator.",
+			"Drive the dev-flow stage gates for the active feature (plan → implement → pre-release → release → done). Never edit .dev-flow state directly; gates enforce plan/mockup/test/verification criteria and confirm with the operator.",
 		parameters: Type.Object({
 			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug", "--ui"]' }),
 		}),
@@ -856,7 +893,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (reason) return { block: true, reason };
 			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
-			if (owner && owner.state.stage === "implement" && (Object.keys(owner.state.checks).length || owner.state.confirmations?.implement)) {
+			if (owner && (owner.state.stage === "implement" || owner.state.stage === "pre-release") && (Object.keys(owner.state.checks).length || owner.state.confirmations?.implement)) {
 				owner.state.checks = {};
 				delete owner.state.confirmations?.implement;
 				writeState(ctx.cwd, owner.state);

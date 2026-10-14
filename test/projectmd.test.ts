@@ -148,6 +148,18 @@ test("parseProjectMd: (ui) marker splits tier-2 items", () => {
 	assert.deepEqual(p.checklist.plan, [{ text: "mockups only", uiOnly: true }, { text: "both", uiOnly: false }]);
 });
 
+test("## pre-release parses like release: keys, checklist, prose", () => {
+	const p = parseProjectMd("# dev-flow\n\n## pre-release\nreview policy prose\n```flow\nversionFile = pyproject.toml\nchangelog = CHANGES.md\n```\n- [ ] version chosen with operator\n");
+	assert.equal(p.hard.length, 0);
+	assert.equal(p.warn.length, 0, "pre-release must be a known stage");
+	assert.equal(p.flow["pre-release"]["versioning.file"], "pyproject.toml");
+	assert.equal(p.flow["pre-release"]["release.changelog"], "CHANGES.md");
+	assert.deepEqual(p.checklist["pre-release"], [{ text: "version chosen with operator", uiOnly: false }]);
+	assert.equal(p.prose["pre-release"], "review policy prose");
+	assert.equal(mdToConfig(p).versioning.file, "pyproject.toml");
+	assert.match(buildDraft({ report: [], partial: { defaultBranch: "main", commands: {} } }), /## pre-release/, "draft template has the new stage");
+});
+
 test("mdToConfig: release.github toggles the GitHub release", () => {
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nversionFile = package.json\ngithub = false\n```\n")).release.githubRelease, false);
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\ngithub = no\n```\n")).release.githubRelease, false);
