@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { mergeConfig } from "../src/core.ts";
-import { buildDraft, doctorFindings, loadProject, mdToConfig, parseProjectMd } from "../src/projectmd.ts";
+import { buildDraft, doctorFindings, loadProject, mdDigest, mdToConfig, parseProjectMd } from "../src/projectmd.ts";
 
 const MD = `# dev-flow
 
@@ -145,4 +145,13 @@ test("mdToConfig: release.artifact key; doctor flags an empty tier-1", () => {
 	assert.ok(doctorFindings(emptyDir, mergeConfig({}), null, false, true).some((f) => f.includes("gates nothing")));
 	const withTest = mdToConfig(parseProjectMd("## implement\n```flow\ntest = x\n```\n"));
 	assert.equal(doctorFindings(emptyDir, withTest, null, false, true).some((f) => f.includes("gates nothing")), false);
+});
+
+test("mdDigest: human phase-grouped summary with real values, nothing truncated", () => {
+	const d = mdDigest("# dev-flow\n\n## global\n```flow\ndefaultBranch = main\n```\n\n## implement\n```flow\ntest = npm test\ndev = docker compose up -d\n```\n\n- [ ] visual pass at both widths\n\nreal data required before shipping\n\n## release\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n");
+	assert.match(d, /^General — default branch: main$/m);
+	assert.match(d, /Implement — test: "npm test" · dev deploy: "docker compose up -d" · manual check: "visual pass at both widths" · guidance: "real data required before shipping"/);
+	assert.match(d, /Release — version in package\.json → tag v\{version\} · GitHub release: created automatically · artifact check: none set/);
+	assert.ok(!d.includes("set:") && !/\bprose\b/.test(d), "no internal notation left");
+	assert.match(d, /nothing is executed or uploaded now/);
 });

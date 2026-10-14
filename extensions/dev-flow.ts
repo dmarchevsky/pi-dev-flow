@@ -81,7 +81,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
-const GATE_HELP = "init [--yes|--force|--write <text>] | start <slug> [--ui] [--patch] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]";
+const GATE_HELP = "init [--yes|--force|--draft|--write <text>] | start <slug> [--ui] [--patch] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 
@@ -225,6 +225,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const draftFresh = buildDraft(det);
 			const draftRefresh = buildDraft(det, loaded.cfg);
 			const editHint = "to change anything: edit .dev-flow/project.md directly (flow init = doctor revalidates), or from an agent session: flow init --draft → discuss → --write";
+			if (flag("draft")) return { text: existsSync(mdFile) ? readFileSync(mdFile, "utf8") : draftFresh }; // read path: prints content, writes nothing
 			const writeMd = (text: string): RunResult | null => {
 				const parsed = parseProjectMd(text);
 				if (parsed.hard.length) return { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true };
@@ -255,7 +256,10 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				else {
 					const edited = ui.editor
 						? await ui.editor(`flow init — doctor: ${findings.length} finding(s) — edit & save to apply, Esc skips`, draftRefresh)
-						: (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}\n\nWrite refreshed project.md?\n${mdDigest(draftRefresh)}`))
+						: (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}
+
+Write refreshed project.md? Your file; cancel writes nothing.
+${mdDigest(draftRefresh)}`))
 							? draftRefresh
 							: undefined;
 					if (edited === undefined) notes.push("declined — project.md unchanged", ...findings.map((f) => `  ${f}`));
@@ -269,7 +273,9 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				// first init: TUI gets the draft in a real editor (review AND edit there); elsewhere confirm the digest, full file lands on disk
 				const edited = ui.editor
 					? await ui.editor("flow init — review & edit project.md, save to write, Esc cancels", draftFresh)
-					: (await ui.confirm("flow init — write project.md?", `drafted from detection:\n${mdDigest(draftFresh)}\n\nfull content goes to .dev-flow/project.md — review/edit it there after`))
+					: (await ui.confirm("Write the playbook draft?", `${mdDigest(draftFresh)}
+
+writes .dev-flow/project.md — your file; edit or delete it anytime. Cancel writes nothing; run flow init --draft to read the full draft first.`))
 						? draftFresh
 						: undefined;
 				if (edited === undefined) notes.push("declined — nothing written");
