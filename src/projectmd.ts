@@ -40,6 +40,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		"release.review": "release.review",
 		"release.changelog": "release.changelog",
 		"release.github": "release.githubRelease",
+		"release.artifact": "release.artifact",
 	},
 	plan: {},
 	implement: {
@@ -57,6 +58,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		review: "release.review",
 		changelog: "release.changelog",
 		github: "release.githubRelease",
+		artifact: "release.artifact",
 	},
 	cleanup: {},
 	deploy: { note: "commands.deployNote" },
@@ -224,6 +226,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, h
 	}
 	if (md) f.push(...md.hard.map((h) => `project.md: ${h}`), ...md.warn.map((w) => `project.md: ${w}`));
 	if (cfg.commands.run && !cfg.checkList.some((c) => c.name === "health")) f.push('run command configured but no tier-1 health check — add commands.health or a flow-check so "running and healthy" is enforced');
+	if (!cfg.checkList.length) f.push("implement tier-1 gates nothing — no test, no health, no flow-check block: 'flow check' would pass vacuously");
 	return f;
 }
 

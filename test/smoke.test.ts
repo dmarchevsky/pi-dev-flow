@@ -346,3 +346,33 @@ test("release opt-out: per-release flag and per-project config skip the GitHub r
 	assert.ok(!c.content[0].text.includes("GitHub release"), "config-off: no attempt, no note");
 	assert.match(c.content[0].text, /feature optcfg done/);
 });
+
+test("release-teeth: tag must reach origin; release.artifact verifies the published artifact", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const origin = mkdtempSync(path.join(tmpdir(), "devflow-origin-"));
+	execFileSync("git", ["init", "-q", "--bare", origin]);
+	execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n\`\`\`flow\nversionFile = package.json\nversionTag = v{version}\nartifact = test -f published.txt\n\`\`\`\n"]);
+	await flow(["start", "teeth"]);
+	mkdirSync(path.join(repo, ".dev-flow", "teeth", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "teeth", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	await flow(["verify", "--confirmed"]);
+	writeFileSync(path.join(repo, "package.json"), '{"name":"t","version":"9.9.9"}');
+	execFileSync("git", ["-C", repo, "merge", "-q", "--ff", "feat/teeth"]);
+	execFileSync("git", ["-C", repo, "push", "-q", "origin", "main"]);
+	execFileSync("git", ["-C", repo, "tag", "v9.9.9"]);
+	const local = await flow(["release-done", "--confirmed", "--no-artifact-check"]);
+	assert.match(local.content[0].text, /local-only/, "a tag that never left the laptop is not a release");
+	execFileSync("git", ["-C", repo, "push", "-q", "origin", "v9.9.9"]);
+	const noart = await flow(["release-done", "--confirmed"]);
+	assert.ok(noart.isError && noart.content[0].text.includes("artifact not published"), "release.artifact gates the published artifact");
+	writeFileSync(path.join(repo, "published.txt"), "sha256:deadbeef\n");
+	const okRun = await flow(["release-done", "--confirmed"]);
+	assert.match(okRun.content[0].text, /Artifact verified\./);
+	assert.match(okRun.content[0].text, /feature teeth done/);
+});

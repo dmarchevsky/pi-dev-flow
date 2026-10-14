@@ -46,7 +46,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `check` | records all tier-1 checks | — (runs every `flow-check`/test/health from project.md `## implement`) |
 | `health` | records a check | — (runs `seedData` + the health command; app must be up locally with real data) |
 | `verify` | implement → release | all tier-1 checks green, build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app, tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; **one question** — or `--confirmed` |
-| `release-done` | release → cleanup | verify approval; with `versioning.file`: tag rendered from the manifest version exists and is reachable from the default branch; **the one release question** (changelog+tag+PR) — or `--confirmed` · creates the GitHub release from the tag (advisory — needs gh + GitHub remote; skip per-release with `--no-github-release`, per-project with `release.github = false`) · **auto-removes worktree/branch/feature dir when clean** — cleanup+deploy only exist for the not-clean path |
+| `release-done` | release → cleanup | verify approval; with `versioning.file`: tag rendered from the manifest version exists, is reachable from the default branch **and is on origin** (a local-only tag is not a release); with `release.artifact`: the published-artifact check runs (`{version}`/`{tag}` placeholders; skip once with `--no-artifact-check`); **the one release question** (changelog+tag+PR) — or `--confirmed` · creates the GitHub release from the tag (advisory — needs gh + GitHub remote; skip per-release with `--no-github-release`, per-project with `release.github = false`) · **auto-removes worktree/branch/feature dir when clean** — cleanup+deploy only exist for the not-clean path |
 | `cleanup` | cleanup → deploy | worktree clean, no unmerged commits — **silent when safe**; asks only when commits look unmerged (squash merges) |
 | `deploy` | → done (deletes `.dev-flow/<slug>/`) | no questions — production deploy is manual and out of scope; a configured `deployNote` runbook is printed for reference |
 | `reflect ["<note>" [--to playbook\|plugin\|doctor]]` | — | queues an agent suggestion for the operator (never gates) |
@@ -111,7 +111,7 @@ Prefer feature flags for risky paths.
 otherwise; confirm the number before tagging” live — the agent sees them at stage entry, and
 `flow release-done` still hard-checks the manifest↔tag agreement. `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `release.review`,
-`release.changelog` and `release.github = false` (skip GitHub release creation); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
+`release.changelog` and `release.github = false` (skip GitHub release creation) and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
 `dev` (dev deploy run by `flow verify` before the operator question), the release stage takes
 `versionFile`/`versionTag` (defaults `v{version}`), `## deploy` a `note =` line. A legacy
 `project.json` still works — project.md overrides it, and the doctor flags having both.

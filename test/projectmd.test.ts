@@ -138,3 +138,11 @@ test("mdToConfig: release.github toggles the GitHub release", () => {
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\ngithub = yes\n```\n")).release.githubRelease, true);
 	assert.equal(mdToConfig(parseProjectMd("# dev-flow\n")).release.githubRelease, true);
 });
+
+test("mdToConfig: release.artifact key; doctor flags an empty tier-1", () => {
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nartifact = docker manifest inspect app:{tag}\n```\n")).release.artifact, "docker manifest inspect app:{tag}");
+	const emptyDir = mkdtempSync(path.join(tmpdir(), "pdf-doctor-"));
+	assert.ok(doctorFindings(emptyDir, mergeConfig({}), null, false, true).some((f) => f.includes("gates nothing")));
+	const withTest = mdToConfig(parseProjectMd("## implement\n```flow\ntest = x\n```\n"));
+	assert.equal(doctorFindings(emptyDir, withTest, null, false, true).some((f) => f.includes("gates nothing")), false);
+});

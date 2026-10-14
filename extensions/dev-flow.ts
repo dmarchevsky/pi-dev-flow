@@ -465,13 +465,29 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 					if (!reach.ok) errs.push(`tag ${expected} is not reachable from ${cfg.defaultBranch} — tag what actually shipped on ${cfg.defaultBranch}`);
 				}
 			}
+			const expectedTag = manifestVer ? cfg.versioning.pattern.replace("{version}", manifestVer) : null;
+			let artNote = "";
+			if (expectedTag && (await sh("git remote get-url origin", root)).ok) {
+				// a release must have LEFT this laptop: CI publishes from the tag on the remote
+				if (!(await sh(`git ls-remote --tags origin "refs/tags/${expectedTag}"`, root)).out.trim()) errs.push(`tag ${expectedTag} is local-only — git push origin ${expectedTag} (git push --follow-tags silently skips lightweight tags; tag with git tag -a and push the ref explicitly)`);
+			}
+			if (expectedTag && cfg.release.artifact) {
+				if (flag("no-artifact-check")) artNote = "Artifact check skipped (--no-artifact-check).";
+				else {
+					const cmd = cfg.release.artifact.replaceAll("{version}", manifestVer!).replaceAll("{tag}", expectedTag);
+					const art = await sh(cmd, root);
+					if (art.ok) artNote = "Artifact verified.";
+					else errs.push(`artifact not published — release.artifact check failed (${cmd}):\n${tail(art.out)}`);
+				}
+			}
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 			// the one release question — changelog, tag and PR are all covered by this answer
 			const ghWanted = !!manifestVer && !flag("no-github-release") && cfg.release.githubRelease !== false;
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 			if (!flag("confirmed")) {
 				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
-				const ok = await ui.confirm("Confirm release", `Confirm release: ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Changelog, tag and merged PR are covered by this.${ghWanted ? " A GitHub release will be created." : ""}`);
+				const willSay = [ghWanted ? "A GitHub release will be created." : "", expectedTag && cfg.release.artifact && !flag("no-artifact-check") ? "The published artifact will be verified." : ""].filter(Boolean).join(" ");
+				const ok = await ui.confirm("Confirm release", `Confirm release: ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Changelog, tag and merged PR are covered by this.${willSay ? ` ${willSay}` : ""}`);
 				if (!ok) return { text: "release confirmation declined — finish the release chores first" };
 			}
 			state!.approvals.release = now();
@@ -485,15 +501,16 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				ghNote = gr.ok ? `GitHub release ${tag} created.` : `GitHub release skipped: ${tail(gr.out)}`;
 			}
 			const closed = await autoClose(root, state!, cfg);
+			const tailNote = [ghNote, artNote].filter(Boolean).join(" ");
 			if (closed) {
 				const note = cfg.commands.deployNote ? ` deploy runbook (manual): ${cfg.commands.deployNote}.` : "";
 				rmSync(featDir(root, state!.slug), { recursive: true, force: true });
 				if (sess.slug === state!.slug) sess.bind(null);
-				return { text: `release recorded as complete${audit}.${ghNote ? ` ${ghNote}` : ""}\n${closed} — feature ${state!.slug} done.${note}` };
+				return { text: `release recorded as complete${audit}.${tailNote ? ` ${tailNote}` : ""}\n${closed} — feature ${state!.slug} done.${note}` };
 			}
 			state!.stage = "cleanup";
 			writeState(root, state!);
-			return { text: `release recorded as complete${audit}.${ghNote ? ` ${ghNote}` : ""}\n${nextHint(state!, cfg)}` };
+			return { text: `release recorded as complete${audit}.${tailNote ? ` ${tailNote}` : ""}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "cleanup": {

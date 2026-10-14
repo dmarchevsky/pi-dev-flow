@@ -70,7 +70,7 @@ export interface Config {
 	checklist: Record<string, ChecklistItem[]>; // tier-2 operator items per stage
 	prose: Record<string, string>; // tier-3 guidance per stage
 	versioning: Versioning;
-	release: { review: string; changelog?: string; tagPattern?: string; githubRelease?: boolean };
+	release: { review: string; changelog?: string; tagPattern?: string; githubRelease?: boolean; artifact?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 }
 
