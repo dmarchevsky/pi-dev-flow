@@ -4,6 +4,18 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-14
+
+### Added
+
+- `release.artifact` playbook key: `release-done` verifies the published artifact (any command — `docker manifest inspect`, registry `curl` — with `{version}`/`{tag}` placeholders) after the tag lands on origin; failure blocks the release; `--no-artifact-check` skips once (operator's call, audited). Set = every tag must show its artifact; unset = none
+
+### Changed
+
+- `release-done` refuses local-only tags: the tag ref must exist on `origin` (`git ls-remote`) when a remote is configured — `git push --follow-tags` silently skipping lightweight tags was producing releases that never existed upstream
+- Doctor flags an implement stage whose tier-1 gates nothing (no test, no health, no `flow-check`)
+- SKILL: annotated tags with explicit `git push origin v<ver>` (never `--follow-tags`); incremental worktree commits instead of a monolith at review time; plan-stage check for local-only default-branch commits that would fall out of the worktree base
+
 ## [0.14.2] - 2026-10-12
 
 ### Added
