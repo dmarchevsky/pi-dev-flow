@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-14
+
+### Added
+
+- **`flow version` — which dev-flow is this session running?** Prints the plugin's own version and the directory it was loaded from, e.g. `dev-flow 0.24.0 (pi-dev-flow at /home/me/.pi/agent/npm/node_modules/pi-dev-flow)`. The number comes from the nearest `package.json` named `pi-dev-flow` above the loaded extension module, so a session dogfooding a checkout and a session on an installed release can be told apart at a glance — previously the only way was digging through pi settings. Read-only like `doctor`: no stage, no `.dev-flow/` required, nothing written. It reports the **plugin's** version, never the project's `versioning.file` version the release gates use.
+
 ## [0.23.0] - 2026-10-14
 
 ### Added

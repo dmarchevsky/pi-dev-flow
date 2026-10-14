@@ -234,6 +234,26 @@ export function parseVersion(file: string, content: string): string | null {
 	return content.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null;
 }
 
+/**
+ * dev-flow's own version, for `flow version`: the nearest package.json above `fromDir` (the
+ * extension's module directory) whose name is `pkgName`. Walking up instead of a fixed `../`
+ * keeps it right for this checkout, an installed pi package and a copy loaded from elsewhere.
+ * `dir` is the manifest's directory when found, else `fromDir` — the place to name in the error.
+ */
+export function pluginVersion(fromDir: string, pkgName = "pi-dev-flow"): { version: string | null; dir: string } {
+	for (let dir = path.resolve(fromDir); ; ) {
+		try {
+			const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
+			if (pkg.name === pkgName) return { version: typeof pkg.version === "string" && pkg.version ? pkg.version : null, dir };
+		} catch {
+			/* missing, unreadable or not JSON: keep walking up */
+		}
+		const parent = path.dirname(dir);
+		if (parent === dir) return { version: null, dir: fromDir };
+		dir = parent;
+	}
+}
+
 /** Gate: the tag derived from the manifest version must exist among local tags. */
 export function versionTagGate(manifestVersion: string | null, tagPattern: string, tags: string[]): string[] {
 	if (!manifestVersion) return ["versioning.file is set but its version could not be parsed — fix versioning config"];

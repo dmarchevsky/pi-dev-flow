@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -24,6 +24,7 @@ import {
 	preReleaseGate,
 	newState,
 	parseVersion,
+	pluginVersion,
 	releaseGate,
 	reflectSections,
 	shouldSelfCompact,
@@ -270,6 +271,23 @@ test("parseVersion: all supported manifest formats", () => {
 	assert.equal(parseVersion("Cargo.toml", '[package]\nname = "x"\nversion = "2.0.1"\n'), "2.0.1");
 	assert.equal(parseVersion("pyproject.toml", '[project]\nversion = "0.4.0"\n'), "0.4.0");
 	assert.equal(parseVersion("Cargo.toml", '[package]\nname = "x"\n'), null);
+});
+
+test("pluginVersion: dev-flow's own manifest, found by walking up from the module dir", () => {
+	const root = mkdtempSync(path.join(tmpdir(), "devflow-pv-"));
+	mkdirSync(path.join(root, "extensions"), { recursive: true });
+	writeFileSync(path.join(root, "package.json"), '{"name":"pi-dev-flow","version":"1.2.3"}');
+	assert.deepEqual(pluginVersion(path.join(root, "extensions")), { version: "1.2.3", dir: root }, "nearest manifest named pi-dev-flow wins");
+
+	// manifest is ours but carries no version: say so about that package, do not walk past it
+	writeFileSync(path.join(root, "package.json"), '{"name":"pi-dev-flow"}');
+	assert.deepEqual(pluginVersion(path.join(root, "extensions")), { version: null, dir: root });
+
+	// some other package, and nothing of ours above it: unknown, naming where it looked
+	const other = mkdtempSync(path.join(tmpdir(), "devflow-pv-"));
+	mkdirSync(path.join(other, "lib"), { recursive: true });
+	writeFileSync(path.join(other, "package.json"), '{"name":"someone-else","version":"9.9.9"}');
+	assert.deepEqual(pluginVersion(path.join(other, "lib")), { version: null, dir: path.join(other, "lib") });
 });
 
 test("versionTagGate: manifest and tag must agree", () => {
