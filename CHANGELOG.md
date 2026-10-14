@@ -4,6 +4,20 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-10-14
+
+### Changed
+
+- `flow abort` at plan stage (nothing approved) removes the feature dir outright — a kept-over plan-stage state dir stayed "unfinished" forever and the one-unfinished-feature auto-bind resurrected the ghost into every unbound session
+
+### Fixed
+
+- Per-segment git guard: each git command in a chain is judged by the branch of the directory it actually runs in (incl. its own `git -C`); previously the last `cd` in a compound command set the verdict for all git calls, blocking legitimate worktree commits (hit two real releases) and weakening mixed-chain checks symmetrically
+- `git checkout -b feat/x` in the main checkout is now blocked like a plain checkout of a feature branch
+- `flow init` reports when an existing pre-commit hook prevents installing the dev-flow hook (main commits outside Pi are then unguarded)
+- `flow` tool description matches its actual subcommands (shared const with the help line)
+- Docs: the `dev` command must background and exit — `flow verify` waits for it (15-min cap)
+
 ## [0.15.1] - 2026-10-14
 
 ### Changed

@@ -235,9 +235,10 @@ const unquote = (s: string): string => s.replace(/^(['"])(.*)\1$/, "$2");
  *  git runs in (last preceding `cd` target or `git -C` target; null = session cwd).
  *  shortcut: naive segment split, subshells/backticks not tracked; the pre-commit
  *  hook still covers what slips past this advisory guard. */
-export function gitInvocation(command: string): { subs: string[]; dir: string | null; pushes: string[][] } {
+export function gitInvocation(command: string): { subs: string[]; dir: string | null; pushes: string[][]; gitSegs: { seg: string; dir: string | null }[] } {
 	const subs: string[] = [];
 	const pushes: string[][] = [];
+	const gitSegs: { seg: string; dir: string | null }[] = [];
 	let dir: string | null = null;
 	// global git options that consume a following value
 	const OPT_VAL = new Set(["-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace", "--super-prefix"]);
@@ -266,8 +267,9 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 			}
 			if (OPT_VAL.has(name) && eq === -1) i++;
 		}
+		gitSegs.push({ seg: seg.trim(), dir }); // after -C parsing so the entry carries its own effective dir
 	}
-	return { subs, dir, pushes };
+	return { subs, dir, pushes, gitSegs };
 }
 
 export type PushRef = { kind: "tag" | "branch" | "current"; name: string };
@@ -312,7 +314,8 @@ export function stateTamper(command: string): boolean {
 	return /\.dev-flow\/\S*state\.json/.test(command) && /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|-e|node\s)/.test(command);
 }
 
-/** Guard: decide whether a git bash command violates the flow. Returns a reason or null. */
+/** Guard: decide whether a git bash command violates the flow. Returns a reason or null.
+ *  Call per git segment (gitInvocation().gitSegs) with that segment's own branch — a chain may span directories. */
 export function bashFlowGuard(o: GuardCtx): string | null {
 	const c = o.command;
 	const { subs } = gitInvocation(c);
@@ -375,7 +378,7 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 
 /** Branch targeted by a `git checkout`/`git switch` in the command, or null. */
 export function checkoutTarget(command: string): string | null {
-	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\s+(?:-c\s+)?([^\s;|&]+)/);
+	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\s+(?:-[bBc]\s+)?([^\s;|&]+)/);
 	return m ? m[1] : null;
 }
 

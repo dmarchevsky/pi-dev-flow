@@ -123,6 +123,10 @@ test("worktree isolation: commit guards follow the command's directory", async (
 	// reads are never misguarded
 	assert.equal(await guard({ toolName: "bash", input: { command: "cat .git/hooks/pre-commit" } }, ctx), undefined, "reading the hook is not a commit");
 	assert.equal(await guard({ toolName: "bash", input: { command: "git log --oneline" } }, ctx), undefined, "git log is not a commit");
+	// per-segment attribution: a chain spanning directories must not inherit one verdict (the release-blocker bug)
+	assert.equal(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(wt)} && git commit -m x && cd ${JSON.stringify(repo)} && git pull` } }, ctx), undefined, "commit judged in the worktree even when the chain later cds to main");
+	assert.ok(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(repo)} && git log && cd ${JSON.stringify(repo)} && git commit -m x` } }, ctx), "commit after cd back to main checkout is blocked");
+	assert.ok(await guard({ toolName: "bash", input: { command: `git -C ${JSON.stringify(repo)} checkout -b feat/sneaky` } }, ctx), "checkout -b of a feature branch in the main checkout is blocked");
 });
 
 test("init --yes keeps existing project.md; --force rewrites from fresh detection", async () => {
@@ -208,12 +212,14 @@ test("session binding: use/abort/ambiguity", async () => {
 	await pi.cmds.flow.handler("start b-two", ctx); // start binds b-two
 	await pi.cmds.flow.handler("use nope", ctx);
 	assert.ok(ctx.notices.at(-1)?.includes("no unfinished feature"), "use validates slug");
+	await pi.cmds.flow.handler("use nope", ctx);
+	assert.ok(ctx.notices.at(-1)?.includes("no unfinished feature"), "use validates slug");
+	await pi.cmds.flow.handler("approve", ctx);
+	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "bound gate runs on the bound feature (b-two)");
 	await pi.cmds.flow.handler("abort b-two", ctx);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "b-two")), "plan-stage abort drops the feature entirely");
 	await pi.cmds.flow.handler("approve", ctx);
-	assert.ok(ctx.notices.at(-1)?.includes("multiple unfinished"), "ambiguous without binding must refuse");
-	await pi.cmds.flow.handler("use a-one", ctx);
-	await pi.cmds.flow.handler("approve", ctx);
-	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "bound gate runs on the bound feature");
+	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "lone remaining feature auto-binds and hits its gate");
 });
 
 test("status bar: compact refresh follows the gates", async () => {
@@ -375,4 +381,39 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	const okRun = await flow(["release-done", "--confirmed"]);
 	assert.match(okRun.content[0].text, /Artifact verified\./);
 	assert.match(okRun.content[0].text, /feature teeth done/);
+});
+
+test("abort at plan stage drops the feature; approved features keep recoverable state", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n"]);
+	await flow(["start", "ghost"]);
+	assert.match((await flow(["abort", "ghost"])).content[0].text, /feature removed/);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ghost")), "plan-stage abort leaves no ghost for auto-bind");
+	await flow(["start", "keeper"]);
+	mkdirSync(path.join(repo, ".dev-flow", "keeper", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "keeper", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const ab = await flow(["abort", "keeper"]);
+	assert.match(ab.content[0].text, /state stays at .dev-flow\/keeper/);
+	assert.match(ab.content[0].text, /git worktree remove/);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "keeper", "state.json")), "real work stays recoverable");
+});
+
+test("flow exempt: opens the checkout, keeps dev-flow files protected, off closes it", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n"]);
+	await flow(["start", "ex-feat"]);
+	const guard = pi.handlers.tool_call[0];
+	assert.ok((await guard({ toolName: "write", input: { path: path.join(repo, "src", "x.ts") } }, ctx))?.block, "bound at implement blocks main-checkout writes");
+	assert.match((await flow(["exempt", "one-off fix"])).content[0].text, /flow-exempt: one-off fix/);
+	assert.equal(await guard({ toolName: "write", input: { path: path.join(repo, "src", "x.ts") } }, ctx), undefined, "exemption opens the checkout");
+	assert.ok((await guard({ toolName: "write", input: { path: path.join(repo, ".dev-flow", "ex-feat", "state.json") } }, ctx))?.block, "exempt never touches flow-owned files");
+	await flow(["exempt", "off"]);
+	assert.ok((await guard({ toolName: "write", input: { path: path.join(repo, "src", "y.ts") } }, ctx))?.block, "off restores the rules");
 });
