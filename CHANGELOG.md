@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-14
+
+### Added
+
+- `flow start <slug> --patch` — chore releases with reduced paperwork: no plan document (the one-line start description is the plan); approve, worktree discipline, tier-1 checks, verify, tagged release and audit trail unchanged. Status marks patch features with an amber marker. (Folded reflection: release-patch shortcut)
+
 ## [0.15.2] - 2026-10-14
 
 ### Changed
