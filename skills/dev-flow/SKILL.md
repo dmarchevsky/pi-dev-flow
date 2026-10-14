@@ -1,8 +1,8 @@
 ---
 name: dev-flow
 description: >
-  The repo's enforced feature workflow: plan → implement → release →
-  done, one feature at a time, driven through the flow tool. Read before
+  The repo's enforced feature workflow: plan → implement → pre-release →
+  release → done, one feature at a time, driven through the flow tool. Read before
   starting ANY feature work in a repo that has a .dev-flow/ directory — the
   stage guards block out-of-stage edits and main-branch git ops, so working
   outside this flow fails at the guard.
@@ -24,7 +24,7 @@ Ground rules:
 - `.dev-flow/project.json` is operator-owned: read it for commands (test/build/run), the default branch, worktree path — never edit it; ask the user.
 - Also obey the repo's own AGENTS.md and project skills; dev-flow sequences stages, the project defines its conventions.
 - If a guard blocks you, you are trying to skip a stage or write outside your session's feature. Stop and run the gate instead of working around it.
-- **Checkpoint questions are one verb: Approve? / Verified? / Ship?** The verb doubles as the operator's answer; ask exactly that word at each gate and treat the same verb (or an explicit equivalent) in chat as the answer — then `--confirmed` carries the checkpoint with zero dialogs.
+- **Checkpoint questions are one verb: Approve? / Verified? / Release? / Ship? / Finish?** The verb doubles as the operator's answer; ask exactly that word at each gate and treat the same verb (or an explicit equivalent) in chat as the answer — then `--confirmed` carries the checkpoint with zero dialogs.
 
 ## Start
 
@@ -63,7 +63,7 @@ Work happens **only in the worktree** the gate created (path in `flow status` or
    - walk the **tier-2 checklist** (`- [ ]` items) with the operator honestly — those can't be scripted;
    - then ask the user **Verified?** When they answer, run `flow verify --confirmed` (no second dialog); interactively they can run `/flow verify` themselves. Fixes requested = iterate and re-verify; that loop is free.
 
-`flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — absent config means dev-flow says nothing about dev; the command must **background and exit** — e.g. `docker compose up -d .` — verify waits for it and kills runs past 15 min) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal.
+`flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — absent config means dev-flow says nothing about dev; the command must **background and exit** — e.g. `docker compose up -d .` — verify waits for it and kills runs past 15 min) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal. Verify lands the feature in **pre-release**.
 
 ### Handling additions mid-implement
 
@@ -73,28 +73,35 @@ The operator asks for something extra while you are implementing. Do not bounce 
 - **Different problem** → finish the current feature; it is a new flow (`flow start <new-slug>` after this one ships). Never fold a second feature into one plan, PR and verify — the audit trail is the point.
 - **Heavily amended plan needs formal re-review** → show the operator the amended plan and ask them to re-approve it in chat; the verify gate remains the checkpoint. There is no reopen command by design.
 
-## Stage: release
+## Stage: pre-release
 
-You are now cleared to touch main-repo git state (merge/tag/push on the default branch is allowed only here). **Versioning:** the version manifest in project.json `versioning.file` is the single source of truth; tags are always `versioning.pattern` rendered from it — one number everywhere. If `versioning.file` is unset, stop and clarify the scheme with the user before touching any version; never invent one mid-release. Recommended sequence — run it in the worktree unless noted:
+The change is implemented, tested and running locally; now you prepare the release — still entirely in the worktree, main-repo git state stays off-limits until this gate hands over. **Versioning:** the version manifest in project.json `versioning.file` is the single source of truth; tags are always `versioning.pattern` rendered from it — one number everywhere. If `versioning.file` is unset, stop and clarify the scheme with the user before touching any version; never invent one mid-release. Sequence:
 
 1. `/ponytail-review` the change; fix every **must-have** and **should-have** finding; `flow test` again if code changed.
 2. Update documentation to reflect the change.
-3. Update the changelog and bump the version manifest (`versioning.file`) to the exact version you will tag — manifest, changelog, and tag must all agree; `flow release-done` verifies the tag exists and is reachable from the default branch.
-4. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
-5. `git fetch` and confirm the merge landed, create the release tag **annotated** (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) — never `git push --follow-tags`, which silently skips lightweight tags (tags then never reach the remote and CI never publishes). After merge, a tag points at what actually shipped. If CI publishes artifacts from the tag, set `release.artifact` in the playbook so `release-done` verifies the published artifact — it also refuses local-only tags outright.
-6. Ask the operator **Ship?** — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and records the release; `flow finish` is what closes the feature out. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
+3. Update the changelog and bump the version manifest (`versioning.file`) to the exact version you will tag — manifest, changelog, and tag must all agree; commit the prep on the feature branch.
+4. Run `flow check` — the prep edits invalidated the implement checks and the release gate demands them green again.
+5. Tell the operator what the PR will contain, present the version and the changelog entry, and **stop** — one word: **Release?** When they answered, run `flow release --confirmed` (interactively they can run `/flow release` themselves). The gate re-checks tier-1, requires the manifest version to be **ahead of the last tag** and the changelog to mention it — then you are in release.
+
+## Stage: release
+
+You are now cleared to touch main-repo git state (merge/tag/push on the default branch is allowed only here) — this stage publishes, the preparation happened in pre-release. Recommended sequence — run it in the worktree unless noted:
+
+1. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
+2. `git fetch` and confirm the merge landed, create the release tag **annotated** (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) — never `git push --follow-tags`, which silently skips lightweight tags (tags then never reach the remote and CI never publishes). After merge, a tag points at what actually shipped. If CI publishes artifacts from the tag, set `release.artifact` in the playbook so `release-done` verifies the published artifact — it also refuses local-only tags outright.
+3. Ask the operator **Ship?** — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers the tag and merged PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and records the release; `flow finish` is what closes the feature out. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
 
 ## Stage: finish
 
-`flow finish [slug]` is the last step of a released feature — the one command that closes it out:
+Ask the operator **Finish?** — then run `flow finish --confirmed` (or interactively; the gate's one question covers the whole cleanup and mentions any commits that look unmerged). `flow finish [slug]` is the last step of a released feature — the one command that closes it out:
 
 - it refuses until `release-done` recorded the release, so an unfinished feature never gets a tidy
   ending (abandon those with `flow abort`);
 - it requires the main checkout to be **clean and pushed** — an uncommitted changelog or a local-only
   release commit is exactly what it protects against — and it refuses until that is fixed;
 - it removes the worktree and the branch, then deletes `.dev-flow/<slug>/` and unbinds the session.
-  Uncommitted worktree edits block it; unmerged-looking commits (squash merges) make it ask the
-  operator — if it asks and you have no operator answer, stop and show them.
+  Uncommitted worktree edits block it; commits that look unmerged (squash merges) are called out in
+  the Finish? question — if the gate asks and you have no operator answer, stop and show them.
 
 Production deployment stays manual and out of scope: never ask the operator whether a prod deploy happened.
 

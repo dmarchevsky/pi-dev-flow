@@ -3,7 +3,7 @@
 An enforced feature workflow for [Pi](https://pi.dev), shipped as a pi package. One feature at a time:
 
 ```
-plan → implement → release → done
+plan → implement → pre-release → release → done
 ```
 
 The flow lives in **this repo**; each project only gets a gitignored `.dev-flow/` folder. State is a file, checkpoints are gates, and the guardrails are enforced by the harness — not by prose the model may forget.
@@ -46,9 +46,10 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `test` | records a check | — (runs the `test` command/check, records pass/fail) |
 | `check` | records all tier-1 checks | — (runs every `flow-check`/test/health from project.md `## implement`) |
 | `health` | records a check | — (runs `seedData` + the health command; app must be up locally with real data) |
-| `verify` | implement → release | all tier-1 checks green, build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app, tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; **one question** — or `--confirmed` |
-| `release-done` | records the release (the stage stays `release`) | verify approval; with `versioning.file`: tag rendered from the manifest version exists, is reachable from the default branch **and is on origin** (a local-only tag is not a release); with `release.artifact`: the published-artifact check runs (`{version}`/`{tag}` placeholders; skip once with `--no-artifact-check`); **the one release question** (changelog+tag+PR) — or `--confirmed` · creates the GitHub release from the tag (advisory — needs gh + GitHub remote; skip per-release with `--no-github-release`, per-project with `release.github = false`) |
-| `finish [slug]` | release → done (removes worktree + branch, deletes `.dev-flow/<slug>/`) | a release is recorded (`release-done` ran), the main checkout is clean **and** pushed to `origin/<default>`, and the worktree has no uncommitted changes — unmerged-looking commits (squash merges) **ask**, silently passing when safe; to abandon an unreleased feature use `abort` |
+| `verify` | implement → pre-release | all tier-1 checks green, build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app, tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; **one question** — or `--confirmed` |
+| `release` | pre-release → release | checks re-greened after the prep edits; with `versioning.file`: the manifest version parses and is **not tagged yet** (the bump must be ahead of the last release); with `release.changelog`: the file exists and mentions the version; tier-2 `## pre-release` checklist confirmed; **one question** (Release?) — or `--confirmed` |
+| `release-done` | records the release (the stage stays `release`) | verify approval; with `versioning.file`: tag rendered from the manifest version exists, is reachable from the default branch **and is on origin** (a local-only tag is not a release); with `release.artifact`: the published-artifact check runs (`{version}`/`{tag}` placeholders; skip once with `--no-artifact-check`); **the one release question** (tag+merged PR) — or `--confirmed` · creates the GitHub release from the tag (advisory — needs gh + GitHub remote; skip per-release with `--no-github-release`, per-project with `release.github = false`) |
+| `finish [slug]` | release → done (removes worktree + branch, deletes `.dev-flow/<slug>/`) | a release is recorded (`release-done` ran), the main checkout is clean **and** pushed to `origin/<default>`, and the worktree has no uncommitted changes; **one question** (Finish? — mentions unmerged-looking squash-merge commits when it sees them) — or `--confirmed`; to abandon an unreleased feature use `abort` |
 | `doctor [reflect "<note>"]` | — | read-only findings: playbook drift, dead commands/scripts, ghost feature dirs, orphan worktrees/branches, open reflections — it writes nothing and asks nothing, safe for agents and CI at any stage. `doctor reflect "<note>"` queues an agent suggestion in `reflections.md`, under `## playbook`, `## plugin` or both, chosen from the note's wording (never gates) |
 | `status [slug]` / `abort [slug]` | — | — |
 
@@ -60,12 +61,12 @@ While a feature is active, the extension intercepts every tool call:
 
 - **Nothing on main, ever**: `git commit` on the default branch is blocked; pushes are judged by the ref they write — only pushing *to* the default branch (or a bare push while on it) requires stage `release`, so tag pushes and feature-branch pushes pass from any stage; `git merge` onto the default branch also requires stage `release`. Plus the standalone pre-commit hook for commits made outside Pi.
 - **No code before an approved plan**: at stage `plan`, edits are confined to `.dev-flow/<slug>/`.
-- **Work stays in the worktree**: at stage `implement`, edits are confined to that feature's worktree — judged per-path by the owning feature, so one session can never write into another session's worktree or into the main checkout.
+- **Work stays in the worktree**: at stages `implement` and `pre-release`, edits are confined to that feature's worktree — judged per-path by the owning feature, so one session can never write into another session's worktree or into the main checkout.
 - **Flow by default**: in a repo with `.dev-flow/`, an unbound session cannot touch source files at all — every request goes through `flow start`/`flow use`; there is no bypass. `flow start` refuses when the main checkout isn't on the default branch, worktrees are always created from the default branch, and the agent cannot check feature branches out in the main checkout.
 - **Gates can't be skipped**: `state.json` is untouchable by the agent (edit tool and bash); `project.json` is operator-owned; editing worktree code invalidates a passing test check until `flow test` reruns.
 - **Your project's own rules**: every `deny`/`confirm`/`protect`/`forbid` rule from the `flow-guard` block in project.md `## global` runs on every bash command and every edit/write path — in every stage and binding, ahead of dev-flow's own verdicts. A block always carries the reason you wrote.
 - **Compact-aware**: when context nears pi's auto-compaction threshold, dev-flow compacts *itself* at a safe point — right after a gate wrote state to disk, or when a run settles — with flow-aware summary instructions. It never compacts while chat is the state (open tier-2 dialog, plan discussion not yet in `plan/`), so pi's mid-work compaction rarely fires; when it does, a note lands in `reflections.md`.
-- The active stage is injected into the model's context every turn; the bundled `dev-flow` skill is the agent's playbook, including the recommended release sequence: review (`/ponytail-review`) → fixes → docs → changelog/version → PR → merge → tag → `release-done`.
+- The active stage is injected into the model's context every turn; the bundled `dev-flow` skill is the agent's playbook, including the recommended sequences: pre-release — review (`/ponytail-review`) → fixes → docs → changelog/version bump; release — PR → merge → tag → `release-done`.
 - **Status bar**: while a feature is active the pi footer shows `◆ <slug> ▸ <stage>` (stage-colored, `✗` on failing checks); press `ctrl+,` for the detail panel (approvals, checks, branch/worktree, next step).
 
 ## Concurrency model
@@ -85,7 +86,7 @@ while your bound feature is in `plan`/`implement` and while any feature is unbou
 
 The operator-owned playbook, gitignored, edited by you (the agent is blocked from writing it
 directly; it goes through `flow init --write` which validates). Content is organized per stage
-(`## plan`, `## implement`, `## release`…) in **three tiers** — tier 1 splits into
+(`## plan`, `## implement`, `## pre-release`, `## release`…) in **three tiers** — tier 1 splits into
 executable checks and hard safety rules:
 
 | Tier | Notation | Enforcement |
@@ -144,17 +145,18 @@ Matching is per shell segment (the guard splits on `;`, `|`, `&&` and newlines, 
 `git -C`), and a segment whose head only reads (`grep`, `cat`, `ls`, `git log`, `jq`, …) is skipped — so
 `grep "git push --force" docs/` searches, it does not push.
 
-`## release` prose is where rules like “follow semver: minor for user-facing features, patch
+`## pre-release` prose is where rules like “follow semver: minor for user-facing features, patch
 otherwise; confirm the number before tagging” live — the agent sees them at stage entry, and
-`flow release-done` still hard-checks the manifest↔tag agreement. `## global` holds
+`flow release` / `flow release-done` hard-check the manifest side (bumped past the last tag, then
+manifest↔tag agreement). `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `release.review`,
 `release.changelog` and `release.github = false` (skip GitHub release creation) and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
 `dev`. Of those, `setup` runs once inside a freshly created worktree at `approve` (where `cp .env` +
 `npm install` belong — a failing setup fails the gate), and `run` is advisory: the agent starts the app
 with it for the running-and-healthy walk, dev-flow never runs it itself. `dev` is the dev deploy run by
 `flow verify` before the operator question — it must background and exit,
-e.g. `docker compose up -d .`. The release stage takes
-`versionFile`/`versionTag` (defaults `v{version}`). A legacy
+e.g. `docker compose up -d .`. The pre-release and release stages take
+`versionFile`/`versionTag` (defaults `v{version}`; accepted under either section). A legacy
 `project.json` still works — project.md overrides it, and the doctor flags having both.
 
 `flow init` is the dialogue around this file: **fresh repo** → writes the detection draft
@@ -186,7 +188,7 @@ ideas the agent notices along the way queue up in `.dev-flow/reflections.md` und
     plan/
       plan.md                 the review document (embeds the renders)
       mockups/                mockup HTML + chromium renders (*.png)  ← UI plan output
-    worktree/                 feature worktree    ← implement/release work
+    worktree/                 feature worktree    ← implement/pre-release/release work
     state.json                stage, approvals, checks (agent cannot write)
 ```
 
