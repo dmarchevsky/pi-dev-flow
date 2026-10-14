@@ -106,7 +106,7 @@ test("doctorFindings: drift, missing manifest, no health check", () => {
 test("doctorFindings: the dogfood shim is probed only in a dev-flow checkout", () => {
 	const cfg = mergeConfig({ commands: { test: "npm test" } });
 	const has = (root: string) => doctorFindings(root, cfg, null, false, true).some((x) => x.includes("dogfood shim"));
-	const repo = fixtureRoot({ "skills/dev-flow/SKILL.md": "# dev-flow\n" });
+	const repo = fixtureRoot({ "package.json": '{"name":"pi-dev-flow","version":"1.0.0"}' });
 	assert.ok(has(repo), "a dev-flow checkout whose extension is not wired loads nothing");
 	const shim = path.join(repo, ".pi", "extensions", "dev-flow.ts");
 	mkdirSync(path.dirname(shim), { recursive: true });
@@ -114,7 +114,9 @@ test("doctorFindings: the dogfood shim is probed only in a dev-flow checkout", (
 	assert.ok(!has(repo), "the committed one-liner is what satisfies it");
 	writeFileSync(shim, 'export { default } from "../elsewhere.ts";\n');
 	assert.ok(has(repo), "a shim pointing somewhere else is stale wiring");
-	assert.ok(!has(fixtureRoot({ "package.json": '{"version":"1.0.0"}' })), "an ordinary project never hears about our dogfood setup");
+	// a project that merely carries dev-flow's skill, or is named similarly, is not our checkout
+	const other = fixtureRoot({ "package.json": '{"name":"my-app","version":"1.0.0"}', "skills/dev-flow/SKILL.md": "# dev-flow\n" });
+	assert.ok(!has(other), "an ordinary project never hears about our dogfood setup");
 });
 
 test("loadProject: md overrides json base", () => {
