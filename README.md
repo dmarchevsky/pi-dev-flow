@@ -112,7 +112,8 @@ otherwise; confirm the number before tagging” live — the agent sees them at 
 `flow release-done` still hard-checks the manifest↔tag agreement. `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `release.review`,
 `release.changelog` and `release.github = false` (skip GitHub release creation) and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
-`dev` (dev deploy run by `flow verify` before the operator question), the release stage takes
+`dev` (dev deploy run by `flow verify` before the operator question — must background and exit,
+e.g. `docker compose up -d .`), the release stage takes
 `versionFile`/`versionTag` (defaults `v{version}`), `## deploy` a `note =` line. A legacy
 `project.json` still works — project.md overrides it, and the doctor flags having both.
 

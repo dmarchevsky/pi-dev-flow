@@ -81,6 +81,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
+const GATE_HELP = "init [--yes|--force|--write <text>] | start <slug> [--ui] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 
@@ -289,6 +290,8 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 						{ mode: 0o755 },
 					);
 					notes.push("pre-commit hook installed (blocks commits on main)");
+				} else if (existsSync(hook) && !readFileSync(hook, "utf8").includes("installed by dev-flow")) {
+					notes.push("existing pre-commit hook found — dev-flow hook NOT installed; main commits outside Pi are unguarded");
 				}
 			}
 			return { text: notes.join("\n") };
@@ -495,7 +498,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (manifestVer && flag("no-github-release")) ghNote = "GitHub release skipped (--no-github-release).";
 			else if (manifestVer && ghWanted) {
 				// advisory: GitHub release for the verified tag — a note on failure, never a block
-				const tag = cfg.versioning.pattern.replace("{version}", manifestVer);
+				const tag = expectedTag!;
 				const notes = (await sh(`git tag -l --format=%(contents) ${JSON.stringify(tag)}`, root)).out.trim();
 				const gr = await sh(`gh release create ${JSON.stringify(tag)} --title ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`, root);
 				ghNote = gr.ok ? `GitHub release ${tag} created.` : `GitHub release skipped: ${tail(gr.out)}`;
@@ -615,7 +618,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		}
 
 		default:
-			return { text: `unknown subcommand "${sub}" — init [--yes|--force|--write <text>] | start <slug> [--ui] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]`, isError: true };
+			return { text: `unknown subcommand "${sub}" — ${GATE_HELP}`, isError: true };
 	}
 }
 
@@ -750,7 +753,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("flow", {
-		description: "dev-flow gates: init | start <slug> [--ui] | use <slug> | status | approve | test | verify | release-done | cleanup | deploy | abort",
+		description: `dev-flow gates: ${GATE_HELP}`,
 		handler: async (args, ctx) => {
 			const res = await runFlow(parse(args), ctx.cwd, uiFrom(ctx), sessFor(ctx));
 			ctx.ui.notify(res.text, res.isError ? "error" : "info");
@@ -823,31 +826,42 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (stateTamper(command)) return { block: true, reason: "state.json is dev-flow-owned — advance stages with the flow tool only" };
 			const inv = gitInvocation(command);
 			if (!inv.subs.length) return undefined; // git is not invoked as a command — nothing to guard
-			// Judge by the branch of the directory git actually runs in (git -C / preceding cd target),
-			// not the session root — a bound session's work happens in the feature worktree.
-			const gitDir = inv.dir ? path.resolve(ctx.cwd, inv.dir) : ctx.cwd;
-			// push targets are judged by ref; bare names disambiguated against the repo's own tags (read-only probe)
-			let pushRefs: PushRef[] | undefined;
-			if (inv.pushes.length) {
-				pushRefs = await Promise.all(
-					parsePushRefs(inv.pushes).map(async (r) => {
-						if (r.kind !== "branch" || !r.name || r.name === "*") return r;
-						const tag = await sh(`git rev-parse --verify -q refs/tags/${JSON.stringify(r.name)}`, gitDir);
-						return tag.ok ? { kind: "tag" as const, name: r.name } : r;
-					})
-				);
-			}
-			const br = await sh(`git -C ${JSON.stringify(gitDir)} branch --show-current`, ctx.cwd);
-			const branch = (br.ok ? br.out : "").trim().split("\n")[0] || (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] || "";
 			const bound = boundFeature(ctx.cwd, key);
-			const reason = bashFlowGuard({ command, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs });
-			if (reason) return { block: true, reason };
-			// Branch discipline: feature branches live in their worktree — never checked out in the main checkout by the agent.
-			const target = checkoutTarget(command);
-			if (target && target.startsWith(featureBranchPrefix(cfg))) {
-				const gitAbs = path.resolve(gitDir);
-				const inWorktree = featureRefs(ctx.cwd).some((f) => f.worktreeAbs && (gitAbs === f.worktreeAbs || gitAbs.startsWith(f.worktreeAbs + path.sep)));
-				if (!inWorktree) return { block: true, reason: `branch ${target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };
+			// judge EACH git segment by the branch of the directory it runs in — a chain may cd across
+			// directories; one last-cd-wins verdict misattributed mixed-dir chains and blocked legit worktree commits
+			const branchCache = new Map<string, string>();
+			const branchOf = async (dir: string | null): Promise<string> => {
+				const at = dir ? path.resolve(ctx.cwd, dir) : ctx.cwd;
+				if (!branchCache.has(at)) {
+					const br = await sh(`git -C ${JSON.stringify(at)} branch --show-current`, ctx.cwd);
+					let b = (br.ok ? br.out : "").trim().split("\n")[0];
+					if (!b) b = (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] || "";
+					branchCache.set(at, b);
+				}
+				return branchCache.get(at)!;
+			};
+			for (const g of inv.gitSegs) {
+				const gitDir = g.dir ? path.resolve(ctx.cwd, g.dir) : ctx.cwd;
+				let pushRefs: PushRef[] | undefined;
+				const gp = gitInvocation(g.seg).pushes;
+				if (gp.length) {
+					// push targets are judged by ref; bare names disambiguated against that repo's own tags (read-only probe)
+					pushRefs = await Promise.all(
+						parsePushRefs(gp).map(async (r) => {
+							if (r.kind !== "branch" || !r.name || r.name === "*") return r;
+							const tag = await sh(`git rev-parse --verify -q refs/tags/${JSON.stringify(r.name)}`, gitDir);
+							return tag.ok ? { kind: "tag" as const, name: r.name } : r;
+						}),
+					);
+				}
+				const reason = bashFlowGuard({ command: g.seg, branch: await branchOf(g.dir), stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs });
+				if (reason) return { block: true, reason };
+				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
+				const target = checkoutTarget(g.seg);
+				if (target && target.startsWith(featureBranchPrefix(cfg))) {
+					const inWorktree = featureRefs(ctx.cwd).some((f) => f.worktreeAbs && (gitDir === f.worktreeAbs || gitDir.startsWith(f.worktreeAbs + path.sep)));
+					if (!inWorktree) return { block: true, reason: `branch ${target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };
+				}
 			}
 		}
 		return undefined;
