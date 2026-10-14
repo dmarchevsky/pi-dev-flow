@@ -25,6 +25,7 @@ import {
 	preReleaseGate,
 	newState,
 	parseVersion,
+	pidAlive,
 	pluginVersion,
 	releaseGate,
 	reflectSections,
@@ -394,4 +395,10 @@ test("claimBlocks blocks auto-bind only for a foreign live claim", () => {
 	assert.equal(claimBlocks(claim, "A"), false, "our own claim — auto-bind proceeds");
 	assert.equal(claimBlocks(claim, "B", () => true), true, "foreign claim from a live pid — auto-bind blocked");
 	assert.equal(claimBlocks(claim, "B", () => false), false, "foreign claim from a dead pid — claim is void");
+});
+
+test("pidAlive probes process existence without signaling", () => {
+	assert.equal(pidAlive(process.pid), true, "our own process is alive");
+	assert.equal(pidAlive(2 ** 30), false, "a pid beyond the range is dead");
+	assert.equal(pidAlive("123" as unknown as number), false, "a corrupt pid value reads as dead, not as a crash");
 });
