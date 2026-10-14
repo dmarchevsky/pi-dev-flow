@@ -8,8 +8,8 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
-export type Stage = "plan" | "implement" | "release" | "cleanup" | "deploy" | "done";
-export const STAGES: Stage[] = ["plan", "implement", "release", "cleanup", "deploy", "done"];
+export type Stage = "plan" | "implement" | "release" | "done";
+export const STAGES: Stage[] = ["plan", "implement", "release", "done"];
 
 export interface Check {
 	ok: boolean;
@@ -51,7 +51,6 @@ export interface Commands {
 	run?: string;
 	/** Deploy to a dev/staging environment before verification — operator reviews the running dev app. */
 	dev?: string;
-	deployNote?: string;
 }
 
 export interface Versioning {
@@ -73,7 +72,7 @@ export interface Config {
 	versioning: Versioning;
 	release: { review: string; changelog?: string; tagPattern?: string; githubRelease?: boolean; artifact?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
-	/** Operator safety rules from the project.md flow-guard block — stage- and exemption-independent. */
+	/** Operator safety rules from the project.md flow-guard block — stage-independent. */
 	guard: GuardRules;
 }
 
@@ -210,7 +209,7 @@ export function versionTagGate(manifestVersion: string | null, tagPattern: strin
 	return [`expected release tag "${expected}" (from manifest version ${manifestVersion}) not found; recent tags: ${tags.slice(0, 5).join(", ") || "none"}`];
 }
 
-/** Gate: release → cleanup (the release playbook was run to completion). */
+/** Gate: release-done records the release; `flow finish` then closes the feature. */
 export function releaseGate(state: FlowState): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "release") errs.push(`stage is "${state.stage}", release-done only applies to "release"`);
@@ -219,8 +218,8 @@ export function releaseGate(state: FlowState): string[] {
 }
 
 /**
- * Cleanup safety. Returns { errors, unmerged }: errors hard-block; unmerged is
- * a warning list the operator can confirm through (e.g. squash merges).
+ * Cleanup safety for `flow finish`. Returns { errors, unmerged }: errors hard-block;
+ * unmerged is a warning list the operator can confirm through (e.g. squash merges).
  */
 export function cleanupAssess(porcelain: string, unmerged: string[]): { errors: string[]; unmerged: string[] } {
 	const errors: string[] = [];
@@ -459,10 +458,10 @@ const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs
  * worktree's own feature; main-checkout writes are judged by the session's bound feature
  * (release+ may touch it; plan/implement may not); with no binding and unfinished features
  * the session must bind first (`flow use`). Flow-by-default: a session with no flow may not
- * touch the checkout at all — only an operator-granted exemption (`flow exempt`) opens it.
+ * touch the checkout at all — a bound feature is the only way in.
  * Returns a reason or null (allowed).
  */
-export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; exempt?: boolean }): string | null {
+export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null }): string | null {
 	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is operator-owned — ask the user to change it";
 	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
@@ -471,20 +470,18 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (owner) {
 		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
 		if (owner.state.stage === "done") return `feature ${owner.state.slug} is done`;
-		return null; // implement/release/cleanup/deploy: own worktree is the working area
+		return null; // implement/release: own worktree is the working area
 	}
 	if (within(o.abs, o.dfDir)) return null;
-	// Flow-by-default: the operator's exemption lifts binding requirements wholesale (user override).
-	if (o.exempt) return null;
 	if (o.boundSlug) {
 		const bound = o.features.find((f) => f.state.slug === o.boundSlug);
 		if (bound) {
 			if (bound.state.stage === "implement") return `bound feature ${o.boundSlug} is at implement — edit its worktree (${bound.state.worktree}), not the main checkout`;
 			if (bound.state.stage === "plan") return `bound feature ${o.boundSlug} is in plan — code is read-only until approved`;
-			return null; // release/cleanup/deploy: release chores may touch the main checkout
+			return null; // release: release chores may touch the main checkout
 		}
 	}
-	if (!o.features.length) return "no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature; only the operator can exempt (\"/flow exempt <reason>\")";
+	if (!o.features.length) return "no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature";
 	return `unfinished features: ${o.features.map((f) => f.state.slug).join(", ")} — bind this session with flow use <slug> (or pass an explicit slug to gates)`;
 }
 
@@ -503,6 +500,41 @@ export function featureBranchPrefix(cfg: Config): string {
 /** Open (unchecked) reflection items in reflections.md content — the agent's suggestion queue. */
 export function openReflections(text: string): string[] {
 	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));
+}
+
+export const REFLECT_HEADER =
+	"# dev-flow reflections\n\n<!-- Suggestions queued by the agent; the operator decides. Fold playbook items in via flow init --write, file plugin items as issues; check off when handled. -->\n";
+
+/** The two reflections.md sections, in document order. */
+export const REFLECT_SECTIONS = ["playbook", "plugin"] as const;
+export type ReflectSection = (typeof REFLECT_SECTIONS)[number];
+
+// keyword sets decide the section: plugin = dev-flow's own behaviour, playbook = this project's
+const PLUGIN_HINT = /\b(plugin|extension|dev-flow|gate|guard|command|tool|session|compact\w*|hook|status bar)\b/i;
+const PLAYBOOK_HINT = /\b(project\.md|playbook|checklist|versioning|defaultBranch|prose|setup|health|release rules)\b/i;
+
+/** Which reflections.md section(s) a note belongs to. Both keyword sets → both sections;
+ *  neither → playbook, where the operator will notice and move it. */
+export function reflectSections(note: string): ReflectSection[] {
+	const plugin = PLUGIN_HINT.test(note);
+	return plugin && PLAYBOOK_HINT.test(note) ? ["playbook", "plugin"] : plugin ? ["plugin"] : ["playbook"];
+}
+
+/**
+ * Rewrite reflections.md as a header + one section per non-empty bucket, with `line` appended to
+ * each named section. Legacy flat lines carry their target inline (`- [ ] (plugin) …`, `— to
+ * playbook`); that marker buckets them and is then dropped, so an old file migrates on next write.
+ */
+export function appendReflection(text: string, sections: ReflectSection[], line: string): string {
+	const buckets = Object.fromEntries(REFLECT_SECTIONS.map((s) => [s, [] as string[]])) as Record<ReflectSection, string[]>;
+	for (const raw of text.split("\n")) {
+		const l = raw.trim();
+		if (!l.startsWith("- [")) continue;
+		const key: ReflectSection = /\((plugin|doctor)\)/.test(l) || /\bto plugin\b/.test(l) ? "plugin" : "playbook";
+		buckets[key].push(l.replace(/\((plugin|playbook|doctor)\)/, "").replace(/\s*[—-]\s*to\s+(playbook|plugin|doctor)/, "").replace(/\s{2,}/g, " ").trim());
+	}
+	for (const s of sections) buckets[s].push(line.trim());
+	return REFLECT_HEADER + REFLECT_SECTIONS.filter((s) => buckets[s].length).map((s) => `## ${s}\n\n${buckets[s].join("\n")}\n`).join("\n");
 }
 
 /** How far before pi's own compaction threshold dev-flow compacts (one fat tool turn). */
@@ -528,7 +560,7 @@ export function shouldSelfCompact(
 
 /** reflections.md line for a forced (non-manual) pi compaction while a flow is bound — advisory, never gates. */
 export function compactionReflectionLine(slug: string, stage: Stage, reason: string, today: string): string {
-	return `- [ ] (plugin) pi auto-compacted (${reason}) at stage ${stage} — pace gates so work lands on disk before compaction; draft plan discussion into plan/ early — ${slug} ${today}`;
+	return `- [ ] pi auto-compacted (${reason}) at stage ${stage} — pace gates so work lands on disk before compaction; draft plan discussion into plan/ early — ${slug} ${today}`;
 }
 
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
@@ -545,11 +577,9 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "implement":
 			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
 		case "release":
-			return `run the release playbook (${cfg.release.review} → fix → docs${cfg.release.changelog ? ` → ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}, tag ${cfg.versioning.pattern.replace("{version}", "<version>")} from it` : cfg.release.tagPattern ? ` → tag ${cfg.release.tagPattern}` : ""} → PR → merge), then run flow release-done`;
-		case "cleanup":
-			return "worktree was not clean after release — fix it, then run flow cleanup (it asks you only if commits look unmerged)";
-		case "deploy":
-			return "run flow deploy to close out (production deploy is manual, never asked about)";
+			return state.approvals.release
+				? "release recorded — commit and push the release chores in the main checkout, then run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
+				: `run the release playbook (${cfg.release.review} → fix → docs${cfg.release.changelog ? ` → ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}, tag ${cfg.versioning.pattern.replace("{version}", "<version>")} from it` : cfg.release.tagPattern ? ` → tag ${cfg.release.tagPattern}` : ""} → PR → merge), then run flow release-done`;
 		default:
 			return "feature finished";
 	}

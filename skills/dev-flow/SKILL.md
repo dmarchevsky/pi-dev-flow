@@ -1,8 +1,8 @@
 ---
 name: dev-flow
 description: >
-  The repo's enforced feature workflow: plan → implement → release → cleanup →
-  deploy, one feature at a time, driven through the flow tool. Read before
+  The repo's enforced feature workflow: plan → implement → release →
+  done, one feature at a time, driven through the flow tool. Read before
   starting ANY feature work in a repo that has a .dev-flow/ directory — the
   stage guards block out-of-stage edits and main-branch git ops, so working
   outside this flow fails at the guard.
@@ -18,8 +18,8 @@ The user can run the same things as `/flow ...`.
 Ground rules:
 
 - A pi session is bound to exactly one feature (flow + branch + worktree). Parallel sessions, one feature each, are the model. The binding is automatic when one unfinished feature exists, set by `flow start`, and switched with `flow use <slug>`; with several unfinished features and no binding, gates demand an explicit slug and main-checkout writes stay blocked.
-- **Flow is the default for all work.** An unbound session cannot edit source files — start a feature (`flow start <slug>`, main checkout must be on the default branch) or bind an unfinished one (`flow use <slug>`). The only bypass is the operator running `/flow exempt <reason>` themselves: you may *mention* it when a task seems flow-worthy-exempt, never run it for yourself, and suggest `flow exempt off` when exempted work finishes.
-- **A project's own `flow-guard` rules** (`deny`/`confirm`/`protect`/`forbid` in project.md `## global`) apply at **every** stage and are not lifted by `flow exempt` — they are the operator's safety rules, not flow discipline. When one fires, its reason is the answer: stop, show it, and let the operator decide; never route around it.
+- **Flow is the default for all work.** An unbound session cannot edit source files — start a feature (`flow start <slug>`, main checkout must be on the default branch) or bind an unfinished one (`flow use <slug>`). There is no bypass: every request runs through the flow.
+- **A project's own `flow-guard` rules** (`deny`/`confirm`/`protect`/`forbid` in project.md `## global`) apply at **every** stage and are judged ahead of dev-flow's own verdicts — they are the operator's safety rules, not flow discipline. When one fires, its reason is the answer: stop, show it, and let the operator decide; never route around it.
 - Never read/write `.dev-flow/<slug>/state.json` yourself — it is flow-owned (the guard blocks it anyway). `flow status` is your view.
 - `.dev-flow/project.json` is operator-owned: read it for commands (test/build/run), the default branch, worktree path — never edit it; ask the user.
 - Also obey the repo's own AGENTS.md and project skills; dev-flow sequences stages, the project defines its conventions.
@@ -28,7 +28,7 @@ Ground rules:
 
 ## Start
 
-Repo without `.dev-flow/`? Run `flow init` — it writes `.dev-flow/project.md` from detection immediately, then your job is the review loop: show the operator the file (path + what was detected) and ask **confirm as-is, or change?** If they want changes, ask one short question per unclear knob (default branch, real commands, versioning, checklist items, prose rules — explain each in a line when it isn't obvious), apply their answers with `flow init --write "<content>"` (never hand-edit the file), and re-present until confirmed. With an existing config, `flow init` acts as a **doctor** — discuss its findings and fix them via the same write path; it never overwrites hand edits without confirming. Ghost feature dirs (a `plan/` whose `state.json` is gone) come with a delete offer: surface that dialog as it comes and let the operator answer it — never delete a feature directory on your own initiative. `flow doctor` runs the same probes **read-only** — prefer it whenever you (or the operator) just want the findings; `flow init` is the fix path, the one that can write. `--yes` = silent draft (CI), `--force` = rewrite from fresh detection, `--draft` = print the file without writing.
+Repo without `.dev-flow/`? Run `flow init` — it writes `.dev-flow/project.md` from detection immediately, then your job is the review loop: show the operator the file (path + what was detected) and ask **confirm as-is, or change?** If they want changes, ask one short question per unclear knob (default branch, real commands, versioning, checklist items, prose rules — explain each in a line when it isn't obvious), apply their answers with `flow init --write "<content>"` (never hand-edit the file), and re-present until confirmed. With an existing config, `flow init` acts as a **doctor** — discuss its findings and fix them via the same write path; it never overwrites hand edits without confirming. Ghost feature dirs (a `plan/` whose `state.json` is gone) come with a delete offer: surface that dialog as it comes and let the operator answer it — never delete a feature directory on your own initiative. `flow doctor` runs the same probes **read-only** — prefer it whenever you (or the operator) just want the findings; `flow init` is the fix path, the one that can write. `--force` = rewrite from fresh detection, `--draft` = print the file without writing.
 
 `flow start <slug> --ui` when the work touches anything user-visible, else `flow start <slug>`. Slug: lowercase words-dashed. Check `flow status` first to see whether one is already active.
 
@@ -82,12 +82,21 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 3. Update the changelog and bump the version manifest (`versioning.file`) to the exact version you will tag — manifest, changelog, and tag must all agree; `flow release-done` verifies the tag exists and is reachable from the default branch.
 4. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
 5. `git fetch` and confirm the merge landed, create the release tag **annotated** (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) — never `git push --follow-tags`, which silently skips lightweight tags (tags then never reach the remote and CI never publishes). After merge, a tag points at what actually shipped. If CI publishes artifacts from the tag, set `release.artifact` in the playbook so `release-done` verifies the published artifact — it also refuses local-only tags outright.
-6. Ask the operator **Ship?** — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and, when the worktree is clean and fully merged, removes worktree + branch + feature dir itself: the release is the end of the flow. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
+6. Ask the operator **Ship?** — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and records the release; `flow finish` is what closes the feature out. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
 
-## Stage: cleanup + deploy (only when release-done couldn't auto-close)
+## Stage: finish
 
-- `["cleanup"]` is reached when the worktree was dirty or commits looked unmerged (squash merges). Fix what it reports, then run it; it asks the operator only on unmerged-looking commits — if it reports those and you have no operator answer, stop and show them.
-- `["deploy"]` closes the feature — no questions. Production deployment is manual and out of scope; if the playbook defines a `commands.deployNote` runbook it is printed for reference. Never ask the operator whether a prod deploy happened.
+`flow finish [slug]` is the last step of a released feature — the one command that closes it out:
+
+- it refuses until `release-done` recorded the release, so an unfinished feature never gets a tidy
+  ending (abandon those with `flow abort`);
+- it requires the main checkout to be **clean and pushed** — an uncommitted changelog or a local-only
+  release commit is exactly what it protects against — and it refuses until that is fixed;
+- it removes the worktree and the branch, then deletes `.dev-flow/<slug>/` and unbinds the session.
+  Uncommitted worktree edits block it; unmerged-looking commits (squash merges) make it ask the
+  operator — if it asks and you have no operator answer, stop and show them.
+
+Production deployment stays manual and out of scope: never ask the operator whether a prod deploy happened.
 
 ## When things go sideways
 
@@ -96,8 +105,8 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 
 ## Reflect (your suggestion queue)
 
-When you notice something the playbook or the plugin should improve — drifted commands, gate friction, a plugin bug — park it instead of complaining in chat: `flow reflect "<one-line note>" [--to playbook|plugin|doctor]` (default `playbook`). The operator sees the open count in status and stage context and decides what happens next:
+When you notice something the playbook or the plugin should improve — drifted commands, gate friction, a plugin bug — park it instead of complaining in chat: `flow doctor reflect "<one-line note>"`. The note lands under `## playbook` (what to change in this project's playbook) or `## plugin` (what to change in dev-flow itself) — the wording decides, and a note about both is written to both. The operator sees the open count in status and stage context and decides what happens next:
 
 - Only reflect real friction, one line each; never reflect the same issue twice.
-- `flow reflect` lists open items. When the operator says "fold them in": draft the playbook update (read current file via `flow init --draft` → adjust → `flow init --write`), then check items off (`- [x]`) in `.dev-flow/reflections.md` with a normal edit — that file is your queue; `project.md` is not.
-- `to=plugin` items: offer to file a GitHub issue against dev-flow; the operator confirms.
+- `flow doctor reflect` lists open items. When the operator says "fold them in": draft the playbook update (read current file via `flow init --draft` → adjust → `flow init --write`), then check items off (`- [x]`) in `.dev-flow/reflections.md` with a normal edit — that file is your queue; `project.md` is not.
+- `## plugin` items: offer to file a GitHub issue against dev-flow; the operator confirms.
