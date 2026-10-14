@@ -382,7 +382,7 @@ ${mdDigest(draftRefresh)}`))
 			});
 			if (warn.length) lines.push(...warn);
 			const refl = readReflections(root);
-			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — flow reflect`);
+			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — flow doctor reflect`);
 			return { text: lines.join("\n") || "no features" };
 		}
 
@@ -928,7 +928,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const curBr = await currentBranch(ctx.cwd);
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
 			const refl0 = readReflections(ctx.cwd);
-			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open (flow reflect).`;
+			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open (flow doctor reflect).`;
 			return { message: { customType: "dev-flow-context", display: false, content } };
 		}
 		const guidance: string[] = [];
