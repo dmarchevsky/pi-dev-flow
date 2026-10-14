@@ -657,3 +657,27 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	assert.match(fin.content[0].text, /done/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "rel")), "feature directory removed on finish");
 });
+
+test("a live foreign claim refuses auto-bind; flow use takes over explicitly", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
+	const a = session("sess-A");
+	await pi.cmds.flow.handler("init", a);
+	await pi.cmds.flow.handler("start claim-feature", a);
+	const claimOf = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json"), "utf8")) as { key: string };
+	assert.equal(claimOf().key, "sess-A", "start binds and claims the feature");
+
+	// a second live session on the same repo must not auto-bind onto it
+	const b = session("sess-B");
+	const injB = (await pi.handlers.before_agent_start[0]({}, b)) as { message?: { content: string } };
+	assert.match(injB.message?.content ?? "", /no flow bound/, "a foreign live claim refuses the auto-bind");
+	assert.match(injB.message?.content ?? "", /claim-feature is claimed by another live session/, "the unbound context names the blocked feature");
+
+	// explicit use succeeds and says it took over from a live holder
+	await pi.cmds.flow.handler("use claim-feature", b);
+	assert.ok(b.notices.at(-1)?.includes("taken over from live session"), "takeover from the live holder is stated");
+	assert.equal(claimOf().key, "sess-B", "the claim moves to the taking-over session");
+	const injB2 = (await pi.handlers.before_agent_start[0]({}, b)) as { message?: { content: string } };
+	assert.match(injB2.message?.content ?? "", /bound to: claim-feature/, "after the takeover B is bound");
+});

@@ -9,6 +9,7 @@ import {
 	approveGate,
 	bashFlowGuard,
 	checkoutTarget,
+	claimBlocks,
 	compactionReflectionLine,
 	featureBranchPrefix,
 	gitInvocation,
@@ -385,4 +386,12 @@ test("mergeConfig reads guard rules from project.json (bare patterns and objects
 	assert.deepEqual(c.guard.deny, [{ pattern: "\\bgit\\b[^]*--force", why: "" }]);
 	assert.equal(c.guard.forbid[0].why, "secret storage");
 	assert.deepEqual(mergeConfig(null).guard, { deny: [], confirm: [], protect: [], forbid: [] });
+});
+
+test("claimBlocks blocks auto-bind only for a foreign live claim", () => {
+	const claim = { key: "A", pid: 123, at: "now" };
+	assert.equal(claimBlocks(null, "B"), false, "no claim — auto-bind proceeds");
+	assert.equal(claimBlocks(claim, "A"), false, "our own claim — auto-bind proceeds");
+	assert.equal(claimBlocks(claim, "B", () => true), true, "foreign claim from a live pid — auto-bind blocked");
+	assert.equal(claimBlocks(claim, "B", () => false), false, "foreign claim from a dead pid — claim is void");
 });
