@@ -33,7 +33,7 @@ Repo without `.dev-flow/`? Run `flow init` — run `flow init --draft`, discuss 
 ## Stage: plan
 
 1. Research the code needed for the plan (reads are always allowed).
-2. Write the plan to `.dev-flow/<slug>/plan/plan.md`: problem, approach, files to touch, test strategy, risks. Keep it reviewable, not exhaustive.
+2. Write the plan to `.dev-flow/<slug>/plan/plan.md`: problem, approach, files to touch, test strategy, risks. Keep it reviewable, not exhaustive. Before asking for approval check `git log origin/<default>..<default> --oneline` — local-only default-branch commits fall out of the worktree's base (push them or re-plan around them).
 3. **UI flag set?** Build the mockups in `plan/mockups/` and render them — a mockup that was never rendered is not a mockup:   - Write one HTML per screen/state at `plan/mockups/<screen>.html`. Reuse the project's real stylesheet and class names where it exists (relative links work from inside `.dev-flow/`) — fidelity by construction.
    - Find a headless chromium: probe `chromium`, `chromium-browser`, `google-chrome` on PATH; else playwright's shell at `~/.cache/ms-playwright/*/chrome-headless-shell-linux64/chrome-headless-shell`.
    - Render each screen at the widths the project cares for (default: phone 390, desktop 1280):
@@ -49,7 +49,7 @@ Approval creates the worktree and branch. Until then no code edits are possible.
 
 Work happens **only in the worktree** the gate created (path in `flow status` or the injection line). Edit and write outside it are blocked. When other sessions hold other features, their worktrees are theirs — never edit them; attribution guards judge every path by its owning feature.
 
-1. Implement per the approved plan, following project conventions and the **stage guidance injected at stage start** (tier-3 prose from project.md).
+1. Implement per the approved plan, following project conventions and the **stage guidance injected at stage start** (tier-3 prose from project.md). Commit in the worktree **as you go** — small reviewable commits; a twelve-file monolith saved for the end faces review blind and is not crash-safe.
 2. Write appropriate tests for the change as you go (project test framework — see the `test` key / `flow-check` blocks).
 3. Run `flow check` — it runs every tier-1 check (test, health, named `flow-check` blocks) and records each. Any later edit in the worktree invalidates checks and the tier-2 confirmation; rerun before verify.
 4. UI flag set? Perform an actual visual check with a browser (screenshot or automated visual pass per the project's tooling) — not just a typecheck.
@@ -77,8 +77,8 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 2. Update documentation to reflect the change.
 3. Update the changelog and bump the version manifest (`versioning.file`) to the exact version you will tag — manifest, changelog, and tag must all agree; `flow release-done` verifies the tag exists and is reachable from the default branch.
 4. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
-5. `git fetch` and confirm the merge landed, create the release tag (after merge — a tag points at what actually shipped) and push it.
-6. Ask the operator the **one release question** — "confirm release <name> v<version>?" — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and, when the worktree is clean and fully merged, removes worktree + branch + feature dir itself: the release is the end of the flow. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative.
+5. `git fetch` and confirm the merge landed, create the release tag **annotated** (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) — never `git push --follow-tags`, which silently skips lightweight tags (tags then never reach the remote and CI never publishes). After merge, a tag points at what actually shipped. If CI publishes artifacts from the tag, set `release.artifact` in the playbook so `release-done` verifies the published artifact — it also refuses local-only tags outright.
+6. Ask the operator the **one release question** — "confirm release <name> v<version>?" — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and, when the worktree is clean and fully merged, removes worktree + branch + feature dir itself: the release is the end of the flow. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
 
 ## Stage: cleanup + deploy (only when release-done couldn't auto-close)
 
