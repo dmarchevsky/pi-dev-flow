@@ -7,7 +7,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, mergeConfig, parseVersion } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, mergeConfig, parseVersion, type GuardRules } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "release", "cleanup", "deploy"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
@@ -23,6 +23,7 @@ export interface ParsedMd {
 	global: Record<string, string>;
 	flow: Record<MdStage, Record<string, string>>;
 	checks: StageCheck[];
+	guard: GuardRules;
 	checklist: Record<string, ChecklistItem[]>;
 	prose: Record<string, string>;
 }
@@ -66,13 +67,54 @@ const KEYMAP: Record<string, Record<string, string>> = {
 
 const CHECK_ITEM = /^\s*-\s*\[[ xX]\]\s+(.+)/;
 
+const GUARD_VERBS = ["deny", "confirm", "protect", "forbid"] as const;
+type GuardVerb = (typeof GUARD_VERBS)[number];
+const isGuardVerb = (w: string): w is GuardVerb => (GUARD_VERBS as readonly string[]).includes(w);
+
+/** ` ```flow-guard ` body: `<verb> <pattern> :: <why>` — deny/confirm carry a JS regex source,
+ *  protect/forbid a repo-relative path. ` :: ` (whitespace before the colons) is the separator so a
+ *  regex like `pr::list` survives; a bad regex is a hard finding so `flow init --write` refuses it. */
+function parseGuardRules(entries: { line: string; where: string }[], stage: string | null, p: ParsedMd): void {
+	if (stage !== "global") {
+		p.warn.push(`${entries[0].where}: flow-guard rules belong to ## global — the block under ## ${stage ?? "(no stage)"} is ignored`);
+		return;
+	}
+	for (const { line, where } of entries) {
+		const m = line.match(/^(\w+)\s+(.*?)\s*::\s*(.*?)\s*$/);
+		if (!m) {
+			const part = line.match(/^(\w+)\s+/);
+			p.hard.push(`${where}: flow-guard rule needs \` :: <why>\`${part ? ` (no separator after \`${part[1]}\`)` : ""}`);
+			continue;
+		}
+		const [, verb, pattern, why] = m;
+		if (!isGuardVerb(verb)) {
+			p.warn.push(`${where}: unknown flow-guard verb "${verb}" — expected deny, confirm, protect or forbid — ignored`);
+			continue;
+		}
+		if (!pattern) {
+			p.hard.push(`${where}: flow-guard ${verb} rule has no pattern`);
+			continue;
+		}
+		if (verb === "deny" || verb === "confirm") {
+			try {
+				new RegExp(pattern);
+			} catch (e) {
+				p.hard.push(`${where}: flow-guard ${verb} pattern is not a valid regular expression: ${(e as Error).message}`);
+				continue;
+			}
+		}
+		p.guard[verb].push({ pattern, why });
+	}
+}
+
 export function parseProjectMd(text: string): ParsedMd {
-	const p: ParsedMd = { hard: [], warn: [], global: {}, flow: Object.fromEntries(MD_STAGES.map((s) => [s, {}])) as Record<MdStage, Record<string, string>>, checks: [], checklist: {}, prose: {} };
+	const p: ParsedMd = { hard: [], warn: [], global: {}, flow: Object.fromEntries(MD_STAGES.map((s) => [s, {}])) as Record<MdStage, Record<string, string>>, checks: [], guard: structuredClone(DEFAULTS.guard), checklist: {}, prose: {} };
 	let stage: string | null = null;
 	const prose: Record<string, string[]> = {};
 	let inFence: string | null = null; // "flow" | "flow-check" | other lang
 	let checkName = "";
 	let checkBody: string[] = [];
+	let guardBody: { line: string; where: string }[] = [];
 	let lastLine = ""; // for fence-start line numbers (1-based = index+1)
 	text.split("\n").forEach((line, i) => {
 		const where = `line ${i + 1}`;
@@ -84,6 +126,10 @@ export function parseProjectMd(text: string): ParsedMd {
 					else if (!cmd) p.hard.push(`${lastLine}: flow-check "${checkName}" is empty`);
 					else if (stage !== "implement") p.warn.push(`${where}: flow-check "${checkName}" ignored (tier-1 checks belong to ## implement)`);
 					else p.checks.push({ name: checkName, cmd });
+				}
+				if (inFence === "flow-guard") {
+					if (guardBody.length) parseGuardRules(guardBody, stage, p);
+					guardBody = [];
 				}
 				inFence = null;
 				checkName = "";
@@ -102,6 +148,7 @@ export function parseProjectMd(text: string): ParsedMd {
 					else p.flow[stage as MdStage][mapped] = m[2];
 				}
 			} else if (inFence === "flow-check") checkBody.push(line);
+			else if (inFence === "flow-guard") guardBody.push({ line, where });
 			return;
 		}
 		lastLine = where;
@@ -112,7 +159,8 @@ export function parseProjectMd(text: string): ParsedMd {
 			else if (lang.startsWith("flow-check")) {
 				inFence = "flow-check";
 				checkName = lang.slice("flow-check".length).trim();
-			} else inFence = lang || "code";
+			} else if (lang === "flow-guard") inFence = "flow-guard";
+			else inFence = lang || "code";
 			return;
 		}
 		const head = line.match(/^##\s+(\S+)\s*$/);
@@ -152,6 +200,8 @@ export function mdToConfig(p: ParsedMd, base?: Config): Config {
 	const rel = (nested as { release?: { githubRelease?: unknown } }).release;
 	if (rel && typeof rel.githubRelease === "string") rel.githubRelease = !/^(no|false)$/i.test(rel.githubRelease);
 	mergeInto(c, nested);
+	// a flow-guard block is the whole rule set; with none in project.md the project.json base stands
+	if (GUARD_VERBS.some((v) => p.guard[v].length)) c.guard = structuredClone(p.guard);
 	c.checkList = [
 		...(c.commands.test ? [{ name: "test", cmd: c.commands.test }] : []),
 		...(c.commands.health ? [{ name: "health", cmd: c.commands.health }] : []),
@@ -218,7 +268,8 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, h
 		const run = cmd.match(/\b(?:npm|pnpm|yarn|bun)\s+run\s+([\w:.-]+)/);
 		if (run && pkgScripts && !(run[1] in pkgScripts)) f.push(`${label} runs "run ${run[1]}" but package.json has no such script`);
 		for (const tok of cmd.split(/\s+/)) {
-			if (/^[\w.-]+\/[\w./-]+$/.test(tok) && /\.\w+$/.test(tok) && !existsSync(path.join(root, tok))) {
+			// only root-relative paths are probeable — checks run in the worktree, where `../../docker/.env` is correct
+			if (/^[\w][\w-]*\/[\w./-]+$/.test(tok) && /\.\w+$/.test(tok) && !existsSync(path.join(root, tok))) {
 				f.push(`${label} references missing file ${tok}`);
 				break;
 			}

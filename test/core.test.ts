@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import {
 	applyAnswer,
@@ -8,6 +11,9 @@ import {
 	compactionReflectionLine,
 	featureBranchPrefix,
 	gitInvocation,
+	guardBash,
+	guardPath,
+	type GuardRules,
 	checklistHash,
 	cleanupAssess,
 	DEFAULTS,
@@ -260,4 +266,57 @@ test("compactionReflectionLine is a valid open reflection item", () => {
 	const line = compactionReflectionLine("compact-aware", "implement", "threshold", "2025-10-13");
 	assert.deepEqual(openReflections(line).length, 1);
 	assert.match(line, /\(plugin\) pi auto-compacted \(threshold\) at stage implement .* — compact-aware 2025-10-13$/);
+});
+
+// ---------------------------------------------------------------- flow-guard rules
+
+const rules = (o: Partial<GuardRules> = {}): GuardRules => ({ deny: [], confirm: [], protect: [], forbid: [], ...o });
+
+test("guardBash: deny blocks with the operator's reason, confirm is collected for the caller to ask", () => {
+	const g = rules({
+		deny: [{ pattern: "\\bgit\\b[^]*--force(?!\\w)", why: "history stays linear" }],
+		confirm: [{ pattern: "\\bdocker\\b[^]*\\bcompose\\b[^]*\\brestart\\b", why: "drops the upstream" }],
+	});
+	assert.equal(guardBash("git push --force-with-lease origin feat/x", g).block, "project rule: history stays linear");
+	assert.equal(guardBash("git push origin feat/x", g).block, null);
+	assert.deepEqual(guardBash("docker compose restart app", g).confirms.map((r) => r.why), ["drops the upstream"]);
+	assert.equal(guardBash("docker compose restart app", g).block, null, "a confirm rule never blocks on its own");
+	assert.equal(guardBash("ls -la", rules()).block, null, "no rules, no verdict");
+});
+
+test("guardBash: read-only segments are skipped — quoted text is not a command", () => {
+	const g = rules({ deny: [{ pattern: "\\bgit\\b[^]*--force", why: "no force pushes" }] });
+	assert.equal(guardBash('grep -rn "git push --force origin main" docs/', g).block, null, "a docs search quoting the denied command must not trip");
+	assert.equal(guardBash("git log --oneline && git status", g).block, null, "read-only git subcommands are skipped");
+	assert.equal(guardBash("git push origin feat && grep -- --force NOTES.md", g).block, null, "a later segment's word cannot complete an earlier segment's rule");
+	assert.equal(guardBash("git log --oneline && git push --force", g).block, "project rule: no force pushes", "the doing-segment still trips");
+	assert.match(guardBash('echo "git push --force" >> notes.md', g).block ?? "", /no force pushes/, "a redirect makes even echo a write");
+});
+
+test("guardBash: deny beats confirm inside one chain", () => {
+	const g = rules({
+		deny: [{ pattern: "\\bgit\\b[^]*worktree\\s+prune", why: "prunes other sessions" }],
+		confirm: [{ pattern: "\\bdocker\\b[^]*\\bcompose\\b[^]*\\bdown\\b", why: "stops containers" }],
+	});
+	const v = guardBash("docker compose down && git worktree prune", g);
+	assert.equal(v.block, "project rule: prunes other sessions");
+});
+
+test("guardPath: subtree, paths that do not exist yet, and no escaping the root", () => {
+	const root = mkdtempSync(path.join(tmpdir(), "guard-"));
+	mkdirSync(path.join(root, "docker")); // docker/secrets does not exist yet
+	const g = rules({ protect: [{ pattern: "docker/.env", why: "live secrets" }], forbid: [{ pattern: "docker/secrets", why: "secret storage" }] });
+	assert.equal(guardPath(path.join(root, "docker/secrets/new-key.pem"), root, g).block, "project rule: secret storage", "a directory rule covers its subtree, created or not");
+	assert.equal(guardPath(path.join(root, "docker/.env"), root, g).confirm, "live secrets");
+	assert.equal(guardPath(path.join(root, "docker/x/../.env"), root, g).confirm, "live secrets", "a lexical .. still lands on the rule");
+	assert.equal(guardPath(path.join(root, "src/app.ts"), root, g).block, null);
+	const elsewhere = mkdtempSync(path.join(tmpdir(), "outside-"));
+	assert.equal(guardPath(path.join(elsewhere, "docker/.env"), root, g).confirm, null, "the same relative path in another checkout is not this repo's file");
+});
+
+test("mergeConfig reads guard rules from project.json (bare patterns and objects)", () => {
+	const c = mergeConfig({ guard: { deny: ["\\bgit\\b[^]*--force"], forbid: [{ pattern: "docker/secrets", why: "secret storage" }] } });
+	assert.deepEqual(c.guard.deny, [{ pattern: "\\bgit\\b[^]*--force", why: "" }]);
+	assert.equal(c.guard.forbid[0].why, "secret storage");
+	assert.deepEqual(mergeConfig(null).guard, { deny: [], confirm: [], protect: [], forbid: [] });
 });

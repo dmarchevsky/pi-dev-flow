@@ -64,6 +64,7 @@ While a feature is active, the extension intercepts every tool call:
 - **Work stays in the worktree**: at stage `implement`, edits are confined to that feature's worktree — judged per-path by the owning feature, so one session can never write into another session's worktree or into the main checkout.
 - **Flow by default**: in a repo with `.dev-flow/`, an unbound session cannot touch source files at all — every request goes through `flow start`/`flow use`, unless the *operator* exempts the session (`/flow exempt <reason>`; status bar shows `◆ exempt`). `flow start` refuses when the main checkout isn't on the default branch, worktrees are always created from the default branch, and the agent cannot check feature branches out in the main checkout.
 - **Gates can't be skipped**: `state.json` is untouchable by the agent (edit tool and bash); `project.json` is operator-owned; editing worktree code invalidates a passing test check until `flow test` reruns.
+- **Your project's own rules**: every `deny`/`confirm`/`protect`/`forbid` rule from the `flow-guard` block in project.md `## global` runs on every bash command and every edit/write path — in every stage and even while a session is flow-exempt. A block always carries the reason you wrote.
 - **Compact-aware**: when context nears pi's auto-compaction threshold, dev-flow compacts *itself* at a safe point — right after a gate wrote state to disk, or when a run settles — with flow-aware summary instructions. It never compacts while chat is the state (open tier-2 dialog, plan discussion not yet in `plan/`), so pi's mid-work compaction rarely fires; when it does, a note lands in `reflections.md`.
 - The active stage is injected into the model's context every turn; the bundled `dev-flow` skill is the agent's playbook, including the recommended release sequence: review (`/ponytail-review`) → fixes → docs → changelog/version → PR → merge → tag → `release-done`.
 - **Status bar**: while a feature is active the pi footer shows `◆ <slug> ▸ <stage>` (stage-colored, `✗` on failing checks); press `ctrl+,` for the detail panel (approvals, checks, branch/worktree, next step).
@@ -85,11 +86,13 @@ while your bound feature is in `plan`/`implement` and while any feature is unbou
 
 The operator-owned playbook, gitignored, edited by you (the agent is blocked from writing it
 directly; it goes through `flow init --write` which validates). Content is organized per stage
-(`## plan`, `## implement`, `## release`, `## deploy`…) in **three tiers**:
+(`## plan`, `## implement`, `## release`, `## deploy`…) in **three tiers** — tier 1 splits into
+executable checks and hard safety rules:
 
 | Tier | Notation | Enforcement |
 |---|---|---|
 | 1 — executable | ` ```flow` (`key = value`) config blocks; ` ```flow-check <name>` command blocks | gates run every check, record pass/fail, worktree edits invalidate — hard |
+| 1 — guard | ` ```flow-guard ` (`deny`/`confirm`/`protect`/`forbid`) rules in `## global` | enforced on every bash command and every edit/write path, at every stage, exemption or not — hard block or operator confirmation |
 | 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features) | gate confirms cover them as a set (hashed, invalidated on edits); `(ui)` items never appear for non-UI features |
 | 3 — prose | any other text | injected to the agent when its stage begins — advisory |
 
@@ -109,13 +112,50 @@ node scripts/check-overflow.mjs
 Prefer feature flags for risky paths.
 ````
 
+Your project's own safety rules are a `flow-guard` block in `## global` — the reason a project
+adopting dev-flow can delete its own guard extension:
+
+````markdown
+## global
+```flow-guard
+deny    \bgit\b[^\n]*--force(?!\w)   :: history stays linear — PRs squash-merge
+deny    \bgit\b[^\n]*\bworktree\s+prune\b :: it prunes other sessions' worktrees
+confirm \bgit\b[^\n]*\bbranch\s+(?:-D\b|--delete\b) :: deletes a squash-merged branch git cannot see as merged
+confirm \bdocker\b[^\n]*\bcompose\b[^\n]*\brestart\b :: drops a permanent upstream connection
+protect docker/.env                  :: gitignored live secrets — never echo the values
+forbid  docker/secrets               :: gitignored secret storage
+```
+````
+
+| Verb | Applies to | What happens |
+|---|---|---|
+| `deny` | one segment of a bash command | hard block — no confirmation offered |
+| `confirm` | one segment of a bash command | asks the operator; **blocked when no UI is present** — a hidden confirmation is not a confirmation |
+| `protect` | an edit/write path | asks the operator, same no-UI rule |
+| `forbid` | an edit/write path | hard block |
+
+` :: ` separates the matcher from the reason, so reasons are free text and show up verbatim when a
+rule fires. `deny`/`confirm` matchers are JS regex sources — an unparseable regex is a hard finding,
+so `flow init --write` refuses the file (an unknown verb is a warning). `protect`/`forbid` take a
+repo-relative path; a rule on a directory covers its subtree, including files that do not exist yet.
+The block belongs to `## global` — these rules are never stage-scoped, and one under a stage warns and
+applies nothing. `flow exempt` does **not** lift them: exemption is about flow discipline, these are
+the operator's safety rules.
+
+Matching is per shell segment (the guard splits on `;`, `|`, `&&` and newlines, honouring `cd … &&` and
+`git -C`), and a segment whose head only reads (`grep`, `cat`, `ls`, `git log`, `jq`, …) is skipped — so
+`grep "git push --force" docs/` searches, it does not push.
+
 `## release` prose is where rules like “follow semver: minor for user-facing features, patch
 otherwise; confirm the number before tagging” live — the agent sees them at stage entry, and
 `flow release-done` still hard-checks the manifest↔tag agreement. `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `release.review`,
 `release.changelog` and `release.github = false` (skip GitHub release creation) and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
-`dev` (dev deploy run by `flow verify` before the operator question — must background and exit,
-e.g. `docker compose up -d .`), the release stage takes
+`dev`. Of those, `setup` runs once inside a freshly created worktree at `approve` (where `cp .env` +
+`npm install` belong — a failing setup fails the gate), and `run` is advisory: the agent starts the app
+with it for the running-and-healthy walk, dev-flow never runs it itself. `dev` is the dev deploy run by
+`flow verify` before the operator question — it must background and exit,
+e.g. `docker compose up -d .`. The release stage takes
 `versionFile`/`versionTag` (defaults `v{version}`), `## deploy` a `note =` line. A legacy
 `project.json` still works — project.md overrides it, and the doctor flags having both.
 
@@ -123,7 +163,10 @@ e.g. `docker compose up -d .`), the release stage takes
 immediately, then asks you to confirm the file or change it — the agent asks one short question per
 knob you want adjusted and writes your answers back validated (`--write <content>`; `--draft` prints
 the current file whenever you'd rather read raw); **existing file** → doctor mode (drift, dead commands/scripts,
-unparseable manifest, dual configs — it never runs your commands) offering a refresh. At any time
+unparseable manifest, dual configs — it never runs your commands) offering a refresh — which it
+**refuses** whenever your file has lines a regenerated draft cannot reproduce (prose, your own
+checklist items, hand-set keys): it prints the findings and the lines it would drop instead of
+overwriting them. `--force` remains the deliberate overwrite. At any time
 you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doctor) validates and
 flags problems. `--yes` silent draft for CI; `--force` rewrites from fresh detection. Improvement
 ideas the agent notices along the way queue up in `.dev-flow/reflections.md` (`flow reflect
@@ -148,6 +191,8 @@ ideas the agent notices along the way queue up in `.dev-flow/reflections.md` (`f
 
 - Deploy is manual by design (phase 2 automation).
 - Bash git-guard parses shell segments to find real `git` invocations (honoring `cd … &&`, `git -C`, full paths) and judges them by the branch of the directory the command runs in — the feature worktree when you work there. An exotic shell wrapper (subshell, variable) around `git commit` could still slip past; the `.git` hook covers plain commits outside Pi too, but neither is a security sandbox.
+- `flow-guard` and the git guard are guardrails for what an agent types, **not a parser and not a sandbox**. Quoted payloads still match — `gh pr create --body "…git branch -D…"` trips a rule (the mitigation is `--body-file`), and rules fire on doing-verbs an agent types in the clear, not on every way a side effect could be reached. Write rules for the common mistakes, keep validation you actually depend on in scripts and CI.
+- `protect`/`forbid` judge edit/write tools; a bash redirect (`echo k > docker/secrets/k`) is a `deny` rule's job.
 - ~~One active feature per pointer~~ — replaced by session bindings (v0.5.0): one feature per pi session, parallel sessions supported; `abort` unbinds.
 - Gate commands (`test`, `check`, `verify` build, `health`) run inside the feature worktree once it exists — the code under test lives there; before the worktree exists they run in the main checkout.
 

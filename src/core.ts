@@ -4,7 +4,7 @@
  * Pure(ish) logic only — no pi imports here so it is unit-testable with
  * `node --test`. The extension in extensions/dev-flow.ts is thin wiring.
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
@@ -73,6 +73,8 @@ export interface Config {
 	versioning: Versioning;
 	release: { review: string; changelog?: string; tagPattern?: string; githubRelease?: boolean; artifact?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
+	/** Operator safety rules from the project.md flow-guard block — stage- and exemption-independent. */
+	guard: GuardRules;
 }
 
 export const DEFAULTS: Config = {
@@ -87,6 +89,7 @@ export const DEFAULTS: Config = {
 	versioning: { pattern: "v{version}" },
 	release: { review: "/ponytail-review", githubRelease: true },
 	mainHook: true,
+	guard: { deny: [], confirm: [], protect: [], forbid: [] },
 };
 
 export function mergeConfig(raw: unknown): Config {
@@ -104,6 +107,11 @@ export function mergeConfig(raw: unknown): Config {
 		const v = r.versioning as Record<string, unknown>;
 		if (typeof v.file === "string") c.versioning.file = v.file;
 		if (typeof v.pattern === "string") c.versioning.pattern = v.pattern;
+	}
+	if (r.guard && typeof r.guard === "object") {
+		const g = r.guard as Record<string, unknown>;
+		for (const verb of ["deny", "confirm", "protect", "forbid"] as const)
+			if (Array.isArray(g[verb])) c.guard[verb] = normalizeGuardRules(g[verb]);
 	}
 	// tier-1 checks from plain commands so legacy project.json keeps the same teeth as project.md
 	c.checkList = [
@@ -243,7 +251,7 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 	let dir: string | null = null;
 	// global git options that consume a following value
 	const OPT_VAL = new Set(["-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace", "--super-prefix"]);
-	for (const seg of command.split(/[\n;|&]+/)) {
+	for (const seg of bashSegments(command)) {
 		const tok = seg.trim().split(/\s+/).filter(Boolean);
 		let i = 0;
 		while (i < tok.length && /^[\w.]+=/.test(tok[i])) i++; // leading ENV=val prefixes
@@ -334,6 +342,109 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 	}
 	if (git("merge") && onMain && o.stage !== "release") return `merging into ${o.defaultBranch} requires stage "release"`;
 	return null;
+}
+
+// ------------------------------------------------------- project safety rules
+
+/** One flow-guard rule: `pattern` is a JS regex source (deny/confirm) or a repo-relative path (protect/forbid). */
+export interface GuardRule {
+	pattern: string;
+	why: string;
+}
+
+export interface GuardRules {
+	deny: GuardRule[];
+	confirm: GuardRule[];
+	protect: GuardRule[];
+	forbid: GuardRule[];
+}
+
+/** project.json may spell a rule as a bare pattern string. */
+function normalizeGuardRules(raw: unknown[]): GuardRule[] {
+	const out: GuardRule[] = [];
+	for (const e of raw) {
+		if (typeof e === "string" && e.trim()) out.push({ pattern: e, why: "" });
+		else if (e && typeof e === "object") {
+			const o = e as Record<string, unknown>;
+			if (typeof o.pattern === "string" && o.pattern.trim()) out.push({ pattern: o.pattern, why: typeof o.why === "string" ? o.why : "" });
+		}
+	}
+	return out;
+}
+
+/** Shell segment boundaries — the same split the git guard uses, so `cd … &&`, `;`, pipes and `&` each judge on their own. */
+export function bashSegments(command: string): string[] {
+	return command.split(/[\n;|&]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+/** Heads whose arguments are data, not commands: a `grep "git push origin main"` in a docs search must not trip a deny rule. */
+const READ_ONLY_HEADS = new Set(["grep", "rg", "cat", "bat", "head", "tail", "less", "awk", "jq", "find", "fd", "ls", "tree", "wc", "sort", "uniq", "column", "cut", "diff", "cmp", "stat", "file", "du", "echo", "printf", "which", "man"]);
+/** `sed` is deliberately absent — `sed -i` writes. */
+const READ_ONLY_GIT = new Set(["log", "show", "diff", "status", "blame", "cat-file", "ls-files", "rev-parse"]);
+const GIT_INVOKED = /(^|[\s/;|&(])git\s+(\S+)/;
+
+// project.md is re-parsed on every tool call; compiled rules are cached by source.
+const regexCache = new Map<string, RegExp | null>();
+function compile(source: string): RegExp | null {
+	if (!regexCache.has(source)) {
+		try {
+			regexCache.set(source, new RegExp(source));
+		} catch {
+			regexCache.set(source, null); // unreachable through project.md (parse validates); project.json is not
+		}
+	}
+	return regexCache.get(source)!;
+}
+
+/** Why this bash segment must never run (deny), or needs an explicit operator OK (confirm).
+ *  Segments are judged one at a time — rule regexes are written with a no-newline character class,
+ *  so an `&&` chain cannot let one segment's text drag a rule across from the next. */
+export function guardBash(command: string, g: GuardRules): { block: string | null; confirms: GuardRule[] } {
+	const segs = bashSegments(command);
+	const confirms: GuardRule[] = [];
+	const skip = (seg: string): boolean => {
+		if (/[<>]/.test(seg)) return false; // a redirect makes even a read-only head a write
+		const head = seg.split(/\s+/)[0].replace(/^\.\//, "");
+		if (READ_ONLY_HEADS.has(head)) return true;
+		const gm = seg.match(GIT_INVOKED);
+		return !!gm && READ_ONLY_GIT.has(gm[2]);
+	};
+	for (const seg of segs) {
+		if (skip(seg)) continue;
+		for (const r of g.deny) if (compile(r.pattern)?.test(seg)) return { block: `project rule: ${r.why || `denied pattern ${r.pattern}`}`, confirms };
+		for (const r of g.confirm) if (compile(r.pattern)?.test(seg) && !confirms.includes(r)) confirms.push(r);
+	}
+	return { block: null, confirms };
+}
+
+/** realpath the deepest existing ancestor and walk back down, so a rule on a directory covers
+ *  `docker/secrets/new-key` on a host where that directory does not exist yet. */
+function realAbs(abs: string): string {
+	const missing: string[] = [];
+	let cur = abs;
+	while (!existsSync(cur)) {
+		missing.unshift(path.basename(cur));
+		const parent = path.dirname(cur);
+		if (parent === cur) break;
+		cur = parent;
+	}
+	let real = realpathSync(cur);
+	for (const seg of missing) real = path.join(real, seg);
+	return real;
+}
+
+/** Protect/forbid verdict for an edit/write target: a rule on a directory covers its subtree, and
+ *  comparing realpaths means `../` cannot reach out of the root. */
+export function guardPath(abs: string, root: string, g: GuardRules): { block: string | null; confirm: string | null } {
+	const real = realAbs(path.resolve(abs)); // resolve collapses lexical `..` so an escape cannot dodge the rule
+	const hit = (rule: GuardRule): boolean => {
+		const target = realAbs(path.resolve(root, rule.pattern));
+		return real === target || real.startsWith(target + path.sep);
+	};
+	const forbid = g.forbid.find(hit);
+	if (forbid) return { block: `project rule: ${forbid.why || `forbidden path ${forbid.pattern}`}`, confirm: null };
+	const protect = g.protect.find(hit);
+	return { block: null, confirm: protect ? protect.why || `protected path ${protect.pattern}` : null };
 }
 
 export interface FeatureRef {

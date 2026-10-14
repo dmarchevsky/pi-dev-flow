@@ -36,6 +36,8 @@ import {
 	compactionReflectionLine,
 	featureBranchPrefix,
 	gitInvocation,
+	guardBash,
+	guardPath,
 	parsePushRefs,
 
 	listFiles,
@@ -216,6 +218,12 @@ async function autoClose(root: string, state: FlowState, cfg: Config): Promise<s
 	return rm.ok ? "worktree and branch removed" : null;
 }
 
+/** Lines the current project.md has that a regenerated draft cannot reproduce. */
+function droppableLines(current: string, draft: string): string[] {
+	const keep = new Set(draft.split("\n").map((l) => l.trim()).filter(Boolean));
+	return current.split("\n").map((l) => l.trim()).filter((l) => l && !keep.has(l));
+}
+
 function gateCwd(root: string, state: FlowState): string {
 	const wt = worktreeAbs(root, state);
 	return wt && existsSync(wt) ? wt : root;
@@ -292,15 +300,22 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				for (const l of readReflections(root)) findings.push(`open reflection: ${l.slice(6)}`);
 				if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
 				else {
-					const edited = ui.editor
-						? await ui.editor(`flow init — doctor: ${findings.length} finding(s) — edit & save to apply, Esc skips`, draftRefresh)
-						: (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}
+					// a refresh is regenerated from detection + config: lines it cannot reproduce are
+					// hand-written (prose, checklist items, hand-set keys) and would vanish silently.
+					const dropped = droppableLines(readFileSync(mdFile, "utf8"), draftRefresh);
+					let edited: string | undefined;
+					if (dropped.length)
+						notes.push(`doctor: refresh refused — a regenerated draft would drop ${dropped.length} hand-written line(s):`, ...dropped.slice(0, 8).map((l) => `  ${l}`), ...(dropped.length > 8 ? [`  …(${dropped.length - 8} more)`] : []));
+					else
+						edited = ui.editor
+							? await ui.editor(`flow init — doctor: ${findings.length} finding(s) — edit & save to apply, Esc skips`, draftRefresh)
+							: (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}
 
 Write refreshed project.md? Your file; cancel writes nothing.
 ${mdDigest(draftRefresh)}`))
-							? draftRefresh
-							: undefined;
-					if (edited === undefined) notes.push("declined — project.md unchanged", ...findings.map((f) => `  ${f}`));
+								? draftRefresh
+								: undefined;
+					if (edited === undefined) notes.push(dropped.length ? "findings — fix them by editing the file:" : "declined — project.md unchanged", ...findings.map((f) => `  ${f}`));
 					else {
 						const rej = writeMd(edited);
 						if (rej) return rej;
@@ -379,18 +394,25 @@ ${mdDigest(draftRefresh)}`))
 			const branch = subst(cfg.branchPattern, state!.slug);
 			const wtRel = subst(cfg.worktreeDir, state!.slug);
 			const wt = path.resolve(root, wtRel);
+			let setupNote = "";
 			if (!existsSync(wt)) {
 				// branch discipline: features branch off the default branch — never from a stale checkout HEAD
 				const base = (await sh(`git rev-parse --verify -q origin/${cfg.defaultBranch}`, root)).ok ? `origin/${cfg.defaultBranch}` : cfg.defaultBranch;
 				const res = await sh(`git worktree add ${JSON.stringify(wt)} -b ${branch} ${base}`, root);
 				if (!res.ok) return { text: `worktree creation failed:\n${res.out}`, isError: true };
+				if (cfg.commands.setup) {
+					// a fresh worktree is not the checkout: this is where `cp .env` + `npm install` belong
+					const s = await sh(cfg.commands.setup, wt);
+					if (!s.ok) return { text: `worktree ${wtRel} created but setup failed — fix commands.setup, then run flow approve again (the worktree is reused):\n${tail(s.out)}`, isError: true };
+					setupNote = `\nsetup ran in the worktree (${cfg.commands.setup}).`;
+				}
 			}
 			state!.branch = branch;
 			state!.worktree = wtRel;
 			state!.stage = "implement";
 			state!.approvals.plan = now();
 			writeState(root, state!);
-			return { text: `plan approved${audit}; worktree ${wtRel} on branch ${branch}.\n${nextHint(state!, cfg)}` };
+			return { text: `plan approved${audit}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "test": {
@@ -737,6 +759,13 @@ function refreshStatus(ctx: ExtensionContext): void {
 }
 
 
+/** A project confirm rule with no operator present is a block — a hidden confirmation is not a confirmation. */
+async function askOperator(ctx: ExtensionContext, what: string, why: string): Promise<string | null> {
+	if (!ctx.hasUI) return `${why} — this needs an operator confirmation and no UI is available: ask them, or run it yourself outside Pi`;
+	const ok = await ctx.ui.confirm("dev-flow project rule", `${what}\n\n${why}\n\nProceed?`);
+	return ok ? null : `operator declined — ${why}`;
+}
+
 export default function devFlow(pi: ExtensionAPI) {
 	/** Parse "flow <sub> [slug] [--flags]" args shared by command and tool. */
 	const parse = (input: unknown): string[] => {
@@ -853,6 +882,13 @@ export default function devFlow(pi: ExtensionAPI) {
 			const bound = boundFeature(ctx.cwd, key);
 			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null, exempt: !!exemptions.get(key) });
 			if (reason) return { block: true, reason };
+			// operator safety rules from project.md — a flow exemption does not lift them
+			const pv = guardPath(abs, ctx.cwd, cfg.guard);
+			if (pv.block) return { block: true, reason: pv.block };
+			if (pv.confirm) {
+				const why = await askOperator(ctx, `Editing ${path.relative(ctx.cwd, abs) || abs}`, pv.confirm);
+				if (why) return { block: true, reason: why };
+			}
 			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
 			if (owner && owner.state.stage === "implement" && (Object.keys(owner.state.checks).length || owner.state.confirmations?.implement)) {
@@ -866,6 +902,14 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (isToolCallEventType("bash", event)) {
 			const command = String(event.input.command ?? "");
 			if (stateTamper(command)) return { block: true, reason: "state.json is dev-flow-owned — advance stages with the flow tool only" };
+			// project safety rules first: they cover docker/gh/npm and everything else, not only git,
+			// and the operator's deny outranks dev-flow's own stage verdicts
+			const gv = guardBash(command, cfg.guard);
+			if (gv.block) return { block: true, reason: gv.block };
+			for (const r of gv.confirms) {
+				const why = await askOperator(ctx, command, r.why || `project rule ${r.pattern}`);
+				if (why) return { block: true, reason: why };
+			}
 			const inv = gitInvocation(command);
 			if (!inv.subs.length) return undefined; // git is not invoked as a command — nothing to guard
 			const bound = boundFeature(ctx.cwd, key);
