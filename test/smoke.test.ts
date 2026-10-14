@@ -543,3 +543,39 @@ test("init doctor refuses a refresh that would drop hand-written project.md", as
 	assert.match(after, /versionTag = \{version\}/, "a hand-set tag pattern survives");
 	assert.match(after, /flow-check overflow/, "hand-written checks survive");
 });
+
+const TEST_MD = "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n";
+
+test("flow doctor: findings without writing, deleting or asking", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	let dialogs = 0;
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => { dialogs++; return true; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	mkdirSync(path.join(repo, ".dev-flow", "ghosty", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "ghosty", "plan", "plan.md"), "# old plan\n");
+	const d = await flow(["doctor"]);
+	assert.match(d.content[0].text, /doctor: 1 finding\(s\)/);
+	assert.match(d.content[0].text, /\.dev-flow\/ghosty has a plan\/ but no state\.json/);
+	assert.equal(dialogs, 0, "the doctor never asks — it only reports");
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "ghosty")), "and it never deletes — that stays flow init's job");
+	assert.ok(!d.isError, "findings are advisory, not a failure");
+	execFileSync("rm", ["-rf", path.join(repo, ".dev-flow", "ghosty")]);
+	assert.match((await flow(["doctor"])).content[0].text, /doctor: no findings/, "a clean repo gets the no-findings line");
+});
+
+test("flow init without a UI prints the findings; flow status reports them even with no features", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+	await flow(["init", "--write", TEST_MD]);
+	writeFileSync(path.join(repo, ".dev-flow", "project.json"), JSON.stringify({ defaultBranch: "main" }));
+	await pi.cmds.flow.handler("init", ctx); // the --yes/CI path: no dialogs, findings printed
+	assert.match(ctx.notices.at(-1) ?? "", /doctor: 1 finding\(s\):/);
+	assert.match(ctx.notices.at(-1) ?? "", /both project\.json and project\.md exist/);
+	const st = await flow(["status"]);
+	assert.match(st.content[0].text, /no features/);
+	assert.match(st.content[0].text, /⚠ doctor: 1 finding\(s\) — run flow doctor/);
+});

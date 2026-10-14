@@ -85,7 +85,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
-const GATE_HELP = "init [--yes|--force|--draft|--write <text>] | start <slug> [--ui] [--patch] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]";
+const GATE_HELP = "init [--yes|--force|--draft|--write <text>] | doctor | start <slug> [--ui] [--patch] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 
@@ -301,7 +301,9 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				writeFileSync(mdFile, draftFresh);
 				notes.push("project.md OVERWRITTEN (--force):", ...det.report.map((r) => `  ${r}`));
 			} else if (!ui.hasUI) {
-				notes.push("project.md already exists — kept (flow init runs the doctor; --force to overwrite, --write to edit)");
+				// the CI/agent path: the doctor's findings have to be printed, not just promised
+				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
+				notes.push("project.md already exists — kept (flow init --force to overwrite, --write to edit)", findings.length ? `doctor: ${findings.length} finding(s):` : "doctor: no findings", ...findings.map((x) => `  ${x}`));
 			} else if (existsSync(mdFile)) {
 				// doctor mode: cheap consistency probes only — never runs project commands
 				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
@@ -364,8 +366,13 @@ ${mdDigest(draftRefresh)}`))
 		}
 
 		case "status": {
+			const df = dfDir(root);
+			const { md } = loadProject(df);
+			// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
+			const findings = md ? doctorFindings(root, cfg, md, existsSync(path.join(df, "project.json")), true) : [];
+			const warn = findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : [];
 			const slugs = slugArg ? [slugArg] : existsSync(dfDir(root)) ? (await listDirs(dfDir(root))).filter((s) => readState(root, s)) : [];
-			if (!slugs.length) return { text: "no features — start one: flow start <slug> [--ui] [--patch]" };
+			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch]", ...warn].join("\n") };
 			const un0 = unfinishedStates(root);
 			const cur = sess.slug ?? (un0.length === 1 ? un0[0].slug : null);
 			const lines = slugs.flatMap((s) => {
@@ -377,14 +384,20 @@ ${mdDigest(draftRefresh)}`))
 					`  next: ${nextHint(st, cfg)}`,
 				];
 			});
-			const { md } = loadProject(dfDir(root));
-			if (md) {
-				const findings = doctorFindings(root, cfg, md, existsSync(path.join(dfDir(root), "project.json")), true);
-				if (findings.length) lines.push(`⚠ doctor: ${findings.length} finding(s) — run flow init`);
-			}
+			if (warn.length) lines.push(...warn);
 			const refl = readReflections(root);
 			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — flow reflect`);
 			return { text: lines.join("\n") || "no features" };
+		}
+
+		case "doctor": {
+			// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
+			const df = dfDir(root);
+			const loaded = loadProject(df);
+			const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(path.join(df, "project.json")), existsSync(path.join(df, "project.md")));
+			findings.push(...(await gitConsistency(root, loaded.cfg)));
+			for (const l of readReflections(root)) findings.push(`open reflection: ${l.slice(6)}`);
+			return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
 		}
 
 		case "approve": {

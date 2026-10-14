@@ -4,6 +4,15 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **`flow doctor` — the doctor as an endpoint, not a side effect of `flow init`.** Findings on demand: playbook drift and dead commands/scripts, ghost feature dirs, orphan worktrees and branches, open reflections — printed as `doctor: N finding(s)` plus one line each, or `doctor: no findings — playbook, flow state and git layout are consistent`. It writes nothing, asks nothing and deletes nothing, so an agent or a CI job can run it at any stage with no flow bound; `flow init` stays the fix path, the one that can write.
+
+### Changed
+
+- `flow init` **without a UI prints the findings it computed** (the `--yes`/CI path said "the doctor ran" and showed nothing).
+- `flow status` runs the cheap probes even when no feature is unfinished — it used to return `no features` before reaching them — and points at `flow doctor` for the full list.
+
 ## [0.19.1] - 2026-10-14
 
 ### Added
