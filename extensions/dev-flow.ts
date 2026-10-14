@@ -1,11 +1,11 @@
 /**
  * dev-flow: enforced feature-flow state machine for Pi (pi package extension).
  *
- * Stages: plan → implement → release → cleanup → deploy → done, per feature,
+ * Stages: plan → implement → release → done, per feature,
  * with state in <repo>/.dev-flow/<slug>/state.json (gitignored, flow-owned).
  *
  * Enforcement has three teeth:
- *  1. Gate commands (/flow approve|verify|release-done|cleanup|deploy) refuse
+ *  1. Gate commands (/flow approve|verify|release-done|finish) refuse
  *     to advance unless exit criteria hold (plan file, mockups, green tests,
  *     operator confirmations, merged worktree).
  *  2. tool_call guards: no commits/pushes on the main branch outside the
@@ -28,6 +28,7 @@ import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	approveGate,
 	applicableItems,
+	appendReflection,
 	bashFlowGuard,
 	checklistHash,
 	checklistPending,
@@ -39,6 +40,7 @@ import {
 	guardBash,
 	guardPath,
 	parsePushRefs,
+	reflectSections,
 
 	listFiles,
 	newState,
@@ -85,7 +87,8 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
-const GATE_HELP = "init [--yes|--force|--draft|--write <text>] | doctor | start <slug> [--ui] [--patch] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]";
+const GATE_HELP =
+	"init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch] | use <slug> | test | check | health | approve | verify | release-done | finish <slug> | abort [slug] — state gates take [slug] and --confirmed (the operator already answered in chat)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 
@@ -103,12 +106,9 @@ function writeState(root: string, state: FlowState): void {
 
 /** Session bindings: one flow per pi session; persisted per session branch via appendEntry. */
 const bindings = new Map<string, string | null>();
-/** Operator-granted session exemptions: reason string, or null/undefined when not exempt. */
-const exemptions = new Map<string, string | null>();
 const sessionKey = (ctx: { cwd: string; sessionManager?: { getSessionId(): string } }) => ctx.sessionManager?.getSessionId() ?? ctx.cwd;
 /** Sessions with a dev-flow-initiated compaction in flight (prevents stacked compactions). */
 const compacting = new Set<string>();
-const REFLECT_HEADER = "# dev-flow reflections\n\n<!-- Suggestions queued by the agent; the operator decides. Fold playbook items in via flow init --write, file plugin items as issues; check off when handled. -->\n";
 
 function unfinishedStates(root: string): FlowState[] {
 	if (!existsSync(dfDir(root))) return [];
@@ -200,24 +200,6 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 
 /** Where feature commands run: the feature worktree once it exists (that is where the
  *  code under test lives), else the main checkout. Keeps gates off the main branch. */
-/** Auto-tail after release: when the worktree is safe, remove worktree + branch and report how; null when the operator must handle it (dirty or unmerged-looking). */
-async function autoClose(root: string, state: FlowState, cfg: Config): Promise<string | null> {
-	const wt = worktreeAbs(root, state);
-	if (!wt || !existsSync(wt)) {
-		await sh("git worktree prune", root);
-		if (state.branch && (await sh(`git rev-parse --verify --quiet refs/heads/${state.branch}`, root)).ok) {
-			const del = await sh(`git branch -d ${JSON.stringify(state.branch)}`, root);
-			if (!del.ok) return null;
-		}
-		return "worktree and branch removed";
-	}
-	const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
-	const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
-	const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
-	if (assess.errors.length || assess.unmerged.length) return null;
-	const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${state.branch}`, root);
-	return rm.ok ? "worktree and branch removed" : null;
-}
 
 /** Lines the current project.md has that a regenerated draft cannot reproduce. */
 function droppableLines(current: string, draft: string): string[] {
@@ -240,8 +222,21 @@ interface RunResult {
 interface Session {
 	slug: string | null;
 	bind: (slug: string | null) => void;
-	exempt: string | null;
-	setExempt: (reason: string | null) => void;
+}
+
+/** `flow doctor reflect <note>` — advisory queue, operator decides. The note lands in the
+ *  playbook and/or plugin section of reflections.md, chosen from its wording. */
+function reflectNote(root: string, sess: Session, note: string[]): RunResult {
+	const file = path.join(dfDir(root), "reflections.md");
+	if (!note.length) {
+		const open = readReflections(root);
+		return { text: open.length ? `open reflections:\n${open.map((l, i) => `  ${i + 1}. ${l}`).join("\n")}` : 'no open reflections — flow doctor reflect "<note>" parks a suggestion for the operator' };
+	}
+	const text = existsSync(file) ? readFileSync(file, "utf8") : "";
+	const sections = reflectSections(note.join(" "));
+	const line = `- [ ] ${note.join(" ")} — ${sess.slug ?? "-"} ${now().slice(0, 10)}`;
+	writeFileSync(file, appendReflection(text, sections, line));
+	return { text: `reflected (${sections.join(" + ")}): ${line}` };
 }
 
 /** Single runner for both the /flow command and the flow tool. */
@@ -387,11 +382,12 @@ ${mdDigest(draftRefresh)}`))
 			});
 			if (warn.length) lines.push(...warn);
 			const refl = readReflections(root);
-			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — flow reflect`);
+			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — flow doctor reflect`);
 			return { text: lines.join("\n") || "no features" };
 		}
 
 		case "doctor": {
+			if (rest[0] === "reflect") return reflectNote(root, sess, rest.slice(1));
 			// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
 			const df = dfDir(root);
 			const loaded = loadProject(df);
@@ -577,63 +573,51 @@ ${mdDigest(draftRefresh)}`))
 				const gr = await sh(`gh release create ${JSON.stringify(tag)} --title ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`, root);
 				ghNote = gr.ok ? `GitHub release ${tag} created.` : `GitHub release skipped: ${tail(gr.out)}`;
 			}
-			const closed = await autoClose(root, state!, cfg);
 			const tailNote = [ghNote, artNote].filter(Boolean).join(" ");
-			if (closed) {
-				const note = cfg.commands.deployNote ? ` deploy runbook (manual): ${cfg.commands.deployNote}.` : "";
-				rmSync(featDir(root, state!.slug), { recursive: true, force: true });
-				if (sess.slug === state!.slug) sess.bind(null);
-				return { text: `release recorded as complete${audit}.${tailNote ? ` ${tailNote}` : ""}\n${closed} — feature ${state!.slug} done.${note}` };
-			}
-			state!.stage = "cleanup";
 			writeState(root, state!);
 			return { text: `release recorded as complete${audit}.${tailNote ? ` ${tailNote}` : ""}\n${nextHint(state!, cfg)}` };
 		}
 
-		case "cleanup": {
+		case "finish": {
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
-			if (state!.stage !== "cleanup") return { text: `stage is "${state!.stage}", cleanup only applies after release-done`, isError: true };
+			if (!state!.approvals.release)
+				return { text: `finish closes a released feature — stage is "${state!.stage}" and no release is recorded; run flow release-done first (to abandon an unfinished feature, run flow abort)`, isError: true };
+			// after this the flow state is gone: nothing may sit uncommitted or unpushed
+			const dirty = await sh("git status --porcelain", root);
+			if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
+			if ((await sh("git remote get-url origin", root)).ok) {
+				const pushed = await sh(`git merge-base --is-ancestor HEAD ${JSON.stringify(`origin/${cfg.defaultBranch}`)}`, root);
+				if (!pushed.ok) return { text: `HEAD is not on origin/${cfg.defaultBranch} — push the release (git push origin ${cfg.defaultBranch}) before finish`, isError: true };
+			}
+			// the cleanup part of closing out: drop the worktree and branch the release consumed
 			const wt = worktreeAbs(root, state!);
-			if (!wt || !existsSync(wt)) {
-				// worktree already gone (manually removed or pruned): that IS the cleanup — prune,
-				// drop the branch if safe and advance; never inspect the main checkout for dirt.
+			let closeNote: string;
+			if (wt && existsSync(wt)) {
+				const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
+				const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
+				const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
+				if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
+				// silent when safe — the operator is only asked when commits look unmerged (possible squash merge)
+				if (assess.unmerged.length && !flag("confirmed")) {
+					if (!ui.hasUI) return { text: `finish needs an operator OK — ${assess.unmerged.length} commit(s) in ${state!.worktree} not on ${cfg.defaultBranch} (squash merge?). Re-run with --confirmed once checked.`, isError: true };
+					const ok = await ui.confirm("Finish feature", `${assess.unmerged.length} commit(s) not on ${cfg.defaultBranch}. Remove worktree and branch ${state!.branch} anyway?`);
+					if (!ok) return { text: "finish declined" };
+				}
+				const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${JSON.stringify(state!.branch)}`, root);
+				if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow finish`, isError: true };
+				closeNote = `worktree and branch ${state!.branch} removed`;
+			} else {
 				await sh("git worktree prune", root);
-				let brNote = "branch already gone";
+				closeNote = "worktree already gone";
 				if (state!.branch && (await sh(`git rev-parse --verify --quiet refs/heads/${state!.branch}`, root)).ok) {
 					const del = await sh(`git branch -d ${JSON.stringify(state!.branch)}`, root);
-					brNote = del.ok ? `branch ${state!.branch} deleted` : `branch ${state!.branch} kept (not fully merged — git branch -D if sure)`;
+					closeNote = del.ok ? `branch ${state!.branch} deleted` : `branch ${state!.branch} kept (not fully merged — git branch -D if sure)`;
 				}
-				state!.stage = "deploy";
-				writeState(root, state!);
-				return { text: `worktree already removed; ${brNote}.\n${nextHint(state!, cfg)}` };
 			}
-			const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
-			const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
-			const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
-			if (assess.errors.length) return { text: `cleanup blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
-			// silent when safe — the operator is only asked when commits look unmerged (possible squash merge)
-			if (assess.unmerged.length && !flag("confirmed")) {
-				if (!ui.hasUI) return { text: `cleanup needs an operator OK — ${assess.unmerged.length} commit(s) not on ${cfg.defaultBranch} (squash merge?). Re-run with --confirmed once checked.`, isError: true };
-				const ok = await ui.confirm("Cleanup feature", `${assess.unmerged.length} commit(s) not on ${cfg.defaultBranch}. Remove worktree and branch ${state!.branch} anyway?`);
-				if (!ok) return { text: "cleanup declined" };
-			}
-			const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${state!.branch}`, root);
-			if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow cleanup`, isError: true };
-			state!.stage = "deploy";
-			writeState(root, state!);
-			return { text: `worktree and branch removed.\n${nextHint(state!, cfg)}` };
-		}
-
-		case "deploy": {
-			const { state, err } = needState(root, sess, slugArg);
-			if (err) return err;
-			if (state!.stage !== "deploy") return { text: `stage is "${state!.stage}", deploy only applies after cleanup`, isError: true };
-			// production deploys are manual and out of scope — never ask whether they happened
-			const note = cfg.commands.deployNote ? `\ndeploy runbook (manual): ${cfg.commands.deployNote}` : "";
 			rmSync(featDir(root, state!.slug), { recursive: true, force: true });
 			if (sess.slug === state!.slug) sess.bind(null);
-			return { text: `feature ${state!.slug} done — .dev-flow/${state!.slug}/ removed.${note}` };
+			return { text: `feature ${state!.slug} done — ${closeNote}; .dev-flow/${state!.slug}/ removed.` };
 		}
 
 		case "use": {
@@ -642,37 +626,6 @@ ${mdDigest(draftRefresh)}`))
 			if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
 			sess.bind(slugArg);
 			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}` };
-		}
-
-		case "exempt": {
-			// Operator valve for "do this without the flow" — the agent may only surface it, never self-grant (see SKILL).
-			if (rest[0] === "off") {
-				if (!sess.exempt) return { text: "session is not exempt" };
-				sess.setExempt(null);
-				return { text: "exemption cleared — flow rules apply again" };
-			}
-			if (!rest.length) return { text: sess.exempt ? `session is flow-exempt: ${sess.exempt}` : "session is not exempt — flow start <slug> to begin work" };
-			if (sess.exempt) return { text: `already exempt: ${sess.exempt}` };
-			const reason = rest.join(" ");
-			if (ui.hasUI && !(await ui.confirm("Exempt session from flow?", `Reason: ${reason}\n\nFlow binding rules are lifted for this session (project.md and state.json stay protected). Ends with "flow exempt off" or a new session.`))) return { text: "declined — no exemption" };
-			sess.setExempt(reason);
-			return { text: `session is flow-exempt: ${reason} — run "flow exempt off" when done` };
-		}
-
-		case "reflect": {
-			// Advisory queue: agent appends, operator decides. Never gates anything.
-			const reflFile = path.join(dfDir(root), "reflections.md");
-			const text = existsSync(reflFile) ? readFileSync(reflFile, "utf8") : "";
-			const open = openReflections(text);
-			const toIdx = rest.indexOf("--to");
-			const to = toIdx >= 0 ? rest[toIdx + 1] ?? "" : "playbook";
-			const note = toIdx >= 0 ? rest.filter((_, i) => i !== toIdx && i !== toIdx + 1) : rest;
-			if (!note.length)
-				return { text: open.length ? `open reflections:\n${open.map((l, i) => `  ${i + 1}. ${l.slice(6)}`).join("\n")}` : 'no open reflections — flow reflect "<note>" parks a suggestion for the operator' };
-			if (!["playbook", "plugin", "doctor"].includes(to)) return { text: "--to must be playbook, plugin or doctor", isError: true };
-			const line = `- [ ] (${to}) ${note.join(" ")} — ${sess.slug ?? "-"} ${new Date().toISOString().slice(0, 10)}`;
-			writeFileSync(reflFile, (text || REFLECT_HEADER) + (text && !text.endsWith("\n") ? "\n" : "") + line + "\n");
-			return { text: `reflected: ${line}\n${open.length + 1} item(s) open — list: flow reflect` };
 		}
 
 		case "abort": {
@@ -729,8 +682,6 @@ const STAGE_COLORS: Partial<Record<Stage, "warning" | "accent" | "success" | "di
 	plan: "warning",
 	implement: "accent",
 	release: "success",
-	cleanup: "dim",
-	deploy: "dim",
 };
 
 /** Expand overlay: full flow state, Esc-closable (pi todo-example pattern). */
@@ -773,8 +724,7 @@ function refreshStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
 	const st = existsSync(dfDir(ctx.cwd)) ? boundFeature(ctx.cwd, sessionKey(ctx)) : null;
 	if (!st || st.stage === "done") {
-		const ex = exemptions.get(sessionKey(ctx));
-		ctx.ui.setStatus("dev-flow", ex ? ctx.ui.theme.fg("warning", `◆ exempt: ${ex.slice(0, 40)}`) : undefined);
+		ctx.ui.setStatus("dev-flow", undefined);
 		return;
 	}
 	const { text, failed } = statusCompact(st);
@@ -810,26 +760,18 @@ export default function devFlow(pi: ExtensionAPI) {
 				bindings.set(key, slug);
 				pi.appendEntry("dev-flow-bind", { slug });
 			},
-			exempt: exemptions.get(key) ?? null,
-			setExempt: (reason) => {
-				exemptions.set(key, reason);
-				pi.appendEntry("dev-flow-exempt", { reason });
-			},
 		};
 	};
 
-	/** Restore this session's binding + exemption from its branch history (survives resume/fork). */
+	/** Restore this session's binding from its branch history (survives resume/fork). */
 	const rebuildSession = (ctx: ExtensionContext) => {
 		let slug: string | null = null;
-		let exempt: string | null = null;
 		for (const e of ctx.sessionManager?.getBranch() ?? []) {
 			// SAFETY: narrow structural view of the SessionEntry union; we only read entries whose type/customType match our own appendEntry writes.
-			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null; reason?: string | null } };
+			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null } };
 			if (ce.type === "custom" && ce.customType === "dev-flow-bind") slug = ce.data?.slug ?? null;
-			if (ce.type === "custom" && ce.customType === "dev-flow-exempt") exempt = ce.data?.reason ?? null;
 		}
 		bindings.set(sessionKey(ctx), slug);
-		exemptions.set(sessionKey(ctx), exempt);
 	};
 
 	pi.registerCommand("flow", {
@@ -846,7 +788,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		name: "flow",
 		label: "Flow",
 		description:
-			"Drive the dev-flow stage gates for the active feature (plan → implement → release → cleanup → deploy). Never edit .dev-flow state directly; gates enforce plan/mockup/test/verification criteria and confirm with the operator.",
+			"Drive the dev-flow stage gates for the active feature (plan → implement → release → done). Never edit .dev-flow state directly; gates enforce plan/mockup/test/verification criteria and confirm with the operator.",
 		parameters: Type.Object({
 			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug", "--ui"]' }),
 		}),
@@ -875,7 +817,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		const f = path.join(dfDir(ctx.cwd), "reflections.md");
 		const text = existsSync(f) ? readFileSync(f, "utf8") : "";
 		const line = compactionReflectionLine(st.slug, st.stage, event.reason, new Date().toISOString().slice(0, 10));
-		writeFileSync(f, (text || REFLECT_HEADER) + (text && !text.endsWith("\n") ? "\n" : "") + line + "\n");
+		writeFileSync(f, appendReflection(text, ["plugin"], line));
 	});
 
 	pi.registerShortcut("ctrl+,", {
@@ -903,15 +845,15 @@ export default function devFlow(pi: ExtensionAPI) {
 			const abs = path.resolve(ctx.cwd, String(event.input.path ?? ""));
 			const feats = featureRefs(ctx.cwd);
 			const bound = boundFeature(ctx.cwd, key);
-			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null, exempt: !!exemptions.get(key) });
-			if (reason) return { block: true, reason };
-			// operator safety rules from project.md — a flow exemption does not lift them
+			// operator safety rules from project.md run first — as in the bash guard, the operator's deny outranks flow discipline
 			const pv = guardPath(abs, ctx.cwd, cfg.guard);
 			if (pv.block) return { block: true, reason: pv.block };
 			if (pv.confirm) {
 				const why = await askOperator(ctx, `Editing ${path.relative(ctx.cwd, abs) || abs}`, pv.confirm);
 				if (why) return { block: true, reason: why };
 			}
+			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null });
+			if (reason) return { block: true, reason };
 			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
 			if (owner && owner.state.stage === "implement" && (Object.keys(owner.state.checks).length || owner.state.confirmations?.implement)) {
@@ -982,17 +924,11 @@ export default function devFlow(pi: ExtensionAPI) {
 		const state = boundFeature(ctx.cwd, sessionKey(ctx));
 		if (!state || state.stage === "done") {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
-			const ex = exemptions.get(sessionKey(ctx));
-			let content: string;
-			if (ex) {
-				content = `[dev-flow] session is flow-exempt: ${ex} — work directly without a flow. Suggest the operator run "/flow exempt off" once this work is done.`;
-			} else {
-				const curBr = await currentBranch(ctx.cwd);
-				content = `[dev-flow] no flow bound. Every request goes through flow unless the OPERATOR exempts it (/flow exempt <reason> — you may mention it, never run it for yourself). New work: flow start <slug>; unfinished feature: flow use <slug>.`;
-				if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
-			}
+			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
+			const curBr = await currentBranch(ctx.cwd);
+			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
 			const refl0 = readReflections(ctx.cwd);
-			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open (flow reflect).`;
+			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open (flow doctor reflect).`;
 			return { message: { customType: "dev-flow-context", display: false, content } };
 		}
 		const guidance: string[] = [];

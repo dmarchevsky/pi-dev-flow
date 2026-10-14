@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, mergeConfig, parseVersion, type GuardRules } from "./core.ts";
 
-export const MD_STAGES = ["global", "plan", "implement", "release", "cleanup", "deploy"] as const;
+export const MD_STAGES = ["global", "plan", "implement", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
 
 export interface StageCheck {
@@ -61,8 +61,6 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		github: "release.githubRelease",
 		artifact: "release.artifact",
 	},
-	cleanup: {},
-	deploy: { note: "commands.deployNote" },
 };
 
 const CHECK_ITEM = /^\s*-\s*\[[ xX]\]\s+(.+)/;
@@ -301,8 +299,8 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, h
 }
 
 /** Compact per-stage digest of project.md content for dialog display (raw md walls are unreadable). */
-const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", release: "Release", deploy: "Deploy" };
-const DIGEST_CMDS: Record<string, string> = { setup: "setup", test: "test", build: "build", run: "run app", seedData: "seed data", health: "health", dev: "dev deploy", note: "manual runbook" };
+const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", release: "Release" };
+const DIGEST_CMDS: Record<string, string> = { setup: "setup", test: "test", build: "build", run: "run app", seedData: "seed data", dev: "dev deploy" };
 const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files" };
 
 /** Human summary of a playbook for the init confirm: one line per stage, real values and full item/guidance text, nothing truncated. */
@@ -358,6 +356,5 @@ export function buildDraft(det: { report: string[]; partial: { defaultBranch: st
 	}
 	L.push("- [ ] app runs locally with real data; visual pass: no overflows or stray scrollbars", "", "<!-- tier-3: standing guidance for this stage -->", "");
 	L.push("## release", "", "<!-- e.g. semver rules, changelog policy, who confirms the version -->", "", "```flow", `versionFile = ${verFile}`, "versionTag = v{version}", "```", "");
-	if (cmd("deployNote")) L.push("## deploy", "", cmd("deployNote"), "");
 	return L.join("\n") + "\n";
 }

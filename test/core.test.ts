@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import {
 	applyAnswer,
+	appendReflection,
 	approveGate,
 	bashFlowGuard,
 	checkoutTarget,
@@ -23,6 +24,7 @@ import {
 	newState,
 	parseVersion,
 	releaseGate,
+	reflectSections,
 	shouldSelfCompact,
 	stateTamper,
 	statusCompact,
@@ -160,9 +162,6 @@ test("writeGuard: path attribution + session binding rules", () => {
 	const rel = { ...impl, stage: "release" as const };
 	assert.equal(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: [{ state: rel, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores may touch main checkout");
 	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null }) ?? "", /no active flow/, "flow-by-default: clean repo still requires a flow");
-	assert.equal(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null, exempt: true }), null, "operator exemption opens the checkout");
-	assert.equal(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: feats, boundSlug: "b", exempt: true }), null, "exemption lifts stage confinement too (user override)");
-	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null, exempt: true }), "exempt never touches dev-flow-owned files");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
 	assert.equal(checkoutTarget("git checkout feat/x"), "feat/x");
@@ -175,6 +174,33 @@ test("writeGuard: path attribution + session binding rules", () => {
 test("openReflections: unchecked items only", () => {
 	assert.deepEqual(openReflections("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
 	assert.deepEqual(openReflections(""), []);
+});
+
+test("reflectSections: plugin wording → plugin, playbook wording → playbook", () => {
+	assert.deepEqual(reflectSections("the gate prompt asks twice, that is wrong"), ["plugin"]);
+	assert.deepEqual(reflectSections("the checklist item about seeded data is stale"), ["playbook"]);
+	assert.deepEqual(reflectSections("the verify gate should read the health command from project.md"), ["playbook", "plugin"]);
+	assert.deepEqual(reflectSections("typo in the readme"), ["playbook"], "unclear notes land where the operator reads them");
+	assert.deepEqual(reflectSections("the test command drifted, npm test no longer works"), ["playbook"], "a drifted project command is a playbook issue, not a plugin one");
+});
+
+test("appendReflection writes the two sections and migrates a legacy flat file", () => {
+	const legacy = "# dev-flow reflections\n\n<!-- note -->\n- [ ] (plugin) old plugin note — x 2025-10-01\n- [ ] (playbook) old playbook note — y 2025-10-01\n";
+	const out = appendReflection(legacy, ["plugin"], "- [ ] new note — z 2025-10-02");
+	assert.match(out, /## playbook\n\n- \[ \] old playbook note — y 2025-10-01\n\n## plugin\n/);
+	assert.match(out, /- \[ \] old plugin note — x 2025-10-01\n- \[ \] new note — z 2025-10-02\n$/);
+	assert.ok(!out.includes("(plugin)"), "inline target markers go away once the section carries them");
+	assert.equal(openReflections(out).length, 3);
+	const both = appendReflection("", ["playbook", "plugin"], "- [ ] both — z 2025-10-02");
+	assert.equal(openReflections(both).length, 2, "a both-sections note is written to each");
+	const noted = "# my notes\n\noperator: triage on Fridays\n\n- [ ] item one\n";
+	assert.equal(
+		appendReflection(noted, ["plugin"], "- [ ] item two"),
+		"# my notes\n\noperator: triage on Fridays\n\n## playbook\n\n- [ ] item one\n\n## plugin\n\n- [ ] item two\n",
+		"the operator's preamble survives a rewrite verbatim",
+	);
+	assert.equal(both.split(/^## /m).length - 1, 2, "both sections written");
+	assert.equal(both.split("- [ ] both").length - 1, 2, "the line is in each section");
 });
 
 test("statusCompact: slug ▸ stage with failing-check marker", () => {
@@ -265,7 +291,7 @@ test("shouldSelfCompact: only near pi's threshold and only when no chat-only sta
 test("compactionReflectionLine is a valid open reflection item", () => {
 	const line = compactionReflectionLine("compact-aware", "implement", "threshold", "2025-10-13");
 	assert.deepEqual(openReflections(line).length, 1);
-	assert.match(line, /\(plugin\) pi auto-compacted \(threshold\) at stage implement .* — compact-aware 2025-10-13$/);
+	assert.match(line, /^- \[ \] pi auto-compacted \(threshold\) at stage implement .* — compact-aware 2025-10-13$/);
 });
 
 // ---------------------------------------------------------------- flow-guard rules
