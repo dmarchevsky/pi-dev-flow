@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-14
+
+### Changed
+
+- One-word checkpoints: gates ask **Approve? / Verified? / Ship?** — the verb doubles as the operator's answer; dialogs carry the same verb with just enough context, cleanup still asks only when unsafe, deploy stays silent
+
 ## [0.15.0] - 2026-10-14
 
 ### Added
