@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-14
+
+### Changed
+
+- **One release question.** The release stage asked the operator twice — `Release?` (pre-release → release) and `Ship?` (`release-done`) — but by the time `Ship?` came the PR was merged and the tag pushed: the answer ratified a fait accompli and could still only skip the advisory GitHub release. `flow release-done` is now **check-only**: it re-verifies (tag rendered from the manifest version, reachable from the default branch, present on origin, artifact check when configured), records the release and creates the GitHub release without a checkpoint; the surviving `Release?` dialog names its coverage ("Publishing starts: PR, merge, tag — release-done afterwards needs no further answer"). `--confirmed` is still accepted by `release-done` as a silent no-op; `--no-github-release` / `--no-artifact-check` stay operator-instructed-only, anchored on the chat answer. Checkpoints per release drop from five to four: Approve? / Verified? / Release? / Finish?.
+
 ## [0.25.0] - 2026-10-14
 
 ### Added
