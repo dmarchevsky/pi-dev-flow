@@ -680,9 +680,27 @@ ${mdDigest(draftRefresh)}`))
 					closeNote = del.ok ? `branch ${state!.branch} deleted` : `branch ${state!.branch} kept (not fully merged — git branch -D if sure)`;
 				}
 			}
+			// remote cleanup: origin/<branch> is deleted only on proof it was released — being an ancestor of
+			// origin/<default> (merge-commit merges) or a merged PR via gh (squash merges); else it stays.
+			let remoteNote = "";
+			if (state!.branch && (await sh("git remote get-url origin", root)).ok) {
+				const br = state!.branch;
+				const onRemote = await sh("git ls-remote --heads origin", root);
+				if (onRemote.out.split("\n").some((l) => l.endsWith(`\trefs/heads/${br}`))) {
+					await sh(`git fetch -q origin ${JSON.stringify(br)}`, root);
+					let merged = (await sh(`git merge-base --is-ancestor origin/${JSON.stringify(br)} origin/${JSON.stringify(cfg.defaultBranch)}`, root)).ok;
+					if (!merged) {
+						const pr = await sh(`gh pr list --state merged --head ${JSON.stringify(br)} --json number --jq length`, root);
+						merged = pr.ok && pr.out.trim() !== "0";
+					}
+					let deleted = false;
+					if (merged) deleted = (await sh(`git push origin --delete ${JSON.stringify(`refs/heads/${br}`)}`, root)).ok;
+					remoteNote = deleted ? ` origin/${br} deleted (verified merged)` : ` origin/${br} kept — merged state not verifiable from here (git push origin --delete ${br} when sure)`;
+				}
+			}
 			rmSync(featDir(root, state!.slug), { recursive: true, force: true });
 			if (sess.slug === state!.slug) sess.bind(null);
-			return { text: `feature ${state!.slug} done — ${closeNote}; .dev-flow/${state!.slug}/ removed.` };
+			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.` };
 		}
 
 		case "use": {
