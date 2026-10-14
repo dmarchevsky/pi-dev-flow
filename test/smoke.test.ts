@@ -417,3 +417,18 @@ test("flow exempt: opens the checkout, keeps dev-flow files protected, off close
 	await flow(["exempt", "off"]);
 	assert.ok((await guard({ toolName: "write", input: { path: path.join(repo, "src", "y.ts") } }, ctx))?.block, "off restores the rules");
 });
+
+test("patch feature: no plan file, same gates end to end", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n"]);
+	await flow(["start", "chore", "--patch"]);
+	const noPlan = await flow(["approve"]);
+	assert.ok(!noPlan.content[0].text.includes("plan gate FAILED"), "patch does not require plan/*.md");
+	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/);
+	await flow(["check"]);
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering release/);
+	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /feature chore done/);
+});

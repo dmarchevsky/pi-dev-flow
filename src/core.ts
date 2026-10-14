@@ -32,6 +32,7 @@ export interface FlowState {
 	approvals: Record<string, string>;
 	checks: Record<string, Check>;
 	confirmations?: Record<string, { hash: string; at: string }>;
+	patch?: boolean; // chore release: no plan document, all gates intact
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
@@ -120,8 +121,8 @@ export function validSlug(slug: string): boolean {
 	return /^[a-z0-9][a-z0-9-]*$/.test(slug);
 }
 
-export function newState(slug: string, ui: boolean): FlowState {
-	return { slug, stage: "plan", ui, branch: "", worktree: "", createdAt: new Date().toISOString(), approvals: {}, checks: {} };
+export function newState(slug: string, ui: boolean, patch = false): FlowState {
+	return { slug, stage: "plan", ui, branch: "", worktree: "", createdAt: new Date().toISOString(), approvals: {}, checks: {}, ...(patch ? { patch: true } : {}) };
 }
 
 /** Recursive relative file listing of a directory (empty when missing). */
@@ -143,7 +144,7 @@ function matchesGlob(file: string, globs: string[]): boolean {
 export function approveGate(state: FlowState, cfg: Config, planFiles: string[]): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "plan") errs.push(`stage is "${state.stage}", approval only applies to "plan"`);
-	if (!planFiles.some((f) => f.endsWith(".md"))) errs.push("plan/ must contain the written plan (*.md)");
+	if (!state.patch && !planFiles.some((f) => f.endsWith(".md"))) errs.push("plan/ must contain the written plan (*.md)");
 	if (state.ui && !planFiles.some((f) => matchesGlob(f, cfg.mockupGlobs)))
 		errs.push(`UI feature: plan/mockups/ must contain rendered screenshots matching ${cfg.mockupGlobs.join(", ")} (headless chromium, embedded in plan.md)`);
 	return errs;
@@ -395,13 +396,14 @@ export function openReflections(text: string): string[] {
 
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
 	const failed = Object.values(state.checks).some((c) => !c.ok);
-	return { text: `${state.slug} ▸ ${state.stage}`, failed };
+	return { text: `${state.slug}${state.patch ? " ⚡" : ""} ▸ ${state.stage}`, failed };
 }
 
 /** What the agent/user should do next, per stage. */
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
+			if (state.patch) return `patch: describe the change to the operator in one line, then ask them to approve — no plan file needed (all gates still apply)`;
 			return `write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator to run /flow approve`;
 		case "implement":
 			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
