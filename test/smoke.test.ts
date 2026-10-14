@@ -228,6 +228,17 @@ test("status bar: compact refresh follows the gates", async () => {
 	assert.equal(statuses.at(-1), "◆ demo-feature ▸ plan");
 });
 
+test("flow version: the plugin's own version, and no .dev-flow/ needed", async () => {
+	const pi = makePi();
+	const ctx = makeCtx(mkdtempSync(path.join(tmpdir(), "noflow-")));
+	const own = (JSON.parse(readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8")) as { version: string }).version;
+	const r = await pi.tools.flow.execute("id", { args: ["version"] }, undefined, undefined, ctx) as { content: [{ text: string }]; isError?: boolean };
+	assert.ok(!r.isError, "version answers in a repo with no flow");
+	assert.match(r.content[0].text, new RegExp(`^dev-flow ${own.split(".").join("\\.")} \\(pi-dev-flow at `));
+	await pi.cmds.flow.handler("version", ctx); // same answer through /flow
+	assert.match(ctx.notices.at(-1) ?? "", new RegExp(`dev-flow ${own.split(".").join("\\.")}`));
+});
+
 test("extension is pass-through without .dev-flow", async () => {
 	const pi = makePi();
 	const ctx = makeCtx(mkdtempSync(path.join(tmpdir(), "noflow-")));

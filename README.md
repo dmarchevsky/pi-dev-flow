@@ -52,6 +52,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `finish [slug]` | release → done (removes worktree + branch, deletes `.dev-flow/<slug>/`) | a release is recorded (`release-done` ran), the main checkout is clean **and** pushed to `origin/<default>`, and the worktree has no uncommitted changes; **one question** (Finish? — mentions unmerged-looking squash-merge commits when it sees them) — or `--confirmed`; to abandon an unreleased feature use `abort` |
 | `doctor [reflect "<note>"]` | — | read-only findings: playbook drift, dead commands/scripts, ghost feature dirs, orphan worktrees/branches, open reflections — it writes nothing and asks nothing, safe for agents and CI at any stage. `doctor reflect "<note>"` queues an agent suggestion in `reflections.md`, under `## playbook`, `## plugin` or both, chosen from the note's wording (never gates) |
 | `status [slug]` / `abort [slug]` | — | — |
+| `version` | — | — (prints dev-flow's **own** version and the directory it was loaded from — which copy this session runs, this checkout vs an installed `pi-dev-flow`; answerable in any repo, at any stage, with no `.dev-flow/`) |
 
 `--confirmed` is the operator-presence flag: pass it only after the operator literally answered the stage question in chat — one checkpoint per stage, no second dialog.
 

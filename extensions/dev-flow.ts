@@ -40,6 +40,7 @@ import {
 	guardBash,
 	guardPath,
 	parsePushRefs,
+	pluginVersion,
 	preReleaseGate,
 	reflectSections,
 
@@ -89,7 +90,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
 const GATE_HELP =
-	"init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch] | use <slug> | test | check | health | approve | verify | release | release-done | finish <slug> | abort [slug] — state gates take [slug] and --confirmed (the operator already answered in chat)";
+	"init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch] | use <slug> | test | check | health | approve | verify | release | release-done | finish <slug> | abort [slug] | version — state gates take [slug] and --confirmed (the operator already answered in chat)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 
@@ -243,7 +244,8 @@ function reflectNote(root: string, sess: Session, note: string[]): RunResult {
 /** Single runner for both the /flow command and the flow tool. */
 async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Promise<RunResult> {
 	const [sub = "status", ...rest] = args;
-	if (!existsSync(dfDir(root)) && sub !== "init") return { text: "no .dev-flow/ in this repo — run /flow init first", isError: true };
+	// `version` is a question about the plugin, not the repo: it is answerable with no .dev-flow/ at all
+	if (!existsSync(dfDir(root)) && sub !== "init" && sub !== "version") return { text: "no .dev-flow/ in this repo — run /flow init first", isError: true };
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
 	const slugArg = rest.find((a) => !a.startsWith("--"));
@@ -396,6 +398,12 @@ ${mdDigest(draftRefresh)}`))
 			findings.push(...(await gitConsistency(root, loaded.cfg)));
 			for (const l of readReflections(root)) findings.push(`open reflection: ${l.slice(6)}`);
 			return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
+		}
+
+		case "version": {
+			// the plugin's own version — separate from the project's versioning.file version the release gates use
+			const self = pluginVersion(import.meta.dirname);
+			return { text: self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}` };
 		}
 
 		case "approve": {
