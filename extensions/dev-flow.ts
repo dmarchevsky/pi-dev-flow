@@ -577,7 +577,7 @@ ${mdDigest(draftRefresh)}`))
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 			if (!flag("confirmed")) {
 				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat", isError: true };
-				const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Publishing starts: PR, merge, tag.`);
+				const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Publishing starts: PR, merge, tag — release-done afterwards needs no further answer.`);
 				if (!ok) return { text: "release declined — keep preparing in pre-release" };
 			}
 			state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
@@ -622,15 +622,8 @@ ${mdDigest(draftRefresh)}`))
 				}
 			}
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
-			// the one release question — changelog, tag and PR are all covered by this answer
+			// no checkpoint here — the operator's Release? answer covered the whole publication; everything left is objective checks
 			const ghWanted = !!manifestVer && !flag("no-github-release") && cfg.release.githubRelease !== false;
-			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
-			if (!flag("confirmed")) {
-				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
-				const willSay = [ghWanted ? "A GitHub release will be created." : "", expectedTag && cfg.release.artifact && !flag("no-artifact-check") ? "The published artifact will be verified." : ""].filter(Boolean).join(" ");
-				const ok = await ui.confirm("Confirm release", `Ship ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Covers changelog, tag and merged PR.${willSay ? ` ${willSay}` : ""}`);
-				if (!ok) return { text: "release confirmation declined — finish the release chores first" };
-			}
 			state!.approvals.release = now();
 			let ghNote = "";
 			if (manifestVer && flag("no-github-release")) ghNote = "GitHub release skipped (--no-github-release).";
@@ -643,7 +636,7 @@ ${mdDigest(draftRefresh)}`))
 			}
 			const tailNote = [ghNote, artNote].filter(Boolean).join(" ");
 			writeState(root, state!);
-			return { text: `release recorded as complete${audit}.${tailNote ? ` ${tailNote}` : ""}\n${nextHint(state!, cfg)}` };
+			return { text: `release recorded as complete.${tailNote ? ` ${tailNote}` : ""}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "finish": {

@@ -662,7 +662,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "release":
 			return state.approvals.release
 				? "release recorded — commit and push the release chores in the main checkout, ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
-				: "publish: commit and push the branch, open and merge the PR, create the annotated tag from the manifest version and push it, then run flow release-done";
+				: "publish: commit and push the branch, open and merge the PR, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)";
 		default:
 			return "feature finished";
 	}

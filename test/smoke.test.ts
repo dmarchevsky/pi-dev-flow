@@ -305,8 +305,8 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	execFileSync("git", ["-C", cwt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "dev artifact"]);
 	execFileSync("git", ["-C", repo, "merge", "-q", "--ff", "feat/ck"]); // simulate the merge landing on main
 	assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
-	const rd = await flow(["release-done", "--confirmed"]);
-	assert.match(rd.content[0].text, /release recorded as complete \(confirmed by operator instruction\)/);
+	const rd = await flow(["release-done", "--confirmed"]); // flag still accepted, as a no-op — release-done asks nothing
+	assert.match(rd.content[0].text, /release recorded as complete/);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "ck", "state.json")), "release-done records the release; closing out is finish's job");
 	const fin = await flow(["finish", "--confirmed"]);
 	assert.match(fin.content[0].text, /feature ck done — worktree and branch feat\/ck removed/);
@@ -454,7 +454,7 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	await flow(["check"]);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
 	await flow(["release", "--confirmed"]);
-	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /release recorded as complete/);
+	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/, "release-done is check-only — asks the operator nothing");
 	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature chore done/);
 });
 
