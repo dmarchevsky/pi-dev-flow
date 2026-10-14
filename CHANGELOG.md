@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-14
+
+### Added
+
+- **Session claims — auto-bind no longer silently joins a live session's feature.** A second pi session on the same checkout used to auto-bind onto the one unfinished feature and become its unwitting caretaker — a stray verification run could commit that worktree's work as its own. Every bind (`start`, `use`, auto-bind) now leaves a claim in the feature directory (`claim.json`: session key + pi pid). Auto-bind refuses a feature whose claim is held by a **live** process (pid probe; a claim from a dead process is void and gets replaced), and the unbound-session context names the blocked feature and its `flow use <slug>` takeover. An explicit `flow use` always wins and says so when it takes over from a still-running holder. Liveness is pid-only: pid reuse can at worst force an explicit `flow use` instead of an auto-bind — friction, never a wrong commit.
+
 ## [0.24.0] - 2026-10-14
 
 ### Added

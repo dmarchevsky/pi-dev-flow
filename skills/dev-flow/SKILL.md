@@ -17,7 +17,7 @@ The user can run the same things as `/flow ...`.
 
 Ground rules:
 
-- A pi session is bound to exactly one feature (flow + branch + worktree). Parallel sessions, one feature each, are the model. The binding is automatic when one unfinished feature exists, set by `flow start`, and switched with `flow use <slug>`; with several unfinished features and no binding, gates demand an explicit slug and main-checkout writes stay blocked.
+- A pi session is bound to exactly one feature (flow + branch + worktree). Parallel sessions, one feature each, are the model. The binding is automatic when one unfinished feature exists — unless another live session already claims it (`flow use <slug>` is the explicit takeover) — set by `flow start`, and switched with `flow use <slug>`; with several unfinished features and no binding, gates demand an explicit slug and main-checkout writes stay blocked.
 - **Flow is the default for all work.** An unbound session cannot edit source files — start a feature (`flow start <slug>`, main checkout must be on the default branch) or bind an unfinished one (`flow use <slug>`). There is no bypass: every request runs through the flow.
 - **A project's own `flow-guard` rules** (`deny`/`confirm`/`protect`/`forbid` in project.md `## global`) apply at **every** stage and are judged ahead of dev-flow's own verdicts — they are the operator's safety rules, not flow discipline. When one fires, its reason is the answer: stop, show it, and let the operator decide; never route around it.
 - Never read/write `.dev-flow/<slug>/state.json` yourself — it is flow-owned (the guard blocks it anyway). `flow status` is your view.

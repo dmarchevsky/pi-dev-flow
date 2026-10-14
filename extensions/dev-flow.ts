@@ -33,6 +33,7 @@ import {
 	checklistHash,
 	checklistPending,
 	checkoutTarget,
+	claimBlocks,
 	cleanupAssess,
 	compactionReflectionLine,
 	featureBranchPrefix,
@@ -62,6 +63,7 @@ import {
 	type FeatureRef,
 	type FlowState,
 	type PushRef,
+	type SessionClaim,
 	type Stage,
 } from "../src/core.ts";
 import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
@@ -93,6 +95,7 @@ const GATE_HELP =
 	"init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch] | use <slug> | test | check | health | approve | verify | release | release-done | finish <slug> | abort [slug] | version — state gates take [slug] and --confirmed (the operator already answered in chat)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
+const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
 
 function readState(root: string, slug: string): FlowState | null {
 	try {
@@ -126,7 +129,7 @@ const readReflections = (root: string): string[] => {
 	return existsSync(f) ? openReflections(readFileSync(f, "utf8")) : [];
 };
 
-/** The session's feature: explicit binding, else the single unfinished feature (auto-bind). */
+/** The session's feature: explicit binding, else the single unfinished feature — auto-bind unless another live session claims it. */
 function boundFeature(root: string, key: string): FlowState | null {
 	const bound = bindings.get(key);
 	if (bound) {
@@ -134,7 +137,31 @@ function boundFeature(root: string, key: string): FlowState | null {
 		if (s && s.stage !== "done") return s;
 	}
 	const un = unfinishedStates(root);
-	return un.length === 1 ? un[0] : null;
+	if (un.length !== 1) return null;
+	const claim = readClaim(root, un[0].slug);
+	// shortcut: liveness is pid-only — pid reuse can read "live" and force an explicit flow use; friction only, never a wrong commit.
+	if (claimBlocks(claim, key)) return null;
+	if (claim?.key !== key) writeClaim(root, un[0].slug, key);
+	return un[0];
+}
+
+function readClaim(root: string, slug: string): SessionClaim | null {
+	try {
+		return JSON.parse(readFileSync(claimFile(root, slug), "utf8")) as SessionClaim;
+	} catch {
+		return null;
+	}
+}
+
+const writeClaim = (root: string, slug: string, key: string) =>
+	writeFileSync(claimFile(root, slug), `${JSON.stringify({ key, pid: process.pid, at: now() })}\n`);
+
+/** The auto-bind this session was denied by another live session's claim — lets the unbound-context message name the feature. */
+function claimBlocker(root: string, key: string): { state: FlowState; claim: SessionClaim } | null {
+	const un = unfinishedStates(root);
+	if (un.length !== 1) return null;
+	const claim = readClaim(root, un[0].slug);
+	return claim && claimBlocks(claim, key) ? { state: un[0], claim } : null;
 }
 
 /**
@@ -223,6 +250,7 @@ interface RunResult {
 
 interface Session {
 	slug: string | null;
+	key: string;
 	bind: (slug: string | null) => void;
 }
 
@@ -668,8 +696,10 @@ ${mdDigest(draftRefresh)}`))
 			if (!slugArg) return { text: "usage: flow use <slug>", isError: true };
 			const st = readState(root, slugArg);
 			if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
+			const prior = readClaim(root, slugArg);
+			const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
 			sess.bind(slugArg);
-			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}` };
+			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}${takeover}` };
 		}
 
 		case "abort": {
@@ -800,10 +830,15 @@ export default function devFlow(pi: ExtensionAPI) {
 	const sessFor = (ctx: ExtensionContext): Session => {
 		const key = sessionKey(ctx);
 		return {
+			key,
 			slug: bindings.get(key) ?? null,
 			bind: (slug) => {
+				const prev = bindings.get(key);
 				bindings.set(key, slug);
 				pi.appendEntry("dev-flow-bind", { slug });
+				// claims track the binding: claim what you bind, release what you drop.
+				if (prev && prev !== slug && readClaim(ctx.cwd, prev)?.key === key) rmSync(claimFile(ctx.cwd, prev), { force: true });
+				if (slug) writeClaim(ctx.cwd, slug, key);
 			},
 		};
 	};
@@ -970,6 +1005,8 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (!state || state.stage === "done") {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
 			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
+			const cb = claimBlocker(ctx.cwd, sessionKey(ctx));
+			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (pid ${cb.claim.pid}) — flow use ${cb.state.slug} takes it over explicitly.`;
 			const curBr = await currentBranch(ctx.cwd);
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
 			const refl0 = readReflections(ctx.cwd);

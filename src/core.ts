@@ -550,6 +550,28 @@ export function featureBranchPrefix(cfg: Config): string {
 	return cfg.branchPattern.split("{")[0];
 }
 
+/** Content of .dev-flow/<slug>/claim.json: which session is working the feature. */
+export interface SessionClaim {
+	key: string;
+	pid: number;
+	at: string;
+}
+
+/** Whether a process is running (kill 0 only probes existence; EPERM means it exists, foreign-owned). */
+export function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (e) {
+		return (e as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** True only when another live session holds the claim — that blocks silently auto-binding onto its feature. */
+export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (pid: number) => boolean = pidAlive): boolean {
+	return !!claim && claim.key !== myKey && alive(claim.pid);
+}
+
 /** Compact footer status text; coloring/theme is the extension's business. */
 /** Open (unchecked) reflection items in reflections.md content — the agent's suggestion queue. */
 export function openReflections(text: string): string[] {

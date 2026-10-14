@@ -76,7 +76,9 @@ While a feature is active, the extension intercepts every tool call:
 features, worked by separate sessions in parallel — that is the supported shape, not an edge
 case. The binding lives with the session (persisted via session entries, restored on
 resume/fork), so nothing is repo-global. One unfinished feature binds automatically and the
-single-session case needs no ceremony; `flow use <slug>` switches, and ambiguous sessions must
+single-session case needs no ceremony — unless a **live** session already works that feature:
+every bind leaves a claim (`claim.json`, session + pid) and auto-bind refuses foreign features,
+so a second session must `flow use <slug>` to take over. `flow use <slug>` switches, and ambiguous sessions must
 bind or pass explicit slugs. With nothing unfinished and no binding, the session must start a
 flow — work does not happen outside the flow.
 Enforcement is by attribution: a write inside worktree X is judged
