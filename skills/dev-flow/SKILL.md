@@ -100,6 +100,8 @@ Ask the operator **Finish?** — then run `flow finish --confirmed` (or interact
 - it requires the main checkout to be **clean and pushed** — an uncommitted changelog or a local-only
   release commit is exactly what it protects against — and it refuses until that is fixed;
 - it removes the worktree and the branch, then deletes `.dev-flow/<slug>/` and unbinds the session.
+  If `origin` still has the feature branch it is deleted **only on proof it was merged** — an ancestor of
+  `origin/<default>`, or a merged PR via gh (squash merges); otherwise it is kept with a note in the output.
   Uncommitted worktree edits block it; commits that look unmerged (squash merges) are called out in
   the Finish? question — if the gate asks and you have no operator answer, stop and show them.
 

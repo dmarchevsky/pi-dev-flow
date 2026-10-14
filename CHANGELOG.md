@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-14
+
+### Added
+
+- **`flow finish` cleans the remote too.** Every release used to leave `origin/feat/<slug>` behind (a squash-merged repo accumulated one stale branch per release, each keeping the pre-squash commit line alive in every contributor's graph and making released work look unmerged). Finish now deletes the feature's remote branch — but **only on proof it was merged**: the branch is an ancestor of `origin/<default>` (merge-commit merges, repo-local), or `gh pr list --state merged` confirms a merged PR (squash merges, same advisory-gh posture as the GitHub release). Unverifiable branches are kept with the reason and the manual command in the output — never a silent delete, never a block on the release. No new config: the verification is the safety.
+
 ## [0.26.0] - 2026-10-14
 
 ### Changed

@@ -681,3 +681,43 @@ test("a live foreign claim refuses auto-bind; flow use takes over explicitly", a
 	const injB2 = (await pi.handlers.before_agent_start[0]({}, b)) as { message?: { content: string } };
 	assert.match(injB2.message?.content ?? "", /bound to: claim-feature/, "after the takeover B is bound");
 });
+
+test("finish deletes merged feature branches on origin and keeps unverifiable ones", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const origin = mkdtempSync(path.join(tmpdir(), "devflow-origin-"));
+	execFileSync("git", ["init", "-q", "--bare", origin]);
+	execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const remoteHas = (br: string) => execFileSync("git", ["ls-remote", "--heads", origin, `refs/heads/${br}`], { encoding: "utf8" }).trim() !== "";
+	const git = (...a: string[]) => execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", ...a]);
+	await flow(["init", "--write", "# dev-flow\n"]);
+	git("push", "-q", "origin", "main");
+	const cycle = async (slug: string) => {
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		await flow(["check"]);
+		await flow(["verify", "--confirmed"]);
+		await flow(["release", "--confirmed"]);
+		await flow(["release-done", "--confirmed"]);
+	};
+	// (a) the origin branch is contained in origin/main (merge-commit shape) -> finish deletes it
+	await cycle("gone");
+	git("push", "-q", "origin", "feat/gone");
+	const gone = await flow(["finish", "--confirmed"]);
+	assert.match(gone.content[0].text, /origin\/feat\/gone deleted \(verified merged\)/);
+	assert.ok(!remoteHas("feat/gone"), "the released branch is gone from origin too");
+	// (b) origin branch is ahead of origin/main (squash shape) and origin is not GitHub -> unverifiable, keep
+	await cycle("kept");
+	const wt = path.join(repo, ".dev-flow", "kept", "worktree");
+	writeFileSync(path.join(wt, "x.txt"), "feature work\n");
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"]);
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "work"]);
+	git("push", "-q", "origin", "feat/kept");
+	const kept = await flow(["finish", "--confirmed"]);
+	assert.match(kept.content[0].text, /origin\/feat\/kept kept — merged state not verifiable/, "an unverifiable branch is never deleted");
+	assert.ok(remoteHas("feat/kept"), "the branch survives for the operator to judge");
+});
