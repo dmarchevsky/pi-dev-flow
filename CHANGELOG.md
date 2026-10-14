@@ -4,6 +4,18 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-14
+
+### Added
+
+- **The `pre-release` stage — a checkpoint before anything publishes.** `flow verify` now lands in `pre-release`, where the release preparation happens as worktree work: `/ponytail-review` + fixes, docs, the version bump, the changelog. The new **`flow release`** gate — the one **Release?** question — hands over to `release` only when the tier-1 checks are re-greened after those prep edits, the manifest version parses and is **ahead of the last tag**, and the changelog (when configured) mentions the version. The operator sees the PR summary, the version and the changelog entry *before* the PR, merge and tag start; the `release` stage now only publishes.
+- **`flow finish` asks Finish?** — one unconditional operator question before the cleanup, called after every safety check so it is never wasted; commits that look unmerged (squash merges) are called out inside that same question.
+
+### Changed
+
+- The machine is now `plan → implement → pre-release → release → done`. The guards confine `pre-release` to the feature worktree exactly like `implement`; pushing to or merging into the default branch still requires stage `release`.
+- project.md gains `## pre-release` (prose, checklist items, and the `versionFile`/`versionTag` keys; existing `## release` keys keep parsing unchanged so old playbooks are untouched), and `flow init --draft` generates the new section.
+
 ## [0.22.0] - 2026-10-14
 
 ### Removed
