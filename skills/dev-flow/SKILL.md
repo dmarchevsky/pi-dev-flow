@@ -88,7 +88,7 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 
 ## When things go sideways
 
-- User wants to abandon a feature: `flow abort <slug>` unbinds the session and prints the exact commands to remove the worktree/branch; state stays for manual recovery.
+- User wants to abandon a feature: `flow abort <slug>` unbinds the session — at plan stage (nothing approved) it removes the feature outright; once a worktree exists, state stays for manual recovery and the exact worktree/branch removal commands are printed.
 - A gate refuses: read its reasons — they list exactly what is missing. Fix that, rerun the gate.
 
 ## Reflect (your suggestion queue)
