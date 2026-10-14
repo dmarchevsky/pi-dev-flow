@@ -1,4 +1,7 @@
 node_modules
 *.log
 .dev-flow/
-.pi/
+.pi/*
+!.pi/extensions
+.pi/extensions/*
+!.pi/extensions/dev-flow.ts
