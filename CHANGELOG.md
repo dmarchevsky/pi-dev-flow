@@ -4,6 +4,8 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-14
+
 ### Added
 
 - **`flow-guard` — the playbook carries the project's own safety rules**, so an adopting project can delete its own guard extension. A ` ```flow-guard ` block in `## global` of project.md holds `deny`/`confirm` rules (JS regex over one shell segment of a bash command) and `protect`/`forbid` rules (a repo-relative edit/write path; a directory covers its subtree, files that do not exist yet included). `deny`/`forbid` block outright; `confirm`/`protect` ask the operator and block when no UI is present — a hidden confirmation is not a confirmation. Every rule carries a ` :: <why>` reason that shows up verbatim in the block, and a bad regex is a hard finding so `flow init --write` refuses the file. Enforcement reuses the existing tool-call guards (rules cover `docker`/`gh`/everything, not only git), runs at every stage, and is not lifted by `flow exempt`. Read-only segments are skipped, so `grep "git push --force" docs/` searches instead of pushing.
