@@ -4,6 +4,17 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-14
+
+### Added
+
+- **The doctor finds ghost feature dirs and offers to remove them.** A `.dev-flow/<slug>/` holding a `plan/` with no `state.json` — a feature closed by hand before auto-close existed, or an interrupted `flow start` — was invisible: `flow status`, the guards and auto-bind all key off `state.json`, so the clutter was only findable by eye. `flow status` now counts it as a doctor finding and `flow init` offers to delete exactly those directories, one confirm, with the plan files called out as unrecoverable; decline keeps them, and with no UI nothing is deleted (the finding says how to do it by hand). Live features, `cleanup`/`deploy` leftovers and `project.md` are untouched by construction.
+
+### Changed
+
+- The status warning reads `⚠ doctor: N finding(s) — run flow init` instead of `⚠ project.md:`, since findings now cover flow state as well as the playbook.
+- Internal: `loadProject(dfDir)` dropped its never-read `root` parameter.
+
 ## [0.19.0] - 2026-10-14
 
 ### Added

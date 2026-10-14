@@ -5,7 +5,7 @@
  *  tier 3: every other line — prose injected to the agent when its stage begins
  * Parsing is pure and never fatal: unknown stages/keys and odd syntax become warnings.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, mergeConfig, parseVersion, type GuardRules } from "./core.ts";
 
@@ -224,7 +224,7 @@ function mergeInto(c: Config, r: Record<string, unknown>): void {
 }
 
 /** Load merged config: project.json as legacy base, project.md overriding. */
-export function loadProject(root: string, dfDir: string): { cfg: Config; md: ParsedMd | null; findings: string[] } {
+export function loadProject(dfDir: string): { cfg: Config; md: ParsedMd | null; findings: string[] } {
 	const jsonFile = path.join(dfDir, "project.json");
 	const mdFile = path.join(dfDir, "project.md");
 	const cfg = mergeConfig(existsSync(jsonFile) ? safeJson(readFileSync(jsonFile, "utf8")) : null);
@@ -246,6 +246,18 @@ const safeJson = (s: string): unknown => {
 		return null;
 	}
 };
+
+/** `.dev-flow/<slug>/` directories holding a plan/ with no state.json — a closed or aborted feature
+ *  whose directory outlived its flow state (a hand-close from before auto-close, an interrupted
+ *  start). Nothing reads them: `flow status`, the guards and auto-bind all key off state.json.
+ *  Root-relative paths, for the doctor report and the operator-confirmed remover. */
+export function ghostFeatureDirs(root: string): string[] {
+	const df = path.join(root, ".dev-flow");
+	if (!existsSync(df)) return [];
+	return readdirSync(df, { withFileTypes: true })
+		.filter((d) => d.isDirectory() && existsSync(path.join(df, d.name, "plan")) && !existsSync(path.join(df, d.name, "state.json")))
+		.map((d) => `.dev-flow/${d.name}`);
+}
 
 /**
  * Doctor: cheap file-level probes only — NEVER runs user commands.
@@ -278,6 +290,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, h
 	if (md) f.push(...md.hard.map((h) => `project.md: ${h}`), ...md.warn.map((w) => `project.md: ${w}`));
 	if (cfg.commands.run && !cfg.checkList.some((c) => c.name === "health")) f.push('run command configured but no tier-1 health check — add commands.health or a flow-check so "running and healthy" is enforced');
 	if (!cfg.checkList.length) f.push("implement tier-1 gates nothing — no test, no health, no flow-check block: 'flow check' would pass vacuously");
+	for (const g of ghostFeatureDirs(root)) f.push(`${g} has a plan/ but no state.json — ghost of a closed or aborted feature (flow init offers to remove it)`);
 	return f;
 }
 

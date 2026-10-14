@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { mergeConfig } from "../src/core.ts";
-import { buildDraft, doctorFindings, loadProject, mdDigest, mdToConfig, parseProjectMd } from "../src/projectmd.ts";
+import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, mdToConfig, parseProjectMd } from "../src/projectmd.ts";
 
 const MD = `# dev-flow
 
@@ -105,7 +105,7 @@ test("doctorFindings: drift, missing manifest, no health check", () => {
 
 test("loadProject: md overrides json base", () => {
 	const root = fixtureRoot({ ".dev-flow/project.json": '{"defaultBranch":"jsonbranch","commands":{"build":"make"}}', ".dev-flow/project.md": MD });
-	const { cfg } = loadProject(root, path.join(root, ".dev-flow"));
+	const { cfg } = loadProject(path.join(root, ".dev-flow"));
 	assert.equal(cfg.defaultBranch, "trunk", "md wins over json");
 	assert.equal(cfg.commands.build, "make", "json-only values survive");
 });
@@ -235,4 +235,21 @@ test("doctorFindings probes only root-relative paths — worktree-relative ones 
 	assert.ok(!doctorFindings(root, wtRelative, null, false, true).some((f) => f.includes("missing file")), "a path above the repo root is resolved by the shell in the gate cwd");
 	const rootRelative = mdToConfig(parseProjectMd("## implement\n```flow\ntest = node scripts/nope.mjs\n```\n"));
 	assert.ok(doctorFindings(root, rootRelative, null, false, true).some((f) => f.includes("missing file scripts/nope.mjs")), "root-relative probes still work");
+});
+
+const GHOST_STATE = '{"slug":"live","stage":"implement","ui":false,"branch":"","worktree":"","createdAt":"","approvals":{},"checks":{}}';
+
+test("ghostFeatureDirs: a plan/ with no flow state is a ghost, everything else is not", () => {
+	const root = fixtureRoot({
+		".dev-flow/project.md": "# dev-flow\n",
+		".dev-flow/closed/plan/plan.md": "# plan\n",
+		".dev-flow/live/plan/plan.md": "# plan\n",
+		".dev-flow/live/state.json": GHOST_STATE,
+		".dev-flow/bare/readme.txt": "x",
+	});
+	assert.deepEqual(ghostFeatureDirs(root), [".dev-flow/closed"]);
+	const f = doctorFindings(root, mdToConfig(parseProjectMd("# dev-flow\n")), null, false, true);
+	assert.ok(f.some((x) => x.includes(".dev-flow/closed has a plan/ but no state.json")), f.join("; "));
+	assert.ok(!f.some((x) => x.includes("live")), "a live feature is never a ghost");
+	assert.deepEqual(ghostFeatureDirs(mkdtempSync(path.join(tmpdir(), "nodf-"))), [], "no .dev-flow at all, no ghosts");
 });

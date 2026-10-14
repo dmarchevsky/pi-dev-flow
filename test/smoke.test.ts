@@ -454,6 +454,32 @@ test("first init writes project.md immediately and hands it over for review", as
 	assert.match(text, /confirm as-is, or edit it/);
 });
 
+test("init finds ghost feature dirs and removes them only on the operator's word", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const noUI = makeCtx(repo);
+	await pi.cmds.flow.handler("init", noUI);
+	mkdirSync(path.join(repo, ".dev-flow", "closed", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "closed", "plan", "plan.md"), "# old plan\n");
+	mkdirSync(path.join(repo, ".dev-flow", "live"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "live", "state.json"), '{"slug":"live","stage":"implement","ui":false,"branch":"","worktree":"","createdAt":"","approvals":{},"checks":{}}');
+
+	await pi.cmds.flow.handler("init", noUI);
+	assert.match(noUI.notices.at(-1) ?? "", /1 ghost feature dir\(s\).*closed/, "reported when no operator is present");
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "closed")), "nothing is deleted without a confirmation");
+
+	const declined = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => declined.notices.push(m), confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	await pi.cmds.flow.handler("init", declined);
+	assert.match(declined.notices.at(-1) ?? "", /kept 1 ghost feature dir/);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "closed")), "a declined offer deletes nothing");
+
+	const agreed = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => agreed.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	await pi.cmds.flow.handler("init", agreed);
+	assert.match(agreed.notices.at(-1) ?? "", /removed 1 ghost feature dir\(s\): closed/);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "closed")), "the ghost is gone on the operator's yes");
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "live", "state.json")), "a live feature is never a ghost");
+});
+
 const GUARD_MD = ["# dev-flow", "", "## global", "", "```flow-guard", "deny    \\bgit\\b[^]*--force(?!\\w)      :: history stays linear", "deny    \\bgit\\b[^]*\\bworktree\\s+prune\\b :: prunes other sessions' worktrees", "confirm \\bdocker\\b[^]*\\bcompose\\b[^]*\\brestart\\b :: drops the upstream connection", "protect docker/.env                     :: gitignored live secrets", "forbid  docker/secrets                  :: gitignored secret storage", "```", "", "## implement", "", "```flow", "test = node --version", "```", ""].join("\n");
 
 test("flow-guard wiring: deny blocks with the operator's reason, confirm needs a live operator, exempt never lifts it", async () => {

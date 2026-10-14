@@ -163,7 +163,9 @@ e.g. `docker compose up -d .`. The release stage takes
 immediately, then asks you to confirm the file or change it — the agent asks one short question per
 knob you want adjusted and writes your answers back validated (`--write <content>`; `--draft` prints
 the current file whenever you'd rather read raw); **existing file** → doctor mode (drift, dead commands/scripts,
-unparseable manifest, dual configs — it never runs your commands) offering a refresh — which it
+unparseable manifest, dual configs, **ghost feature dirs** (a `.dev-flow/<slug>/` whose `state.json`
+is gone — it offers to delete those, on your confirm, and says so instead when no UI is present) —
+it never runs your commands) offering a refresh — which it
 **refuses** whenever your file has lines a regenerated draft cannot reproduce (prose, your own
 checklist items, hand-set keys): it prints the findings and the lines it would drop instead of
 overwriting them. `--force` remains the deliberate overwrite. At any time
