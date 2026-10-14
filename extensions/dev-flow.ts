@@ -269,6 +269,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const draftFresh = buildDraft(det);
 			const draftRefresh = buildDraft(det, loaded.cfg);
 			const editHint = "to change anything: edit .dev-flow/project.md directly (flow init = doctor revalidates), or from an agent session: flow init --draft → discuss → --write";
+			if (flag("draft")) return { text: existsSync(mdFile) ? readFileSync(mdFile, "utf8") : draftFresh }; // read path: prints content, writes nothing (and offers no deletions)
 			// ghosts: feature dirs whose state.json is gone — inert, invisible to status and guards, and only findable by eye
 			const ghosts = ghostFeatureDirs(root);
 			if (ghosts.length) {
@@ -278,7 +279,6 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 					notes.push(`removed ${ghosts.length} ghost feature dir(s): ${ghosts.map((g) => g.slice(".dev-flow/".length)).join(", ")}`);
 				} else notes.push(`kept ${ghosts.length} ghost feature dir(s) — inert, remove them whenever you like`);
 			}
-			if (flag("draft")) return { text: existsSync(mdFile) ? readFileSync(mdFile, "utf8") : draftFresh }; // read path: prints content, writes nothing
 			const writeMd = (text: string): RunResult | null => {
 				const parsed = parseProjectMd(text);
 				if (parsed.hard.length) return { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true };
