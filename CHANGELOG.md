@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-14
+
+### Fixed
+
+- `flow init` confirm dialog is now human: one line per phase with real values (commands quoted, checklist items and guidance verbatim, rendered tag pattern, whether a GitHub release is created, which artifact check runs) instead of parser notation (`set: file, pattern · prose`); states plainly what Cancel does and where to read the full file first
+- `flow init --draft` — referenced by the docs since v0.9 but never implemented — now prints the draft (or the current file in doctor mode) and writes nothing; tool help lists `--draft` and `--patch`
+
 ## [0.16.0] - 2026-10-14
 
 ### Added
