@@ -605,6 +605,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (!target) return { text: "nothing bound — pass a slug", isError: true };
 			const st = readState(root, target);
 			if (sess.slug === target) sess.bind(null);
+			if (st && !st.worktree) {
+				// plan-stage abort = drop: no worktree/branch exists, so the state dir is a ghost that
+				// the one-unfinished-feature auto-bind would resurrect into every unbound session
+				rmSync(featDir(root, target), { recursive: true, force: true });
+				return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
+			}
 			return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
 		}
 

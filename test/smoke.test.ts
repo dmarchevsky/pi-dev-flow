@@ -208,12 +208,14 @@ test("session binding: use/abort/ambiguity", async () => {
 	await pi.cmds.flow.handler("start b-two", ctx); // start binds b-two
 	await pi.cmds.flow.handler("use nope", ctx);
 	assert.ok(ctx.notices.at(-1)?.includes("no unfinished feature"), "use validates slug");
+	await pi.cmds.flow.handler("use nope", ctx);
+	assert.ok(ctx.notices.at(-1)?.includes("no unfinished feature"), "use validates slug");
+	await pi.cmds.flow.handler("approve", ctx);
+	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "bound gate runs on the bound feature (b-two)");
 	await pi.cmds.flow.handler("abort b-two", ctx);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "b-two")), "plan-stage abort drops the feature entirely");
 	await pi.cmds.flow.handler("approve", ctx);
-	assert.ok(ctx.notices.at(-1)?.includes("multiple unfinished"), "ambiguous without binding must refuse");
-	await pi.cmds.flow.handler("use a-one", ctx);
-	await pi.cmds.flow.handler("approve", ctx);
-	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "bound gate runs on the bound feature");
+	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "lone remaining feature auto-binds and hits its gate");
 });
 
 test("status bar: compact refresh follows the gates", async () => {
@@ -375,4 +377,23 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	const okRun = await flow(["release-done", "--confirmed"]);
 	assert.match(okRun.content[0].text, /Artifact verified\./);
 	assert.match(okRun.content[0].text, /feature teeth done/);
+});
+
+test("abort at plan stage drops the feature; approved features keep recoverable state", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n"]);
+	await flow(["start", "ghost"]);
+	assert.match((await flow(["abort", "ghost"])).content[0].text, /feature removed/);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ghost")), "plan-stage abort leaves no ghost for auto-bind");
+	await flow(["start", "keeper"]);
+	mkdirSync(path.join(repo, ".dev-flow", "keeper", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "keeper", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const ab = await flow(["abort", "keeper"]);
+	assert.match(ab.content[0].text, /state stays at .dev-flow\/keeper/);
+	assert.match(ab.content[0].text, /git worktree remove/);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "keeper", "state.json")), "real work stays recoverable");
 });
