@@ -9,7 +9,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, mergeConfig, parseVersion, type GuardRules } from "./core.ts";
 
-export const MD_STAGES = ["global", "plan", "implement", "release"] as const;
+export const MD_STAGES = ["global", "plan", "implement", "pre-release", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
 
 export interface StageCheck {
@@ -62,6 +62,9 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		artifact: "release.artifact",
 	},
 };
+// pre-release owns release preparation; the release keys are accepted under both sections so
+// existing playbooks (## release with versionFile/…) keep parsing unchanged
+KEYMAP["pre-release"] = { ...KEYMAP.release };
 
 const CHECK_ITEM = /^\s*-\s*\[[ xX]\]\s+(.+)/;
 
@@ -355,6 +358,7 @@ export function buildDraft(det: { report: string[]; partial: { defaultBranch: st
 		L.push("```flow-check " + x.name, x.cmd, "```", "");
 	}
 	L.push("- [ ] app runs locally with real data; visual pass: no overflows or stray scrollbars", "", "<!-- tier-3: standing guidance for this stage -->", "");
-	L.push("## release", "", "<!-- e.g. semver rules, changelog policy, who confirms the version -->", "", "```flow", `versionFile = ${verFile}`, "versionTag = v{version}", "```", "");
+	L.push("## pre-release", "", "<!-- e.g. review policy, docs expectations, who picks the version -->", "", "```flow", `versionFile = ${verFile}`, "versionTag = v{version}", "```", "");
+	L.push("## release", "", "<!-- e.g. PR/merge/tag policy, who publishes artifacts -->", "");
 	return L.join("\n") + "\n";
 }

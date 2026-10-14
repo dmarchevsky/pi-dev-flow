@@ -282,7 +282,7 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved \(confirmed by operator instruction\)/);
 	await flow(["check"]);
 	const v = await flow(["verify", "--confirmed"]);
-	assert.match(v.content[0].text, /verified \(confirmed by operator instruction\) — entering release/);
+	assert.match(v.content[0].text, /verified \(confirmed by operator instruction\) — entering pre-release/);
 	assert.equal(dialogs, 0, "operator answered in chat — gates must not ask again");
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ck", "state.json"), "utf8"));
 	assert.ok(st.checks.dev?.ok, "dev deploy ran and recorded before verification");
@@ -293,6 +293,7 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	execFileSync("git", ["-C", cwt, "add", "-A"]);
 	execFileSync("git", ["-C", cwt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "dev artifact"]);
 	execFileSync("git", ["-C", repo, "merge", "-q", "--ff", "feat/ck"]); // simulate the merge landing on main
+	assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
 	const rd = await flow(["release-done", "--confirmed"]);
 	assert.match(rd.content[0].text, /release recorded as complete \(confirmed by operator instruction\)/);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "ck", "state.json")), "release-done records the release; closing out is finish's job");
@@ -315,6 +316,7 @@ test("release tail: finish refuses to remove a dirty worktree", async () => {
 	await flow(["check"]);
 	await flow(["verify", "--confirmed"]);
 	writeFileSync(path.join(repo, ".dev-flow", "dirt", "worktree", "loose.txt"), "uncommitted\n");
+	await flow(["release", "--confirmed"]);
 	const rd = await flow(["release-done", "--confirmed"]);
 	assert.match(rd.content[0].text, /release recorded as complete/, "release-done records the release even when the worktree is dirty");
 	const fin = await flow(["finish", "--confirmed"]);
@@ -337,8 +339,9 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	const early = await flow(["finish"]);
 	assert.ok(early.isError && early.content[0].text.includes("release-done"), "finish refuses until the release is recorded");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "state.json")), "a refused finish removes nothing");
+	await flow(["release", "--confirmed"]);
 	await flow(["release-done", "--confirmed"]);
-	assert.match((await flow(["finish"])).content[0].text, /feature fin done — worktree and branch feat\/fin removed/);
+	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature fin done — worktree and branch feat\/fin removed/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "fin")), "the flow state folder is gone");
 	assert.throws(() => execFileSync("git", ["-C", repo, "rev-parse", "--verify", "feat/fin"]));
 });
@@ -348,7 +351,7 @@ test("release opt-out: per-release flag and per-project config skip the GitHub r
 	const repo = makeRepo();
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
-	const versioned = async (slug: string, mdTail: string) => {
+	const versioned = async (slug: string, ver: string, mdTail: string) => {
 		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nversionFile = package.json\nversionTag = v{version}\n${mdTail}\`\`\`\n`]);
 		await flow(["start", slug]);
 		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
@@ -356,17 +359,19 @@ test("release opt-out: per-release flag and per-project config skip the GitHub r
 		await flow(["approve", "--confirmed"]);
 		await flow(["check"]);
 		await flow(["verify", "--confirmed"]);
-		writeFileSync(path.join(repo, "package.json"), '{"name":"t","version":"9.9.9"}');
 		const wt = path.join(repo, ".dev-flow", slug, "worktree");
+		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`); // pre-release bump lives on the branch
+		execFileSync("git", ["-C", wt, "add", "-A"]);
+		execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", `bump ${ver}`]);
+		assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
 		execFileSync("git", ["-C", repo, "merge", "-q", "--ff", `feat/${slug}`]);
-		try { execFileSync("git", ["-C", repo, "tag", "v9.9.9"]); } catch { /* second feature: tag already on main */ }
-		void wt;
+		execFileSync("git", ["-C", repo, "tag", `v${ver}`]);
 	};
-	await versioned("optflag", "");
+	await versioned("optflag", "9.9.9", "");
 	const f = await flow(["release-done", "--confirmed", "--no-github-release"]);
 	assert.match(f.content[0].text, /GitHub release skipped \(--no-github-release\)/);
 	assert.match(f.content[0].text, /release recorded as complete/);
-	await versioned("optcfg", "github = false\n");
+	await versioned("optcfg", "9.9.8", "github = false\n");
 	const c = await flow(["release-done", "--confirmed"]);
 	assert.ok(!c.content[0].text.includes("GitHub release"), "config-off: no attempt, no note");
 	assert.match(c.content[0].text, /release recorded as complete/);
@@ -387,7 +392,11 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	await flow(["verify", "--confirmed"]);
-	writeFileSync(path.join(repo, "package.json"), '{"name":"t","version":"9.9.9"}');
+	const wt = path.join(repo, ".dev-flow", "teeth", "worktree");
+	writeFileSync(path.join(wt, "package.json"), '{"name":"t","version":"9.9.9"}'); // the bump lives on the branch
+	execFileSync("git", ["-C", wt, "add", "-A"]);
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "bump 9.9.9"]);
+	await flow(["release", "--confirmed"]);
 	execFileSync("git", ["-C", repo, "merge", "-q", "--ff", "feat/teeth"]);
 	execFileSync("git", ["-C", repo, "push", "-q", "origin", "main"]);
 	execFileSync("git", ["-C", repo, "tag", "v9.9.9"]);
@@ -432,9 +441,10 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	assert.ok(!noPlan.content[0].text.includes("plan gate FAILED"), "patch does not require plan/*.md");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/);
 	await flow(["check"]);
-	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering release/);
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
+	await flow(["release", "--confirmed"]);
 	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /release recorded as complete/);
-	assert.match((await flow(["finish"])).content[0].text, /feature chore done/);
+	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature chore done/);
 });
 
 test("flow init --draft prints content and writes nothing", async () => {
@@ -596,4 +606,43 @@ test("flow doctor: a feature's own branch (checked out in its worktree) is not a
 	const d = await flow(["doctor"]);
 	assert.ok(!/orphan branch/.test(d.content[0].text), `the active feature's own branch must not be flagged:\n${d.content[0].text}`);
 	assert.ok(!d.content[0].text.includes("+ "), "branch names print without git's column markers");
+});
+
+test("pre-release stage: verify lands there, release gate has teeth, finish asks Finish?", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // no UI: every checkpoint must demand an operator answer or --confirmed
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const stage = () => (JSON.parse(readFileSync(path.join(repo, ".dev-flow", "rel", "state.json"), "utf8")) as { stage: string }).stage;
+	await flow(["init", "--write", TEST_MD]);
+	await flow(["start", "rel"]);
+	mkdirSync(path.join(repo, ".dev-flow", "rel", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "rel", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	assert.equal(stage(), "implement");
+	await flow(["check"]);
+	await flow(["verify", "--confirmed"]);
+	assert.equal(stage(), "pre-release", "verify now lands in pre-release");
+	// a guarded prep edit in the worktree must invalidate the checks again — the release gate re-demands them
+	const guard = pi.handlers.tool_call[0];
+	assert.equal(await guard({ toolName: "write", input: { path: path.join(repo, ".dev-flow", "rel", "worktree", "CHANGELOG.md") } }, ctx), undefined);
+	writeFileSync(path.join(repo, ".dev-flow", "rel", "worktree", "CHANGELOG.md"), "## 0.0.1\n");
+	const early = await flow(["release", "--confirmed"]);
+	assert.ok(early.isError && /check "test" has not passed/.test(early.content[0].text), "release gate demands re-greened checks after prep edits");
+	execFileSync("git", ["-C", path.join(repo, ".dev-flow", "rel", "worktree"), "add", "-A"]);
+	execFileSync("git", ["-C", path.join(repo, ".dev-flow", "rel", "worktree"), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "changelog"]);
+	await flow(["check"]);
+	const noOp = await flow(["release"]);
+	assert.ok(noOp.isError && /needs the operator/.test(noOp.content[0].text), "Release? needs an operator answer");
+	assert.equal(stage(), "pre-release");
+	await flow(["release", "--confirmed"]);
+	assert.equal(stage(), "release");
+	const earlyFinish = await flow(["finish", "--confirmed"]);
+	assert.ok(earlyFinish.isError && /release-done/.test(earlyFinish.content[0].text), "finish refuses before the release is recorded");
+	await flow(["release-done", "--confirmed"]);
+	const finishNoAsk = await flow(["finish"]);
+	assert.ok(finishNoAsk.isError && /Finish\?/.test(finishNoAsk.content[0].text), "finish asks the operator first");
+	const fin = await flow(["finish", "--confirmed"]);
+	assert.match(fin.content[0].text, /done/);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "rel")), "feature directory removed on finish");
 });

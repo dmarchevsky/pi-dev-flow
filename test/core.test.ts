@@ -21,6 +21,7 @@ import {
 	getPath,
 	mergeConfig,
 	parsePushRefs,
+	preReleaseGate,
 	newState,
 	parseVersion,
 	releaseGate,
@@ -78,6 +79,22 @@ test("releaseGate requires verify approval and release stage", () => {
 	assert.ok(releaseGate(s).length === 1, "still wrong stage");
 });
 
+test("preReleaseGate: stage, re-greened checks, bumped version, changelog mention", () => {
+	const s = { ...newState("f", false), stage: "pre-release" as const };
+	const c2 = mergeConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
+	const prep = { manifestVersion: "1.2.0", localTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
+	assert.ok(preReleaseGate(s, c2, prep).some((e) => e.includes("flow check")), "checks must be rerun after prep edits");
+	s.checks.test = { ok: true, at: "" };
+	assert.equal(preReleaseGate(s, c2, prep).length, 0);
+	assert.ok(preReleaseGate({ ...s, stage: "implement" as const }, c2, prep).length > 0, "wrong stage");
+	assert.ok(preReleaseGate(s, c2, { ...prep, localTags: ["v1.2.0"] }).some((e) => e.includes("already tagged")), "version not bumped past the last tag");
+	assert.ok(preReleaseGate(s, c2, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")));
+	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: null }).some((e) => e.includes("does not exist")));
+	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: { file: "CHANGELOG.md", content: "## 1.1.0" } }).some((e) => e.includes("does not mention")));
+	// no versioning/changelog configured: only the check matters
+	assert.equal(preReleaseGate({ ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } }, mergeConfig({ commands: { test: "x" } }), prep).length, 0);
+});
+
 test("bashFlowGuard: main protection and release-stage release", () => {
 	const base = { branch: "main", stage: null as "plan" | null, defaultBranch: "main" };
 	assert.ok(bashFlowGuard({ ...base, command: "git commit -m x" }));
@@ -97,6 +114,8 @@ test("bashFlowGuard: main protection and release-stage release", () => {
 	assert.ok(bashFlowGuard({ ...base, command: "git push --mirror" }), "mirror rewrites everything — worst case");
 	assert.ok(bashFlowGuard({ ...base, command: "git merge feat/x" }));
 	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git merge feat/x" }), null);
+	assert.ok(bashFlowGuard({ ...base, stage: "pre-release" as const, command: "git push origin main" }), "pre-release cannot push the default branch");
+	assert.ok(bashFlowGuard({ ...base, stage: "pre-release" as const, command: "git merge feat/x" }), "pre-release cannot merge into main");
 	assert.equal(bashFlowGuard({ ...base, command: "git status" }), null);
 });
 
@@ -161,6 +180,9 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.ok(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: feats, boundSlug: "b" }), "implement-bound session confined to its worktree");
 	const rel = { ...impl, stage: "release" as const };
 	assert.equal(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: [{ state: rel, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores may touch main checkout");
+	const pre = { ...impl, stage: "pre-release" as const };
+	assert.ok(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: [{ state: pre, worktreeAbs: wtB }], boundSlug: "b" }), "pre-release-bound session stays confined to its worktree");
+	assert.equal(writeGuard({ abs: `${wtB}/CHANGELOG.md`, dfDir: df, features: [{ state: pre, worktreeAbs: wtB }], boundSlug: "b" }), null, "pre-release worktree is the working area");
 	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null }) ?? "", /no active flow/, "flow-by-default: clean repo still requires a flow");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
