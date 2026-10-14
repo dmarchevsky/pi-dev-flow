@@ -52,6 +52,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `deploy` | → done (deletes `.dev-flow/<slug>/`) | no questions — production deploy is manual and out of scope; a configured `deployNote` runbook is printed for reference |
 | `reflect ["<note>" [--to playbook\|plugin\|doctor]]` | — | queues an agent suggestion for the operator (never gates) |
 | `status` / `abort [slug]` | — | — |
+| `doctor` | — (read-only findings: playbook drift, dead commands/scripts, ghost feature dirs, orphan worktrees/branches, open reflections) | never — it writes nothing and asks nothing; safe for agents and CI at any stage |
 
 `--confirmed` is the operator-presence flag: pass it only after the operator literally answered the stage question in chat — one checkpoint per stage, no second dialog.
 
@@ -170,7 +171,8 @@ it never runs your commands) offering a refresh — which it
 checklist items, hand-set keys): it prints the findings and the lines it would drop instead of
 overwriting them. `--force` remains the deliberate overwrite. At any time
 you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doctor) validates and
-flags problems. `--yes` silent draft for CI; `--force` rewrites from fresh detection. Improvement
+flags problems, and `flow doctor` runs the same probes on demand without offering to change
+anything (findings are also printed when `flow init` runs without a UI, e.g. `--yes` in CI). `--yes` silent draft for CI; `--force` rewrites from fresh detection. Improvement
 ideas the agent notices along the way queue up in `.dev-flow/reflections.md` (`flow reflect
 "<note>" [--to playbook|plugin|doctor]`) — you decide what gets folded in; nothing there ever gates.
 
