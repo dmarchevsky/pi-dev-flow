@@ -190,7 +190,8 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 	const ownedBr = new Set(feats.map((f) => f.branch));
 	const brRaw = await sh(`git branch --list ${JSON.stringify(`${featureBranchPrefix(cfg)}*`)}`, root);
 	if (brRaw.ok)
-		for (const b of brRaw.out.split("\n").map((x) => x.replace(/^\*?\s+/, "").trim()).filter(Boolean)) {
+		// git marks the current branch with "* " and a worktree-checked-out one with "+ " — strip both, or an active feature's own branch never matches ownedBr
+		for (const b of brRaw.out.split("\n").map((x) => x.replace(/^[*+]?\s+/, "").trim()).filter(Boolean)) {
 			if (!ownedBr.has(b)) out.push(`orphan branch ${b} — no unfinished feature owns it (git branch -D ${b})`);
 		}
 	for (const f of feats) if (f.worktree && !existsSync(path.resolve(root, f.worktree))) out.push(`feature ${f.slug} (${f.stage}) has no worktree at ${f.worktree}`);

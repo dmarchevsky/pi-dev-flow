@@ -579,3 +579,18 @@ test("flow init without a UI prints the findings; flow status reports them even 
 	assert.match(st.content[0].text, /no features/);
 	assert.match(st.content[0].text, /⚠ doctor: 1 finding\(s\) — run flow doctor/);
 });
+
+test("flow doctor: a feature's own branch (checked out in its worktree) is not an orphan", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+	await flow(["init", "--write", TEST_MD]);
+	await flow(["start", "orphan-bait"]);
+	mkdirSync(path.join(repo, ".dev-flow", "orphan-bait", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "orphan-bait", "plan", "plan.md"), "# plan\n");
+	await flow(["approve"]); // worktree + branch feat/orphan-bait; git branch --list marks it "+ " — the marker must be stripped
+	const d = await flow(["doctor"]);
+	assert.ok(!/orphan branch/.test(d.content[0].text), `the active feature's own branch must not be flagged:\n${d.content[0].text}`);
+	assert.ok(!d.content[0].text.includes("+ "), "branch names print without git's column markers");
+});

@@ -12,6 +12,7 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 - `flow init` **without a UI prints the findings it computed** (the `--yes`/CI path said "the doctor ran" and showed nothing).
 - `flow status` runs the cheap probes even when no feature is unfinished — it used to return `no features` before reaching them — and points at `flow doctor` for the full list.
+- The git consistency probe no longer flags an active feature's own branch as an orphan: `git branch --list` marks worktree-checked-out branches with `+ ` and only `* ` was stripped, so the marked name never matched the owned set.
 
 ## [0.19.1] - 2026-10-14
 
