@@ -23,6 +23,7 @@ Ground rules:
 - `.dev-flow/project.json` is operator-owned: read it for commands (test/build/run), the default branch, worktree path — never edit it; ask the user.
 - Also obey the repo's own AGENTS.md and project skills; dev-flow sequences stages, the project defines its conventions.
 - If a guard blocks you, you are trying to skip a stage or write outside your session's feature. Stop and run the gate instead of working around it.
+- **Checkpoint questions are one verb: Approve? / Verified? / Ship?** The verb doubles as the operator's answer; ask exactly that word at each gate and treat the same verb (or an explicit equivalent) in chat as the answer — then `--confirmed` carries the checkpoint with zero dialogs.
 
 ## Start
 
@@ -41,7 +42,7 @@ Repo without `.dev-flow/`? Run `flow init` — run `flow init --draft`, discuss 
      (height: pick per-screen, re-render if content clips).
    - Embed every render in plan.md under its section: `![<screen> — phone](mockups/<screen>-390.png)`. The plan is then one self-contained reviewable document.
    - No chromium anywhere? Tell the user and ask — fall back to `*.html`-only plans only with their OK (they can set `mockupGlobs`); never fake or skip a screenshot silently.
-4. Tell the user the plan is ready and **stop** — one question: "approve?". They answer in chat (or run `/flow approve` themselves). When they answered, run `flow approve --confirmed` — **exactly one checkpoint per stage**: a chat "approved" must never trigger a second dialog. `--confirmed` is only for a literal operator answer, never your inference; without an answer and without interactive UI the gate refuses.
+4. Tell the user the plan is ready and **stop** — one word: **Approve?** They answer in chat (or run `/flow approve` themselves). When they answered, run `flow approve --confirmed` — **exactly one checkpoint per stage**: a chat answer must never trigger a second dialog. `--confirmed` is only for a literal operator answer, never your inference; without an answer and without interactive UI the gate refuses.
 
 Approval creates the worktree and branch. Until then no code edits are possible. `(ui)`-marked playbook checklist items do not apply to non-UI features — they never appear in prompts or confirmations.
 
@@ -57,7 +58,7 @@ Work happens **only in the worktree** the gate created (path in `flow status` or
    - `commands.seedData` (if set) puts real data in place; start the app with the `run` command;
    - the health check (tier 1) must pass — `flow check` covers it (it runs seedData before health);
    - walk the **tier-2 checklist** (`- [ ]` items) with the operator honestly — those can't be scripted;
-   - then **ask the user to verify** — one question: "tested and works?". When they answer, run `flow verify --confirmed` (no second dialog); interactively they can run `/flow verify` themselves. Fixes requested = iterate and re-verify; that loop is free.
+   - then ask the user **Verified?** When they answer, run `flow verify --confirmed` (no second dialog); interactively they can run `/flow verify` themselves. Fixes requested = iterate and re-verify; that loop is free.
 
 `flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — absent config means dev-flow says nothing about dev) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal.
 
@@ -78,7 +79,7 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 3. Update the changelog and bump the version manifest (`versioning.file`) to the exact version you will tag — manifest, changelog, and tag must all agree; `flow release-done` verifies the tag exists and is reachable from the default branch.
 4. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
 5. `git fetch` and confirm the merge landed, create the release tag **annotated** (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) — never `git push --follow-tags`, which silently skips lightweight tags (tags then never reach the remote and CI never publishes). After merge, a tag points at what actually shipped. If CI publishes artifacts from the tag, set `release.artifact` in the playbook so `release-done` verifies the published artifact — it also refuses local-only tags outright.
-6. Ask the operator the **one release question** — "confirm release <name> v<version>?" — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and, when the worktree is clean and fully merged, removes worktree + branch + feature dir itself: the release is the end of the flow. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
+6. Ask the operator **Ship?** — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers changelog, tag and PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and, when the worktree is clean and fully merged, removes worktree + branch + feature dir itself: the release is the end of the flow. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
 
 ## Stage: cleanup + deploy (only when release-done couldn't auto-close)
 

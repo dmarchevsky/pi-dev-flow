@@ -340,7 +340,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 			if (!flag("confirmed")) {
 				if (!ui.hasUI) return { text: "plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
-				const ok = await ui.confirm("Approve plan", `Approve plan for ${state!.slug}${state!.ui ? " (UI)" : ""}? Worktree and branch will be created.`);
+				const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}? Creates the worktree.`);
 				if (!ok) return { text: "approval declined — keep iterating on the plan" };
 			}
 			if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
@@ -394,7 +394,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 			if (!flag("confirmed")) {
 				if (!ui.hasUI) return { text: "verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
-				const ok = await ui.confirm("Operator verification", `All checks green${cfg.commands.dev ? "; dev deploy is up for review" : ""}. Have you tested it and confirm it works?`);
+				const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev ? "; dev deploy is up for review" : ""} \u2014 does it work?`);
 				if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
 			}
 			state!.confirmations = { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } };
@@ -487,7 +487,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			if (!flag("confirmed")) {
 				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
 				const willSay = [ghWanted ? "A GitHub release will be created." : "", expectedTag && cfg.release.artifact && !flag("no-artifact-check") ? "The published artifact will be verified." : ""].filter(Boolean).join(" ");
-				const ok = await ui.confirm("Confirm release", `Confirm release: ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Changelog, tag and merged PR are covered by this.${willSay ? ` ${willSay}` : ""}`);
+				const ok = await ui.confirm("Confirm release", `Ship ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Covers changelog, tag and merged PR.${willSay ? ` ${willSay}` : ""}`);
 				if (!ok) return { text: "release confirmation declined — finish the release chores first" };
 			}
 			state!.approvals.release = now();
