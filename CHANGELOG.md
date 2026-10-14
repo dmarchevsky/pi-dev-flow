@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-14
+
+### Changed
+
+- **This checkout now loads its own working extension, and always will.** `.pi/extensions/dev-flow.ts` is a committed one-line re-export of `extensions/dev-flow.ts` instead of an untracked hard link that a `git pull` silently left behind. A fresh clone of dev-flow needs no setup to dogfood itself, and after any merge or pull new sessions run main's current code — nothing to re-run. (A symlink cannot be used here: pi resolves a module's relative imports from the link's own directory, so the extension's `../src/core.ts` would not resolve.)
+
+### Added
+
+- **`flow doctor` now flags broken dogfood wiring**: in a `pi-dev-flow` checkout, a missing `.pi/extensions/dev-flow.ts` — or one that no longer re-exports `../../extensions/dev-flow.ts` — is a finding, because sessions in that checkout would silently load nothing (or stale code).
+
 ## [0.20.0] - 2026-10-14
 
 ### Added
