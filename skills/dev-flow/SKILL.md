@@ -24,7 +24,7 @@ Ground rules:
 - `.dev-flow/project.json` is operator-owned: read it for commands (test/build/run), the default branch, worktree path — never edit it; ask the user.
 - Also obey the repo's own AGENTS.md and project skills; dev-flow sequences stages, the project defines its conventions.
 - If a guard blocks you, you are trying to skip a stage or write outside your session's feature. Stop and run the gate instead of working around it.
-- **Checkpoint questions are one verb: Approve? / Verified? / Release? / Ship? / Finish?** The verb doubles as the operator's answer; ask exactly that word at each gate and treat the same verb (or an explicit equivalent) in chat as the answer — then `--confirmed` carries the checkpoint with zero dialogs.
+- **Checkpoint questions are one verb: Approve? / Verified? / Release? / Finish?** The verb doubles as the operator's answer; ask exactly that word at each gate and treat the same verb (or an explicit equivalent) in chat as the answer — then `--confirmed` carries the checkpoint with zero dialogs.
 
 ## Start
 
@@ -89,7 +89,7 @@ You are now cleared to touch main-repo git state (merge/tag/push on the default 
 
 1. Commit everything on the feature branch, push the branch, open the PR, wait for it to be merged (merge yourself with `gh pr merge` or ask the user).
 2. `git fetch` and confirm the merge landed, create the release tag **annotated** (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) — never `git push --follow-tags`, which silently skips lightweight tags (tags then never reach the remote and CI never publishes). After merge, a tag points at what actually shipped. If CI publishes artifacts from the tag, set `release.artifact` in the playbook so `release-done` verifies the published artifact — it also refuses local-only tags outright.
-3. Ask the operator **Ship?** — then run `flow release-done --confirmed` (or interactively; the gate's single dialog covers the tag and merged PR together). release-done creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and records the release; `flow finish` is what closes the feature out. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — never decide it on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
+3. Run `flow release-done` — **no question**: the operator's Release? answer covered the whole publication, release-done only re-verifies (tag on the default branch, on origin, artifact when configured), creates the GitHub release from the tag (advisory — a note if gh or a GitHub remote is missing) and records the release; `flow finish` is what closes the feature out. Skipping the GitHub release is the operator's call only — `--no-github-release` (once) or `release.github = false` in the playbook (always) — act on it only when the operator says so, never on your own initiative. The artifact check works the same way: `release.artifact` set means every release must show the published artifact; `--no-artifact-check` skips it once, operator's call only.
 
 ## Stage: finish
 
