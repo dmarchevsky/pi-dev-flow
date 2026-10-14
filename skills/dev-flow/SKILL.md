@@ -31,6 +31,8 @@ Repo without `.dev-flow/`? Run `flow init` — run `flow init --draft`, discuss 
 
 `flow start <slug> --ui` when the work touches anything user-visible, else `flow start <slug>`. Slug: lowercase words-dashed. Check `flow status` first to see whether one is already active.
 
+**Patches and chores**: a small change you intend to release (a one-file fix, a docs/version chore) starts with `flow start <slug> --patch` — no plan file; one line of description in chat is the plan. Everything else is identical: approve, worktree, tier-1 checks, verify, tagged release. Never use `--patch` to dodge planning for real features — if the change grows past one line, start the feature properly.
+
 ## Stage: plan
 
 1. Research the code needed for the plan (reads are always allowed).

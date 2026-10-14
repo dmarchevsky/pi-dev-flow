@@ -81,7 +81,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
-const GATE_HELP = "init [--yes|--force|--write <text>] | start <slug> [--ui] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]";
+const GATE_HELP = "init [--yes|--force|--write <text>] | start <slug> [--ui] [--patch] | use <slug> | exempt [off|<reason>] | reflect [<note> [--to playbook|plugin|doctor]] | status | approve | test | check | health | verify | release-done | cleanup | deploy | abort [slug]";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 
@@ -298,21 +298,21 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		}
 
 		case "start": {
-			if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] (slug: lowercase, dashes)", isError: true };
+			if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch] (slug: lowercase, dashes)", isError: true };
 			if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
 			// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
 			const curBr = await currentBranch(root);
 			if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
-			const state = newState(slugArg, flag("ui"));
+			const state = newState(slugArg, flag("ui"), flag("patch"));
 			mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
 			writeState(root, state);
 			sess.bind(slugArg);
-			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}).\n${nextHint(state, cfg)}` };
+			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : ""}).\n${nextHint(state, cfg)}` };
 		}
 
 		case "status": {
 			const slugs = slugArg ? [slugArg] : existsSync(dfDir(root)) ? (await listDirs(dfDir(root))).filter((s) => readState(root, s)) : [];
-			if (!slugs.length) return { text: "no features — start one: flow start <slug> [--ui]" };
+			if (!slugs.length) return { text: "no features — start one: flow start <slug> [--ui] [--patch]" };
 			const un0 = unfinishedStates(root);
 			const cur = sess.slug ?? (un0.length === 1 ? un0[0].slug : null);
 			const lines = slugs.flatMap((s) => {
@@ -343,7 +343,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 			if (!flag("confirmed")) {
 				if (!ui.hasUI) return { text: "plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
-				const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}? Creates the worktree.`);
+				const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : ""}? Creates the worktree.`);
 				if (!ok) return { text: "approval declined — keep iterating on the plan" };
 			}
 			if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
@@ -896,7 +896,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			message: {
 				customType: "dev-flow-context",
 				display: false,
-				content: `[dev-flow] this session is bound to: ${state.slug} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
+				content: `[dev-flow] this session is bound to: ${state.slug}${state.patch ? " (patch)" : ""} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
 Next: ${nextHint(state, cfg)}.
 ${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: follow the dev-flow skill playbook; drive gates with the flow tool (/flow as user); stage guards block out-of-stage edits and main-branch git ops — do not work around them.`,
 			},

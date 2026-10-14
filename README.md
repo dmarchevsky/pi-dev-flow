@@ -39,7 +39,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 
 | Gate | Advances | Refuses unless |
 |---|---|---|
-| `start <slug> [--ui]` | → plan | slug is new (binds the session) |
+| `start <slug> [--ui] [--patch]` | → plan | slug is new (binds the session); `--patch` = chore release: no plan document, every gate unchanged |
 | `use <slug>` | — (binds this session to a feature) | slug unfinished |
 | `approve` | plan → implement (creates worktree + branch) | `plan/*.md` exists; if `--ui`, rendered mockup screenshots (per `mockupGlobs`, default `*.png`) exist under `plan/` — headless chromium renders embedded in plan.md; **one question** — or `--confirmed` after you answered in chat |
 | `test` | records a check | — (runs the `test` command/check, records pass/fail) |

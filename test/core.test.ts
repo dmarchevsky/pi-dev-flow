@@ -228,3 +228,10 @@ test("cleanupAssess flags dirty worktree and lists unmerged", () => {
 	assert.ok(cleanupAssess(" M file.ts", []).errors.length === 1);
 	assert.deepEqual(cleanupAssess("", ["abc msg", ""]).unmerged, ["abc msg"]);
 });
+
+test("approveGate: patch features skip the plan document, gates stay", () => {
+	const p = newState("p", false, true);
+	assert.equal(approveGate(p, mergeConfig({}), []).length, 0, "patch: empty plan/ passes the gate");
+	assert.equal(approveGate(newState("p", false), mergeConfig({}), []).length, 1, "non-patch still requires plan/*.md");
+	assert.ok(statusCompact(p).text.includes("⚡"), "status marks patch features");
+});
