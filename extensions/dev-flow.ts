@@ -33,6 +33,7 @@ import {
 	checklistPending,
 	checkoutTarget,
 	cleanupAssess,
+	compactionReflectionLine,
 	featureBranchPrefix,
 	gitInvocation,
 	parsePushRefs,
@@ -43,6 +44,7 @@ import {
 	openReflections,
 	releaseGate,
 	parseVersion,
+	shouldSelfCompact,
 	stateTamper,
 	statusCompact,
 	subst,
@@ -102,6 +104,9 @@ const bindings = new Map<string, string | null>();
 /** Operator-granted session exemptions: reason string, or null/undefined when not exempt. */
 const exemptions = new Map<string, string | null>();
 const sessionKey = (ctx: { cwd: string; sessionManager?: { getSessionId(): string } }) => ctx.sessionManager?.getSessionId() ?? ctx.cwd;
+/** Sessions with a dev-flow-initiated compaction in flight (prevents stacked compactions). */
+const compacting = new Set<string>();
+const REFLECT_HEADER = "# dev-flow reflections\n\n<!-- Suggestions queued by the agent; the operator decides. Fold playbook items in via flow init --write, file plugin items as issues; check off when handled. -->\n";
 
 function unfinishedStates(root: string): FlowState[] {
 	if (!existsSync(dfDir(root))) return [];
@@ -126,6 +131,37 @@ function boundFeature(root: string, key: string): FlowState | null {
 	}
 	const un = unfinishedStates(root);
 	return un.length === 1 ? un[0] : null;
+}
+
+/**
+ * Flow-aware self-compaction at safe points: called after a successful gate (state just hit disk)
+ * and when a run settles. Only fires within COMPACT_MARGIN of pi's own threshold and never while
+ * chat-only state is pending (open dialog, undigested plan) — see shouldSelfCompact.
+ */
+function maybeCompactNow(ctx: ExtensionContext): void {
+	if (!existsSync(dfDir(ctx.cwd))) return;
+	const u = ctx.getContextUsage?.(); // minimal/fake contexts may lack usage info — treat as unknown
+	if (!u || u.tokens === null) return;
+	const key = sessionKey(ctx);
+	const st = boundFeature(ctx.cwd, key);
+	if (!st) return;
+	const cfg = loadProject(ctx.cwd, dfDir(ctx.cwd)).cfg;
+	const decision = {
+		tokens: u.tokens,
+		contextWindow: u.contextWindow,
+		stage: st.stage,
+		planFiles: listFiles(path.join(featDir(ctx.cwd, st.slug), "plan")).length,
+		checklistPending: checklistPending(cfg, st, st.stage),
+		compacting: compacting.has(key),
+	};
+	if (!shouldSelfCompact(decision)) return;
+	compacting.add(key);
+	const done = () => compacting.delete(key);
+	ctx.compact({
+		customInstructions: `dev-flow feature "${st.slug}", stage "${st.stage}" — flow state is persisted on disk (state.json, plan/). Preserve verbatim: operator answers not yet recorded by a gate, reasons for uncommitted changes, and the exact next action from the last exchange.`,
+		onComplete: done,
+		onError: done,
+	});
 }
 
 function featureRefs(root: string): FeatureRef[] {
@@ -590,8 +626,7 @@ ${mdDigest(draftRefresh)}`))
 				return { text: open.length ? `open reflections:\n${open.map((l, i) => `  ${i + 1}. ${l.slice(6)}`).join("\n")}` : 'no open reflections — flow reflect "<note>" parks a suggestion for the operator' };
 			if (!["playbook", "plugin", "doctor"].includes(to)) return { text: "--to must be playbook, plugin or doctor", isError: true };
 			const line = `- [ ] (${to}) ${note.join(" ")} — ${sess.slug ?? "-"} ${new Date().toISOString().slice(0, 10)}`;
-			const header = "# dev-flow reflections\n\n<!-- Suggestions queued by the agent; the operator decides. Fold playbook items in via flow init --write, file plugin items as issues; check off when handled. -->\n";
-			writeFileSync(reflFile, (text || header) + (text && !text.endsWith("\n") ? "\n" : "") + line + "\n");
+			writeFileSync(reflFile, (text || REFLECT_HEADER) + (text && !text.endsWith("\n") ? "\n" : "") + line + "\n");
 			return { text: `reflected: ${line}\n${open.length + 1} item(s) open — list: flow reflect` };
 		}
 
@@ -751,6 +786,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const res = await runFlow(parse(args), ctx.cwd, uiFrom(ctx), sessFor(ctx));
 			ctx.ui.notify(res.text, res.isError ? "error" : "info");
 			refreshStatus(ctx);
+			if (!res.isError) maybeCompactNow(ctx);
 		},
 	});
 
@@ -764,6 +800,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		}),
 		execute: async (_id, params, _signal, _onUpdate, ctx) => {
 			const res = await runFlow(params.args, ctx.cwd, uiFrom(ctx), sessFor(ctx));
+			if (!res.isError) maybeCompactNow(ctx);
 			return { content: [{ type: "text", text: res.text }], details: undefined, isError: res.isError };
 		},
 	});
@@ -776,6 +813,18 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 	pi.on("session_tree", async (_event, ctx) => rebuildSession(ctx));
 	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
+	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
+	pi.on("agent_settled", async (_event, ctx) => maybeCompactNow(ctx));
+	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
+	pi.on("session_compact", async (event, ctx) => {
+		if (!existsSync(dfDir(ctx.cwd)) || event.reason === "manual") return;
+		const st = boundFeature(ctx.cwd, sessionKey(ctx));
+		if (!st) return;
+		const f = path.join(dfDir(ctx.cwd), "reflections.md");
+		const text = existsSync(f) ? readFileSync(f, "utf8") : "";
+		const line = compactionReflectionLine(st.slug, st.stage, event.reason, new Date().toISOString().slice(0, 10));
+		writeFileSync(f, (text || REFLECT_HEADER) + (text && !text.endsWith("\n") ? "\n" : "") + line + "\n");
+	});
 
 	pi.registerShortcut("ctrl+,", {
 		description: "Show the dev-flow detail panel (stage, approvals, checks, next step)",

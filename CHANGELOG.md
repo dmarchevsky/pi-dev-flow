@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-13
+
+### Added
+
+- **Compact-aware**: when context nears pi's auto-compaction threshold, dev-flow now compacts *itself* at a safe point — right after a gate wrote state to disk, or when a run settles — with flow-aware summary instructions (slug/stage-aware; keeps operator answers, uncommitted-change rationale and next action verbatim). It never self-compacts while chat is the state: an open tier-2 dialog or a plan discussion not yet in `plan/` blocks it. If pi force-compacts anyway (threshold/overflow while a feature is bound), a pacing note lands in `reflections.md` for the operator — advisory, never a gate.
+
 ## [0.17.0] - 2026-10-14
 
 ### Changed

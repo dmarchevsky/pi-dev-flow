@@ -394,6 +394,32 @@ export function openReflections(text: string): string[] {
 	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));
 }
 
+/** How far before pi's own compaction threshold dev-flow compacts (one fat tool turn). */
+export const COMPACT_MARGIN = 16384;
+/** pi's default compaction reserveTokens; pass the real value if known. */
+export const PI_RESERVE_DEFAULT = 16384;
+
+/**
+ * Safe-point decision for flow-aware self-compaction: only when the context is
+ * within COMPACT_MARGIN of pi's threshold AND nothing important lives only in chat —
+ * an open operator dialog (pending checklist) or an undigested plan discussion both mean the transcript IS the state.
+ */
+export function shouldSelfCompact(
+	d: { tokens: number | null; contextWindow: number; stage: Stage | null; planFiles: number; checklistPending: number; compacting: boolean },
+	reserve = PI_RESERVE_DEFAULT,
+): boolean {
+	if (d.compacting || d.tokens === null) return false;
+	if (!d.stage || d.stage === "done") return false;
+	if (d.checklistPending > 0) return false;
+	if (d.stage === "plan" && d.planFiles === 0) return false;
+	return d.tokens > d.contextWindow - reserve - COMPACT_MARGIN;
+}
+
+/** reflections.md line for a forced (non-manual) pi compaction while a flow is bound — advisory, never gates. */
+export function compactionReflectionLine(slug: string, stage: Stage, reason: string, today: string): string {
+	return `- [ ] (plugin) pi auto-compacted (${reason}) at stage ${stage} — pace gates so work lands on disk before compaction; draft plan discussion into plan/ early — ${slug} ${today}`;
+}
+
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
 	const failed = Object.values(state.checks).some((c) => !c.ok);
 	return { text: `${state.slug}${state.patch ? " ⚡" : ""} ▸ ${state.stage}`, failed };
