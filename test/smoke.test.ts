@@ -432,3 +432,13 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering release/);
 	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /feature chore done/);
 });
+
+test("flow init --draft prints content and writes nothing", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const d = await flow(["init", "--draft"]);
+	assert.match(d.content[0].text, /defaultBranch/);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "project.md")), "--draft must not write");
+});

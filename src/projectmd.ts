@@ -231,20 +231,36 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, h
 }
 
 /** Compact per-stage digest of project.md content for dialog display (raw md walls are unreadable). */
+const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", release: "Release", deploy: "Deploy" };
+const DIGEST_CMDS: Record<string, string> = { setup: "setup", test: "test", build: "build", run: "run app", seedData: "seed data", health: "health", dev: "dev deploy", note: "manual runbook" };
+const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files" };
+
+/** Human summary of a playbook for the init confirm: one line per stage, real values and full item/guidance text, nothing truncated. */
 export function mdDigest(text: string): string {
 	const p = parseProjectMd(text);
 	const rows: string[] = [];
 	for (const s of MD_STAGES) {
+		const label = DIGEST_STAGES[s];
+		if (!label) continue;
 		const bits: string[] = [];
-		const keys = Object.keys(p.flow[s]).map((k) => k.split(".").pop()!);
-		if (keys.length) bits.push(`set: ${keys.join(", ")}`);
-		if (s === "implement" && p.checks.length) bits.push(`checks: ${p.checks.map((c) => c.name).join(", ")}`);
-		const n = (p.checklist[s] ?? []).length;
-		if (n) bits.push(`checklist: ${n}`);
-		if (p.prose[s]) bits.push("prose");
-		if (bits.length) rows.push(`## ${s} — ${bits.join(" \u00b7 ")}`);
+		const keys: Record<string, string> = {};
+		for (const [k, v] of Object.entries(p.flow[s] as Record<string, string>)) keys[k.split(".").pop()!] = v; // config dot-paths → display keys
+		for (const [k, v] of Object.entries(keys)) {
+			if (s === "release" && ["file", "pattern", "github", "artifact"].includes(k)) continue; // rendered specially below
+			bits.push(DIGEST_CMDS[k] ? `${DIGEST_CMDS[k]}: ${JSON.stringify(v)}` : `${DIGEST_WORDS[k] ?? k}: ${v}`);
+		}
+		if (s === "implement" && p.checks.length) bits.push(`named checks: ${p.checks.map((c) => c.name).join(", ")}`);
+		if (s === "release" && keys.file) {
+			bits.push(`version in ${keys.file} → tag ${keys.pattern ?? "v{version}"}`);
+			bits.push(keys.github === "false" || keys.github === "no" ? "GitHub release: off" : "GitHub release: created automatically");
+			bits.push(`artifact check: ${keys.artifact ?? "none set"}`);
+		}
+		const items = p.checklist[s] ?? [];
+		if (items.length) bits.push(`manual check: ${items.map((i) => `${i.uiOnly ? "(UI only) " : ""}\"${i.text}\"`).join(" · ")}`);
+		if (p.prose[s]) bits.push(`guidance: "${p.prose[s].replace(/\s+/g, " ").trim()}"`);
+		if (bits.length) rows.push(`${label} — ${bits.join(" · ")}`);
 	}
-	return rows.join("\n") || "(empty)";
+	return `${rows.join("\n") || "(empty)"}\n\nnothing is executed or uploaded now — gates only run later inside the flow`;
 }
 
 /** Draft project.md: fresh = pure detection (first init, --force); otherwise a refresh keeping configured values. */
