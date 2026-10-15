@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-14
+
+### Changed
+
+- **`/flow` output is a conversation message, not a popup.** Gate output (the command handler, the panel-mode hint, the no-feature notice) used to arrive as a `ui.notify` toast — easy to miss, gone on scroll, and colored severity nobody saw in time. It now goes through `pi.sendMessage({customType: "flow", display: true})`, rendering as a persistent `[flow]` box in the transcript in both the TUI and the web UI, with no model turn triggered. The gate confirmations, the `flow init` editor and the `ctrl+,` panel stay dialogs — they are operator input, not output.
+
 ## [0.27.0] - 2026-10-14
 
 ### Added
