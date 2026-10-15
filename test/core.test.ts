@@ -312,6 +312,21 @@ test("approveGate: patch features skip the plan document, gates stay", () => {
 	assert.ok(statusCompact(p).text.includes("⚡"), "status marks patch features");
 });
 
+test("docs mode: no plan document, no tier-1 checks, release integrity intact", () => {
+	const cfg = mergeConfig({ commands: { test: "x" } });
+	assert.equal(approveGate(newState("d", false, false, true), mergeConfig({}), []).length, 0, "docs: empty plan/ passes the gate");
+	assert.ok(approveGate(newState("d", false), mergeConfig({}), []).length === 1, "normal features still require plan/*.md");
+	assert.ok(statusCompact(newState("d", false, false, true)).text.includes("📄"), "status marks docs features");
+	const d = { ...newState("d", false, false, true), stage: "implement" as const };
+	assert.equal(verifyGate(d, cfg).length, 0, "docs skips the tier-1 check requirement");
+	assert.ok(verifyGate({ ...newState("d", false), stage: "implement" as const }, cfg).length > 0, "non-docs still demands green checks");
+	const pre = { ...newState("d", false, false, true), stage: "pre-release" as const };
+	const c3 = mergeConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
+	const prep = { manifestVersion: "1.2.0", localTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
+	assert.ok(!preReleaseGate(pre, c3, prep).some((e) => e.includes("flow check")), "docs release gate skips re-greened checks");
+	assert.ok(preReleaseGate(pre, c3, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")), "docs still needs the version bump");
+});
+
 test("shouldSelfCompact: only near pi's threshold and only when no chat-only state is pending", () => {
 	// 200k window, default reserve 16384 + margin 16384 → trigger above 167232 tokens
 	const base = { tokens: 190_000, contextWindow: 200_000, stage: "implement" as const, planFiles: 1, checklistPending: 0, compacting: false };

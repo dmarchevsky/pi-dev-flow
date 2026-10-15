@@ -457,7 +457,8 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n"]);
-	await flow(["start", "chore", "--patch"]);
+	assert.match((await flow(["start", "ungranted", "--patch"])).content[0].text, /operator-granted/, "--patch without the operator's chat grant is refused");
+	await flow(["start", "chore", "--patch", "--confirmed"]);
 	const noPlan = await flow(["approve"]);
 	assert.ok(!noPlan.content[0].text.includes("plan gate FAILED"), "patch does not require plan/*.md");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/);
@@ -466,6 +467,21 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	await flow(["release", "--confirmed"]);
 	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/, "release-done is check-only — asks the operator nothing");
 	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature chore done/);
+});
+
+test("docs feature: no plan file, no tier-1 checks, full release end to end", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n"]);
+	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /operator-granted/, "--docs without the operator's chat grant is refused");
+	assert.match((await flow(["start", "readme-typo", "--docs", "--confirmed"])).content[0].text, /docs/, "docs mode announced at start");
+	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/, "docs approves with no plan file written");
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "docs verify passes with no flow check run");
+	await flow(["release", "--confirmed"]);
+	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/);
+	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature readme-typo done/);
 });
 
 test("flow init --draft prints content and writes nothing", async () => {
