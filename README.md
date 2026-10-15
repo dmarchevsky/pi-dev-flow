@@ -65,11 +65,11 @@ While a feature is active, the extension intercepts every tool call:
 - **No code before an approved plan**: at stage `plan`, edits are confined to `.dev-flow/<slug>/`.
 - **Work stays in the worktree**: at stages `implement` and `pre-release`, edits are confined to that feature's worktree — judged per-path by the owning feature, so one session can never write into another session's worktree or into the main checkout.
 - **Flow by default**: in a repo with `.dev-flow/`, an unbound session cannot touch source files at all — every request goes through `flow start`/`flow use`; there is no bypass. `flow start` refuses when the main checkout isn't on the default branch, worktrees are always created from the default branch, and the agent cannot check feature branches out in the main checkout.
-- **Gates can't be skipped**: `state.json` is untouchable by the agent (edit tool and bash); `project.json` is operator-owned; editing worktree code invalidates a passing test check until `flow test` reruns.
+- **Gates can't be skipped**: `state.json` is untouchable by the agent (edit tool and bash); the `project.md` playbook is operator-owned; editing worktree code invalidates a passing test check until `flow test` reruns.
 - **Your project's own rules**: every `deny`/`confirm`/`protect`/`forbid` rule from the `flow-guard` block in project.md `## global` runs on every bash command and every edit/write path — in every stage and binding, ahead of dev-flow's own verdicts. A block always carries the reason you wrote.
 - **Compact-aware**: when context nears pi's auto-compaction threshold, dev-flow compacts *itself* at a safe point — right after a gate wrote state to disk, or when a run settles — with flow-aware summary instructions. It never compacts while chat is the state (open tier-2 dialog, plan discussion not yet in `plan/`), so pi's mid-work compaction rarely fires; when it does, a note lands in `reflections.md`.
 - The active stage is injected into the model's context every turn; the bundled `dev-flow` skill is the agent's playbook, including the recommended sequences: pre-release — review (`/ponytail-review`) → fixes → docs → changelog/version bump; release — PR → merge → tag → `release-done`.
-- **Status bar**: while a feature is active the pi footer shows `◆ <slug> ▸ <stage>` (stage-colored, `✗` on failing checks); press `ctrl+,` for the detail panel (approvals, checks, branch/worktree, next step).
+- **Status bar**: while a feature is active the pi footer shows `◆ <slug> ▸ <stage>` with a mode marker — ⚡ patch, 📄 docs, 🎱 yolo (stage-colored, `✗` on failing checks); press `ctrl+,` for the detail panel (approvals, checks, branch/worktree, next step). `flow status` adds the per-feature mode tags (`[ui]`, `[yolo]`, `[no-version]`) and the `flow=<ver>` stamp of the build that started the feature.
 
 ## Concurrency model
 
@@ -203,7 +203,6 @@ ideas the agent notices along the way queue up in `.dev-flow/reflections.md` und
 - `flow-guard` and the git guard are guardrails for what an agent types, **not a parser and not a sandbox**. Quoted payloads still match — `gh pr create --body "…git branch -D…"` trips a rule (the mitigation is `--body-file`), and rules fire on doing-verbs an agent types in the clear, not on every way a side effect could be reached. Write rules for the common mistakes, keep validation you actually depend on in scripts and CI.
 - `protect`/`forbid` judge edit/write tools against the repo root the session runs in — a copy of a protected file inside a feature worktree is a different path, and a bash redirect (`echo k > docker/secrets/k`) is a `deny` rule's job.
 - The read-only heads that get skipped (`find`, `awk`, `jq`, …) can write in their own dialects — `find . -delete`, `awk … > file`. A deny rule on `rm` does not cover them; write a rule for the effect you actually need to prevent.
-- ~~One active feature per pointer~~ — replaced by session bindings (v0.5.0): one feature per pi session, parallel sessions supported; `abort` unbinds.
 - Gate commands (`test`, `check`, `verify` build, `health`) run inside the feature worktree once it exists — the code under test lives there; before the worktree exists they run in the main checkout.
 
 ## Development
