@@ -64,7 +64,7 @@ Work happens **only in the worktree** the gate created (path in `flow status` or
    - walk the **tier-2 checklist** (`- [ ]` items) with the operator honestly — those can't be scripted;
    - then ask the user **Verified?** When they answer, run `flow verify --confirmed` (no second dialog); interactively they can run `/flow verify` themselves. Fixes requested = iterate and re-verify; that loop is free.
 
-`flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — absent config means dev-flow says nothing about dev; the command must **background and exit** — e.g. `docker compose up -d .` — verify waits for it and kills runs past 15 min) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal. Verify lands the feature in **pre-release**.
+`flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — the gate **prints what it ran** (`build ran (…)` / `dev ran (…)` / `dev: none configured`) because the command can take minutes and touch live services; it must **background and exit** — e.g. `docker compose up -d .` — verify waits for it and kills runs past 15 min) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal. Verify lands the feature in **pre-release**.
 
 ### Handling additions mid-implement
 

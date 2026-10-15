@@ -167,6 +167,42 @@ test("init --write stores validated project.md (tool path)", async () => {
 	assert.match(readFileSync(mdFile, "utf8"), /test = x/, "rejected write must not touch the file");
 });
 
+test("init reports .dev-flow/ created only when it created it (#39)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	assert.match((await flow(["init"])).content[0].text, /\.dev-flow\/ created in /, "a real creation is still reported");
+	const again = await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = x\n```\n"]);
+	assert.match(again.content[0].text, /project\.md written/);
+	assert.ok(!/created/.test(again.content[0].text), `nothing was created, nothing may be claimed: ${again.content[0].text}`);
+});
+
+test("verify names the commands it ran, and says when dev is not configured (#38)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n`;
+	const toImplement = async (slug: string, body: string) => {
+		await flow(["init", "--write", md(body)]);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		await flow(["check"]);
+	};
+	await flow(["init"]);
+	await toImplement("ran", "test = node --version\ndev = touch dev-up\n");
+	// the commands run before the operator is asked, so even the walk-out path must report them
+	const early = await flow(["verify"]);
+	assert.ok(early.isError, "no UI and no --confirmed: verification still needs the operator");
+	assert.match(early.content[0].text, /dev ran \(touch dev-up\)/);
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /verified .* — entering pre-release stage\.\ndev ran \(touch dev-up\)/);
+	await toImplement("nodev", "test = node --version\n");
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /dev: none configured/);
+});
+
 test("first init writes immediately even in a TUI — no editor or confirm gate", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
