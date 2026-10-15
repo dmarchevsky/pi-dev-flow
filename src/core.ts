@@ -34,6 +34,9 @@ export interface FlowState {
 	confirmations?: Record<string, { hash: string; at: string }>;
 	patch?: boolean; // chore release: no plan document, all gates intact
 	docs?: boolean; // docs-only release: no plan document, no tier-1 checks; worktree discipline and the full release stay
+	flowVersion?: string; // dev-flow build that started the feature (stamped at start, shown by status)
+	noVersion?: boolean; // operator chose: this flow releases without a version bump or tag
+	yolo?: boolean; // operator said "yolo" at approve: every later gate question pre-confirmed; checks and guardrails stay
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
@@ -129,8 +132,8 @@ export function validSlug(slug: string): boolean {
 	return /^[a-z0-9][a-z0-9-]*$/.test(slug);
 }
 
-export function newState(slug: string, ui: boolean, patch = false, docs = false): FlowState {
-	return { slug, stage: "plan", ui, branch: "", worktree: "", createdAt: new Date().toISOString(), approvals: {}, checks: {}, ...(patch ? { patch: true } : {}), ...(docs ? { docs: true } : {}) };
+export function newState(slug: string, ui: boolean, patch = false, docs = false, flowVersion?: string): FlowState {
+	return { slug, stage: "plan", ui, branch: "", worktree: "", createdAt: new Date().toISOString(), approvals: {}, checks: {}, ...(patch ? { patch: true } : {}), ...(docs ? { docs: true } : {}), ...(flowVersion ? { flowVersion } : {}) };
 }
 
 /** Recursive relative file listing of a directory (empty when missing). */
@@ -188,15 +191,18 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
 	const pend = checklistPending(cfg, state, "pre-release");
 	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow release after ticking them off`);
-	if (cfg.versioning.file) {
-		if (!prep.manifestVersion) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — bump it to the version you will release`);
-		else if (prep.localTags.includes(cfg.versioning.pattern.replace("{version}", prep.manifestVersion)))
-			errs.push(`version ${prep.manifestVersion} is already tagged — bump the manifest to the next version`);
-	}
-	if (cfg.release.changelog) {
-		if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog`);
-		else if (prep.manifestVersion && !prep.changelog.content.includes(prep.manifestVersion))
-			errs.push(`${prep.changelog.file} does not mention version ${prep.manifestVersion} — add its entry before releasing`);
+	// unversioned flow (operator granted --no-version): the release publishes as-is — no bump, changelog-entry or tag requirement
+	if (!state.noVersion) {
+		if (cfg.versioning.file) {
+			if (!prep.manifestVersion) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — bump it to the version you will release`);
+			else if (prep.localTags.includes(cfg.versioning.pattern.replace("{version}", prep.manifestVersion)))
+				errs.push(`version ${prep.manifestVersion} is already tagged — bump the manifest to the next version`);
+		}
+		if (cfg.release.changelog) {
+			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog`);
+			else if (prep.manifestVersion && !prep.changelog.content.includes(prep.manifestVersion))
+				errs.push(`${prep.changelog.file} does not mention version ${prep.manifestVersion} — add its entry before releasing`);
+		}
 	}
 	return errs;
 }
@@ -647,7 +653,7 @@ export function compactionReflectionLine(slug: string, stage: Stage, reason: str
 
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
 	const failed = Object.values(state.checks).some((c) => !c.ok);
-	return { text: `${state.slug}${state.patch ? " ⚡" : state.docs ? " 📄" : ""} ▸ ${state.stage}`, failed };
+	return { text: `${state.slug}${state.patch ? " ⚡" : state.docs ? " 📄" : ""}${state.yolo ? " 🎱" : ""} ▸ ${state.stage}`, failed };
 }
 
 /** What the agent/user should do next, per stage. */
@@ -665,7 +671,9 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "release":
 			return state.approvals.release
 				? "release recorded — commit and push the release chores in the main checkout, ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
-				: "publish: commit and push the branch, open and merge the PR, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)";
+				: state.noVersion
+					? "publish: commit and push the branch, open and merge the PR — unversioned release: no manifest bump, no tag; then run flow release-done (no further question)"
+					: "publish: commit and push the branch, open and merge the PR, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)";
 		default:
 			return "feature finished";
 	}

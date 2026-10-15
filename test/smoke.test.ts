@@ -748,3 +748,76 @@ test("finish deletes merged feature branches on origin and keeps unverifiable on
 	assert.match(kept.content[0].text, /origin\/feat\/kept kept — merged state not verifiable/, "an unverifiable branch is never deleted");
 	assert.ok(remoteHas("feat/kept"), "the branch survives for the operator to judge");
 });
+
+test("flow help: usage answers everywhere, even with no .dev-flow/", async () => {
+	const pi = makePi();
+	const ctx = makeCtx(mkdtempSync(path.join(tmpdir(), "noflow-")));
+	for (const args of [["help"], ["--help"], ["-h"]]) {
+		const r = (await pi.tools.flow.execute("id", { args }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
+		assert.ok(!r.isError, `flow ${args[0]} answers in a repo without .dev-flow/`);
+		assert.match(r.content[0].text, /^usage: flow <sub> — help \| init/);
+		assert.match(r.content[0].text, /approve \[--yolo\]/);
+		assert.match(r.content[0].text, /release \[--no-version\]/);
+	}
+});
+
+test("flow start prints the plugin version and stamps it into the feature state", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const own = (JSON.parse(readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8")) as { version: string }).version;
+	await pi.cmds.flow.handler("init", ctx);
+	await pi.cmds.flow.handler("start stamped", ctx);
+	assert.match(ctx.notices.at(-1) ?? "", new RegExp(`dev-flow ${own.split(".").join("\\.")}`), "start names the dev-flow build");
+	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "stamped", "state.json"), "utf8"));
+	assert.equal(st.flowVersion, own, "state.json carries the stamp");
+	const s = await pi.tools.flow.execute("id", { args: ["status"] }, undefined, undefined, ctx) as { content: [{ text: string }] };
+	assert.match(s.content[0].text, new RegExp(`flow=${own.split(".").join("\\.")}`), "status shows it per feature");
+});
+
+test("yolo: approve --yolo pre-confirms every later gate question, checks still enforced", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	let dialogs = 0;
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = exit 1\n```\n"]);
+	await flow(["start", "yo"]);
+	mkdirSync(path.join(repo, ".dev-flow", "yo", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "yo", "plan", "plan.md"), "# plan\n");
+	assert.match((await flow(["approve", "--yolo", "--confirmed"])).content[0].text, /yolo: later gate questions pre-confirmed/);
+	// a failing check still blocks verify — yolo pre-confirms questions, not checks
+	await flow(["check"]);
+	const v = await flow(["verify"]);
+	assert.ok(v.isError && /check "test" has not passed/.test(v.content[0].text), "yolo never bypasses tier-1 checks");
+	await flow(["init", "--write", "# dev-flow\n"]);
+	await flow(["check"]);
+	assert.match((await flow(["verify"])).content[0].text, /verified \(yolo: pre-confirmed\) — entering pre-release/);
+	await flow(["release"]);
+	await flow(["release-done"]);
+	assert.match((await flow(["finish"])).content[0].text, /feature yo done — worktree and branch feat\/yo removed/);
+	assert.equal(dialogs, 0, "yolo answered every checkpoint up front — gates must not ask");
+});
+
+test("unversioned release: --no-version skips the bump/tag machinery for that flow", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
+	await flow(["start", "nv"]);
+	mkdirSync(path.join(repo, ".dev-flow", "nv", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "nv", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	await flow(["verify", "--confirmed"]);
+	// default stays versioned: no manifest in the worktree → the gate refuses
+	const versioned = await flow(["release", "--confirmed"]);
+	assert.ok(versioned.isError && /no parsable version/.test(versioned.content[0].text), "default release still demands the version bump");
+	const r = await flow(["release", "--no-version", "--confirmed"]);
+	assert.match(r.content[0].text, /unversioned: this flow creates no version bump or tag/);
+	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "nv", "state.json"), "utf8"));
+	assert.equal(st.noVersion, true, "the mode is persisted for release-done");
+	const rd = await flow(["release-done", "--confirmed"]);
+	assert.match(rd.content[0].text, /release recorded as complete \(unversioned — this flow created no version or tag\)/);
+});
