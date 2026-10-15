@@ -870,7 +870,8 @@ export default function devFlow(pi: ExtensionAPI) {
 		description: `dev-flow gates: ${GATE_HELP}`,
 		handler: async (args, ctx) => {
 			const res = await runFlow(parse(args), ctx.cwd, uiFrom(ctx), sessFor(ctx));
-			ctx.ui.notify(res.text, res.isError ? "error" : "info");
+			// gate output belongs to the conversation, not a toast: display:true renders a [flow] box (TUI + web), no triggerTurn so no model turn fires
+			pi.sendMessage({ customType: "flow", content: res.text, display: true });
 			refreshStatus(ctx);
 			if (!res.isError) maybeCompactNow(ctx);
 		},
@@ -916,12 +917,12 @@ export default function devFlow(pi: ExtensionAPI) {
 		description: "Show the dev-flow detail panel (stage, approvals, checks, next step)",
 		handler: async (ctx) => {
 			if (ctx.mode !== "tui") {
-				if (ctx.hasUI) ctx.ui.notify("flow panel requires interactive mode", "warning");
+				if (ctx.hasUI) pi.sendMessage({ customType: "flow", content: "flow panel requires interactive mode", display: true });
 				return;
 			}
 			const st = existsSync(dfDir(ctx.cwd)) ? boundFeature(ctx.cwd, sessionKey(ctx)) : null;
 			if (!st || st.stage === "done") {
-				ctx.ui.notify("dev-flow: no active feature", "info");
+				pi.sendMessage({ customType: "flow", content: "dev-flow: no active feature", display: true });
 				return;
 			}
 			await ctx.ui.custom<void>((_tui, theme, _kb, done) => new FlowPanel(st, loadProject(dfDir(ctx.cwd)).cfg, theme, () => done()));

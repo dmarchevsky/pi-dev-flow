@@ -20,9 +20,16 @@ interface Stub {
 
 function makePi(): Stub & ((...a: never[]) => void) {
 	const stub = { cmds: {}, tools: {}, handlers: {} } as Stub;
+	let cmdCtx: { notices?: string[] } | undefined; // last command's ctx — sendMessage output lands in its notices
 	const api = {
 		registerCommand: (n: string, o: unknown) => {
-			stub.cmds[n] = o as never;
+			const cmd = o as { handler: (a: string, c: unknown) => Promise<void> };
+			stub.cmds[n] = {
+				handler: async (a: string, c: unknown) => {
+					cmdCtx = c as { notices?: string[] };
+					await cmd.handler(a, c);
+				},
+			} as never;
 		},
 		registerTool: (t: { name: string }) => {
 			stub.tools[t.name] = t as never;
@@ -33,6 +40,9 @@ function makePi(): Stub & ((...a: never[]) => void) {
 		},
 		registerShortcut: () => {},
 		appendEntry: () => {},
+		sendMessage: (m: { content: string }) => {
+			if (cmdCtx) (cmdCtx.notices ??= []).push(m.content);
+		},
 	};
 	devFlow(api as never);
 	return stub as never;
