@@ -50,6 +50,11 @@ test("mergeConfig fills defaults and merges partial overrides", () => {
 	assert.equal(mergeConfig(null).defaultBranch, "main");
 });
 
+test("newState stamps the dev-flow build when supplied", () => {
+	assert.equal(newState("f", false, false, false, "1.2.3").flowVersion, "1.2.3");
+	assert.equal("flowVersion" in newState("f", false), false, "no stamp supplied → field absent");
+});
+
 test("approveGate requires plan.md, rendered mockups when ui", () => {
 	const s = newState("f", false);
 	assert.ok(approveGate(s, cfg, []).length > 0);
@@ -94,6 +99,8 @@ test("preReleaseGate: stage, re-greened checks, bumped version, changelog mentio
 	assert.ok(preReleaseGate(s, c2, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")));
 	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: null }).some((e) => e.includes("does not exist")));
 	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: { file: "CHANGELOG.md", content: "## 1.1.0" } }).some((e) => e.includes("does not mention")));
+	// unversioned flow (operator granted release --no-version): bump and changelog requirements are off
+	assert.equal(preReleaseGate({ ...s, noVersion: true }, c2, { manifestVersion: null, localTags: ["v1.2.0"], changelog: null }).length, 0);
 	// no versioning/changelog configured: only the check matters
 	assert.equal(preReleaseGate({ ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } }, mergeConfig({ commands: { test: "x" } }), prep).length, 0);
 });

@@ -92,7 +92,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
 const GATE_HELP =
-	"init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve | verify | release | release-done | finish <slug> | abort [slug] | version — state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode)";
+	"help | init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done | finish [slug] | abort [slug] | version — state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -272,7 +272,8 @@ function reflectNote(root: string, sess: Session, note: string[]): RunResult {
 /** Single runner for both the /flow command and the flow tool. */
 async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Promise<RunResult> {
 	const [sub = "status", ...rest] = args;
-	// `version` is a question about the plugin, not the repo: it is answerable with no .dev-flow/ at all
+	// help and version are questions about the plugin, not the repo: answerable with no .dev-flow/ at all
+	if (sub === "help" || sub === "--help" || sub === "-h") return { text: `usage: flow <sub> — ${GATE_HELP}` };
 	if (!existsSync(dfDir(root)) && sub !== "init" && sub !== "version") return { text: "no .dev-flow/ in this repo — run /flow init first", isError: true };
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
@@ -389,11 +390,13 @@ ${mdDigest(draftRefresh)}`))
 			// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
 			const curBr = await currentBranch(root);
 			if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
-			const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"));
+			// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling
+			const self = pluginVersion(import.meta.dirname);
+			const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), self.version ?? undefined);
 			mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
 			writeState(root, state);
 			sess.bind(slugArg);
-			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}).\n${nextHint(state, cfg)}` };
+			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${self.version ? `, dev-flow ${self.version}` : ""}).\n${nextHint(state, cfg)}` };
 		}
 
 		case "status": {
@@ -410,7 +413,7 @@ ${mdDigest(draftRefresh)}`))
 				const st = readState(root, s);
 				if (!st) return [];
 				return [
-					`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}`,
+					`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""}${st.yolo ? " [yolo]" : ""}${st.noVersion ? " [no-version]" : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""}`,
 					`  approvals: ${Object.keys(st.approvals).join(", ") || "none"} | checks: ${Object.entries(st.checks).map(([k, v]) => `${k}:${v.ok ? "ok" : "FAILED"}`).join(", ") || "none"}${st.confirmations?.implement ? " | checklist: confirmed" : ""}`,
 					`  next: ${nextHint(st, cfg)}`,
 				];
@@ -444,10 +447,11 @@ ${mdDigest(draftRefresh)}`))
 			const errs = approveGate(state!, cfg, listFiles(path.join(featDir(root, state!.slug), "plan")));
 			if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 			const planItems = applicableItems(cfg, state!, "plan");
+			if (flag("yolo")) state!.yolo = true; // operator's word at Approve? — every later gate question is pre-confirmed; checks and guardrails stay
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 			if (!flag("confirmed")) {
 				if (!ui.hasUI) return { text: "plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
-				const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.`);
+				const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
 				if (!ok) return { text: "approval declined — keep iterating on the plan" };
 			}
 			if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
@@ -472,7 +476,7 @@ ${mdDigest(draftRefresh)}`))
 			state!.stage = "implement";
 			state!.approvals.plan = now();
 			writeState(root, state!);
-			return { text: `plan approved${audit}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
+			return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "test": {
@@ -505,8 +509,8 @@ ${mdDigest(draftRefresh)}`))
 				writeState(root, state!);
 				if (!res.ok) return { text: `dev deploy FAILED:\n${tail(res.out)}`, isError: true };
 			}
-			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
-			if (!flag("confirmed")) {
+			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
+			if (!flag("confirmed") && !state!.yolo) {
 				if (!ui.hasUI) return { text: "verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
 				const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev ? "; dev deploy is up for review" : ""} \u2014 does it work?`);
 				if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
@@ -564,6 +568,7 @@ ${mdDigest(draftRefresh)}`))
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			const items = applicableItems(cfg, state!, "pre-release");
+			if (flag("no-version")) state!.noVersion = true; // operator's word at Release?: this flow ships without a version bump or tag
 			// prep evidence is read from the worktree: the bump and changelog entry exist on the branch before the PR merges
 			const wtCwd = gateCwd(root, state!);
 			const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
@@ -578,17 +583,17 @@ ${mdDigest(draftRefresh)}`))
 			// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 			const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 			if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
-			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
-			if (!flag("confirmed")) {
+			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
+			if (!flag("confirmed") && !state!.yolo) {
 				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat", isError: true };
-				const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}? Publishing starts: PR, merge, tag — release-done afterwards needs no further answer.`);
+				const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${state!.noVersion ? " (unversioned — no version bump or tag for this flow)" : ""}? Publishing starts: PR, merge${state!.noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.`);
 				if (!ok) return { text: "release declined — keep preparing in pre-release" };
 			}
 			state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
 			state!.approvals["pre-release"] = now();
 			state!.stage = "release";
 			writeState(root, state!);
-			return { text: `release approved${audit} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}\n${nextHint(state!, cfg)}` };
+			return { text: `release approved${audit}${state!.noVersion ? " — unversioned: this flow creates no version bump or tag" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "release-done": {
@@ -596,7 +601,7 @@ ${mdDigest(draftRefresh)}`))
 			if (err) return err;
 			const errs = releaseGate(state!);
 			let manifestVer: string | null = null;
-			if (cfg.versioning.file) {
+			if (cfg.versioning.file && !state!.noVersion) {
 				const manifestPath = path.join(root, cfg.versioning.file);
 				if (!existsSync(manifestPath)) errs.push(`versioning.file "${cfg.versioning.file}" does not exist — fix project.json`);
 				const manifest = existsSync(manifestPath) ? parseVersion(cfg.versioning.file, readFileSync(manifestPath, "utf8")) : null;
@@ -640,7 +645,7 @@ ${mdDigest(draftRefresh)}`))
 			}
 			const tailNote = [ghNote, artNote].filter(Boolean).join(" ");
 			writeState(root, state!);
-			return { text: `release recorded as complete.${tailNote ? ` ${tailNote}` : ""}\n${nextHint(state!, cfg)}` };
+			return { text: `release recorded as complete${state!.noVersion ? " (unversioned — this flow created no version or tag)" : ""}.${tailNote ? ` ${tailNote}` : ""}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "finish": {
@@ -667,7 +672,7 @@ ${mdDigest(draftRefresh)}`))
 				if (assess.unmerged.length) unmergedNote = ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?).`;
 			}
 			// the one finish question — asked after the safety checks so it can never be a wasted question
-			if (!flag("confirmed")) {
+			if (!flag("confirmed") && !state!.yolo) {
 				if (!ui.hasUI) return { text: `finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)`, isError: true };
 				const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 				if (!ok) return { text: "finish declined" };
@@ -1031,6 +1036,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			return { message: { customType: "dev-flow-context", display: false, content } };
 		}
 		const guidance: string[] = [];
+		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every later gate question (Verified?/Release?/Finish?) — run the gates without asking; checks and guardrails stay fully enforced.");
 		if (cfg.prose[state.stage]) guidance.push(`Stage guidance (project.md): ${cfg.prose[state.stage]}`);
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}`);

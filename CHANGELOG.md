@@ -4,6 +4,19 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-14
+
+### Added
+
+- **`flow help`** (aliases `--help`, `-h`) prints the gate usage — answerable in any repo, at any stage, with no `.dev-flow/` (where `flow --help` used to fall into an unknown-subcommand error).
+- **Version stamp at `flow start`.** Start prints the dev-flow build that created the feature and persists it (`state.flowVersion`); `flow status` shows `flow=<ver>` per feature — a stuck flow can now be read against the tooling that started it.
+- **Unversioned release: `flow release --no-version`.** Default stays versioned (bump + tag). When the operator chooses it at the Release? step, the gate skips the manifest-bump and changelog requirements and `release-done` skips the whole version/tag/artifact machinery for that flow, recording the release with an `unversioned` note; status marks it `[no-version]`.
+- **Yolo mode: `flow approve --yolo`.** The operator's word at Approve? pre-confirms every later gate question (Verified?/Release?/Finish?) so the agent drives the flow through without stopping. Tier-1 checks still block gates, and guardrails stay fully enforced — a flow-guard `confirm` rule still asks the operator. Status marks it 🎱; the stage context tells the agent not to re-ask.
+
+### Docs
+
+- README command table and the dev-flow skill playbook cover when "yolo" / "no version" in chat license the flags.
+
 ## [0.29.0] - 2026-10-15
 
 ### Added
