@@ -1,16 +1,16 @@
 /**
  * dev-flow: enforced feature-flow state machine for Pi (pi package extension).
  *
- * Stages: plan → implement → release → done, per feature,
+ * Stages: plan → implement → pre-release → release → done, per feature,
  * with state in <repo>/.dev-flow/<slug>/state.json (gitignored, flow-owned).
  *
  * Enforcement has three teeth:
- *  1. Gate commands (/flow approve|verify|release-done|finish) refuse
+ *  1. Gate commands (/flow approve|verify|release|release-done|finish) refuse
  *     to advance unless exit criteria hold (plan file, mockups, green tests,
- *     operator confirmations, merged worktree).
+ *     operator confirmations, recorded release).
  *  2. tool_call guards: no commits/pushes on the main branch outside the
  *     release stage; edits confined to the plan dir or the worktree; state.json
- *     and project.json are untouchable by the agent.
+ *     is untouchable and the project.md playbook is operator-owned.
  *  3. before_agent_start injects the active stage so the model always knows
  *     where it is and which gate comes next.
  *
@@ -92,7 +92,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
 const GATE_HELP =
-	"help | init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done | finish [slug] | abort [slug] | version — state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
+	"help | init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-github-release] | finish [slug] | abort [slug] | version — state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");

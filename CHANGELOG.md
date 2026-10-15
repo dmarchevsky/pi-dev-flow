@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-10-14
+
+### Fixed
+
+- Documentation consistency: the extension header's stale stage/gate lists (missing `pre-release`, missing the `release` gate, "merged worktree" criterion), the skill playbook's operator-config rule now names `project.md` (legacy `project.json` noted as superseded), `flow help`/command description now show `start --force` and the `release-done` opt-out flags, the README status-bar bullet documents the mode markers (⚡/📄/🎱) and the `flow status` mode tags + `flow=<ver>` stamp; a dead v0.5.0 limitations line was dropped. No behavior change.
+
 ## [0.30.0] - 2026-10-14
 
 ### Added
