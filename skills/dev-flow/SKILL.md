@@ -24,7 +24,7 @@ Ground rules:
 - `.dev-flow/project.json` is operator-owned: read it for commands (test/build/run), the default branch, worktree path — never edit it; ask the user.
 - Also obey the repo's own AGENTS.md and project skills; dev-flow sequences stages, the project defines its conventions.
 - If a guard blocks you, you are trying to skip a stage or write outside your session's feature. Stop and run the gate instead of working around it.
-- **Checkpoint questions are one verb: Approve? / Verified? / Release? / Finish?** The verb doubles as the operator's answer; ask exactly that word at each gate and treat the same verb (or an explicit equivalent) in chat as the answer — then `--confirmed` carries the checkpoint with zero dialogs.
+- **Checkpoint questions are one verb: Approve? / Verified? / Release? / Finish?** The verb doubles as the operator's answer; ask exactly that word at each gate and treat the same verb (or an explicit equivalent) in chat as the answer — then `--confirmed` carries the checkpoint with zero dialogs. Ask it as a **plain chat message**: a structured question tool (AskUserQuestion-style dialog) is not chat — its answer never licenses `--confirmed`. The same rule covers mode grants: `--patch`/`--docs` on `flow start` require the operator having granted that mode in chat, with `--confirmed` as the anchor — never self-grant.
 
 ## Start
 
@@ -32,20 +32,21 @@ Repo without `.dev-flow/`? Run `flow init` — it writes `.dev-flow/project.md` 
 
 `flow start <slug> --ui` when the work touches anything user-visible, else `flow start <slug>`. Slug: lowercase words-dashed. Check `flow status` first to see whether one is already active.
 
-**Patches and chores**: a small change you intend to release (a one-file fix, a docs/version chore) starts with `flow start <slug> --patch` — no plan file; one line of description in chat is the plan. Everything else is identical: approve, worktree, tier-1 checks, verify, tagged release. Never use `--patch` to dodge planning for real features — if the change grows past one line, start the feature properly.
+**Modes are proposed, never taken** — every `flow start` carries the mode you propose and why, and the operator's grant makes it real. `normal` (default): a written plan is enforced (plan/plan.md before Approve?). `--patch`: a small change you intend to release (one-file fix, version chore) — no plan file, one line in chat is the plan, every other gate identical. `--docs`: docs-only work — no plan file **and no tier-1 checks** (build/lint/test); worktree discipline and the full release stay. Relaxed modes are operator-granted: the gate refuses `--patch`/`--docs` until the operator's chat grant is anchored with `--confirmed`. Suggest patch/docs only when they fit — if the change grows past one line or touches behavior, it is a normal feature.
 
 ## Stage: plan
 
 1. Research the code needed for the plan (reads are always allowed).
-2. Write the plan to `.dev-flow/<slug>/plan/plan.md`: problem, approach, files to touch, test strategy, risks. Keep it reviewable, not exhaustive. Before asking for approval check `git log origin/<default>..<default> --oneline` — local-only default-branch commits fall out of the worktree's base (push them or re-plan around them).
-3. **UI flag set?** Build the mockups in `plan/mockups/` and render them — a mockup that was never rendered is not a mockup:   - Write one HTML per screen/state at `plan/mockups/<screen>.html`. Reuse the project's real stylesheet and class names where it exists (relative links work from inside `.dev-flow/`) — fidelity by construction.
+2. **Clarify before drafting** — do not jump to the plan file. Present a preliminary direction to the operator in chat (what you found, the shape of the fix, open unknowns), propose the mode (normal / patch / docs) with a one-line reason, ask your clarifying questions and let the operator ask his. Draft only after the direction is confirmed.
+3. Write the plan to `.dev-flow/<slug>/plan/plan.md`: problem, approach, files to touch, test strategy, risks. Keep it reviewable, not exhaustive. Before asking for approval check `git log origin/<default>..<default> --oneline` — local-only default-branch commits fall out of the worktree's base (push them or re-plan around them).
+4. **UI flag set?** Build the mockups in `plan/mockups/` and render them — a mockup that was never rendered is not a mockup:   - Write one HTML per screen/state at `plan/mockups/<screen>.html`. Reuse the project's real stylesheet and class names where it exists (relative links work from inside `.dev-flow/`) — fidelity by construction.
    - Find a headless chromium: probe `chromium`, `chromium-browser`, `google-chrome` on PATH; else playwright's shell at `~/.cache/ms-playwright/*/chrome-headless-shell-linux64/chrome-headless-shell`.
    - Render each screen at the widths the project cares for (default: phone 390, desktop 1280):
      `<binary> --no-sandbox --disable-gpu --hide-scrollbars --virtual-time-budget=5000 --window-size=<width>,<height> --screenshot=plan/mockups/<screen>-<width>.png file://<absolute path to html>`
      (height: pick per-screen, re-render if content clips).
    - Embed every render in plan.md under its section: `![<screen> — phone](mockups/<screen>-390.png)`. The plan is then one self-contained reviewable document.
    - No chromium anywhere? Tell the user and ask — fall back to `*.html`-only plans only with their OK (they can set `mockupGlobs`); never fake or skip a screenshot silently.
-4. Tell the user the plan is ready and **stop** — one word: **Approve?** They answer in chat (or run `/flow approve` themselves). When they answered, run `flow approve --confirmed` — **exactly one checkpoint per stage**: a chat answer must never trigger a second dialog. `--confirmed` is only for a literal operator answer, never your inference; without an answer and without interactive UI the gate refuses.
+5. Tell the user the plan is ready and **stop** — one word: **Approve?** They answer in chat (or run `/flow approve` themselves). When they answered, run `flow approve --confirmed` — **exactly one checkpoint per stage**: a chat answer must never trigger a second dialog. `--confirmed` is only for a literal operator answer, never your inference; without an answer and without interactive UI the gate refuses.
 
 Approval creates the worktree and branch (running `commands.setup` inside it when configured — a failing setup fails the gate). Until then no code edits are possible. `(ui)`-marked playbook checklist items do not apply to non-UI features — they never appear in prompts or confirmations.
 

@@ -40,7 +40,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 
 | Gate | Advances | Refuses unless |
 |---|---|---|
-| `start <slug> [--ui] [--patch]` | → plan | slug is new (binds the session); `--patch` = chore release: no plan document, every gate unchanged |
+| `start <slug> [--ui] [--patch|--docs --confirmed]` | → plan | slug is new (binds the session); relaxed modes are operator-granted in chat, anchored by `--confirmed`: `--patch` = chore release, no plan document, every gate unchanged; `--docs` = docs-only, no plan document and no tier-1 checks (worktree and release intact) |
 | `use <slug>` | — (binds this session to a feature) | slug unfinished |
 | `approve` | plan → implement (creates worktree + branch) | `plan/*.md` exists; if `--ui`, rendered mockup screenshots (per `mockupGlobs`, default `*.png`) exist under `plan/` — headless chromium renders embedded in plan.md; **one question** — or `--confirmed` after you answered in chat |
 | `test` | records a check | — (runs the `test` command/check, records pass/fail) |

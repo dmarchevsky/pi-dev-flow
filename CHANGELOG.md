@@ -4,6 +4,17 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-15
+
+### Added
+
+- **`--docs` mode — the most relaxed release lane.** For docs-only work: no plan file (like `--patch`) **and no tier-1 checks** (build/lint/test skipped at verify and the release gate); worktree/branch discipline and the full release (version bump, changelog, tag, gate questions) stay untouched. Status marks it `📄` (patch keeps `⚡`).
+
+### Changed
+
+- **Relaxed modes are operator-granted, mechanically.** `flow start` refuses `--patch` or `--docs` without `--confirmed` — reusing the convention that `--confirmed` may only anchor a literal operator chat answer, self-selection is impossible: the agent proposes a mode, the operator grants it in chat, the gate enforces the grant. `--patch --docs` together is refused (exclusive). The skill playbook's checkpoint rule now names the failure it prevents: gate verbs and mode grants are plain chat only — a structured question-tool dialog is not an operator answer and never licenses `--confirmed`.
+- **Clarify before drafting.** The plan stage opens with investigation, a preliminary direction presented to the operator in chat, a mode proposal with reasoning, and clarifying Q&A — only then is the plan drafted. Encoded in the skill playbook and the plan-stage hints; normal mode keeps enforcing the written `plan/*.md` at approve (it always did — this is what `--patch` used to skip, by operator grant only).
+
 ## [0.28.0] - 2026-10-14
 
 ### Changed
