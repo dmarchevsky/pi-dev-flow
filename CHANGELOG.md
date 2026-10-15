@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-10-15
+
+### Fixed
+
+- **`flow init --write` no longer claims `.dev-flow/ created` in a repo that already had it** (#39). The recursive mkdir cannot tell the two apart, so every init path — worst the agent-only `--write` path — printed a creation that never happened, and the agent went off to diff its own playbook for damage that had not been done. Creation is now reported only when the folder was really created; otherwise `--write` prints just `project.md written (operator-owned playbook)`.
+- **`flow verify` says which commands it ran** (#38). `commands.dev` can rebuild an image and recreate a live container — minutes of work and a real side effect — while the only output was `verified … — entering pre-release stage.`, which read as if nothing had run. The gate now prints `build ran (<cmd>)` / `dev ran (<cmd>)`, or `dev: none configured`, on success and on the "verification needs the operator" path alike, and names the command in the Verified? prompt. Same precedent as `setup ran in the worktree (<cmd>)`; checks, guardrails and prompts are unchanged.
+
 ## [0.30.1] - 2026-10-14
 
 ### Fixed

@@ -281,8 +281,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 
 	switch (sub) {
 		case "init": {
+			// a recursive mkdir is silent about whether it created anything, and `flow init --write` is the
+			// only sanctioned agent path to the playbook: claiming "created" when the folder was already
+			// there sends the agent diffing its own config for damage that never happened (#39).
+			const dfExisted = existsSync(dfDir(root));
 			mkdirSync(dfDir(root), { recursive: true });
-			const notes: string[] = [`.dev-flow/ created in ${root}`];
+			const notes: string[] = dfExisted ? [] : [`.dev-flow/ created in ${root}`];
 			// self-ignoring folder: nothing under .dev-flow/ ever enters git, without touching tracked files
 			writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n");
 			rmSync(path.join(dfDir(root), ".current"), { force: true }); // migrate away the legacy repo-global pointer
@@ -496,23 +500,30 @@ ${mdDigest(draftRefresh)}`))
 			// tier-1 gate first (tier-2 confirmation is recorded by this very command, so it is excluded here)
 			const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg);
 			if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
+			// commands that take minutes and touch live services must say so (#38): a terse gate let the
+			// agent tell the operator the dev deploy had never run, right after it recreated a container.
+			const did: string[] = [];
 			if (cfg.commands.build) {
 				const res = await sh(cfg.commands.build, gateCwd(root, state!));
 				state!.checks.build = { ok: res.ok, at: now() };
 				writeState(root, state!);
-				if (!res.ok) return { text: `build FAILED:\n${tail(res.out)}`, isError: true };
+				if (!res.ok) return { text: `build FAILED (${cfg.commands.build}):\n${tail(res.out)}`, isError: true };
+				did.push(`build ran (${cfg.commands.build})`);
 			}
 			// deploy to dev before asking — the operator reviews the running dev app, not a promise
 			if (cfg.commands.dev) {
 				const res = await sh(cfg.commands.dev, gateCwd(root, state!));
 				state!.checks.dev = { ok: res.ok, at: now() };
 				writeState(root, state!);
-				if (!res.ok) return { text: `dev deploy FAILED:\n${tail(res.out)}`, isError: true };
-			}
+				if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev}):\n${tail(res.out)}`, isError: true };
+				did.push(`dev ran (${cfg.commands.dev})`);
+			} else did.push("dev: none configured");
+			const ran = did.join("; ");
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 			if (!flag("confirmed") && !state!.yolo) {
-				if (!ui.hasUI) return { text: "verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
-				const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev ? "; dev deploy is up for review" : ""} \u2014 does it work?`);
+				// these commands already ran — say so even on the way out
+				if (!ui.hasUI) return { text: `verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat.\n${ran}`, isError: true };
+				const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 				if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
 			}
 			state!.confirmations = { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } };
@@ -521,7 +532,7 @@ ${mdDigest(draftRefresh)}`))
 			state!.approvals.verify = now();
 			state!.stage = "pre-release";
 			writeState(root, state!);
-			return { text: `verified${audit} — entering pre-release stage.\n${nextHint(state!, cfg)}` };
+			return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "check": {

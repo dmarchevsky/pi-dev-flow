@@ -159,7 +159,8 @@ manifest↔tag agreement). `## global` holds
 `npm install` belong — a failing setup fails the gate), and `run` is advisory: the agent starts the app
 with it for the running-and-healthy walk, dev-flow never runs it itself. `dev` is the dev deploy run by
 `flow verify` before the operator question — it must background and exit,
-e.g. `docker compose up -d .`. The pre-release and release stages take
+e.g. `docker compose up -d .`; the gate names what it ran (`dev ran (<cmd>)`, or
+`dev: none configured`) so minutes of deploys never read as "nothing happened". The pre-release and release stages take
 `versionFile`/`versionTag` (defaults `v{version}`; accepted under either section). A legacy
 `project.json` still works — project.md overrides it, and the doctor flags having both.
 
