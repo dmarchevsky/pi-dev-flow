@@ -203,6 +203,34 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /dev: none configured/);
 });
 
+test("verify re-probes health after the dev deploy — a stale pre-deploy PASS cannot carry the gate", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n`;
+	const toImplement = async (slug: string, body: string) => {
+		await flow(["init", "--write", md(body)]);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		await flow(["check"]);
+	};
+	const stage = (slug: string) => JSON.parse(readFileSync(path.join(repo, ".dev-flow", slug, "state.json"), "utf8")).stage;
+	await flow(["init"]);
+	// the probe passes before the deploy and fails after it: precisely the hole the post-deploy probe closes
+	await toImplement("stale", "test = node --version\ndev = touch deploy-up\nhealth = test ! -e deploy-up\n");
+	const failed = await flow(["verify", "--confirmed"]);
+	assert.ok(failed.isError, "a deploy the probe rejects cannot be verified");
+	assert.match(failed.content[0].text, /post-deploy probe FAILED \(test ! -e deploy-up\)/);
+	assert.equal(stage("stale"), "implement", "a failed probe leaves the flow in implement");
+	await toImplement("probed", "test = node --version\ndev = touch dev-up\nhealth = node --version\n");
+	const ok = await flow(["verify", "--confirmed"]);
+	assert.match(ok.content[0].text, /dev ran \(touch dev-up\); health: PASS \(node --version\)/);
+	assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "probed", "state.json"), "utf8")).checks.health.ok, "the post-deploy PASS is what lands in state");
+});
+
 test("first init writes immediately even in a TUI — no editor or confirm gate", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

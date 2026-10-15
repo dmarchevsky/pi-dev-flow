@@ -46,7 +46,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `test` | records a check | — (runs the `test` command/check, records pass/fail) |
 | `check` | records all tier-1 checks | — (runs every `flow-check`/test/health from project.md `## implement`) |
 | `health` | records a check | — (runs `seedData` + the health command; app must be up locally with real data) |
-| `verify` | implement → pre-release | all tier-1 checks green, build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app, tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; **one question** — or `--confirmed` |
+| `verify` | implement → pre-release | all tier-1 checks green, build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app **and the health probe (if configured) re-runs against what it just deployed** (a failing probe refuses the gate: the `flow check` PASS predates the deploy; with no probe the output says `health: none configured`), tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; **one question** — or `--confirmed` |
 | `release [--no-version]` | pre-release → release | checks re-greened after the prep edits; with `versioning.file`: the manifest version parses and is **not tagged yet** (the bump must be ahead of the last release); with `release.changelog`: the file exists and mentions the version; tier-2 `## pre-release` checklist confirmed; **one question** (Release?) — or `--confirmed`; `--no-version` (your call at Release?) releases this flow **without** version bump or tag — those requirements and the tag checks at `release-done` are skipped for it (default: versioned) |
 | `release-done` | records the release (the stage stays `release`) | **no question — the Release? answer covered the publication**; verify approval; with `versioning.file`: tag rendered from the manifest version exists, is reachable from the default branch **and is on origin** (a local-only tag is not a release); with `release.artifact`: the published-artifact check runs (`{version}`/`{tag}` placeholders; skip once with `--no-artifact-check`, operator-instructed only) · creates the GitHub release from the tag (advisory — needs gh + GitHub remote; skip per-release with `--no-github-release`, per-project with `release.github = false`) |
 | `finish [slug]` | release → done (removes worktree + branch, deletes `.dev-flow/<slug>/`, and deletes `origin/<branch>` **only** when its merged state is verified — ancestor of the default branch or a merged PR via gh; unverifiable branches stay with a note) | a release is recorded (`release-done` ran), the main checkout is clean **and** pushed to `origin/<default>`, and the worktree has no uncommitted changes; **one question** (Finish? — mentions unmerged-looking squash-merge commits when it sees them) — or `--confirmed`; to abandon an unreleased feature use `abort` |
@@ -160,7 +160,13 @@ manifest↔tag agreement). `## global` holds
 with it for the running-and-healthy walk, dev-flow never runs it itself. `dev` is the dev deploy run by
 `flow verify` before the operator question — it must background and exit,
 e.g. `docker compose up -d .`; the gate names what it ran (`dev ran (<cmd>)`, or
-`dev: none configured`) so minutes of deploys never read as "nothing happened". The pre-release and release stages take
+`dev: none configured`) so minutes of deploys never read as "nothing happened". After a deploy that
+ran, verify re-runs the health probe (`commands.health` or a `flow-check` block named `health`, with
+`seedData` first when set) in the worktree and refuses the gate when it fails — the pre-deploy
+`flow check` PASS describes a container that no longer exists. What "healthy and serving this
+build" means stays the project's own assertion: the probe runs with the worktree as cwd, so it can
+wait for readiness and compare the served build stamp with `git rev-parse HEAD`. No probe → the
+gate prints `health: none configured` and `flow doctor` flags the combination. The pre-release and release stages take
 `versionFile`/`versionTag` (defaults `v{version}`; accepted under either section). A legacy
 `project.json` still works — project.md overrides it, and the doctor flags having both.
 

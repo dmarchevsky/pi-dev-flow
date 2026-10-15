@@ -7,7 +7,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, mergeConfig, parseVersion, type GuardRules } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, mergeConfig, parseVersion, type GuardRules } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "pre-release", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
@@ -290,6 +290,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, h
 	}
 	if (md) f.push(...md.hard.map((h) => `project.md: ${h}`), ...md.warn.map((w) => `project.md: ${w}`));
 	if (cfg.commands.run && !cfg.checkList.some((c) => c.name === "health")) f.push('run command configured but no tier-1 health check — add commands.health or a flow-check so "running and healthy" is enforced');
+	if (cfg.commands.dev && !healthProbe(cfg)) f.push("dev deploy configured but no health check — flow verify cannot prove the deploy came back serving this build: add commands.health or a flow-check health block");
 	if (!cfg.checkList.length) f.push("implement tier-1 gates nothing — no test, no health, no flow-check block: 'flow check' would pass vacuously");
 	for (const g of ghostFeatureDirs(root)) f.push(`${g} has a plan/ but no state.json — ghost of a closed or aborted feature (flow init offers to remove it)`);
 	// dev-flow must load its own working code in its own checkout: the committed .pi shim is the only thing that guarantees it
