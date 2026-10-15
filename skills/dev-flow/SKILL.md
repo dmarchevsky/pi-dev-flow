@@ -60,11 +60,11 @@ Work happens **only in the worktree** the gate created (path in `flow status` or
 4. UI flag set? Perform an actual visual check with a browser (screenshot or automated visual pass per the project's tooling) — not just a typecheck.
 5. Done means **running and healthy, with pre-existing data** — not "compiles":
    - `commands.seedData` (if set) puts real data in place; start the app with the `run` command;
-   - the health check (tier 1) must pass — `flow check` covers it (it runs seedData before health);
+   - the health check (tier 1) must pass — `flow check` covers it (it runs seedData before health), and `flow verify` runs it **again after** the `dev` deploy, because the deploy is what has to be proven;
    - walk the **tier-2 checklist** (`- [ ]` items) with the operator honestly — those can't be scripted;
    - then ask the user **Verified?** When they answer, run `flow verify --confirmed` (no second dialog); interactively they can run `/flow verify` themselves. Fixes requested = iterate and re-verify; that loop is free.
 
-`flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — the gate **prints what it ran** (`build ran (…)` / `dev ran (…)` / `dev: none configured`) because the command can take minutes and touch live services; it must **background and exit** — e.g. `docker compose up -d .` — verify waits for it and kills runs past 15 min) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal. Verify lands the feature in **pre-release**.
+`flow verify` re-runs build, runs the `dev` deploy command when configured (the operator reviews the running dev app — the gate **prints what it ran** (`build ran (…)` / `dev ran (…)` / `dev: none configured`) because the command can take minutes and touch live services; it must **background and exit** — e.g. `docker compose up -d .` — verify waits for it and kills runs past 15 min), then **re-runs the health probe against what it just deployed** (with `seedData` first when configured; a failing probe refuses the gate — the pre-deploy PASS describes a container that no longer exists; no probe configured prints `health: none configured` and the doctor flags it) and demands every tier-1 check green before the single question; the operator's confirm covers the tier-2 list as a set (hashed; edits reset it) — criteria structured, conversation minimal. Verify lands the feature in **pre-release**.
 
 ### Handling additions mid-implement
 

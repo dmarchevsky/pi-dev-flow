@@ -40,6 +40,7 @@ import {
 	gitInvocation,
 	guardBash,
 	guardPath,
+	healthProbe,
 	parsePushRefs,
 	pluginVersion,
 	preReleaseGate,
@@ -517,6 +518,25 @@ ${mdDigest(draftRefresh)}`))
 				writeState(root, state!);
 				if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev}):\n${tail(res.out)}`, isError: true };
 				did.push(`dev ran (${cfg.commands.dev})`);
+				// the deploy is what must be proven, not just run: a container that came back unhealthy, or
+				// still serves the previous build, must not pass on a health PASS recorded before it was
+				// recreated. What "the expected version" means is the project's business — the probe runs in
+				// the worktree cwd, so it can compare the served build stamp with `git rev-parse HEAD`.
+				const probe = healthProbe(cfg);
+				if (!probe) did.push("health: none configured");
+				else {
+					if (cfg.commands.seedData) {
+						const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
+						state!.checks.seedData = { ok: seed.ok, at: now() };
+						writeState(root, state!);
+						if (!seed.ok) return { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
+					}
+					const probed = await sh(probe, gateCwd(root, state!));
+					state!.checks.health = { ok: probed.ok, at: now() };
+					writeState(root, state!);
+					if (!probed.ok) return { text: `post-deploy probe FAILED (${probe}) — the deploy is not healthy / not serving this build:\n${tail(probed.out)}`, isError: true };
+					did.push(`health: PASS (${probe})`);
+				}
 			} else did.push("dev: none configured");
 			const ran = did.join("; ");
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";

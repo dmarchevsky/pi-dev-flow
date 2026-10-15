@@ -124,6 +124,12 @@ export function mergeConfig(raw: unknown): Config {
 	return c;
 }
 
+/** The project's own "running and healthy" probe — `commands.health` or a flow-check block named
+ *  health. The plugin runs it, the project says what healthy means (readiness, served build stamp). */
+export function healthProbe(c: Config): string | undefined {
+	return c.checkList.find((x) => x.name === "health")?.cmd;
+}
+
 export function subst(pattern: string, slug: string): string {
 	return pattern.replaceAll("{slug}", slug);
 }

@@ -103,6 +103,14 @@ test("doctorFindings: drift, missing manifest, no health check", () => {
 	assert.ok(broken.some((x) => x.includes("does not exist")), "VERSION missing in second fixture");
 });
 
+test("doctorFindings: a dev deploy with no health probe cannot be proven by verify", () => {
+	const root = fixtureRoot({});
+	const bare = doctorFindings(root, mergeConfig({ commands: { test: "npm test", dev: "docker compose up -d ." } }), null, false, true);
+	assert.ok(bare.some((f) => f.includes("dev deploy configured but no health check")), "nothing re-probes the recreated container");
+	const probed = doctorFindings(root, mergeConfig({ commands: { test: "npm test", dev: "docker compose up -d .", health: "curl -fs localhost:3000/healthz" } }), null, false, true);
+	assert.equal(probed.some((f) => f.includes("dev deploy configured but no health check")), false, "a configured probe satisfies it");
+});
+
 test("doctorFindings: the dogfood shim is probed only in a dev-flow checkout", () => {
 	const cfg = mergeConfig({ commands: { test: "npm test" } });
 	const has = (root: string) => doctorFindings(root, cfg, null, false, true).some((x) => x.includes("dogfood shim"));

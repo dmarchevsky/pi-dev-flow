@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-15
+
+### Added
+
+- **`flow verify` re-probes the deploy it just made.** `flow check` records `health` PASS *before* the deploy, so a `commands.dev` that failed to restart the container, brought it back unhealthy, or left it serving the previous image used to walk through the gate on evidence about a container that no longer exists. Verify now runs the project's own probe — `commands.health`, or a `flow-check` block named `health` (`seedData` first when set) — right after a successful dev deploy, in the worktree, records it, and **refuses the gate** when it fails: `post-deploy probe FAILED (<cmd>):` plus the output tail. What "healthy and serving the expected version" means stays project knowledge, not plugin knowledge: the probe runs with the worktree as cwd, so the project's script waits for readiness and compares the served build stamp with `git rev-parse HEAD`. No new config key.
+- **Success output names it**: `dev ran (bun run build:bff && docker compose -f docker/compose.yml up -d); health: PASS (./scripts/probe-dev.sh)`, or `health: none configured` — a missing probe is a notice, never a block (the gate must stay walkable for playbooks that deploy without a probe).
+- **doctor finding**: `dev` deploy configured with no health check — verify cannot prove the deploy came back serving this build.
+
 ## [0.30.2] - 2026-10-15
 
 ### Fixed
