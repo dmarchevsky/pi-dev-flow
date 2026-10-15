@@ -458,6 +458,7 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n"]);
 	assert.match((await flow(["start", "ungranted", "--patch"])).content[0].text, /operator-granted/, "--patch without the operator's chat grant is refused");
+	assert.match((await flow(["start", "ungranted", "--patch", "--docs", "--confirmed"])).content[0].text, /exclusive/, "modes are mutually exclusive");
 	await flow(["start", "chore", "--patch", "--confirmed"]);
 	const noPlan = await flow(["approve"]);
 	assert.ok(!noPlan.content[0].text.includes("plan gate FAILED"), "patch does not require plan/*.md");

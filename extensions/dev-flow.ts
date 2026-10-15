@@ -383,6 +383,7 @@ ${mdDigest(draftRefresh)}`))
 			if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] (slug: lowercase, dashes); --patch/--docs are operator-granted modes — ask the operator in chat, then add --confirmed", isError: true };
 			if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
 			// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
+			if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
 			const mode = flag("patch") ? "patch" : flag("docs") ? "docs" : null;
 			if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — the operator must grant it in chat, then re-run with --confirmed`, isError: true };
 			// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
