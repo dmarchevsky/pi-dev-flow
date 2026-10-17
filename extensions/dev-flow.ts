@@ -273,7 +273,7 @@ function isSelfRepo(root: string): boolean {
 
 /** The questions `flow init` asks before writing a playbook — detection fills what it can, the operator answers the rest (the agent relays them). */
 function setupQuestions(det: { partial: { defaultBranch: string; versioning?: { file: string }; forge?: string }; missing: string[] }): string[] {
-	const q = [`git forge: detected "${det.partial.forge}" from the origin URL — github, gitlab or self-hosted? (global key forge)`];
+	const q = [det.partial.forge ? `git forge: detected "${det.partial.forge}" from the origin URL — github, gitlab or self-hosted? (global key forge)` : "git forge: no origin remote to detect from — github, gitlab or self-hosted? (global key forge)"];
 	q.push(det.partial.versioning ? `version manifest: detected ${det.partial.versioning.file} — keep it? tag pattern v{version}?` : "versioning: no manifest found — which file holds the version (VERSION recommended), and the tag pattern?");
 	q.push("releases: should release-done create the forge release automatically via gh/glab (releases = yes), or is publishing manual (no)?");
 	q.push("artifacts: do you publish anything to a registry (e.g. a container image to Docker Hub)? then release.artifact needs a verify command (e.g. docker buildx imagetools inspect <image>:{version}); the push itself belongs to ## release prose.");
@@ -328,7 +328,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
 			const det = detectProject(root, branch);
 			const origin = await sh("git remote get-url origin", root);
-			det.partial.forge = detectForge(origin.ok ? origin.out : ""); // confirmed or corrected by the operator during setup
+			det.partial.forge = origin.ok && origin.out.trim() ? detectForge(origin.out) : undefined; // confirmed or corrected by the operator during setup; absent = no origin to detect from
 			const loaded = loadProject(dfDir(root));
 			const draftFresh = buildDraft(det);
 			const draftRefresh = buildDraft(det, loaded.cfg);

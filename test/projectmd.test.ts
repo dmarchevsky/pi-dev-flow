@@ -178,6 +178,8 @@ test("mdToConfig: release.releases toggles forge release creation; the legacy gi
 	const legacy = parseProjectMd("## release\n```flow\ngithub = false\n```\n");
 	assert.equal(mdToConfig(legacy).release.releases, false, "the old key keeps working");
 	assert.ok(legacy.warn.some((w) => w.includes('renamed "releases"')), "and the rename is warned");
+	const bogus = mdToConfig(parseProjectMd("## global\n```flow\nforge = bitbucket\n```\n"));
+	assert.ok(doctorFindings(mkdtempSync(path.join(tmpdir(), "forge-")), bogus, null).some((x) => x.includes('forge "bitbucket" is invalid')), "an unknown forge is a doctor finding");
 });
 
 test("mdToConfig: release.artifact key; doctor flags an empty tier-1", () => {
