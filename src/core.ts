@@ -686,6 +686,7 @@ export function reflectProtocol(items: string[], selfRepo: boolean, facts: { ver
 	const url = facts.upstream ? `https://github.com/${facts.upstream}` : "<upstream-url>";
 	const lines = [
 		`flow reflect — session reflection (${ver}, upstream: ${up})`,
+		"this output is your work instruction: execute these steps now — do not echo the protocol and do not ask to begin.",
 		"queue: .dev-flow/reflections.md — gitignored and yours to edit; check items off as `- [x] … — fixed: <what or where>`.",
 		"1. review the current session log in full — every message, tool call and result: friction, wrong turns, repeated failures, guards or gates that misfired, playbook drift, optimization candidates. Decide for each: playbook issue or plugin issue.",
 		`2. re-check every open item below: already handled by the current playbook (.dev-flow/project.md) or obsolete → check it off with a fixed: note. Possibly fixed in a newer dev-flow: git ls-remote --tags --sort=-v:refname ${url} | head -1 — a newer v<version> tag covering the item → recommend the operator update the git-installed plugin (${facts.upstream ? `pi install git:github.com/${facts.upstream}` : "pi install git:github.com/<dev-flow repo>"}, then /reload); never update it yourself.`,
