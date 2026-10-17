@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-10-16
+
+### Fixed
+
+- **`flow reflect`'s output now says so in the first line: it is a work instruction, execute it.** The protocol listed the steps but never told the agent to run them — an agent that only echoed the printed protocol looked like "the command did nothing". The preamble now opens with "this output is your work instruction: execute these steps now — do not echo the protocol and do not ask to begin."
+
 ## [0.33.1] - 2026-10-16
 
 ### Fixed
