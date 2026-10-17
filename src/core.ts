@@ -713,7 +713,13 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 	const lines = text.split("\n");
 	const firstItem = lines.findIndex((l) => l.trim().startsWith("- ["));
 	// shortcut: only the preamble above the first item survives verbatim; hand-written prose below the items is dropped.
-	const preamble = (firstItem < 0 ? lines : lines.slice(0, firstItem)).join("\n").trim();
+	// bare `## section` headers above the first item are leftovers of an earlier rewrite; dropped here so they never duplicate verbatim into every following file.
+	const staleHeader = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
+	const preamble = (firstItem < 0 ? lines : lines.slice(0, firstItem))
+		.filter((l) => !staleHeader.test(l.trim()))
+		.join("\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
 	const buckets = Object.fromEntries(REFLECT_SECTIONS.map((s) => [s, [] as string[]])) as Record<ReflectSection, string[]>;
 	for (const raw of firstItem < 0 ? [] : lines.slice(firstItem)) {
 		const l = raw.trim();

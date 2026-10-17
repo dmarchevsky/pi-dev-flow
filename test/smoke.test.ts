@@ -20,13 +20,13 @@ interface Stub {
 
 function makePi(): Stub & ((...a: never[]) => void) {
 	const stub = { cmds: {}, tools: {}, handlers: {} } as Stub;
-	let cmdCtx: { notices?: string[] } | undefined; // last command's ctx — sendMessage output lands in its notices
+	let cmdCtx: { notices?: string[]; sent?: { triggerTurn?: boolean }[] } | undefined; // last command's ctx — sendMessage output lands in its notices
 	const api = {
 		registerCommand: (n: string, o: unknown) => {
 			const cmd = o as { handler: (a: string, c: unknown) => Promise<void> };
 			stub.cmds[n] = {
 				handler: async (a: string, c: unknown) => {
-					cmdCtx = c as { notices?: string[] };
+					cmdCtx = c as { notices?: string[]; sent?: { triggerTurn?: boolean }[] };
 					await cmd.handler(a, c);
 				},
 			} as never;
@@ -40,8 +40,11 @@ function makePi(): Stub & ((...a: never[]) => void) {
 		},
 		registerShortcut: () => {},
 		appendEntry: () => {},
-		sendMessage: (m: { content: string }) => {
-			if (cmdCtx) (cmdCtx.notices ??= []).push(m.content);
+		sendMessage: (m: { content: string }, opts?: { triggerTurn?: boolean }) => {
+			if (cmdCtx) {
+				(cmdCtx.notices ??= []).push(m.content);
+				(cmdCtx.sent ??= []).push(opts ?? {});
+			}
 		},
 	};
 	devFlow(api as never);
@@ -60,8 +63,22 @@ function makeRepo(): string {
 
 function makeCtx(cwd: string, hasUI = false) {
 	const notices: string[] = [];
-	return { cwd, hasUI, notices, ui: { notify: (m: string) => notices.push(m), confirm: async () => true } };
+	return { cwd, hasUI, notices, sent: [] as { triggerTurn?: boolean }[], ui: { notify: (m: string) => notices.push(m), confirm: async () => true } };
 }
+
+test("bare reflect from the command bar wakes the model; other commands stay display-only", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	mkdirSync(path.join(repo, ".dev-flow")); // bare reflect needs an initialized repo to print the protocol
+	const ctx = makeCtx(repo);
+	await pi.cmds.flow.handler("reflect", ctx);
+	assert.match(ctx.notices.at(-1) ?? "", /work instruction/, "the reflect protocol rendered");
+	assert.equal(ctx.sent.at(-1)?.triggerTurn, true, "bare reflect triggers a model turn — its output is instructions the agent must execute");
+	await pi.cmds.flow.handler("reflect some note", ctx);
+	assert.notEqual(ctx.sent.at(-1)?.triggerTurn, true, "reflect <note> only queues — no model turn");
+	await pi.cmds.flow.handler("status", ctx);
+	assert.notEqual(ctx.sent.at(-1)?.triggerTurn, true, "gate output stays display-only");
+});
 
 /** project.md is un-ignored now — the finish dirty-check demands the playbook committed like everything else.
  *  The DEV_FLOW_ALLOW_MAIN env is the sanctioned override of the pre-commit hook the tests' own init installed. */
