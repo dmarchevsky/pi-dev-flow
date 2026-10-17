@@ -1,7 +1,7 @@
 /**
  * Deterministic project detection for `flow init`.
  *
- * Produces a *partial* project.json (merged over DEFAULTS by loadConfig) plus
+ * Produces a *partial* config (merged over DEFAULTS by the caller) plus
  * human-readable report lines. No LLM, no guessing beyond strong evidence —
  * anything not confidently detected is left empty and reported as missing.
  */
@@ -10,7 +10,7 @@ import path from "node:path";
 import { parseVersion } from "./core.ts";
 
 export interface Detection {
-	partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string } };
+	partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string }; forge?: string };
 	report: string[]; // human lines: what was detected
 	missing: string[]; // command keys left empty (excluding setup)
 }

@@ -7,7 +7,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, mergeConfig, parseVersion, type GuardRules } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseVersion, type GuardRules } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "pre-release", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
@@ -36,11 +36,13 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		worktreeDir: "worktreeDir",
 		mainHook: "mainHook",
 		mockupGlobs: "mockupGlobs",
+		forge: "forge",
 		"versioning.file": "versioning.file",
 		"versioning.pattern": "versioning.pattern",
 		"release.review": "release.review",
 		"release.changelog": "release.changelog",
-		"release.github": "release.githubRelease",
+		"release.github": "release.releases",
+		"release.releases": "release.releases",
 		"release.artifact": "release.artifact",
 	},
 	plan: {},
@@ -58,7 +60,8 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		versionTag: "versioning.pattern",
 		review: "release.review",
 		changelog: "release.changelog",
-		github: "release.githubRelease",
+		github: "release.releases", // legacy alias for `releases` — parse warns about the rename
+		releases: "release.releases",
 		artifact: "release.artifact",
 	},
 };
@@ -146,7 +149,10 @@ export function parseProjectMd(text: string): ParsedMd {
 				} else {
 					const mapped = KEYMAP[stage][m[1]];
 					if (!mapped) p.warn.push(`${where}: unknown key "${m[1]}" in ## ${stage} — ignored`);
-					else p.flow[stage as MdStage][mapped] = m[2];
+					else {
+						if (mapped === "release.releases" && m[1].endsWith("github")) p.warn.push(`${where}: key "${m[1]}" is renamed "releases" — rename it`);
+						p.flow[stage as MdStage][mapped] = m[2];
+					}
 				}
 			} else if (inFence === "flow-check") checkBody.push(line);
 			else if (inFence === "flow-guard") guardBody.push({ line, where });
@@ -187,9 +193,9 @@ export function parseProjectMd(text: string): ParsedMd {
 	return p;
 }
 
-/** Fold parsed project.md onto a (possibly merged project.json) config. */
-export function mdToConfig(p: ParsedMd, base?: Config): Config {
-	const c: Config = base ? structuredClone(base) : structuredClone(DEFAULTS);
+/** Fold parsed project.md onto DEFAULTS — project.md is the only persisted config source. */
+export function mdToConfig(p: ParsedMd): Config {
+	const c: Config = structuredClone(DEFAULTS);
 	const raw: Record<string, unknown> = {};
 	for (const stage of MD_STAGES) for (const [key, val] of Object.entries(p.flow[stage])) applyAnswer(raw, key, val);
 	// boolean/key normalization identical to project.json semantics
@@ -198,10 +204,10 @@ export function mdToConfig(p: ParsedMd, base?: Config): Config {
 	// flow keys were mapped to dot paths (commands.x, versioning.y, release.z) — rebuild nested
 	const nested: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(raw)) applyAnswer(nested, k, v as string);
-	const rel = (nested as { release?: { githubRelease?: unknown } }).release;
-	if (rel && typeof rel.githubRelease === "string") rel.githubRelease = !/^(no|false)$/i.test(rel.githubRelease);
+	const rel = (nested as { release?: { releases?: unknown } }).release;
+	if (rel && typeof rel.releases === "string") rel.releases = !/^(no|false)$/i.test(rel.releases);
 	mergeInto(c, nested);
-	// a flow-guard block is the whole rule set; with none in project.md the project.json base stands
+	// a flow-guard block is the whole rule set; with none in project.md the DEFAULTS (empty) stand
 	if (GUARD_VERBS.some((v) => p.guard[v].length)) c.guard = structuredClone(p.guard);
 	c.checkList = [
 		...(c.commands.test ? [{ name: "test", cmd: c.commands.test }] : []),
@@ -219,25 +225,24 @@ function mergeInto(c: Config, r: Record<string, unknown>): void {
 	if (typeof r.worktreeDir === "string") c.worktreeDir = r.worktreeDir;
 	if (typeof r.mainHook === "boolean") c.mainHook = r.mainHook;
 	if (Array.isArray(r.mockupGlobs)) c.mockupGlobs = r.mockupGlobs.map(String);
+	if (typeof r.forge === "string") c.forge = r.forge;
 	if (typeof r.commands === "object" && r.commands) Object.assign(c.commands, r.commands);
 	if (typeof r.versioning === "object" && r.versioning) Object.assign(c.versioning, r.versioning);
 	if (typeof r.release === "object" && r.release) Object.assign(c.release, r.release);
 }
 
-/** Load merged config: project.json as legacy base, project.md overriding. */
+/** Load the project config: project.md alone — the legacy project.json is no longer read. */
 export function loadProject(dfDir: string): { cfg: Config; md: ParsedMd | null; findings: string[] } {
-	const jsonFile = path.join(dfDir, "project.json");
 	const mdFile = path.join(dfDir, "project.md");
-	const cfg = mergeConfig(existsSync(jsonFile) ? safeJson(readFileSync(jsonFile, "utf8")) : null);
 	let mdText: string | null = null;
 	try {
 		if (existsSync(mdFile)) mdText = readFileSync(mdFile, "utf8");
 	} catch {
 		mdText = null;
 	}
-	if (mdText === null) return { cfg, md: null, findings: [] };
+	if (mdText === null) return { cfg: structuredClone(DEFAULTS), md: null, findings: [] };
 	const md = parseProjectMd(mdText);
-	return { cfg: mdToConfig(md, cfg), md, findings: [] };
+	return { cfg: mdToConfig(md), md, findings: [] };
 }
 
 const safeJson = (s: string): unknown => {
@@ -264,9 +269,12 @@ export function ghostFeatureDirs(root: string): string[] {
  * Doctor: cheap file-level probes only — NEVER runs user commands.
  * Findings are advisory strings for `flow init` (fixer) and the status flag.
  */
-export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, hasJson: boolean, hasMd: boolean): string[] {
+export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): string[] {
 	const f: string[] = [];
-	if (hasJson && hasMd) f.push("both project.json and project.md exist — project.md overrides it; fold legacy values in and delete project.json");
+	if (existsSync(path.join(root, ".dev-flow", "project.json"))) f.push(".dev-flow/project.json is no longer read — fold its values into project.md and delete it");
+	const gi = path.join(root, ".dev-flow", ".gitignore");
+	if (existsSync(gi) && !readFileSync(gi, "utf8").includes("!project.md")) f.push(".dev-flow/.gitignore still hides project.md from git — re-run flow init to heal it");
+	if (cfg.forge && !["github", "gitlab", "self"].includes(cfg.forge)) f.push(`forge "${cfg.forge}" is invalid — use github, gitlab or self`);
 	if (cfg.versioning.file) {
 		const mf = path.join(root, cfg.versioning.file);
 		if (!existsSync(mf)) f.push(`versioning.file "${cfg.versioning.file}" does not exist`);
@@ -305,7 +313,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null, h
 /** Compact per-stage digest of project.md content for dialog display (raw md walls are unreadable). */
 const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", release: "Release" };
 const DIGEST_CMDS: Record<string, string> = { setup: "setup", test: "test", build: "build", run: "run app", seedData: "seed data", dev: "dev deploy" };
-const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files" };
+const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files", forge: "forge" };
 
 /** Human summary of a playbook for the init confirm: one line per stage, real values and full item/guidance text, nothing truncated. */
 export function mdDigest(text: string): string {
@@ -324,7 +332,7 @@ export function mdDigest(text: string): string {
 		if (s === "implement" && p.checks.length) bits.push(`named checks: ${p.checks.map((c) => c.name).join(", ")}`);
 		if (s === "release" && keys.file) {
 			bits.push(`version in ${keys.file} → tag ${keys.pattern ?? "v{version}"}`);
-			bits.push(keys.github === "false" || keys.github === "no" ? "GitHub release: off" : "GitHub release: created automatically");
+			bits.push(keys.releases === "false" || keys.releases === "no" ? "forge release: off" : "forge release: created automatically (gh/glab)");
 			bits.push(`artifact check: ${keys.artifact ?? "none set"}`);
 		}
 		const items = p.checklist[s] ?? [];
@@ -336,7 +344,7 @@ export function mdDigest(text: string): string {
 }
 
 /** Draft project.md: fresh = pure detection (first init, --force); otherwise a refresh keeping configured values. */
-export function buildDraft(det: { report: string[]; partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string } } }, cfg?: Config): string {
+export function buildDraft(det: { report: string[]; partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string }; forge?: string } }, cfg?: Config): string {
 	const fresh = cfg === undefined;
 	const c = cfg ?? structuredClone(DEFAULTS);
 	const cmd = (k: string) => (fresh ? undefined : (c.commands as Record<string, string>)[k]) || det.partial.commands[k];
@@ -344,7 +352,9 @@ export function buildDraft(det: { report: string[]; partial: { defaultBranch: st
 	const verFile = (fresh ? undefined : c.versioning.file) || det.partial.versioning?.file || "package.json";
 	const L: string[] = [];
 	L.push("# dev-flow", "", "<!-- Operator-owned playbook. Regenerate with: flow init --draft -->", "");
-	L.push("## global", "", "```flow", `defaultBranch = ${branch}`, "```", "");
+	L.push("## global", "", "```flow", `defaultBranch = ${branch}`);
+	if (det.partial.forge) L.push(`forge = ${det.partial.forge}`); // from the origin URL — confirm or correct
+	L.push("```", "");
 	L.push("## plan", "", "- [ ] rendered mockups attached for every changed screen", "", "<!-- what the plan must contain, UI expectations -->", "");
 	L.push("## implement", "", "```flow");
 	for (const k of ["setup", "test", "build", "run", "seedData", "dev"]) if (cmd(k)) L.push(`${k} = ${cmd(k)}`);

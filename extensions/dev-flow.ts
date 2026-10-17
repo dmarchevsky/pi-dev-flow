@@ -36,15 +36,19 @@ import {
 	claimBlocks,
 	cleanupAssess,
 	compactionReflectionLine,
+	detectForge,
 	featureBranchPrefix,
 	gitInvocation,
 	guardBash,
 	guardPath,
 	healthProbe,
+	investigationBrief,
 	parsePushRefs,
+	playbookTamper,
 	pluginVersion,
 	preReleaseGate,
 	reflectSections,
+	reflectionRoutes,
 
 	listFiles,
 	newState,
@@ -93,7 +97,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
 const GATE_HELP =
-	"help | init [--force|--draft|--write <text>] | doctor [reflect <note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-github-release] | finish [slug] | abort [slug] | version — state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
+	"help | init [--force|--draft|--write <text>] | doctor [reflect <note>|<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -225,6 +229,9 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 			if (!ownedBr.has(b)) out.push(`orphan branch ${b} — no unfinished feature owns it (git branch -D ${b})`);
 		}
 	for (const f of feats) if (f.worktree && !existsSync(path.resolve(root, f.worktree))) out.push(`feature ${f.slug} (${f.stage}) has no worktree at ${f.worktree}`);
+	// the playbook belongs in git — an untracked project.md is invisible to teammates and lost on machine changes
+	if (existsSync(path.join(root, ".dev-flow", "project.md")) && !(await sh("git ls-files --error-unmatch -- .dev-flow/project.md", root)).ok)
+		out.push(".dev-flow/project.md is not tracked in git — git add -f .dev-flow/project.md (force: a root .gitignore may exclude .dev-flow/ wholesale)");
 	return out;
 }
 
@@ -254,6 +261,29 @@ interface Session {
 	key: string;
 	bind: (slug: string | null) => void;
 }
+
+/** Is this checkout the dev-flow repo itself? Plugin reflections are fixable in-repo only here. */
+function isSelfRepo(root: string): boolean {
+	try {
+		return (JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { name?: unknown }).name === "pi-dev-flow";
+	} catch {
+		return false;
+	}
+}
+
+/** The questions `flow init` asks before writing a playbook — detection fills what it can, the operator answers the rest (the agent relays them). */
+function setupQuestions(det: { partial: { defaultBranch: string; versioning?: { file: string }; forge?: string }; missing: string[] }): string[] {
+	const q = [`git forge: detected "${det.partial.forge}" from the origin URL — github, gitlab or self-hosted? (global key forge)`];
+	q.push(det.partial.versioning ? `version manifest: detected ${det.partial.versioning.file} — keep it? tag pattern v{version}?` : "versioning: no manifest found — which file holds the version (VERSION recommended), and the tag pattern?");
+	q.push("releases: should release-done create the forge release automatically via gh/glab (releases = yes), or is publishing manual (no)?");
+	q.push("artifacts: do you publish anything to a registry (e.g. a container image to Docker Hub)? then release.artifact needs a verify command (e.g. docker buildx imagetools inspect <image>:{version}); the push itself belongs to ## release prose.");
+	q.push(`tier-1 checks: ${det.missing.length ? `not detected: ${det.missing.join(", ")} —` : "detected test/build/run —"} which commands run tests, the build? any lint/typecheck? each extra becomes a flow-check block under ## implement.`);
+	q.push("runtime: does the app expose a health endpoint (commands.health) and is there a dev deploy (commands.dev) the operator reviews before verify?");
+	q.push("manual checks: any per-stage items the operator must tick off (tier-2 checklist) or standing guidance (prose)?");
+	return q;
+}
+
+const GIT_TRACK_NOTE = "the playbook belongs in git: git add -f .dev-flow/project.md (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering)";
 
 /** `flow doctor reflect <note>` — advisory queue, operator decides. The note lands in the
  *  playbook and/or plugin section of reflections.md, chosen from its wording. */
@@ -288,16 +318,17 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const dfExisted = existsSync(dfDir(root));
 			mkdirSync(dfDir(root), { recursive: true });
 			const notes: string[] = dfExisted ? [] : [`.dev-flow/ created in ${root}`];
-			// self-ignoring folder: nothing under .dev-flow/ ever enters git, without touching tracked files
-			writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n");
+			// self-ignoring folder with one exception: the playbook is the only file under .dev-flow/ that lives in git
+			writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n!project.md\n");
 			rmSync(path.join(dfDir(root), ".current"), { force: true }); // migrate away the legacy repo-global pointer
 			const mdFile = path.join(dfDir(root), "project.md");
-			const jsonFile = path.join(dfDir(root), "project.json");
 			const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
 			const curBr = await currentBranch(root);
 			// never propose a feature branch (contains "/") as the default branch
 			const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
 			const det = detectProject(root, branch);
+			const origin = await sh("git remote get-url origin", root);
+			det.partial.forge = detectForge(origin.ok ? origin.out : ""); // confirmed or corrected by the operator during setup
 			const loaded = loadProject(dfDir(root));
 			const draftFresh = buildDraft(det);
 			const draftRefresh = buildDraft(det, loaded.cfg);
@@ -324,22 +355,39 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				const parsed = parseProjectMd(content);
 				const rej = writeMd(content);
 				if (rej) return rej;
-				notes.push("project.md written (operator-owned playbook)");
+				notes.push("project.md written (operator-owned playbook)", GIT_TRACK_NOTE);
 				if (parsed.warn.length) notes.push("warnings:", ...parsed.warn.map((w) => `  ${w}`));
 			} else if (!existsSync(mdFile)) {
-				// first init: write immediately — the review happens on the file, not in a dialog
-				writeFileSync(mdFile, draftFresh);
-				notes.push("wrote .dev-flow/project.md from detection:", ...det.report.map((r) => `  ${r}`), "review `.dev-flow/project.md` — confirm as-is, or edit it; agent: if the operator wants changes, ask one short question per unclear knob, apply answers with flow init --write, re-present until confirmed");
+				// first init: never write silently. The setup brief lists what detection could not decide;
+				// the agent relays the questions to the operator and applies the answers via flow init --write
+				// (validated) after presenting the digest; an interactive init may confirm the draft right here.
+				const brief = [
+					"setup — project.md not written yet; nothing is drafted to disk until the operator confirms.",
+					...det.report.map((r) => `  ${r}`),
+					"questions for the operator (one per unclear knob, with the detected default):",
+					...setupQuestions(det).map((line, i) => `  ${i + 1}. ${line}`),
+					"agent: ask these in chat, fill the draft (flow init --draft), then apply with flow init --write \"<content>\" (hard-validated) — present the digest and get the operator's confirmation before writing.",
+					GIT_TRACK_NOTE,
+				];
+				if (ui.hasUI) {
+					const ok = await ui.confirm("Write project.md draft?", `${mdDigest(draftFresh)}\n\nWrite this detection draft now? Declining leaves the setup questions open for chat clarification.`);
+					if (ok) {
+						const rej = writeMd(draftFresh);
+						if (rej) return rej;
+						notes.push("wrote .dev-flow/project.md from detection — review it and adjust as needed", GIT_TRACK_NOTE);
+					} else notes.push("draft not written — answer the setup questions, then flow init --write");
+				}
+				notes.push(...brief);
 			} else if (flag("force")) {
 				writeFileSync(mdFile, draftFresh);
-				notes.push("project.md OVERWRITTEN (--force):", ...det.report.map((r) => `  ${r}`));
+				notes.push("project.md OVERWRITTEN (--force):", ...det.report.map((r) => `  ${r}`), GIT_TRACK_NOTE);
 			} else if (!ui.hasUI) {
 				// the CI/agent path: the doctor's findings have to be printed, not just promised
-				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
+				const findings = doctorFindings(root, loaded.cfg, loaded.md);
 				notes.push("project.md already exists — kept (flow init --force to overwrite, --write to edit)", findings.length ? `doctor: ${findings.length} finding(s):` : "doctor: no findings", ...findings.map((x) => `  ${x}`));
 			} else if (existsSync(mdFile)) {
 				// doctor mode: cheap consistency probes only — never runs project commands
-				const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(jsonFile), true);
+				const findings = doctorFindings(root, loaded.cfg, loaded.md);
 				findings.push(...(await gitConsistency(root, loaded.cfg)));
 				for (const l of readReflections(root)) findings.push(`open reflection: ${l.slice(6)}`);
 				if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
@@ -408,7 +456,7 @@ ${mdDigest(draftRefresh)}`))
 			const df = dfDir(root);
 			const { md } = loadProject(df);
 			// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
-			const findings = md ? doctorFindings(root, cfg, md, existsSync(path.join(df, "project.json")), true) : [];
+			const findings = md ? doctorFindings(root, cfg, md) : [];
 			const warn = findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : [];
 			const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
 			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn].join("\n") };
@@ -425,7 +473,7 @@ ${mdDigest(draftRefresh)}`))
 			});
 			if (warn.length) lines.push(...warn);
 			const refl = readReflections(root);
-			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — flow doctor reflect`);
+			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — run flow doctor (it reviews and routes them)`);
 			return { text: lines.join("\n") || "no features" };
 		}
 
@@ -434,10 +482,16 @@ ${mdDigest(draftRefresh)}`))
 			// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
 			const df = dfDir(root);
 			const loaded = loadProject(df);
-			const findings = doctorFindings(root, loaded.cfg, loaded.md, existsSync(path.join(df, "project.json")), existsSync(path.join(df, "project.md")));
+			const findings = doctorFindings(root, loaded.cfg, loaded.md);
 			findings.push(...(await gitConsistency(root, loaded.cfg)));
-			for (const l of readReflections(root)) findings.push(`open reflection: ${l.slice(6)}`);
-			return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
+			const refl = readReflections(root);
+			if (refl.length) {
+				findings.push(`reflection review — ${refl.length} open item(s); doctor never implements: investigate each, present the fix, the operator confirms, then the routed flow implements it:`);
+				for (const r of reflectionRoutes(refl, isSelfRepo(root))) findings.push(`  [${r.sections.join("+")}] ${r.text}\n      → ${r.route}`);
+			}
+			if (!rest.length) return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
+			// flow doctor <note>: a fresh observation gets an investigation brief and a fix route
+			return { text: investigationBrief(rest.filter((a) => !a.startsWith("--")).join(" "), isSelfRepo(root)).join("\n") };
 		}
 
 		case "version": {
@@ -663,16 +717,23 @@ ${mdDigest(draftRefresh)}`))
 			}
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 			// no checkpoint here — the operator's Release? answer covered the whole publication; everything left is objective checks
-			const ghWanted = !!manifestVer && !flag("no-github-release") && cfg.release.githubRelease !== false;
+			const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;
 			state!.approvals.release = now();
 			let ghNote = "";
-			if (manifestVer && flag("no-github-release")) ghNote = "GitHub release skipped (--no-github-release).";
-			else if (manifestVer && ghWanted) {
-				// advisory: GitHub release for the verified tag — a note on failure, never a block
+			if (manifestVer && flag("no-release-create")) ghNote = "Forge release skipped (--no-release-create).";
+			else if (manifestVer && releasesWanted) {
+				// advisory: forge release for the verified tag — gh for GitHub, glab for GitLab; a note on failure, never a block
 				const tag = expectedTag!;
-				const notes = (await sh(`git tag -l --format=%(contents) ${JSON.stringify(tag)}`, root)).out.trim();
-				const gr = await sh(`gh release create ${JSON.stringify(tag)} --title ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`, root);
-				ghNote = gr.ok ? `GitHub release ${tag} created.` : `GitHub release skipped: ${tail(gr.out)}`;
+				const forge = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
+				if (forge === "self") ghNote = "Forge release skipped (forge=self — publication stays manual).";
+				else {
+					const notes = (await sh(`git tag -l --format=%(contents) ${JSON.stringify(tag)}`, root)).out.trim();
+					const cmd = forge === "gitlab"
+						? `glab release create ${JSON.stringify(tag)} --name ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`
+						: `gh release create ${JSON.stringify(tag)} --title ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`;
+					const gr = await sh(cmd, root);
+					ghNote = gr.ok ? `${forge} release ${tag} created.` : `${forge} release skipped: ${tail(gr.out)}`;
+				}
 			}
 			const tailNote = [ghNote, artNote].filter(Boolean).join(" ");
 			writeState(root, state!);
@@ -730,8 +791,16 @@ ${mdDigest(draftRefresh)}`))
 					await sh(`git fetch -q origin ${JSON.stringify(br)}`, root);
 					let merged = (await sh(`git merge-base --is-ancestor origin/${JSON.stringify(br)} origin/${JSON.stringify(cfg.defaultBranch)}`, root)).ok;
 					if (!merged) {
-						const pr = await sh(`gh pr list --state merged --head ${JSON.stringify(br)} --json number --jq length`, root);
-						merged = pr.ok && pr.out.trim() !== "0";
+						// squash merges leave no ancestry — ask the forge: gh pr list, or the GitLab API via glab; self-hosted stays on ancestry proof
+						const originUrl = await sh("git remote get-url origin", root);
+						const forge = cfg.forge || detectForge(originUrl.out);
+						if (forge === "gitlab") {
+							const mr = await sh(`glab api ${JSON.stringify(`projects/:id/merge_requests?source_branch=${br}&state=merged&per_page=1`)}`, root);
+							merged = mr.ok && mr.out.trim() !== "[]";
+						} else if (forge === "github") {
+							const pr = await sh(`gh pr list --state merged --head ${JSON.stringify(br)} --json number --jq length`, root);
+							merged = pr.ok && pr.out.trim() !== "0";
+						}
 					}
 					if (merged) remoteNote = (await sh(`git push origin --delete ${JSON.stringify(`refs/heads/${br}`)}`, root)).ok
 						? ` origin/${br} deleted (verified merged)`
@@ -1000,6 +1069,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (isToolCallEventType("bash", event)) {
 			const command = String(event.input.command ?? "");
 			if (stateTamper(command)) return { block: true, reason: "state.json is dev-flow-owned — advance stages with the flow tool only" };
+			if (playbookTamper(command)) return { block: true, reason: "project.md is the operator playbook — change it with flow init --write or inside a docs/patch flow's worktree" };
 			// project safety rules first: they cover docker/gh/npm and everything else, not only git,
 			// and the operator's deny outranks dev-flow's own stage verdicts
 			const gv = guardBash(command, cfg.guard);
@@ -1063,7 +1133,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const curBr = await currentBranch(ctx.cwd);
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
 			const refl0 = readReflections(ctx.cwd);
-			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open (flow doctor reflect).`;
+			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open — run flow doctor.`;
 			return { message: { customType: "dev-flow-context", display: false, content } };
 		}
 		const guidance: string[] = [];
@@ -1072,7 +1142,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}`);
 		const refl = readReflections(ctx.cwd);
-		if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — mention to the operator; fold in only on request.`);
+		if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — mention to the operator; run flow doctor to review and route them (fold in only on request).`);
 		return {
 			message: {
 				customType: "dev-flow-context",

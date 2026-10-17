@@ -63,6 +63,13 @@ function makeCtx(cwd: string, hasUI = false) {
 	return { cwd, hasUI, notices, ui: { notify: (m: string) => notices.push(m), confirm: async () => true } };
 }
 
+/** project.md is un-ignored now — the finish dirty-check demands the playbook committed like everything else.
+ *  The DEV_FLOW_ALLOW_MAIN env is the sanctioned override of the pre-commit hook the tests' own init installed. */
+function trackPlaybook(repo: string) {
+	execFileSync("git", ["-C", repo, "add", ".dev-flow/project.md"]);
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
+}
+
 test("init → start → guards → gate ordering, end to end", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -71,9 +78,11 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	await pi.cmds.flow.handler("init", ctx);
 	assert.ok(existsSync(path.join(repo, ".dev-flow")), "init created .dev-flow/");
 	assert.ok(existsSync(path.join(repo, ".git", "hooks", "pre-commit")), "pre-commit hook installed");
-	assert.equal(readFileSync(path.join(repo, ".dev-flow", ".gitignore"), "utf8").trim(), "*", "self-ignoring .dev-flow/");
+	assert.equal(readFileSync(path.join(repo, ".dev-flow", ".gitignore"), "utf8").trim(), "*\n!project.md", "self-ignoring .dev-flow/ except the playbook");
 	execFileSync("git", ["-C", repo, "check-ignore", "-q", ".dev-flow/whatever/file.txt"]); // throws when not ignored
-	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8").includes("## global"), "init drafted project.md");
+	assert.throws(() => execFileSync("git", ["-C", repo, "check-ignore", "-q", ".dev-flow/project.md"]), "the playbook must be trackable");
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "project.md")), "first init never writes — the operator confirms first");
+	assert.match(ctx.notices.at(-1) ?? "", /questions for the operator/, "first init prints the setup brief");
 	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n<!-- kept -->\n");
 	await pi.cmds.flow.handler("init", ctx);
 	assert.ok(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8").includes("kept"), "re-init must not overwrite operator config");
@@ -231,14 +240,14 @@ test("verify re-probes health after the dev deploy — a stale pre-deploy PASS c
 	assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "probed", "state.json"), "utf8")).checks.health.ok, "the post-deploy PASS is what lands in state");
 });
 
-test("first init writes immediately even in a TUI — no editor or confirm gate", async () => {
+test("first init in a TUI reviews the draft with the operator and writes only on confirm", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	let dialogs = 0;
 	const ctx = { cwd: repo, hasUI: true, mode: "tui", notices: [] as string[], ui: { notify: (_m: string) => {}, setStatus: (_k: string, _t?: string) => {}, confirm: async () => { dialogs++; return true; }, editor: async () => { dialogs++; return undefined; } } };
 	await pi.cmds.flow.handler("init", ctx);
-	assert.equal(dialogs, 0, "first init must not ask before writing");
-	assert.match(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8"), /## implement/, "draft lands on disk directly");
+	assert.equal(dialogs, 1, "the detection draft is reviewed in one confirm, never written silently");
+	assert.match(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8"), /## implement/, "the confirmed draft lands on disk");
 });
 
 test("flow-by-default: unbound writes blocked; start needs default branch; feature checkouts stay in worktrees", async () => {
@@ -265,7 +274,6 @@ test("feature-branch checkout allowed inside its own worktree", async () => {
 	execFileSync("git", ["-C", repo, "worktree", "add", "-b", "feat/z", wt]);
 	const st = { slug: "z", stage: "implement", ui: false, branch: "feat/z", worktree: ".wt/z", approvals: {}, checks: {} };
 	mkdirSync(path.join(repo, ".dev-flow", "z"), { recursive: true });
-	writeFileSync(path.join(repo, ".dev-flow", "project.json"), JSON.stringify({ defaultBranch: "main", worktreeDir: ".wt" }));
 	writeFileSync(path.join(repo, ".dev-flow", "z", "state.json"), JSON.stringify(st));
 	const ctx = { cwd: wt, hasUI: false, notices: [] as string[], ui: { notify: () => {} } };
 	const res = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/z" } }, ctx);
@@ -359,8 +367,8 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	let dialogs = 0;
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
-	await flow(["init"]);
 	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\ndev = touch dev-up\n```\n\n- [ ] operator item\n- [ ] (ui) mockup item\n"]);
+	trackPlaybook(repo);
 	await flow(["start", "ck"]);
 	mkdirSync(path.join(repo, ".dev-flow", "ck", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "ck", "plan", "plan.md"), "# plan\n");
@@ -415,6 +423,7 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n"]);
+	trackPlaybook(repo);
 	await flow(["start", "fin"]);
 	mkdirSync(path.join(repo, ".dev-flow", "fin", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "fin", "plan", "plan.md"), "# plan\n");
@@ -431,7 +440,7 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	assert.throws(() => execFileSync("git", ["-C", repo, "rev-parse", "--verify", "feat/fin"]));
 });
 
-test("release opt-out: per-release flag and per-project config skip the GitHub release", async () => {
+test("release opt-out: per-release flag and per-project config skip forge release creation", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
@@ -453,12 +462,12 @@ test("release opt-out: per-release flag and per-project config skip the GitHub r
 		execFileSync("git", ["-C", repo, "tag", `v${ver}`]);
 	};
 	await versioned("optflag", "9.9.9", "");
-	const f = await flow(["release-done", "--confirmed", "--no-github-release"]);
-	assert.match(f.content[0].text, /GitHub release skipped \(--no-github-release\)/);
+	const f = await flow(["release-done", "--confirmed", "--no-release-create"]);
+	assert.match(f.content[0].text, /Forge release skipped \(--no-release-create\)/);
 	assert.match(f.content[0].text, /release recorded as complete/);
-	await versioned("optcfg", "9.9.8", "github = false\n");
+	await versioned("optcfg", "9.9.8", "releases = false\n");
 	const c = await flow(["release-done", "--confirmed"]);
-	assert.ok(!c.content[0].text.includes("GitHub release"), "config-off: no attempt, no note");
+	assert.ok(!c.content[0].text.includes("release skipped"), "config-off: no attempt, no note");
 	assert.match(c.content[0].text, /release recorded as complete/);
 });
 
@@ -521,6 +530,7 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n"]);
+	trackPlaybook(repo);
 	assert.match((await flow(["start", "ungranted", "--patch"])).content[0].text, /operator-granted/, "--patch without the operator's chat grant is refused");
 	assert.match((await flow(["start", "ungranted", "--patch", "--docs", "--confirmed"])).content[0].text, /exclusive/, "modes are mutually exclusive");
 	await flow(["start", "chore", "--patch", "--confirmed"]);
@@ -540,6 +550,7 @@ test("docs feature: no plan file, no tier-1 checks, full release end to end", as
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n"]);
+	trackPlaybook(repo);
 	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /operator-granted/, "--docs without the operator's chat grant is refused");
 	assert.match((await flow(["start", "readme-typo", "--docs", "--confirmed"])).content[0].text, /docs/, "docs mode announced at start");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/, "docs approves with no plan file written");
@@ -559,15 +570,17 @@ test("flow init --draft prints content and writes nothing", async () => {
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "project.md")), "--draft must not write");
 });
 
-test("first init writes project.md immediately and hands it over for review", async () => {
+test("first init prints the setup questions and writes nothing until confirmed", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	const r = (await pi.tools.flow.execute("id", { args: ["init"] }, undefined, undefined, ctx)) as { content: [{ text: string }] };
 	const text = r.content[0].text;
-	assert.ok(existsSync(path.join(repo, ".dev-flow", "project.md")), "file written without any dialog");
-	assert.match(text, /wrote \.dev-flow\/project\.md from detection/);
-	assert.match(text, /confirm as-is, or edit it/);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "project.md")), "nothing is written before the operator answers");
+	assert.match(text, /questions for the operator/);
+	assert.match(text, /forge/, "the forge question is asked with its detected default");
+	assert.match(text, /flow init --write/, "the agent learns the sanctioned write path");
+	assert.match(text, /git add -f \.dev-flow\/project\.md/, "and that the playbook belongs in git");
 });
 
 test("init finds ghost feature dirs and removes them only on the operator's word", async () => {
@@ -671,12 +684,15 @@ test("flow doctor: findings without writing, deleting or asking", async () => {
 	mkdirSync(path.join(repo, ".dev-flow", "ghosty", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "ghosty", "plan", "plan.md"), "# old plan\n");
 	const d = await flow(["doctor"]);
-	assert.match(d.content[0].text, /doctor: 1 finding\(s\)/);
+	assert.match(d.content[0].text, /doctor: 2 finding\(s\)/);
 	assert.match(d.content[0].text, /\.dev-flow\/ghosty has a plan\/ but no state\.json/);
+	assert.match(d.content[0].text, /not tracked in git/, "an untracked playbook is a finding — it must live in the repo");
 	assert.equal(dialogs, 0, "the doctor never asks — it only reports");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "ghosty")), "and it never deletes — that stays flow init's job");
 	assert.ok(!d.isError, "findings are advisory, not a failure");
 	execFileSync("rm", ["-rf", path.join(repo, ".dev-flow", "ghosty")]);
+	execFileSync("git", ["-C", repo, "add", ".dev-flow/project.md"]);
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 	assert.match((await flow(["doctor"])).content[0].text, /doctor: no findings/, "a clean repo gets the no-findings line");
 });
 
@@ -689,7 +705,7 @@ test("flow init without a UI prints the findings; flow status reports them even 
 	writeFileSync(path.join(repo, ".dev-flow", "project.json"), JSON.stringify({ defaultBranch: "main" }));
 	await pi.cmds.flow.handler("init", ctx); // the no-UI path: no dialogs, findings printed
 	assert.match(ctx.notices.at(-1) ?? "", /doctor: 1 finding\(s\):/);
-	assert.match(ctx.notices.at(-1) ?? "", /both project\.json and project\.md exist/);
+	assert.match(ctx.notices.at(-1) ?? "", /project\.json is no longer read/);
 	const st = await flow(["status"]);
 	assert.match(st.content[0].text, /no features/);
 	assert.match(st.content[0].text, /⚠ doctor: 1 finding\(s\) — run flow doctor/);
@@ -710,6 +726,26 @@ test("flow doctor: a feature's own branch (checked out in its worktree) is not a
 	assert.ok(!d.content[0].text.includes("+ "), "branch names print without git's column markers");
 });
 
+test("flow doctor reviews open reflections with routing and briefs a fresh note", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	writeFileSync(
+		path.join(repo, ".dev-flow", "reflections.md"),
+		"# dev-flow reflections\n\n## playbook\n\n- [ ] test command is stale — x 2026-01-01\n\n## plugin\n\n- [ ] the gate prompt asks twice — y 2026-01-01\n",
+	);
+	const d = await flow(["doctor"]);
+	assert.match(d.content[0].text, /reflection review — 2 open item\(s\)/);
+	assert.match(d.content[0].text, /docs flow \(flow start fold-<topic> --docs --confirmed\)/, "playbook items route to a docs flow");
+	assert.match(d.content[0].text, /file an issue against pi-dev-flow upstream/, "plugin items route upstream in a foreign repo");
+	assert.match(d.content[0].text, /doctor never implements/);
+	const n = await flow(["doctor", "the", "health", "check", "drifted"]);
+	assert.match(n.content[0].text, /investigate: "the health check drifted"/);
+	assert.match(n.content[0].text, /fix routing: docs flow/);
+});
+
 test("pre-release stage: verify lands there, release gate has teeth, finish asks Finish?", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -717,6 +753,7 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	const stage = () => (JSON.parse(readFileSync(path.join(repo, ".dev-flow", "rel", "state.json"), "utf8")) as { stage: string }).stage;
 	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
 	await flow(["start", "rel"]);
 	mkdirSync(path.join(repo, ".dev-flow", "rel", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "rel", "plan", "plan.md"), "# plan\n");
@@ -784,6 +821,7 @@ test("finish deletes merged feature branches on origin and keeps unverifiable on
 	const remoteHas = (br: string) => execFileSync("git", ["ls-remote", "--heads", origin, `refs/heads/${br}`], { encoding: "utf8" }).trim() !== "";
 	const git = (...a: string[]) => execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", ...a]);
 	await flow(["init", "--write", "# dev-flow\n"]);
+	trackPlaybook(repo);
 	git("push", "-q", "origin", "main");
 	const cycle = async (slug: string) => {
 		await flow(["start", slug]);
@@ -846,6 +884,7 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = exit 1\n```\n"]);
+	trackPlaybook(repo);
 	await flow(["start", "yo"]);
 	mkdirSync(path.join(repo, ".dev-flow", "yo", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "yo", "plan", "plan.md"), "# plan\n");
@@ -855,6 +894,7 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	const v = await flow(["verify"]);
 	assert.ok(v.isError && /check "test" has not passed/.test(v.content[0].text), "yolo never bypasses tier-1 checks");
 	await flow(["init", "--write", "# dev-flow\n"]);
+	trackPlaybook(repo);
 	await flow(["check"]);
 	assert.match((await flow(["verify"])).content[0].text, /verified \(yolo: pre-confirmed\) — entering pre-release/);
 	await flow(["release"]);
