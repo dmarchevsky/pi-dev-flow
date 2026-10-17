@@ -353,6 +353,7 @@ test("githubSlug: owner/slug from manifest strings, URLs and scp-style remotes",
 test("reflectProtocol: session-review steps, git-based update probe, routed open items", () => {
 	const out = reflectProtocol(["- [ ] the gate prompt asks twice — x 2026-01-01"], false, { version: "1.2.3", upstream: "dmarchevsky/dev-flow" }).join("\n");
 	assert.match(out, /flow reflect — session reflection \(dev-flow 1\.2\.3, upstream: dmarchevsky\/dev-flow\)/);
+	assert.match(out, /this output is your work instruction: execute these steps now/);
 	assert.match(out, /gitignored and yours to edit/);
 	assert.match(out, /1\. review the current session log in full/);
 	assert.match(out, /git ls-remote --tags --sort=-v:refname https:\/\/github\.com\/dmarchevsky\/dev-flow \| head -1/);
