@@ -4,6 +4,8 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.33.3] - 2026-10-17
+
 ### Fixed
 
 - **Stale section headers in `reflections.md` no longer duplicate.** Everything above the first item is the verbatim preamble, so empty `## playbook` / `## plugin` headers left there by an older rewrite were copied back on every append — headers multiplied with each `flow reflect "<note>"`. `appendReflection` now drops bare section headers from the preamble; the rebuilt sections below are the only headers.
