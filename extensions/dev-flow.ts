@@ -39,6 +39,7 @@ import {
 	detectForge,
 	featureBranchPrefix,
 	gitInvocation,
+	githubSlug,
 	guardBash,
 	guardPath,
 	healthProbe,
@@ -47,6 +48,7 @@ import {
 	playbookTamper,
 	pluginVersion,
 	preReleaseGate,
+	reflectProtocol,
 	reflectSections,
 	reflectionRoutes,
 
@@ -97,7 +99,7 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
 const GATE_HELP =
-	"help | init [--force|--draft|--write <text>] | doctor [reflect <note>|<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
+	"help | init [--force|--draft|--write <text>] | reflect [<note>] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -285,14 +287,10 @@ function setupQuestions(det: { partial: { defaultBranch: string; versioning?: { 
 
 const GIT_TRACK_NOTE = "the playbook belongs in git: git add -f .dev-flow/project.md (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering)";
 
-/** `flow doctor reflect <note>` — advisory queue, operator decides. The note lands in the
+/** `flow reflect <note>` — advisory queue, operator decides. The note lands in the
  *  playbook and/or plugin section of reflections.md, chosen from its wording. */
 function reflectNote(root: string, sess: Session, note: string[]): RunResult {
 	const file = path.join(dfDir(root), "reflections.md");
-	if (!note.length) {
-		const open = readReflections(root);
-		return { text: open.length ? `open reflections:\n${open.map((l, i) => `  ${i + 1}. ${l}`).join("\n")}` : 'no open reflections — flow doctor reflect "<note>" parks a suggestion for the operator' };
-	}
 	const text = existsSync(file) ? readFileSync(file, "utf8") : "";
 	const sections = reflectSections(note.join(" "));
 	const line = `- [ ] ${note.join(" ")} — ${sess.slug ?? "-"} ${now().slice(0, 10)}`;
@@ -477,8 +475,15 @@ ${mdDigest(draftRefresh)}`))
 			return { text: lines.join("\n") || "no features" };
 		}
 
+		case "reflect": {
+			if (rest.length) return reflectNote(root, sess, rest);
+			// upstream for the update probe: the manifest's repository field; the dev-flow checkout itself falls back to its origin
+			const self = pluginVersion(import.meta.dirname);
+			const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
+			return { text: reflectProtocol(readReflections(root), isSelfRepo(root), { version: self.version, upstream }).join("\n") };
+		}
+
 		case "doctor": {
-			if (rest[0] === "reflect") return reflectNote(root, sess, rest.slice(1));
 			// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
 			const df = dfDir(root);
 			const loaded = loadProject(df);

@@ -19,6 +19,7 @@ import {
 	featureBranchPrefix,
 	getPath,
 	gitInvocation,
+	githubSlug,
 	guardBash,
 	guardPath,
 	type GuardRules,
@@ -30,6 +31,7 @@ import {
 	newState,
 	parseVersion,
 	pidAlive,
+	reflectProtocol,
 	reflectSections,
 	reflectionRoutes,
 	releaseGate,
@@ -228,6 +230,7 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.ok(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: [{ state: pre, worktreeAbs: wtB }], boundSlug: "b" }), "pre-release-bound session stays confined to its worktree");
 	assert.equal(writeGuard({ abs: `${wtB}/CHANGELOG.md`, dfDir: df, features: [{ state: pre, worktreeAbs: wtB }], boundSlug: "b" }), null, "pre-release worktree is the working area");
 	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null }) ?? "", /no active flow/, "flow-by-default: clean repo still requires a flow");
+	assert.equal(writeGuard({ abs: "/repo/.dev-flow/reflections.md", dfDir: df, features: [], boundSlug: null }), null, "reflections.md is the agent's queue — editable even with no flow bound");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/project.md", dfDir: df, features: [], boundSlug: null }) ?? "", /operator playbook/, "the main-checkout playbook is never an agent edit target");
@@ -324,18 +327,45 @@ test("parseVersion: all supported manifest formats", () => {
 test("pluginVersion: dev-flow's own manifest, found by walking up from the module dir", () => {
 	const root = mkdtempSync(path.join(tmpdir(), "devflow-pv-"));
 	mkdirSync(path.join(root, "extensions"), { recursive: true });
-	writeFileSync(path.join(root, "package.json"), '{"name":"pi-dev-flow","version":"1.2.3"}');
-	assert.deepEqual(pluginVersion(path.join(root, "extensions")), { version: "1.2.3", dir: root }, "nearest manifest named pi-dev-flow wins");
+	writeFileSync(path.join(root, "package.json"), '{"name":"pi-dev-flow","version":"1.2.3","repository":{"url":"git+https://github.com/dmarchevsky/dev-flow.git"}}');
+	assert.deepEqual(pluginVersion(path.join(root, "extensions")), { version: "1.2.3", dir: root, repo: "dmarchevsky/dev-flow" }, "nearest manifest named pi-dev-flow wins; git-installed copies carry their upstream");
 
 	// manifest is ours but carries no version: say so about that package, do not walk past it
 	writeFileSync(path.join(root, "package.json"), '{"name":"pi-dev-flow"}');
-	assert.deepEqual(pluginVersion(path.join(root, "extensions")), { version: null, dir: root });
+	assert.deepEqual(pluginVersion(path.join(root, "extensions")), { version: null, dir: root, repo: "" });
 
 	// some other package, and nothing of ours above it: unknown, naming where it looked
 	const other = mkdtempSync(path.join(tmpdir(), "devflow-pv-"));
 	mkdirSync(path.join(other, "lib"), { recursive: true });
 	writeFileSync(path.join(other, "package.json"), '{"name":"someone-else","version":"9.9.9"}');
-	assert.deepEqual(pluginVersion(path.join(other, "lib")), { version: null, dir: path.join(other, "lib") });
+	assert.deepEqual(pluginVersion(path.join(other, "lib")), { version: null, dir: path.join(other, "lib"), repo: "" });
+});
+
+test("githubSlug: owner/slug from manifest strings, URLs and scp-style remotes", () => {
+	assert.equal(githubSlug("github.com/dmarchevsky/dev-flow"), "dmarchevsky/dev-flow");
+	assert.equal(githubSlug("https://github.com/dmarchevsky/dev-flow.git"), "dmarchevsky/dev-flow");
+	assert.equal(githubSlug("git@github.com:dmarchevsky/dev-flow.git"), "dmarchevsky/dev-flow");
+	assert.equal(githubSlug("https://gitlab.com/x/y"), "", "non-GitHub upstreams stay unknown");
+	assert.equal(githubSlug(""), "");
+});
+
+test("reflectProtocol: session-review steps, git-based update probe, routed open items", () => {
+	const out = reflectProtocol(["- [ ] the gate prompt asks twice — x 2026-01-01"], false, { version: "1.2.3", upstream: "dmarchevsky/dev-flow" }).join("\n");
+	assert.match(out, /flow reflect — session reflection \(dev-flow 1\.2\.3, upstream: dmarchevsky\/dev-flow\)/);
+	assert.match(out, /gitignored and yours to edit/);
+	assert.match(out, /1\. review the current session log in full/);
+	assert.match(out, /git ls-remote --tags --sort=-v:refname https:\/\/github\.com\/dmarchevsky\/dev-flow \| head -1/);
+	assert.match(out, /pi install git:github\.com\/dmarchevsky\/dev-flow, then \/reload/);
+	assert.match(out, /gh issue list --repo dmarchevsky\/dev-flow --state all --search/);
+	assert.match(out, /gh issue create --repo dmarchevsky\/dev-flow/);
+	assert.match(out, /b\. playbook items: run flow doctor/);
+	assert.match(out, /\[plugin\] the gate prompt asks twice/);
+	assert.match(out, /file an issue against pi-dev-flow upstream/);
+	assert.ok(!out.includes("npm"), "dev-flow ships from git — the npm registry must not appear");
+	const empty = reflectProtocol([], true, { version: null, upstream: "" }).join("\n");
+	assert.match(empty, /dev-flow version unknown/);
+	assert.match(empty, /<upstream-url>/);
+	assert.match(empty, /open items: none/);
 });
 
 test("versionTagGate: manifest and tag must agree", () => {

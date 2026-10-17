@@ -259,18 +259,27 @@ export function parseVersion(file: string, content: string): string | null {
  * keeps it right for this checkout, an installed pi package and a copy loaded from elsewhere.
  * `dir` is the manifest's directory when found, else `fromDir` — the place to name in the error.
  */
-export function pluginVersion(fromDir: string, pkgName = "pi-dev-flow"): { version: string | null; dir: string } {
+export function pluginVersion(fromDir: string, pkgName = "pi-dev-flow"): { version: string | null; dir: string; repo: string } {
 	for (let dir = path.resolve(fromDir); ; ) {
 		try {
-			const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: unknown; version?: unknown };
-			if (pkg.name === pkgName) return { version: typeof pkg.version === "string" && pkg.version ? pkg.version : null, dir };
+			const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: unknown; version?: unknown; repository?: unknown };
+			if (pkg.name === pkgName) {
+				const repository = typeof pkg.repository === "string" ? pkg.repository : typeof (pkg.repository as { url?: unknown })?.url === "string" ? (pkg.repository as { url: string }).url : "";
+				return { version: typeof pkg.version === "string" && pkg.version ? pkg.version : null, dir, repo: githubSlug(repository) };
+			}
 		} catch {
 			/* missing, unreadable or not JSON: keep walking up */
 		}
 		const parent = path.dirname(dir);
-		if (parent === dir) return { version: null, dir: fromDir };
+		if (parent === dir) return { version: null, dir: fromDir, repo: "" };
 		dir = parent;
 	}
+}
+
+/** Owner/slug from any GitHub repo reference — "owner/repo", "github.com/owner/repo", git+https or scp-style git@github.com:owner/repo.git; "" when it is not GitHub. */
+export function githubSlug(ref: string): string {
+	const m = ref.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?(?:\/|$)/) ?? /^[\w.-]+\/[\w.-]+$/.exec(ref);
+	return m ? m[1].replace(/\.git$/, "") : "";
 }
 
 /** Gate: the tag derived from the manifest version must exist among local tags. */
@@ -665,6 +674,31 @@ export function investigationBrief(note: string, selfRepo: boolean): string[] {
 		`fix routing: ${route.route}`,
 		"the note is not implemented by doctor — propose the fix to the operator first; only after they confirm, open the routed flow; its gates carry the confirmation.",
 	];
+}
+
+/** Bare `flow reflect`: the full session-reflection protocol for the agent (the plugin has no LLM —
+ *  the agent reviews the session log, re-checks open items against shipped fixes, dedupes new
+ *  findings and puts the fix decision to the operator). Writes nothing, runs no network calls. */
+export function reflectProtocol(items: string[], selfRepo: boolean, facts: { version: string | null; upstream: string }): string[] {
+	const ver = facts.version ? `dev-flow ${facts.version}` : "dev-flow version unknown";
+	const up = facts.upstream || "<upstream — ask the operator for the dev-flow repo>";
+	const url = facts.upstream ? `https://github.com/${facts.upstream}` : "<upstream-url>";
+	const lines = [
+		`flow reflect — session reflection (${ver}, upstream: ${up})`,
+		"queue: .dev-flow/reflections.md — gitignored and yours to edit; check items off as `- [x] … — fixed: <what or where>`.",
+		"1. review the current session log in full — every message, tool call and result: friction, wrong turns, repeated failures, guards or gates that misfired, playbook drift, optimization candidates. Decide for each: playbook issue or plugin issue.",
+		`2. re-check every open item below: already handled by the current playbook (.dev-flow/project.md) or obsolete → check it off with a fixed: note. Possibly fixed in a newer dev-flow: git ls-remote --tags --sort=-v:refname ${url} | head -1 — a newer v<version> tag covering the item → recommend the operator update the git-installed plugin (${facts.upstream ? `pi install git:github.com/${facts.upstream}` : "pi install git:github.com/<dev-flow repo>"}, then /reload); never update it yourself.`,
+		'3. new findings: dedupe against the open items first — never reflect the same issue twice; queue each real one with flow reflect "<one-line note>", then report to the operator structurally: playbook items vs plugin items, each with its route from the list below.',
+		"4. ask the operator whether to fix the open issues now. If yes:",
+		`   a. plugin items: search upstream first — gh issue list --repo ${up} --state all --search "<keywords>" — an author-addressed match → report the verdict back to the operator (fixed in v… / closed won't-fix + reason), do not re-file; no match → gh issue create --repo ${up} with a detailed description, session evidence and a suggested fix.`,
+		"   b. playbook items: run flow doctor — it reviews each open item and routes it to the docs flow that implements the fix.",
+	];
+	if (!items.length) lines.push("open items: none — steps 1 and 3 still apply.");
+	else {
+		lines.push(`open items (${items.length}):`);
+		for (const r of reflectionRoutes(items, selfRepo)) lines.push(`  [${r.sections.join("+")}] ${r.text}`, `      → ${r.route}`);
+	}
+	return lines;
 }
 
 /**
