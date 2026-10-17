@@ -115,6 +115,7 @@ test("bashFlowGuard: main protection and release-stage release", () => {
 	const base = { branch: "main", stage: null as "plan" | null, defaultBranch: "main" };
 	assert.ok(bashFlowGuard({ ...base, command: "git commit -m x" }));
 	assert.equal(bashFlowGuard({ ...base, branch: "feat/x", command: "git commit -m x" }), null);
+	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git commit -m x" }), null, "release chores may commit in the main checkout");
 	assert.ok(bashFlowGuard({ ...base, command: "git push origin main" }));
 	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git push origin main" }), null);
 	// ref-aware: tag writes never touch branches — stage-free

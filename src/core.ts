@@ -426,7 +426,8 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 	const onMain = o.branch === o.defaultBranch;
 	const git = (word: string) => subs.includes(word);
 
-	if (git("commit") && onMain) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree`;
+	// release chores commit in the main checkout — same stage exception as push/merge below
+	if (git("commit") && onMain && o.stage !== "release") return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree`;
 	if (git("push")) {
 		// ref-aware: only pushes that WRITE the default branch need stage release — tags and other branches pass.
 		// unresolved bare names arrive pre-resolved by the caller (tag vs branch); no parse info → conservative onMain.
@@ -768,7 +769,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":
 			return state.approvals.release
-				? "release recorded — commit and push the release chores in the main checkout, ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
+				? "release recorded — commit and push the release chores in the main checkout (prefix the commit with DEV_FLOW_ALLOW_MAIN=1 — the installed pre-commit hook otherwise blocks main commits), ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
 				: state.noVersion
 					? "publish: commit and push the branch, open and merge the PR — unversioned release: no manifest bump, no tag; then run flow release-done (no further question)"
 					: "publish: commit and push the branch, open and merge the PR, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)";
