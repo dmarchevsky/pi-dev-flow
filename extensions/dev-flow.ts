@@ -983,9 +983,12 @@ export default function devFlow(pi: ExtensionAPI) {
 	pi.registerCommand("flow", {
 		description: `dev-flow gates: ${GATE_HELP}`,
 		handler: async (args, ctx) => {
-			const res = await runFlow(parse(args), ctx.cwd, uiFrom(ctx), sessFor(ctx));
-			// gate output belongs to the conversation, not a toast: display:true renders a [flow] box (TUI + web), no triggerTurn so no model turn fires
-			pi.sendMessage({ customType: "flow", content: res.text, display: true });
+			const cmd = parse(args);
+			const res = await runFlow(cmd, ctx.cwd, uiFrom(ctx), sessFor(ctx));
+			// gate output belongs to the conversation, not a toast: display:true renders a [flow] box (TUI + web), no triggerTurn so no model turn fires.
+			// bare reflect is the exception: its whole output is instructions for the agent — displayed without a turn, they would never execute.
+			const wake = cmd.length === 1 && cmd[0] === "reflect";
+			pi.sendMessage({ customType: "flow", content: res.text, display: true }, wake ? { triggerTurn: true } : undefined);
 			refreshStatus(ctx);
 			if (!res.isError) maybeCompactNow(ctx);
 		},

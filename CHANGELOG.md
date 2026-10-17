@@ -4,6 +4,11 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stale section headers in `reflections.md` no longer duplicate.** Everything above the first item is the verbatim preamble, so empty `## playbook` / `## plugin` headers left there by an older rewrite were copied back on every append — headers multiplied with each `flow reflect "<note>"`. `appendReflection` now drops bare section headers from the preamble; the rebuilt sections below are the only headers.
+- **Bare `/flow reflect` now executes instead of just rendering.** The command bar sends gate output as a display-only box with no model turn — for `reflect`, whose entire output is a work instruction for the agent, that meant the protocol printed and nothing happened. Bare `reflect` from the bar now triggers a model turn so the agent runs the protocol; every other command keeps the display-only behavior.
+
 ## [0.33.2] - 2026-10-16
 
 ### Fixed

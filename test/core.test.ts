@@ -276,6 +276,12 @@ test("appendReflection writes the two sections and migrates a legacy flat file",
 	);
 	assert.equal(both.split(/^## /m).length - 1, 2, "both sections written");
 	assert.equal(both.split("- [ ] both").length - 1, 2, "the line is in each section");
+	const stale = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n\n## plugin\n\n## playbook\n\n- [ ] item one\n";
+	assert.equal(stale.split(/^## /m).length - 1, 3, "fixture: duplicated empty section headers");
+	const refreshed = appendReflection(stale, ["playbook"], "- [ ] item two\n");
+	assert.equal(refreshed.split(/^## /m).length - 1, 1, "stale headers go away; only the non-empty section keeps a header");
+	assert.ok(!refreshed.includes("## plugin"), "an empty section is not resurrected by its stale header");
+	assert.ok(refreshed.includes("<!-- n -->"), "the real preamble survives");
 });
 
 test("statusCompact: slug ▸ stage with failing-check marker", () => {
