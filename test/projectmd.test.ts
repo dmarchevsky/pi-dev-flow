@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { mergeConfig } from "../src/core.ts";
+import { buildConfig } from "../src/core.ts";
 import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, mdToConfig, parseProjectMd } from "../src/projectmd.ts";
 
 const MD = `# dev-flow
@@ -59,8 +59,7 @@ test("mdToConfig: normalization and tier-1 checkList build", () => {
 	assert.deepEqual(cfg.mockupGlobs, ["*.png", "*.jpg"]);
 	assert.deepEqual(cfg.checkList.map((c) => c.name), ["test", "overflow"]);
 	assert.equal(cfg.versioning.pattern, "{version}");
-	const fromJson = mdToConfig(parseProjectMd("## implement\n"), mergeConfig({ commands: { test: "legacy" } }));
-	assert.equal(fromJson.commands.test, "legacy", "empty md must not erase json base");
+	assert.equal(mdToConfig(parseProjectMd("## global\n```flow\nforge = gitlab\n```\n")).forge, "gitlab", "the forge key configures release machinery");
 });
 
 test("parseProjectMd: warnings and hard errors", () => {
@@ -92,28 +91,28 @@ test("doctorFindings: drift, missing manifest, no health check", () => {
 	const root = fixtureRoot({ "package.json": '{"name":"x","scripts":{"test":"vitest"},"version":"1.0.0"}', VERSION: "9.9.9" });
 	const cfg = mdToConfig(parseProjectMd(MD));
 	const md = parseProjectMd(MD);
-	const f = doctorFindings(root, cfg, md, false, true);
+	const f = doctorFindings(root, cfg, md);
 	assert.ok(f.some((x) => x.includes('runs "run dev"')), "npm run dev drift detected");
 	assert.ok(f.some((x) => x.includes("missing file scripts/check-overflow.mjs")));
 	assert.ok(f.some((x) => x.includes("no tier-1 health check")), "run configured, health absent");
 	assert.ok(!f.some((x) => x.includes("versioning.file")), "VERSION exists → no finding");
-	const dual = doctorFindings(root, cfg, md, true, true);
-	assert.ok(dual.some((x) => x.includes("both project.json and project.md")));
-	const broken = doctorFindings(fixtureRoot({ "package.json": "{}" }), { ...cfg }, md, false, true);
+	const legacy = fixtureRoot({ "package.json": '{"name":"x","scripts":{"test":"vitest"},"version":"1.0.0"}', VERSION: "9.9.9", ".dev-flow/project.json": "{}", ".dev-flow/project.md": MD });
+	assert.ok(doctorFindings(legacy, cfg, md).some((x) => x.includes("project.json is no longer read")), "a leftover legacy file is called out");
+	const broken = doctorFindings(fixtureRoot({ "package.json": "{}" }), { ...cfg }, md);
 	assert.ok(broken.some((x) => x.includes("does not exist")), "VERSION missing in second fixture");
 });
 
 test("doctorFindings: a dev deploy with no health probe cannot be proven by verify", () => {
 	const root = fixtureRoot({});
-	const bare = doctorFindings(root, mergeConfig({ commands: { test: "npm test", dev: "docker compose up -d ." } }), null, false, true);
+	const bare = doctorFindings(root, buildConfig({ commands: { test: "npm test", dev: "docker compose up -d ." } }), null);
 	assert.ok(bare.some((f) => f.includes("dev deploy configured but no health check")), "nothing re-probes the recreated container");
-	const probed = doctorFindings(root, mergeConfig({ commands: { test: "npm test", dev: "docker compose up -d .", health: "curl -fs localhost:3000/healthz" } }), null, false, true);
+	const probed = doctorFindings(root, buildConfig({ commands: { test: "npm test", dev: "docker compose up -d .", health: "curl -fs localhost:3000/healthz" } }), null);
 	assert.equal(probed.some((f) => f.includes("dev deploy configured but no health check")), false, "a configured probe satisfies it");
 });
 
 test("doctorFindings: the dogfood shim is probed only in a dev-flow checkout", () => {
-	const cfg = mergeConfig({ commands: { test: "npm test" } });
-	const has = (root: string) => doctorFindings(root, cfg, null, false, true).some((x) => x.includes("dogfood shim"));
+	const cfg = buildConfig({ commands: { test: "npm test" } });
+	const has = (root: string) => doctorFindings(root, cfg, null).some((x) => x.includes("dogfood shim"));
 	const repo = fixtureRoot({ "package.json": '{"name":"pi-dev-flow","version":"1.0.0"}' });
 	assert.ok(has(repo), "a dev-flow checkout whose extension is not wired loads nothing");
 	const shim = path.join(repo, ".pi", "extensions", "dev-flow.ts");
@@ -127,11 +126,13 @@ test("doctorFindings: the dogfood shim is probed only in a dev-flow checkout", (
 	assert.ok(!has(other), "an ordinary project never hears about our dogfood setup");
 });
 
-test("loadProject: md overrides json base", () => {
+test("loadProject: project.md is the only config source; a legacy project.json is ignored", () => {
 	const root = fixtureRoot({ ".dev-flow/project.json": '{"defaultBranch":"jsonbranch","commands":{"build":"make"}}', ".dev-flow/project.md": MD });
 	const { cfg } = loadProject(path.join(root, ".dev-flow"));
-	assert.equal(cfg.defaultBranch, "trunk", "md wins over json");
-	assert.equal(cfg.commands.build, "make", "json-only values survive");
+	assert.equal(cfg.defaultBranch, "trunk", "md drives config");
+	assert.equal(cfg.commands.build, undefined, "json is no longer read");
+	const plain = fixtureRoot({ ".dev-flow/project.json": '{"defaultBranch":"jsonbranch"}' });
+	assert.equal(loadProject(path.join(plain, ".dev-flow")).cfg.defaultBranch, "main", "without project.md the defaults stand");
 });
 
 test("buildDraft: fresh is detection-driven; refresh keeps configured values", () => {
@@ -166,28 +167,34 @@ test("## pre-release parses like release: keys, checklist, prose", () => {
 	assert.equal(p.prose["pre-release"], "review policy prose");
 	assert.equal(mdToConfig(p).versioning.file, "pyproject.toml");
 	assert.match(buildDraft({ report: [], partial: { defaultBranch: "main", commands: {} } }), /## pre-release/, "draft template has the new stage");
+	assert.match(buildDraft({ report: [], partial: { defaultBranch: "main", commands: {}, forge: "gitlab" } }), /forge = gitlab/, "the detected forge rides into the draft");
 });
 
-test("mdToConfig: release.github toggles the GitHub release", () => {
-	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nversionFile = package.json\ngithub = false\n```\n")).release.githubRelease, false);
-	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\ngithub = no\n```\n")).release.githubRelease, false);
-	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\ngithub = yes\n```\n")).release.githubRelease, true);
-	assert.equal(mdToConfig(parseProjectMd("# dev-flow\n")).release.githubRelease, true);
+test("mdToConfig: release.releases toggles forge release creation; the legacy github key still maps", () => {
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nversionFile = package.json\nreleases = false\n```\n")).release.releases, false);
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nreleases = no\n```\n")).release.releases, false);
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nreleases = yes\n```\n")).release.releases, true);
+	assert.equal(mdToConfig(parseProjectMd("# dev-flow\n")).release.releases, true);
+	const legacy = parseProjectMd("## release\n```flow\ngithub = false\n```\n");
+	assert.equal(mdToConfig(legacy).release.releases, false, "the old key keeps working");
+	assert.ok(legacy.warn.some((w) => w.includes('renamed "releases"')), "and the rename is warned");
+	const bogus = mdToConfig(parseProjectMd("## global\n```flow\nforge = bitbucket\n```\n"));
+	assert.ok(doctorFindings(mkdtempSync(path.join(tmpdir(), "forge-")), bogus, null).some((x) => x.includes('forge "bitbucket" is invalid')), "an unknown forge is a doctor finding");
 });
 
 test("mdToConfig: release.artifact key; doctor flags an empty tier-1", () => {
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nartifact = docker manifest inspect app:{tag}\n```\n")).release.artifact, "docker manifest inspect app:{tag}");
 	const emptyDir = mkdtempSync(path.join(tmpdir(), "pdf-doctor-"));
-	assert.ok(doctorFindings(emptyDir, mergeConfig({}), null, false, true).some((f) => f.includes("gates nothing")));
+	assert.ok(doctorFindings(emptyDir, buildConfig({}), null).some((f) => f.includes("gates nothing")));
 	const withTest = mdToConfig(parseProjectMd("## implement\n```flow\ntest = x\n```\n"));
-	assert.equal(doctorFindings(emptyDir, withTest, null, false, true).some((f) => f.includes("gates nothing")), false);
+	assert.equal(doctorFindings(emptyDir, withTest, null).some((f) => f.includes("gates nothing")), false);
 });
 
 test("mdDigest: human phase-grouped summary with real values, nothing truncated", () => {
 	const d = mdDigest("# dev-flow\n\n## global\n```flow\ndefaultBranch = main\n```\n\n## implement\n```flow\ntest = npm test\ndev = docker compose up -d\n```\n\n- [ ] visual pass at both widths\n\nreal data required before shipping\n\n## release\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n");
 	assert.match(d, /^General — default branch: main$/m);
 	assert.match(d, /Implement — test: "npm test" · dev deploy: "docker compose up -d" · manual check: "visual pass at both widths" · guidance: "real data required before shipping"/);
-	assert.match(d, /Release — version in package\.json → tag v\{version\} · GitHub release: created automatically · artifact check: none set/);
+	assert.match(d, /Release — version in package\.json → tag v\{version\} · forge release: created automatically \(gh\/glab\) · artifact check: none set/);
 	assert.ok(!d.includes("set:") && !/\bprose\b/.test(d), "no internal notation left");
 	assert.match(d, /nothing is executed or uploaded now/);
 });
@@ -215,7 +222,7 @@ test("flow-guard block: each verb maps to its rule list", () => {
 	assert.equal(p.guard.forbid[0].why, "gitignored secret storage", "reason is free text");
 	const cfg = mdToConfig(p);
 	assert.equal(cfg.guard.deny[0].why, "history stays linear");
-	assert.equal(mdToConfig(parseProjectMd("## global\n"), mergeConfig({ guard: { forbid: ["docker/secrets"] } })).guard.forbid.length, 1, "no block must not erase the project.json base");
+	assert.equal(mdToConfig(parseProjectMd("## global\n")).guard.forbid.length, 0, "no flow-guard block, no rules");
 });
 
 test("flow-guard block: hard findings and warnings", () => {
@@ -268,9 +275,9 @@ test("flow-guard acceptance: the adopting project's real rule set parses clean",
 test("doctorFindings probes only root-relative paths — worktree-relative ones are not its business", () => {
 	const root = fixtureRoot({ "package.json": '{"name":"x","version":"1.0.0"}' });
 	const wtRelative = mdToConfig(parseProjectMd("## implement\n```flow\ntest = cp -n ../../docker/.env .\n```\n"));
-	assert.ok(!doctorFindings(root, wtRelative, null, false, true).some((f) => f.includes("missing file")), "a path above the repo root is resolved by the shell in the gate cwd");
+	assert.ok(!doctorFindings(root, wtRelative, null).some((f) => f.includes("missing file")), "a path above the repo root is resolved by the shell in the gate cwd");
 	const rootRelative = mdToConfig(parseProjectMd("## implement\n```flow\ntest = node scripts/nope.mjs\n```\n"));
-	assert.ok(doctorFindings(root, rootRelative, null, false, true).some((f) => f.includes("missing file scripts/nope.mjs")), "root-relative probes still work");
+	assert.ok(doctorFindings(root, rootRelative, null).some((f) => f.includes("missing file scripts/nope.mjs")), "root-relative probes still work");
 });
 
 const GHOST_STATE = '{"slug":"live","stage":"implement","ui":false,"branch":"","worktree":"","createdAt":"","approvals":{},"checks":{}}';
@@ -284,7 +291,7 @@ test("ghostFeatureDirs: a plan/ with no flow state is a ghost, everything else i
 		".dev-flow/bare/readme.txt": "x",
 	});
 	assert.deepEqual(ghostFeatureDirs(root), [".dev-flow/closed"]);
-	const f = doctorFindings(root, mdToConfig(parseProjectMd("# dev-flow\n")), null, false, true);
+	const f = doctorFindings(root, mdToConfig(parseProjectMd("# dev-flow\n")), null);
 	assert.ok(f.some((x) => x.includes(".dev-flow/closed has a plan/ but no state.json")), f.join("; "));
 	assert.ok(!f.some((x) => x.includes("live")), "a live feature is never a ghost");
 	assert.deepEqual(ghostFeatureDirs(mkdtempSync(path.join(tmpdir(), "nodf-"))), [], "no .dev-flow at all, no ghosts");

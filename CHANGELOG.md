@@ -4,6 +4,23 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-10-17
+
+### Added
+
+- **Guided setup on `flow init`.** A first init no longer writes a detection draft silently: it prints a **setup brief** — the detection report plus one question per knob detection cannot decide (git forge, version manifest and tag convention, automatic forge releases, registry artifacts like Docker Hub, the real test/build/lint/health commands, tier-2 items and prose). The agent relays the questions to the operator and applies the answers through the validated `flow init --write`; an interactive init can review the draft with one confirm dialog and write it there. Nothing touches disk before the operator confirms.
+- **Forge support end-to-end.** New global key `forge = github | gitlab | self` (auto-detected from the `origin` URL at the moment of use when unset). `flow release-done` creates the forge release from the verified tag via `gh` or `glab release create` — and stays hands-off for `self`, where publication is manual. `flow finish` proves a squash-merged branch via `gh pr list`, or the GitLab API via `glab api projects/:id/merge_requests?source_branch=…&state=merged`, or ancestry alone — an unverifiable branch is still never deleted.
+- **`flow doctor` reviews reflections and routes the fixes.** Bare doctor now lists every open `reflections.md` item with its section and a fix route: playbook item → a docs flow (`flow start fold-<topic> --docs --confirmed`), plugin item → an upstream issue in your repo or a patch/normal flow inside the dev-flow repo. It still never writes, never asks — CI-safe. `flow doctor "<observation>"` (new form) prints an investigation brief and a fix route for a fresh note without queueing it; `flow doctor reflect "<note>"` still parks raw notes.
+
+### Changed
+
+- **`.dev-flow/project.md` now lives in git** — the one tracked file under `.dev-flow/`. The self-ignoring `.gitignore` heals to `*` + `!project.md`, doctor finds an untracked playbook (tracking is `git add -f` — a root `.gitignore` may exclude `.dev-flow/` wholesale, and a tracked file outranks the ignore), and write discipline is enforced instead of conventional: the main-checkout playbook is blocked for agent edits and bash writes outright, and the worktree copy is writable only inside an operator-granted **docs or patch flow** — playbook updates go through the docs flow, with its gates as the confirmation.
+- **`release.github` is renamed `release.releases`** (operator's call): the old key still parses, with a rename warning from doctor.
+
+### Removed
+
+- **`project.json` is gone.** It is no longer read at all (`loadConfig`/`mergeConfig` deleted); a leftover file is a doctor finding — fold the values into `project.md` and delete it. `flow init --write` was already the only sanctioned write path and stays it.
+
 ## [0.31.0] - 2026-10-15
 
 ### Added

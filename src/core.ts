@@ -69,12 +69,15 @@ export interface Config {
 	branchPattern: string; // {slug} substituted
 	worktreeDir: string; // {slug} substituted, relative to repo root
 	mockupGlobs: string[]; // suffix globs required in plan/ when ui (default: rendered screenshots)
+	/** Forge the release machinery targets: github (gh), gitlab (glab), self (forge-neutral).
+	 *  "" = unset → detected from the origin URL at the moment of use. */
+	forge: string;
 	commands: Commands;
 	checkList: StageCheck[]; // tier-1 executable checks (project.md flow blocks)
 	checklist: Record<string, ChecklistItem[]>; // tier-2 operator items per stage
 	prose: Record<string, string>; // tier-3 guidance per stage
 	versioning: Versioning;
-	release: { review: string; changelog?: string; tagPattern?: string; githubRelease?: boolean; artifact?: string };
+	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** Operator safety rules from the project.md flow-guard block — stage-independent. */
 	guard: GuardRules;
@@ -85,21 +88,24 @@ export const DEFAULTS: Config = {
 	branchPattern: "feat/{slug}",
 	worktreeDir: ".dev-flow/{slug}/worktree",
 	mockupGlobs: ["*.png"],
+	forge: "",
 	commands: {},
 	checkList: [],
 	checklist: {},
 	prose: {},
 	versioning: { pattern: "v{version}" },
-	release: { review: "/ponytail-review", githubRelease: true },
+	release: { review: "/ponytail-review", releases: true },
 	mainHook: true,
 	guard: { deny: [], confirm: [], protect: [], forbid: [] },
 };
 
-export function mergeConfig(raw: unknown): Config {
+/** Build a Config from DEFAULTS + a partial overrides object (tests, drafts — the persisted
+ *  source is project.md alone; the legacy project.json loader is gone). */
+export function buildConfig(raw: unknown): Config {
 	const c: Config = structuredClone(DEFAULTS);
 	if (!raw || typeof raw !== "object") return c;
 	const r = raw as Record<string, unknown>;
-	for (const key of ["defaultBranch", "branchPattern", "worktreeDir", "mainHook"] as const) {
+	for (const key of ["defaultBranch", "branchPattern", "worktreeDir", "mainHook", "forge"] as const) {
 		if (typeof r[key] === "string" || typeof r[key] === "boolean") (c[key] as never) = r[key] as never;
 	}
 	if (Array.isArray(r.mockupGlobs)) c.mockupGlobs = r.mockupGlobs.map(String);
@@ -388,6 +394,20 @@ export function stateTamper(command: string): boolean {
 	return /\.dev-flow\/\S*state\.json/.test(command) && /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|-e|node\s)/.test(command);
 }
 
+const WRITE_VERBS = /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|-e|node\s)/;
+
+/** True when a bash command looks like a direct write to the playbook (project.md) — the sanctioned
+ *  channels are `flow init --write` (runs in-plugin, never matches) and edits inside a docs/patch
+ *  flow's worktree. shortcut: same verb-before-path heuristic as stateTamper. */
+export function playbookTamper(command: string): boolean {
+	return /\.dev-flow\/[\w./-]*project\.md/.test(command) && WRITE_VERBS.test(command);
+}
+
+/** Forge from an origin URL: github.com / github enterprise hosts → github, any gitlab host → gitlab. */
+export function detectForge(remoteUrl: string): string {
+	return /github/i.test(remoteUrl) ? "github" : /gitlab/i.test(remoteUrl) ? "gitlab" : "self";
+}
+
 /** Guard: decide whether a git bash command violates the flow. Returns a reason or null.
  *  Call per git segment (gitInvocation().gitSegs) with that segment's own branch — a chain may span directories. */
 export function bashFlowGuard(o: GuardCtx): string | null {
@@ -528,7 +548,8 @@ const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs
  * Returns a reason or null (allowed).
  */
 export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null }): string | null {
-	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is operator-owned — ask the user to change it";
+	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
+	if (o.abs === path.join(o.dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
@@ -536,6 +557,9 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (owner) {
 		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
 		if (owner.state.stage === "done") return `feature ${owner.state.slug} is done`;
+		// the playbook copy inside a worktree: only operator-granted lightweight modes may change it
+		if (path.basename(o.abs) === "project.md" && o.abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
+			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
 		return null; // implement/pre-release/release: own worktree is the working area
 	}
 	if (within(o.abs, o.dfDir)) return null;
@@ -607,6 +631,40 @@ const PLAYBOOK_HINT = /\b(project\.md|playbook|checklist|versioning|defaultBranc
 export function reflectSections(note: string): ReflectSection[] {
 	const plugin = PLUGIN_HINT.test(note);
 	return plugin && PLAYBOOK_HINT.test(note) ? ["playbook", "plugin"] : plugin ? ["plugin"] : ["playbook"];
+}
+
+/** Where a fix must be implemented: every fix runs through a flow whose gates confirm it —
+ *  playbook-only change → docs flow; code in the dev-flow repo → patch/normal flow;
+ *  plugin feedback in someone else's repo → upstream issue (dev-flow files nothing itself). */
+export interface ReflectionRoute {
+	text: string;
+	sections: ReflectSection[];
+	mode: "docs" | "code" | "upstream";
+	route: string;
+}
+
+export function reflectionRoutes(items: string[], selfRepo: boolean): ReflectionRoute[] {
+	return items.map((l) => {
+		const text = l.replace(/^-\s*\[[ xX]\]\s*/, "").trim();
+		const sections = reflectSections(text);
+		if (sections.includes("plugin"))
+			return selfRepo
+				? { text, sections, mode: "code" as const, route: "patch flow for a small fix (flow start fix-<topic> --patch --confirmed), normal flow when bigger" }
+				: { text, sections, mode: "upstream" as const, route: "file an issue against pi-dev-flow upstream (manual — dev-flow files nothing itself); copy the item text there" };
+		return { text, sections, mode: "docs", route: "docs flow (flow start fold-<topic> --docs --confirmed) — project.md edits only pass its worktree" };
+	});
+}
+
+/** What `flow doctor <note>` prints: the note is an investigation order, not an answer —
+ *  the plugin has no LLM; the agent investigates, the gates confirm, the flow implements. */
+export function investigationBrief(note: string, selfRepo: boolean): string[] {
+	const [route] = reflectionRoutes([`- [ ] ${note}`], selfRepo);
+	return [
+		`investigate: "${route.text}"`,
+		"read first: .dev-flow/project.md, flow doctor findings, and whatever files the note names.",
+		`fix routing: ${route.route}`,
+		"the note is not implemented by doctor — propose the fix to the operator first; only after they confirm, open the routed flow; its gates carry the confirmation.",
+	];
 }
 
 /**
@@ -716,12 +774,3 @@ export function applyAnswer(partial: Record<string, unknown>, key: string, value
 	}
 }
 
-export function loadConfig(dfDir: string): Config {
-	const file = path.join(dfDir, "project.json");
-	if (!existsSync(file)) return structuredClone(DEFAULTS);
-	try {
-		return mergeConfig(JSON.parse(readFileSync(path.join(dfDir, "project.json"), "utf8")));
-	} catch {
-		return structuredClone(DEFAULTS); // shortcut: broken config falls back to defaults with a warning from the caller
-	}
-}

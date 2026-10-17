@@ -8,27 +8,31 @@ import {
 	appendReflection,
 	approveGate,
 	bashFlowGuard,
+	buildConfig,
+	checklistHash,
 	checkoutTarget,
 	claimBlocks,
+	cleanupAssess,
 	compactionReflectionLine,
+	DEFAULTS,
+	detectForge,
 	featureBranchPrefix,
+	getPath,
 	gitInvocation,
 	guardBash,
 	guardPath,
 	type GuardRules,
-	checklistHash,
-	cleanupAssess,
-	DEFAULTS,
-	getPath,
-	mergeConfig,
+	investigationBrief,
 	parsePushRefs,
+	playbookTamper,
+	pluginVersion,
 	preReleaseGate,
 	newState,
 	parseVersion,
 	pidAlive,
-	pluginVersion,
-	releaseGate,
 	reflectSections,
+	reflectionRoutes,
+	releaseGate,
 	shouldSelfCompact,
 	stateTamper,
 	statusCompact,
@@ -40,14 +44,14 @@ import {
 
 const cfg = structuredClone(DEFAULTS);
 
-test("mergeConfig fills defaults and merges partial overrides", () => {
-	const c = mergeConfig({ defaultBranch: "master", commands: { test: "bun test" }, release: { changelog: "CHANGELOG.md" } });
+test("buildConfig fills defaults and merges partial overrides", () => {
+	const c = buildConfig({ defaultBranch: "master", commands: { test: "bun test" }, release: { changelog: "CHANGELOG.md" } });
 	assert.equal(c.defaultBranch, "master");
 	assert.equal(c.commands.test, "bun test");
 	assert.equal(c.commands.build, undefined);
 	assert.equal(c.release.changelog, "CHANGELOG.md");
 	assert.equal(c.release.review, "/ponytail-review"); // kept from defaults
-	assert.equal(mergeConfig(null).defaultBranch, "main");
+	assert.equal(buildConfig(null).defaultBranch, "main");
 });
 
 test("newState stamps the dev-flow build when supplied", () => {
@@ -63,7 +67,7 @@ test("approveGate requires plan.md, rendered mockups when ui", () => {
 	assert.ok(approveGate(su, cfg, ["plan.md"]).length > 0, "ui feature without a render must not pass");
 	assert.ok(approveGate(su, cfg, ["plan.md", "mockups/screen.html"]).length > 0, "html source alone is not evidence of a render");
 	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"]).length, 0);
-	const htmlCfg = mergeConfig({ mockupGlobs: ["*.html"] });
+	const htmlCfg = buildConfig({ mockupGlobs: ["*.html"] });
 	assert.equal(approveGate(su, htmlCfg, ["plan.md", "mockups/screen.html"]).length, 0, "configured glob overrides the png default");
 	const done = { ...s, stage: "release" as const };
 	assert.ok(approveGate(done, cfg, ["plan.md"]).length > 0, "wrong stage must not pass");
@@ -72,7 +76,7 @@ test("approveGate requires plan.md, rendered mockups when ui", () => {
 test("verifyGate requires green test check when configured", () => {
 	const s = { ...newState("f", false), stage: "implement" as const };
 	assert.ok(verifyGate(s, cfg).length === 0, "no test command configured → gate open (ui confirm covers)");
-	const c2 = mergeConfig({ commands: { test: "x" } });
+	const c2 = buildConfig({ commands: { test: "x" } });
 	assert.ok(verifyGate(s, c2).length > 0);
 	s.checks.test = { ok: true, at: "" };
 	assert.equal(verifyGate(s, c2).length, 0);
@@ -89,7 +93,7 @@ test("releaseGate requires verify approval and release stage", () => {
 
 test("preReleaseGate: stage, re-greened checks, bumped version, changelog mention", () => {
 	const s = { ...newState("f", false), stage: "pre-release" as const };
-	const c2 = mergeConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
+	const c2 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
 	const prep = { manifestVersion: "1.2.0", localTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
 	assert.ok(preReleaseGate(s, c2, prep).some((e) => e.includes("flow check")), "checks must be rerun after prep edits");
 	s.checks.test = { ok: true, at: "" };
@@ -102,7 +106,7 @@ test("preReleaseGate: stage, re-greened checks, bumped version, changelog mentio
 	// unversioned flow (operator granted release --no-version): bump and changelog requirements are off
 	assert.equal(preReleaseGate({ ...s, noVersion: true }, c2, { manifestVersion: null, localTags: ["v1.2.0"], changelog: null }).length, 0);
 	// no versioning/changelog configured: only the check matters
-	assert.equal(preReleaseGate({ ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } }, mergeConfig({ commands: { test: "x" } }), prep).length, 0);
+	assert.equal(preReleaseGate({ ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } }, buildConfig({ commands: { test: "x" } }), prep).length, 0);
 });
 
 test("bashFlowGuard: main protection and release-stage release", () => {
@@ -175,6 +179,36 @@ test("stateTamper catches direct state.json writes", () => {
 	assert.equal(stateTamper("git status"), false);
 });
 
+test("playbookTamper catches direct project.md writes; reads and flow init --write pass", () => {
+	assert.ok(playbookTamper("echo x > .dev-flow/project.md"));
+	assert.ok(playbookTamper("sed -i s/a/b/ .dev-flow/project.md"));
+	assert.ok(playbookTamper("cp tmp.md .dev-flow/playbook-loop/worktree/.dev-flow/project.md"), "a worktree copy is still the playbook");
+	assert.equal(playbookTamper("cat .dev-flow/project.md"), false);
+	assert.equal(playbookTamper('flow init --write "# dev-flow"'), false);
+	assert.equal(playbookTamper("git status"), false);
+});
+
+test("detectForge: the origin URL decides", () => {
+	assert.equal(detectForge("git@github.com:u/r.git"), "github");
+	assert.equal(detectForge("https://gitlab.example.com/u/r.git"), "gitlab");
+	assert.equal(detectForge("https://git.internal/u/r.git"), "self");
+	assert.equal(detectForge(""), "self");
+});
+
+test("reflectionRoutes and investigationBrief route fixes to the right flow", () => {
+	const [p] = reflectionRoutes(["- [ ] the checklist item about seeded data is stale"], false);
+	assert.equal(p.mode, "docs");
+	assert.match(p.route, /docs flow/);
+	const [x] = reflectionRoutes(["- [ ] the gate prompt asks twice"], false);
+	assert.equal(x.mode, "upstream", "plugin feedback in someone else's repo goes upstream");
+	assert.match(x.route, /pi-dev-flow/);
+	const [s] = reflectionRoutes(["- [ ] the gate prompt asks twice"], true);
+	assert.equal(s.mode, "code", "in the dev-flow repo a plugin item is a flow of its own");
+	const brief = investigationBrief("the gate prompt asks twice", true);
+	assert.match(brief.join(" "), /gate prompt asks twice/);
+	assert.match(brief.join(" "), /patch flow/);
+});
+
 test("writeGuard: path attribution + session binding rules", () => {
 	const df = "/repo/.dev-flow";
 	const plan = newState("a", false);
@@ -196,6 +230,11 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null }) ?? "", /no active flow/, "flow-by-default: clean repo still requires a flow");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
+	assert.match(writeGuard({ abs: "/repo/.dev-flow/project.md", dfDir: df, features: [], boundSlug: null }) ?? "", /operator playbook/, "the main-checkout playbook is never an agent edit target");
+	const docsF = { state: { ...newState("d", false, false, true), stage: "implement" as const, worktree: ".wt/d" }, worktreeAbs: "/repo/.wt/d" };
+	const normF = { state: { ...newState("n", false), stage: "implement" as const, worktree: ".wt/n" }, worktreeAbs: "/repo/.wt/n" };
+	assert.equal(writeGuard({ abs: "/repo/.wt/d/.dev-flow/project.md", dfDir: df, features: [docsF], boundSlug: "d" }), null, "a docs flow edits the playbook in its worktree");
+	assert.ok(writeGuard({ abs: "/repo/.wt/n/.dev-flow/project.md", dfDir: df, features: [normF], boundSlug: "n" }), "a normal feature cannot touch the playbook");
 	assert.equal(checkoutTarget("git checkout feat/x"), "feat/x");
 	assert.equal(checkoutTarget("git switch -c feat/y && make"), "feat/y");
 	assert.equal(checkoutTarget("git checkout -- src/app.ts"), "--");
@@ -262,7 +301,7 @@ test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
 test("verifyGate: tier-1 checks green + tier-2 checklist confirmed (ui-aware)", () => {
 	const s = { ...newState("f", false), stage: "implement" as const };
 	const items = [{ text: "visual pass ok", uiOnly: true }, { text: "docs updated", uiOnly: false }];
-	const c = { ...mergeConfig({}), checkList: [{ name: "health", cmd: "curl x" }], checklist: { implement: items } };
+	const c = { ...buildConfig({}), checkList: [{ name: "health", cmd: "curl x" }], checklist: { implement: items } };
 	assert.ok(verifyGate(s, c).some((e) => e.includes('check "health"')));
 	assert.match(verifyGate(s, c).join(" "), /checklist not confirmed \(1 item/, "non-UI feature sees only the non-ui item");
 	s.checks.health = { ok: true, at: "" };
@@ -314,21 +353,21 @@ test("cleanupAssess flags dirty worktree and lists unmerged", () => {
 
 test("approveGate: patch features skip the plan document, gates stay", () => {
 	const p = newState("p", false, true);
-	assert.equal(approveGate(p, mergeConfig({}), []).length, 0, "patch: empty plan/ passes the gate");
-	assert.equal(approveGate(newState("p", false), mergeConfig({}), []).length, 1, "non-patch still requires plan/*.md");
+	assert.equal(approveGate(p, buildConfig({}), []).length, 0, "patch: empty plan/ passes the gate");
+	assert.equal(approveGate(newState("p", false), buildConfig({}), []).length, 1, "non-patch still requires plan/*.md");
 	assert.ok(statusCompact(p).text.includes("⚡"), "status marks patch features");
 });
 
 test("docs mode: no plan document, no tier-1 checks, release integrity intact", () => {
-	const cfg = mergeConfig({ commands: { test: "x" } });
-	assert.equal(approveGate(newState("d", false, false, true), mergeConfig({}), []).length, 0, "docs: empty plan/ passes the gate");
-	assert.ok(approveGate(newState("d", false), mergeConfig({}), []).length === 1, "normal features still require plan/*.md");
+	const cfg = buildConfig({ commands: { test: "x" } });
+	assert.equal(approveGate(newState("d", false, false, true), buildConfig({}), []).length, 0, "docs: empty plan/ passes the gate");
+	assert.ok(approveGate(newState("d", false), buildConfig({}), []).length === 1, "normal features still require plan/*.md");
 	assert.ok(statusCompact(newState("d", false, false, true)).text.includes("📄"), "status marks docs features");
 	const d = { ...newState("d", false, false, true), stage: "implement" as const };
 	assert.equal(verifyGate(d, cfg).length, 0, "docs skips the tier-1 check requirement");
 	assert.ok(verifyGate({ ...newState("d", false), stage: "implement" as const }, cfg).length > 0, "non-docs still demands green checks");
 	const pre = { ...newState("d", false, false, true), stage: "pre-release" as const };
-	const c3 = mergeConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
+	const c3 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
 	const prep = { manifestVersion: "1.2.0", localTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
 	assert.ok(!preReleaseGate(pre, c3, prep).some((e) => e.includes("flow check")), "docs release gate skips re-greened checks");
 	assert.ok(preReleaseGate(pre, c3, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")), "docs still needs the version bump");
@@ -404,11 +443,11 @@ test("guardPath: subtree, paths that do not exist yet, and no escaping the root"
 	assert.equal(guardPath(path.join(elsewhere, "docker/.env"), root, g).confirm, null, "the same relative path in another checkout is not this repo's file");
 });
 
-test("mergeConfig reads guard rules from project.json (bare patterns and objects)", () => {
-	const c = mergeConfig({ guard: { deny: ["\\bgit\\b[^]*--force"], forbid: [{ pattern: "docker/secrets", why: "secret storage" }] } });
+test("buildConfig reads guard rules (bare patterns and objects)", () => {
+	const c = buildConfig({ guard: { deny: ["\\bgit\\b[^]*--force"], forbid: [{ pattern: "docker/secrets", why: "secret storage" }] } });
 	assert.deepEqual(c.guard.deny, [{ pattern: "\\bgit\\b[^]*--force", why: "" }]);
 	assert.equal(c.guard.forbid[0].why, "secret storage");
-	assert.deepEqual(mergeConfig(null).guard, { deny: [], confirm: [], protect: [], forbid: [] });
+	assert.deepEqual(buildConfig(null).guard, { deny: [], confirm: [], protect: [], forbid: [] });
 });
 
 test("claimBlocks blocks auto-bind only for a foreign live claim", () => {

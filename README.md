@@ -20,14 +20,17 @@ In each project repo, once:
 /flow init
 ```
 
-Creates `.dev-flow/` — which **ignores itself and everything under it** via its own
-`.dev-flow/.gitignore` containing `*` (no tracked file is touched) — and **drafts a project.md
-playbook from analysis** (default branch from git, package manager from `packageManager`/lockfiles,
-test/build/run from npm scripts, or cargo/go/python conventions, version manifest), **writes it
-straight to `.dev-flow/project.md`**, and hands it to you: confirm as-is, or say what to change —
-the agent then walks you through the knobs conversationally and writes your answers back validated
-(`--write <content>`). Running `/flow init` again with an existing project.md runs the **doctor**: cheap
-consistency probes (command drift, dead scripts, unparseable manifest, dual configs) with an offer
+Creates `.dev-flow/` — which **ignores itself** via its own `.dev-flow/.gitignore`
+(`*`, with the single exception `!project.md` — no tracked file is touched) — and **asks before it
+writes anything**: a setup brief from repository analysis (default branch and forge from git, package
+manager from `packageManager`/lockfiles, test/build/run from npm scripts or cargo/go/python
+conventions, version manifest) plus one question per knob detection cannot decide — forge
+(github/gitlab/self-hosted), version convention, automatic forge releases, registry artifacts
+(Docker Hub & friends), the real check commands, tier-2 items and prose. The agent relays the
+questions to you, fills the draft with your answers and writes it validated
+(`--write <content>`); an interactive `flow init` can also review the detection draft with you and
+write it on the spot. Running `/flow init` again with an existing project.md runs the **doctor**: cheap
+consistency probes (command drift, dead scripts, unparseable manifest, legacy files) with an offer
 to refresh — it never runs your commands and never rewrites your hand-edited file without your confirm.
 `/flow init --force` rewrites from fresh
 detection (destructive reset). It also installs a `pre-commit` hook that
@@ -48,9 +51,9 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `health` | records a check | — (runs `seedData` + the health command; app must be up locally with real data) |
 | `verify` | implement → pre-release | all tier-1 checks green, build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app **and the health probe (if configured) re-runs against what it just deployed** (a failing probe refuses the gate: the `flow check` PASS predates the deploy; with no probe the output says `health: none configured`), tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; **one question** — or `--confirmed` |
 | `release [--no-version]` | pre-release → release | checks re-greened after the prep edits; with `versioning.file`: the manifest version parses and is **not tagged yet** (the bump must be ahead of the last release); with `release.changelog`: the file exists and mentions the version; tier-2 `## pre-release` checklist confirmed; **one question** (Release?) — or `--confirmed`; `--no-version` (your call at Release?) releases this flow **without** version bump or tag — those requirements and the tag checks at `release-done` are skipped for it (default: versioned) |
-| `release-done` | records the release (the stage stays `release`) | **no question — the Release? answer covered the publication**; verify approval; with `versioning.file`: tag rendered from the manifest version exists, is reachable from the default branch **and is on origin** (a local-only tag is not a release); with `release.artifact`: the published-artifact check runs (`{version}`/`{tag}` placeholders; skip once with `--no-artifact-check`, operator-instructed only) · creates the GitHub release from the tag (advisory — needs gh + GitHub remote; skip per-release with `--no-github-release`, per-project with `release.github = false`) |
-| `finish [slug]` | release → done (removes worktree + branch, deletes `.dev-flow/<slug>/`, and deletes `origin/<branch>` **only** when its merged state is verified — ancestor of the default branch or a merged PR via gh; unverifiable branches stay with a note) | a release is recorded (`release-done` ran), the main checkout is clean **and** pushed to `origin/<default>`, and the worktree has no uncommitted changes; **one question** (Finish? — mentions unmerged-looking squash-merge commits when it sees them) — or `--confirmed`; to abandon an unreleased feature use `abort` |
-| `doctor [reflect "<note>"]` | — | read-only findings: playbook drift, dead commands/scripts, ghost feature dirs, orphan worktrees/branches, open reflections — it writes nothing and asks nothing, safe for agents and CI at any stage. `doctor reflect "<note>"` queues an agent suggestion in `reflections.md`, under `## playbook`, `## plugin` or both, chosen from the note's wording (never gates) |
+| `release-done` | records the release (the stage stays `release`) | **no question — the Release? answer covered the publication**; verify approval; with `versioning.file`: tag rendered from the manifest version exists, is reachable from the default branch **and is on origin** (a local-only tag is not a release); with `release.artifact`: the published-artifact check runs (`{version}`/`{tag}` placeholders; skip once with `--no-artifact-check`, operator-instructed only) · creates the forge release from the tag — `gh` for GitHub, `glab` for GitLab, skipped for `forge = self` (advisory — a note on failure; skip per-release with `--no-release-create`, per-project with `release.releases = false`) |
+| `finish [slug]` | release → done (removes worktree + branch, deletes `.dev-flow/<slug>/`, and deletes `origin/<branch>` **only** when its merged state is verified — ancestor of the default branch or a merged PR/MR via `gh`/`glab`; unverifiable branches stay with a note) | a release is recorded (`release-done` ran), the main checkout is clean **and** pushed to `origin/<default>`, and the worktree has no uncommitted changes; **one question** (Finish? — mentions unmerged-looking squash-merge commits when it sees them) — or `--confirmed`; to abandon an unreleased feature use `abort` |
+| `doctor [reflect "<note>" | "<issue note>"]` | — | read-only findings: playbook drift, dead commands/scripts, untracked playbook, ghost feature dirs, orphan worktrees/branches — **plus a review of every open reflection, each routed to the flow that should fix it** (playbook item → docs flow; plugin item → upstream issue, or a patch/normal flow inside the dev-flow repo). It writes nothing and asks nothing, safe for agents and CI at any stage; the agent investigates, you confirm, the routed flow implements. `doctor reflect "<note>"` queues a raw suggestion in `reflections.md` (never gates); `doctor "<note>"` prints an investigation brief and a fix route for a fresh observation |
 | `status [slug]` / `abort [slug]` | — | — |
 | `help` (`--help`, `-h`) | — | — (prints the gate help — answerable in any repo, at any stage, with no `.dev-flow/`) |
 | `version` | — | — (prints dev-flow's **own** version and the directory it was loaded from — which copy this session runs, this checkout vs an installed `pi-dev-flow`; answerable in any repo, at any stage, with no `.dev-flow/`) |
@@ -65,7 +68,7 @@ While a feature is active, the extension intercepts every tool call:
 - **No code before an approved plan**: at stage `plan`, edits are confined to `.dev-flow/<slug>/`.
 - **Work stays in the worktree**: at stages `implement` and `pre-release`, edits are confined to that feature's worktree — judged per-path by the owning feature, so one session can never write into another session's worktree or into the main checkout.
 - **Flow by default**: in a repo with `.dev-flow/`, an unbound session cannot touch source files at all — every request goes through `flow start`/`flow use`; there is no bypass. `flow start` refuses when the main checkout isn't on the default branch, worktrees are always created from the default branch, and the agent cannot check feature branches out in the main checkout.
-- **Gates can't be skipped**: `state.json` is untouchable by the agent (edit tool and bash); the `project.md` playbook is operator-owned; editing worktree code invalidates a passing test check until `flow test` reruns.
+- **Gates can't be skipped**: `state.json` is untouchable by the agent (edit tool and bash); the `project.md` playbook is operator-owned — the main-checkout copy is blocked for the agent outright, and only a **docs or patch flow's** worktree copy may be edited (normal features route playbook changes to their own flow); editing worktree code invalidates a passing test check until `flow test` reruns.
 - **Your project's own rules**: every `deny`/`confirm`/`protect`/`forbid` rule from the `flow-guard` block in project.md `## global` runs on every bash command and every edit/write path — in every stage and binding, ahead of dev-flow's own verdicts. A block always carries the reason you wrote.
 - **Compact-aware**: when context nears pi's auto-compaction threshold, dev-flow compacts *itself* at a safe point — right after a gate wrote state to disk, or when a run settles — with flow-aware summary instructions. It never compacts while chat is the state (open tier-2 dialog, plan discussion not yet in `plan/`), so pi's mid-work compaction rarely fires; when it does, a note lands in `reflections.md`.
 - The active stage is injected into the model's context every turn; the bundled `dev-flow` skill is the agent's playbook, including the recommended sequences: pre-release — review (`/ponytail-review`) → fixes → docs → changelog/version bump; release — PR → merge → tag → `release-done`.
@@ -88,8 +91,10 @@ while your bound feature is in `plan`/`implement` and while any feature is unbou
 
 ## Project configuration — `.dev-flow/project.md`
 
-The operator-owned playbook, gitignored, edited by you (the agent is blocked from writing it
-directly; it goes through `flow init --write` which validates). Content is organized per stage
+The operator-owned playbook, **committed to git** (the one file under `.dev-flow/` that is),
+edited by you (the agent is blocked from writing the main-checkout copy
+and may edit it only inside a docs/patch flow's worktree, or apply it through `flow init --write`
+on your word, which validates). Content is organized per stage
 (`## plan`, `## implement`, `## pre-release`, `## release`…) in **three tiers** — tier 1 splits into
 executable checks and hard safety rules:
 
@@ -154,7 +159,7 @@ otherwise; confirm the number before tagging” live — the agent sees them at 
 `flow release` / `flow release-done` hard-check the manifest side (bumped past the last tag, then
 manifest↔tag agreement). `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `release.review`,
-`release.changelog` and `release.github = false` (skip GitHub release creation) and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
+`release.changelog`, `release.releases` and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
 `dev`. Of those, `setup` runs once inside a freshly created worktree at `approve` (where `cp .env` +
 `npm install` belong — a failing setup fails the gate), and `run` is advisory: the agent starts the app
 with it for the running-and-healthy walk, dev-flow never runs it itself. `dev` is the dev deploy run by
@@ -167,13 +172,18 @@ ran, verify re-runs the health probe (`commands.health` or a `flow-check` block 
 build" means stays the project's own assertion: the probe runs with the worktree as cwd, so it can
 wait for readiness and compare the served build stamp with `git rev-parse HEAD`. No probe → the
 gate prints `health: none configured` and `flow doctor` flags the combination. The pre-release and release stages take
-`versionFile`/`versionTag` (defaults `v{version}`; accepted under either section). A legacy
-`project.json` still works — project.md overrides it, and the doctor flags having both.
+`versionFile`/`versionTag` (defaults `v{version}`; accepted under either section). `## global` also takes
+`forge = github | gitlab | self` — the release machinery's target; when unset it is detected from the
+`origin` URL at the moment of use (GitHub gets `gh`, GitLab gets `glab`, self-hosted stays forge-neutral:
+no automatic release creation, merge proof by ancestry only), and `release.releases = false` skips
+automatic release creation entirely (the legacy `github` key still parses, with a rename warning).
+A leftover `project.json` is no longer read — the doctor tells you to fold it in and delete it.
 
-`flow init` is the dialogue around this file: **fresh repo** → writes the detection draft
-immediately, then asks you to confirm the file or change it — the agent asks one short question per
-knob you want adjusted and writes your answers back validated (`--write <content>`; `--draft` prints
-the current file whenever you'd rather read raw); **existing file** → doctor mode (drift, dead commands/scripts,
+`flow init` is the dialogue around this file: **fresh repo** → prints the setup brief (detection report
+plus one question per undetected knob — forge, version convention, releases, artifacts, checks, prose),
+the agent asks you each question, fills the draft and writes your answers back validated
+(`--write <content>`; `--draft` prints the draft or current file whenever you'd rather read raw — an
+interactive init may also confirm the draft with you on the spot and write it then); **existing file** → doctor mode (drift, dead commands/scripts,
 unparseable manifest, dual configs, **ghost feature dirs** (a `.dev-flow/<slug>/` whose `state.json`
 is gone — it offers to delete those, on your confirm, and says so instead when no UI is present) —
 it never runs your commands) offering a refresh — which it
@@ -186,15 +196,17 @@ anything (findings are also printed whenever `flow init` runs without a UI, e.g.
 rewrites from fresh detection. Improvement
 ideas the agent notices along the way queue up in `.dev-flow/reflections.md` under `## playbook`
 (what to change in *your* playbook) and `## plugin` (what to change in dev-flow itself) —
-`flow doctor reflect "<note>"` appends them, you decide what gets folded in, and nothing there ever gates.
+`flow doctor reflect "<note>"` appends them, plain `flow doctor` reviews the open ones and routes
+each fix to the flow that implements it (docs flow for playbook items — those edits only pass a
+docs/patch flow's worktree), and nothing there ever gates.
 
 
 ## Layout in a project
 
 ```
-.dev-flow/                    (gitignored, flow-owned)
-  project.json                operator-owned config
-  .current                    active feature pointer
+.dev-flow/                    (self-ignoring, flow-owned — except project.md, which is committed)
+  project.md                  operator-owned playbook (in git)
+  reflections.md              the agent's suggestion queue for the operator
   <slug>/
     plan/
       plan.md                 the review document (embeds the renders)
