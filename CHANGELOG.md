@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-10-16
+
+### Fixed
+
+- **Release chores finally have a lane in the main checkout.** The bash guard blocked `git commit` on the default branch at **every** stage — including `release`, where the stage hint tells the agent to "commit and push the release chores in the main checkout" and pushing to the default branch is explicitly allowed: a dead allowance, since the commit to push could never be created. Commits on the default branch now carry the same stage exception as push and merge — only at stage `release` — and the release hint names the `DEV_FLOW_ALLOW_MAIN=1` prefix the installed pre-commit hook requires.
+
 ## [0.33.0] - 2026-10-16
 
 ### Added
