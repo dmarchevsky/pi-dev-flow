@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-10-16
+
+### Added
+
+- **`flow reflect` — the full session-reflection protocol.** Bare `flow reflect` prints what the agent must do at the end of a session and the facts it cannot guess: running plugin version, upstream repo, and the open `reflections.md` items with their routes. The protocol: review the session log in full (messages, tool calls, results); re-check every open item against the current playbook and **newer dev-flow versions** — dev-flow ships from git, so the probe is `git ls-remote --tags --sort=-v:refname <upstream> | head -1` against the running version, and a newer tag covering an item means recommending the operator update (`pi install git:github.com/<upstream>` + `/reload`) — check items off in reflections.md (gitignored, agent-editable); dedupe new findings against open items before queueing them; report playbook vs plugin items to the operator structurally; ask whether to fix now — yes: plugin items search upstream first (`gh issue list --repo <upstream> --state all --search …`, an author-addressed match is reported back, never re-filed; no match → `gh issue create` with a detailed description, session evidence and a suggested fix), playbook items go through `flow doctor` to their docs flow. The command writes nothing and runs no network calls — the protocol is the agent's, the facts are the plugin's. `pluginVersion` now also reports the manifest's upstream `owner/slug` (package.json carries a `repository` field).
+
+### Removed
+
+- **`flow doctor reflect "<note>"` — queue notes with `flow reflect "<note>"`** (same section routing by wording; plain `flow doctor` still reviews and routes open reflections). The old form lost its special case: `flow doctor reflect x` now prints a fresh-note investigation brief for an observation literally named "reflect x" and touches nothing.
+
 ## [0.32.0] - 2026-10-17
 
 ### Added

@@ -340,25 +340,53 @@ test("ref-aware push guard end-to-end: tags pass from main, default branch refus
 	assert.equal(await bash("git push origin main:refs/heads/main-backup"), undefined, "explicit non-default dest passes");
 });
 
-test("doctor reflect: section by wording, listing, check-off semantics, status surfacing", async () => {
+test("reflect <note>: section by wording, protocol lists open items, check-off semantics, status surfacing", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init"]);
 	await flow(["start", "rfeat"]);
-	await flow(["doctor", "reflect", "test", "cmd", "is", "stale"]);
-	const r2 = await flow(["doctor", "reflect", "ui", "panels", "are", "ugly", "in", "the", "plugin"]);
+	await flow(["reflect", "test", "cmd", "is", "stale"]);
+	const r2 = await flow(["reflect", "ui", "panels", "are", "ugly", "in", "the", "plugin"]);
 	assert.match(r2.content[0].text, /reflected \(plugin\): - \[ \] ui panels are ugly in the plugin — rfeat \d{4}-\d{2}-\d{2}/);
 	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
 	assert.match(readFileSync(reflFile, "utf8"), /## playbook\n\n- \[ \] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}/);
-	const listed = await flow(["doctor", "reflect"]);
-	assert.match(listed.content[0].text, /1\. - \[ \] test cmd is stale/);
+	const proto = await flow(["reflect"]);
+	assert.match(proto.content[0].text, /flow reflect — session reflection \(dev-flow \d+\.\d+\.\d+, upstream: dmarchevsky\/dev-flow\)/);
+	assert.match(proto.content[0].text, /open items \(2\)/);
+	assert.match(proto.content[0].text, /\[playbook\] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}/);
 	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + "- [x] already handled\n");
-	const listed2 = await flow(["doctor", "reflect"]);
-	assert.ok(!listed2.content[0].text.includes("handled"), "checked-off items are not open");
+	const proto2 = await flow(["reflect"]);
+	assert.match(proto2.content[0].text, /open items \(2\)/, "checked-off items stay out of the open list");
+	assert.ok(!/open items[\s\S]*already handled/.test(proto2.content[0].text), "a checked-off item is not listed");
 	const st = await flow(["status"]);
 	assert.match(st.content[0].text, /↻ 2 reflection\(s\) open/);
+});
+
+test("bare reflect prints the protocol in a foreign repo: plugin items route upstream", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	await flow(["reflect", "the gate prompt asks twice"]);
+	const proto = await flow(["reflect"]);
+	assert.match(proto.content[0].text, /1\. review the current session log in full/);
+	assert.match(proto.content[0].text, /gh issue list --repo dmarchevsky\/dev-flow --state all --search/);
+	assert.match(proto.content[0].text, /b\. playbook items: run flow doctor/);
+	assert.match(proto.content[0].text, /file an issue against pi-dev-flow upstream/, "a foreign repo routes plugin items upstream");
+});
+
+test("flow doctor no longer queues: reflect is the only queue command", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const d = await flow(["doctor", "reflect", "some", "note"]);
+	assert.match(d.content[0].text, /investigate: "reflect some note"/, "the old form falls through to the fresh-note brief");
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "reflections.md")), "doctor writes nothing — the queue lives at flow reflect");
 });
 
 test("checkpoint contract: --confirmed walks every gate with zero dialogs", async () => {
