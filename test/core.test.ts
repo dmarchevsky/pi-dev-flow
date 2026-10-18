@@ -46,6 +46,7 @@ import {
 	reflectionRoutes,
 	releaseGate,
 	shouldSelfCompact,
+	shouldTakeOverCompaction,
 	stateTamper,
 	statusCompact,
 	tagNotesCommand,
@@ -485,6 +486,18 @@ test("shouldSelfCompact: only near pi's threshold and only when no chat-only sta
 	assert.equal(shouldSelfCompact({ ...base, compacting: true }), false, "no stacked compactions");
 	assert.equal(shouldSelfCompact({ ...base, tokens: 968_000, contextWindow: 1_000_000 }), true, "big window uses the same absolute margin");
 	assert.equal(shouldSelfCompact({ ...base, tokens: 850_000, contextWindow: 1_000_000 }), false, "85% of a 1M window is still comfortable");
+	// the real (settings/model-overridden) reserve moves the trigger, like it moves pi's own
+	assert.equal(shouldSelfCompact({ ...base, tokens: 150_000 }, 40_000), true, "reserve 40k lowers the threshold below 150k");
+	assert.equal(shouldSelfCompact({ ...base, tokens: 143_616 }, 40_000), false, "at the reserve-40k threshold-minus-margin");
+	assert.equal(shouldSelfCompact({ ...base, tokens: 143_617 }, 40_000), true, "one over the reserve-40k threshold-minus-margin");
+});
+
+test("shouldTakeOverCompaction: only pi's threshold path, only when bound and idle", () => {
+	assert.equal(shouldTakeOverCompaction({ reason: "threshold", bound: true, inFlight: false }), true);
+	assert.equal(shouldTakeOverCompaction({ reason: "manual", bound: true, inFlight: false }), false, "/compact is the operator's; our own takeover fires as manual");
+	assert.equal(shouldTakeOverCompaction({ reason: "overflow", bound: true, inFlight: false }), false, "cancelling overflow recovery drops pi's retry");
+	assert.equal(shouldTakeOverCompaction({ reason: "threshold", bound: false, inFlight: false }), false, "no flow bound — nothing flow-aware to say");
+	assert.equal(shouldTakeOverCompaction({ reason: "threshold", bound: true, inFlight: true }), false, "no stacked compactions");
 });
 
 test("compactionReflectionLine is a valid open reflection item", () => {

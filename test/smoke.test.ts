@@ -1131,3 +1131,44 @@ test("the playbook tracking chore is legal on the default branch (#53)", async (
 	writeFileSync(path.join(repo, "notes.txt"), "something else is dirty\n");
 	assert.match((await guard('DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"'))?.reason ?? "", /direct commits to main/, "any other dirty path closes the lane");
 });
+
+test("threshold compaction takeover: flow-aware recompact; cancel only when ours landed", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n");
+	const ctx = makeCtx(repo);
+	await pi.cmds.flow.handler("start demo-feature", ctx);
+	const takeover = pi.handlers.session_before_compact[0] as unknown as (
+		e: { reason: string },
+		c: unknown,
+	) => Promise<{ cancel?: boolean } | undefined>;
+	const mk = (fail = false) => {
+		const calls: string[] = [];
+		return {
+			calls,
+			c: { ...ctx, compact: (o: { customInstructions: string; onComplete: () => void; onError: () => void }) =>
+				setTimeout(fail ? o.onError : o.onComplete, 0) && calls.push(o.customInstructions) },
+		};
+	};
+	const ok = mk();
+	assert.equal((await takeover({ reason: "threshold" }, ok.c))?.cancel, true, "our compaction landed — pi's blind summary is cancelled");
+	assert.match(ok.calls[0], /demo-feature/, "the recompact carries the flow-aware instructions");
+	const bad = mk(true);
+	assert.equal(await takeover({ reason: "threshold" }, bad.c), undefined, "a failed takeover must NOT cancel pi's own compaction");
+	assert.equal(await takeover({ reason: "manual" }, mk().c), undefined, "/compact stays the operator's");
+	assert.equal(await takeover({ reason: "overflow" }, mk().c), undefined, "overflow keeps pi's compact-and-retry");
+});
+
+test("turn_end compaction check survives a broken compaction setting", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n");
+	mkdirSync(path.join(repo, ".pi"));
+	writeFileSync(path.join(repo, ".pi", "settings.json"), JSON.stringify({ compaction: { reserveTokens: "bogus" } }));
+	const ctx = makeCtx(repo);
+	await pi.cmds.flow.handler("start demo-feature", ctx);
+	const c = { ...ctx, getContextUsage: () => ({ tokens: 190_000, contextWindow: 200_000, percent: 95 }), compact: () => { throw new Error("must not fire"); } };
+	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, c); // must not reject
+});
