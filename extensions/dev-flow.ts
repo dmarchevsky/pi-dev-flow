@@ -66,6 +66,7 @@ import {
 	releaseGate,
 	parseVersion,
 	shouldSelfCompact,
+	shouldTakeOverCompaction,
 	stateTamper,
 	statusCompact,
 	subst,
@@ -1085,6 +1086,27 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
 	pi.on("agent_settled", async (_event, ctx) => maybeCompactNow(ctx));
+	// pi forcing a threshold compaction while a flow is bound means our safe-point pacing missed — redo it
+	// with flow-aware instructions: cancel pi's blind summary, await our own (compaction is appended by the
+	// time the handler resumes), then cancel. If ours fails, return undefined and let pi's proceed.
+	// overflow is never taken over (cancelling it would drop pi's compact-and-retry); manual is the operator's or ours.
+	pi.on("session_before_compact", async (event, ctx) => {
+		if (!existsSync(dfDir(ctx.cwd))) return undefined;
+		const key = sessionKey(ctx);
+		const st = boundFeature(ctx.cwd, key);
+		if (!shouldTakeOverCompaction({ reason: event.reason, bound: !!st, inFlight: compacting.has(key) })) return undefined;
+		compacting.add(key);
+		let ok = false;
+		await new Promise<void>((resolve) => {
+			const done = (success: boolean) => () => {
+				ok = success;
+				compacting.delete(key);
+				resolve();
+			};
+			ctx.compact({ customInstructions: flowCompactInstructions(st!), onComplete: done(true), onError: done(false) });
+		});
+		return ok ? { cancel: true } : undefined;
+	});
 	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
 	pi.on("session_compact", async (event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd)) || event.reason === "manual") return;
