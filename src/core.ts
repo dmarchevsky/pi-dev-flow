@@ -932,6 +932,14 @@ export function shouldSelfCompact(
 	return d.tokens > d.contextWindow - reserve - COMPACT_MARGIN;
 }
 
+/**
+ * Forced pi compaction that dev-flow should take over and redo with flow-aware instructions:
+ * only the threshold path — overflow must keep pi's compact-and-retry, manual is the operator's or ours.
+ */
+export function shouldTakeOverCompaction(d: { reason: "manual" | "threshold" | "overflow"; bound: boolean; inFlight: boolean }): boolean {
+	return d.reason === "threshold" && d.bound && !d.inFlight;
+}
+
 /** reflections.md line for a forced (non-manual) pi compaction while a flow is bound — advisory, never gates. */
 export function compactionReflectionLine(slug: string, stage: Stage, reason: string, today: string): string {
 	return `- [ ] pi auto-compacted (${reason}) at stage ${stage} — pace gates so work lands on disk before compaction; draft plan discussion into plan/ early — ${slug} ${today}`;

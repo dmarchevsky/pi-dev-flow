@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, isToolCallEventType, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { defineTool, isToolCallEventType, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	approveGate,
@@ -208,10 +208,15 @@ function claimBlocker(root: string, key: string): { state: FlowState; claim: Ses
 	return claim && claimBlocks(claim, key) ? { state: un[0], claim } : null;
 }
 
+/** Flow-aware focus for any compaction dev-flow initiates — state lives on disk, the summary must not invent it. */
+const flowCompactInstructions = (st: FlowState) =>
+	`dev-flow feature "${st.slug}", stage "${st.stage}" — flow state is persisted on disk (state.json, plan/). Preserve verbatim: operator answers not yet recorded by a gate, reasons for uncommitted changes, and the exact next action from the last exchange.`;
+
 /**
- * Flow-aware self-compaction at safe points: called after a successful gate (state just hit disk)
- * and when a run settles. Only fires within COMPACT_MARGIN of pi's own threshold and never while
- * chat-only state is pending (open dialog, undigested plan) — see shouldSelfCompact.
+ * Flow-aware self-compaction at safe points: called after a successful gate (state just hit disk),
+ * at every turn_end and when a run settles. Only fires within COMPACT_MARGIN of pi's own threshold
+ * (computed with the *effective* reserveTokens — settings + model overrides, like pi does) and
+ * never while chat-only state is pending (open dialog, undigested plan) — see shouldSelfCompact.
  */
 function maybeCompactNow(ctx: ExtensionContext): void {
 	if (!existsSync(dfDir(ctx.cwd))) return;
@@ -220,6 +225,8 @@ function maybeCompactNow(ctx: ExtensionContext): void {
 	const key = sessionKey(ctx);
 	const st = boundFeature(ctx.cwd, key);
 	if (!st) return;
+	const settings = SettingsManager.create(ctx.cwd);
+	if (!settings.getCompactionEnabled()) return; // operator turned auto-compaction off — don't do it behind their back
 	const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 	const decision = {
 		tokens: u.tokens,
@@ -229,11 +236,11 @@ function maybeCompactNow(ctx: ExtensionContext): void {
 		checklistPending: checklistPending(cfg, st, st.stage),
 		compacting: compacting.has(key),
 	};
-	if (!shouldSelfCompact(decision)) return;
+	if (!shouldSelfCompact(decision, settings.getCompactionReserveTokens(ctx.model))) return;
 	compacting.add(key);
 	const done = () => compacting.delete(key);
 	ctx.compact({
-		customInstructions: `dev-flow feature "${st.slug}", stage "${st.stage}" — flow state is persisted on disk (state.json, plan/). Preserve verbatim: operator answers not yet recorded by a gate, reasons for uncommitted changes, and the exact next action from the last exchange.`,
+		customInstructions: flowCompactInstructions(st),
 		onComplete: done,
 		onError: done,
 	});
@@ -1071,7 +1078,11 @@ export default function devFlow(pi: ExtensionAPI) {
 		refreshStatus(ctx);
 	});
 	pi.on("session_tree", async (_event, ctx) => rebuildSession(ctx));
-	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
+	pi.on("turn_end", async (_event, ctx) => {
+		refreshStatus(ctx);
+		// pi checks its compaction threshold between every turn; our safe points must be as frequent.
+		maybeCompactNow(ctx);
+	});
 	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
 	pi.on("agent_settled", async (_event, ctx) => maybeCompactNow(ctx));
 	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
