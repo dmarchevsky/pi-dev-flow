@@ -42,6 +42,7 @@ import {
 	guardBash,
 	guardPath,
 	healthProbe,
+	healthRetry,
 	investigationBrief,
 	parsePushRefs,
 	playbookTamper,
@@ -85,6 +86,8 @@ interface Ui {
 
 const now = () => new Date().toISOString();
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: string }> {
 	try {
 		const { stdout, stderr } = await execAsync(command, { cwd, timeout: 15 * 60_000, maxBuffer: 16 * 1024 * 1024 });
@@ -96,8 +99,25 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
+
+/**
+ * Run the health probe with the playbook's wait budget (#42). A service whose readiness lags its
+ * container start can never pass a single shot, and hand-writing a poll loop into every playbook was
+ * the workaround; the gate waits and says how long it tried. Attempts/schedule: core.healthRetry.
+ */
+async function runHealthProbe(cmd: string, cwd: string, waitSec: number): Promise<{ ok: boolean; out: string; attempts: number }> {
+	const { attempts, delayMs } = healthRetry(waitSec);
+	const deadline = Date.now() + waitSec * 1000; // the budget is wall time: a slow probe must not multiply it by its own duration
+	let res = { ok: false, out: "" };
+	for (let i = 1; ; i++) {
+		res = await sh(cmd, cwd);
+		if (res.ok || i >= attempts || Date.now() >= deadline) return { ...res, attempts: i };
+		await sleep(delayMs);
+	}
+}
+
 const GATE_HELP =
-	"help | init [--force|--draft|--write <text>] | reflect [<note>] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
+	"help | init [--force|--draft|--write <text>] | reflect [<note>] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -474,7 +494,10 @@ ${mdDigest(draftRefresh)}`))
 		}
 
 		case "reflect": {
-			if (rest.length) return reflectNote(root, sess, rest);
+			// gate flags belong to the state verbs — pasted into the note they read as part of the operator's
+			// own sentence in reflections.md (#43)
+			const words = rest.filter((a) => !a.startsWith("--"));
+			if (words.length) return reflectNote(root, sess, words);
 			// upstream for the update probe: the manifest's repository field; the dev-flow checkout itself falls back to its origin
 			const self = pluginVersion(import.meta.dirname);
 			const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
@@ -526,12 +549,18 @@ ${mdDigest(draftRefresh)}`))
 				const base = (await sh(`git rev-parse --verify -q origin/${cfg.defaultBranch}`, root)).ok ? `origin/${cfg.defaultBranch}` : cfg.defaultBranch;
 				const res = await sh(`git worktree add ${JSON.stringify(wt)} -b ${branch} ${base}`, root);
 				if (!res.ok) return { text: `worktree creation failed:\n${res.out}`, isError: true };
-				if (cfg.commands.setup) {
-					// a fresh worktree is not the checkout: this is where `cp .env` + `npm install` belong
-					const s = await sh(cfg.commands.setup, wt);
-					if (!s.ok) return { text: `worktree ${wtRel} created but setup failed — fix commands.setup, then run flow approve again (the worktree is reused):\n${tail(s.out)}`, isError: true };
-					setupNote = `\nsetup ran in the worktree (${cfg.commands.setup}).`;
-				}
+			}
+			// setup is worktree work of a normal feature: a docs flow runs no project command at all (#49),
+			// and a worktree left behind by a setup that never succeeded must be retried — "fix it and run
+			// approve again" was a silent no-op on the reused directory (#49). setup is expected to be idempotent.
+			const setupCmd = state!.docs ? undefined : cfg.commands.setup;
+			if (setupCmd && !state!.setupAt) {
+				const s = await sh(setupCmd, wt);
+				if (!s.ok) return { text: `setup failed in ${wtRel} — fix commands.setup, then run flow approve again (the worktree is kept and setup retried):\n${tail(s.out)}`, isError: true };
+				state!.setupAt = now();
+				setupNote = `\nsetup ran in the worktree (${setupCmd}).`;
+			} else if (state!.docs && cfg.commands.setup) {
+				setupNote = "\nsetup skipped (docs mode — no project commands run).";
 			}
 			state!.branch = branch;
 			state!.worktree = wtRel;
@@ -561,46 +590,53 @@ ${mdDigest(draftRefresh)}`))
 			// commands that take minutes and touch live services must say so (#38): a terse gate let the
 			// agent tell the operator the dev deploy had never run, right after it recreated a container.
 			const did: string[] = [];
-			if (cfg.commands.build) {
-				const res = await sh(cfg.commands.build, gateCwd(root, state!));
-				state!.checks.build = { ok: res.ok, at: now() };
-				writeState(root, state!);
-				if (!res.ok) return { text: `build FAILED (${cfg.commands.build}):\n${tail(res.out)}`, isError: true };
-				did.push(`build ran (${cfg.commands.build})`);
-			}
-			// deploy to dev before asking — the operator reviews the running dev app, not a promise
-			if (cfg.commands.dev) {
-				const res = await sh(cfg.commands.dev, gateCwd(root, state!));
-				state!.checks.dev = { ok: res.ok, at: now() };
-				writeState(root, state!);
-				if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev}):\n${tail(res.out)}`, isError: true };
-				did.push(`dev ran (${cfg.commands.dev})`);
-				// the deploy is what must be proven, not just run: a container that came back unhealthy, or
-				// still serves the previous build, must not pass on a health PASS recorded before it was
-				// recreated. What "the expected version" means is the project's business — the probe runs in
-				// the worktree cwd, so it can compare the served build stamp with `git rev-parse HEAD`.
-				const probe = healthProbe(cfg);
-				if (!probe) did.push("health: none configured");
-				else {
-					if (cfg.commands.seedData) {
-						const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
-						state!.checks.seedData = { ok: seed.ok, at: now() };
-						writeState(root, state!);
-						if (!seed.ok) return { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
-					}
-					const probed = await sh(probe, gateCwd(root, state!));
-					state!.checks.health = { ok: probed.ok, at: now() };
+			if (state!.docs) {
+				// docs mode's contract: no tier-1 work happens, so a docs flow neither builds, deploys nor probes (#43 #49)
+				did.push("docs mode: project commands skipped (build/dev/health)");
+			} else {
+				if (cfg.commands.build) {
+					const res = await sh(cfg.commands.build, gateCwd(root, state!));
+					state!.checks.build = { ok: res.ok, at: now() };
 					writeState(root, state!);
-					if (!probed.ok) return { text: `post-deploy probe FAILED (${probe}) — the deploy is not healthy / not serving this build:\n${tail(probed.out)}`, isError: true };
-					did.push(`health: PASS (${probe})`);
+					if (!res.ok) return { text: `build FAILED (${cfg.commands.build}):\n${tail(res.out)}`, isError: true };
+					did.push(`build ran (${cfg.commands.build})`);
 				}
-			} else did.push("dev: none configured");
+				// deploy to dev before asking — the operator reviews the running dev app, not a promise
+				if (cfg.commands.dev) {
+					const res = await sh(cfg.commands.dev, gateCwd(root, state!));
+					state!.checks.dev = { ok: res.ok, at: now() };
+					writeState(root, state!);
+					if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev}):\n${tail(res.out)}`, isError: true };
+					did.push(`dev ran (${cfg.commands.dev})`);
+					// the deploy is what must be proven, not just run: a container that came back unhealthy, or
+					// still serves the previous build, must not pass on a health PASS recorded before it was
+					// recreated. What "the expected version" means is the project's business — the probe runs in
+					// the worktree cwd, so it can compare the served build stamp with `git rev-parse HEAD`.
+					const probe = healthProbe(cfg);
+					if (!probe) did.push("health: none configured");
+					else {
+						if (cfg.commands.seedData) {
+							const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
+							state!.checks.seedData = { ok: seed.ok, at: now() };
+							writeState(root, state!);
+							if (!seed.ok) return { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
+						}
+						const probed = await runHealthProbe(probe, gateCwd(root, state!), cfg.healthWait);
+						state!.checks.health = { ok: probed.ok, at: now() };
+						writeState(root, state!);
+						// a probe that needed the wait budget says so — "it passed on the 9th try" is the operator's business (#42)
+						const tried = probed.attempts > 1 ? `, ${probed.attempts} attempts` : "";
+						if (!probed.ok) return { text: `post-deploy probe FAILED (${probe}) — the deploy is not healthy / not serving this build (gave up after ${probed.attempts} attempt(s), healthWait ${cfg.healthWait}s):\n${tail(probed.out)}`, isError: true };
+						did.push(`health: PASS (${probe}${tried})`);
+					}
+				} else did.push("dev: none configured");
+			}
 			const ran = did.join("; ");
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 			if (!flag("confirmed") && !state!.yolo) {
 				// these commands already ran — say so even on the way out
 				if (!ui.hasUI) return { text: `verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat.\n${ran}`, isError: true };
-				const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
+				const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 				if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
 			}
 			state!.confirmations = { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } };
@@ -646,10 +682,11 @@ ${mdDigest(draftRefresh)}`))
 				writeState(root, state!);
 				if (!seed.ok) return { text: `seedData FAILED:\n${tail(seed.out)}`, isError: true };
 			}
-			const res = await sh(cfg.commands.health, gateCwd(root, state!));
+			const res = await runHealthProbe(cfg.commands.health, gateCwd(root, state!), cfg.healthWait);
 			state!.checks.health = { ok: res.ok, at: now() };
 			writeState(root, state!);
-			return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health})\n${tail(res.out)}` };
+			const tried = res.attempts > 1 ? `, ${res.attempts} attempts` : "";
+			return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health}${tried})\n${tail(res.out)}` };
 		}
 
 		case "release": {

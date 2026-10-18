@@ -37,6 +37,7 @@ export interface FlowState {
 	flowVersion?: string; // dev-flow build that started the feature (stamped at start, shown by status)
 	noVersion?: boolean; // operator chose: this flow releases without a version bump or tag
 	yolo?: boolean; // operator said "yolo" at approve: every later gate question pre-confirmed; checks and guardrails stay
+	setupAt?: string; // commands.setup exited 0 in this worktree — a reused worktree reruns it only when unset (#49)
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
@@ -77,6 +78,8 @@ export interface Config {
 	checklist: Record<string, ChecklistItem[]>; // tier-2 operator items per stage
 	prose: Record<string, string>; // tier-3 guidance per stage
 	versioning: Versioning;
+	/** Seconds the post-deploy health probe may keep retrying before the gate gives up (0 = single shot). */
+	healthWait: number;
 	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** Operator safety rules from the project.md flow-guard block — stage-independent. */
@@ -94,6 +97,7 @@ export const DEFAULTS: Config = {
 	checklist: {},
 	prose: {},
 	versioning: { pattern: "v{version}" },
+	healthWait: 30,
 	release: { review: "/ponytail-review", releases: true },
 	mainHook: true,
 	guard: { deny: [], confirm: [], protect: [], forbid: [] },
@@ -112,6 +116,7 @@ export function buildConfig(raw: unknown): Config {
 	if (r.commands && typeof r.commands === "object")
 		for (const [k, v] of Object.entries(r.commands as Record<string, unknown>)) if (typeof v === "string") (c.commands as Record<string, string>)[k] = v;
 	if (r.release && typeof r.release === "object") Object.assign(c.release, r.release);
+	if (r.healthWait !== undefined) c.healthWait = toSeconds(r.healthWait) ?? c.healthWait;
 	if (r.versioning && typeof r.versioning === "object") {
 		const v = r.versioning as Record<string, unknown>;
 		if (typeof v.file === "string") c.versioning.file = v.file;
@@ -134,6 +139,23 @@ export function buildConfig(raw: unknown): Config {
  *  health. The plugin runs it, the project says what healthy means (readiness, served build stamp). */
 export function healthProbe(c: Config): string | undefined {
 	return c.checkList.find((x) => x.name === "health")?.cmd;
+}
+
+/** A playbook number of seconds, or undefined when it is not a usable non-negative number. */
+export function toSeconds(raw: unknown): number | undefined {
+	const n = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
+	return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+}
+
+/**
+ * Retry schedule for the health probe (#42): a service whose readiness lags its container start can
+ * never pass a single shot, so the gate waits instead of failing the deploy. One immediate attempt
+ * plus one retry per interval, spanning `waitSeconds`; 0 keeps the old single-shot behaviour.
+ */
+export function healthRetry(waitSeconds: number, intervalSeconds = 2): { attempts: number; delayMs: number } {
+	const wait = toSeconds(waitSeconds) ?? 0;
+	const interval = toSeconds(intervalSeconds) ?? 2;
+	return { attempts: 1 + Math.ceil(wait / interval), delayMs: interval * 1000 };
 }
 
 export function subst(pattern: string, slug: string): string {
@@ -772,7 +794,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			if (state.docs) return `docs: describe the change to the operator in one line, then ask them to approve — no plan file and no tier-1 checks (worktree and release stay intact)`;
 			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator to run /flow approve`;
 		case "implement":
-			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode skips tier-1 checks; tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
+			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
 			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
 		case "pre-release":
 			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;

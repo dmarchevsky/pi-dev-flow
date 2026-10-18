@@ -23,6 +23,7 @@ import {
 	guardBash,
 	guardPath,
 	type GuardRules,
+	healthRetry,
 	investigationBrief,
 	parsePushRefs,
 	playbookTamper,
@@ -54,6 +55,21 @@ test("buildConfig fills defaults and merges partial overrides", () => {
 	assert.equal(c.release.changelog, "CHANGELOG.md");
 	assert.equal(c.release.review, "/ponytail-review"); // kept from defaults
 	assert.equal(buildConfig(null).defaultBranch, "main");
+});
+
+test("healthRetry: the wait budget becomes attempts at the probe interval (#42)", () => {
+	assert.deepEqual(healthRetry(0), { attempts: 1, delayMs: 2000 }, "healthWait 0 keeps the single shot");
+	assert.deepEqual(healthRetry(30), { attempts: 16, delayMs: 2000 }, "the default: one shot plus a retry every 2s");
+	assert.deepEqual(healthRetry(5), { attempts: 4, delayMs: 2000 });
+	assert.deepEqual(healthRetry(60, 5), { attempts: 13, delayMs: 5000 });
+	assert.deepEqual(healthRetry(-3), { attempts: 1, delayMs: 2000 }, "a junk budget is a single shot");
+});
+
+test("healthWait: playbook knob reaches the config", () => {
+	assert.equal(DEFAULTS.healthWait, 30, "default: the gate waits, so a booting service is not a failing one");
+	assert.equal(buildConfig({ healthWait: 45 }).healthWait, 45);
+	assert.equal(buildConfig({ healthWait: "45" }).healthWait, 45, "project.md values arrive as strings");
+	assert.equal(buildConfig({ healthWait: "soon" }).healthWait, 30, "junk falls back to the default");
 });
 
 test("newState stamps the dev-flow build when supplied", () => {
