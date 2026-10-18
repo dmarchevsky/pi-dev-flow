@@ -507,6 +507,12 @@ test("bashSegments: quoted text is an argument, not a command", () => {
 	assert.ok(bashSegments('echo "oops && git push origin main').some((s) => s.includes("git push")), "unbalanced quoting keeps the raw split");
 	assert.deepEqual(gitInvocation('gh pr create --body "line one\ngit commit -m x\nline three"').subs, [], "a quoted body discussing a commit runs no commit");
 	assert.deepEqual(gitInvocation('sh -c "git push origin main"').subs, ["push"], "a wrapper that execs its argument still runs git");
+	assert.ok(gitInvocation('sh -c "git add . && git commit -m x"').subs.includes("commit"), "every verb in a wrapper's payload counts, not just the first");
+});
+
+test("playbookTamper: quoting the target does not hide the write", () => {
+	assert.ok(playbookTamper('cp "/tmp/project.md.bak" ".dev-flow/project.md"'), "a quoted destination is still the playbook");
+	assert.ok(playbookTamper('printf x > ".dev-flow/project.md"'), "a quoted redirect target is still the playbook");
 });
 
 test("maskQuoted: what a command says is not what it does", () => {

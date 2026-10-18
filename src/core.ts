@@ -435,14 +435,14 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 			continue;
 		}
 		if (REEXEC_HEADS.has(tok[i] ?? "")) {
-			// a wrapper that execs its argument: a git verb inside the payload is still that verb (sh -c "git push origin main")
-			const m = seg.match(/\bgit\s+(\S+)/); // a quote before `git` is normal here: sh -c "git push …"
-			if (m) {
-				const verb = m[1].replace(/["',)]+$/, "");
-				subs.push(verb);
-				if (verb === "push") pushes.push(seg.slice((m.index ?? 0) + m[0].length).replace(/["']/g, "").split(/\s+/).filter((x) => x && !x.startsWith("-")));
-				gitSegs.push({ seg: seg.trim(), dir });
+			// a wrapper that execs its argument: every git verb in the payload is still that verb (sh -c "git add . && git commit -m x")
+			let wrapped = false;
+			for (const m of seg.matchAll(/\bgit\s+([\w-]+)/g)) {
+				subs.push(m[1]);
+				if (m[1] === "push") pushes.push(seg.slice((m.index ?? 0) + m[0].length).replace(/["']/g, "").split(/[\s&]+/).filter((x) => x && !x.startsWith("-")));
+				wrapped = true;
 			}
+			if (wrapped) gitSegs.push({ seg: seg.trim(), dir });
 			continue;
 		}
 		if (!/(^|\/)git$/.test(tok[i] ?? "")) continue; // git must be the command (git, /usr/bin/git)
@@ -520,15 +520,15 @@ const MOVE_VERBS = new Set(["cp", "mv", "install", "tee", "dd"]);
  *  a backup is safety, and blocking it cost the operator their only backup before a write (#53). */
 export function playbookTamper(command: string): boolean {
 	return bashSegments(command).some((raw) => {
-		// a wrapper that execs its argument keeps the raw text; everyone else's quoted text is prose, not a write
-		const seg = REEXEC_HEADS.has(segHead(raw)) ? raw : maskQuoted(raw);
-		if (!PLAYBOOK_PATH.test(seg)) return false;
-		if (REDIRECT_INTO_PLAYBOOK.test(seg)) return true; // a redirect whose target is the playbook
-		const tok = seg.split(/\s+/).filter(Boolean);
-		const head = (tok[0] ?? "").replace(/^\.\//, "");
-		if (READ_ONLY_HEADS.has(head) || (head === "sed" && !/\s-i\b/.test(seg))) return false; // cat/grep/ls and sed-as-a-printer read it
+		if (!PLAYBOOK_PATH.test(raw)) return false;
+		if (REDIRECT_INTO_PLAYBOOK.test(raw)) return true; // a redirect whose target is the playbook (quotes allowed)
+		const tok = raw.split(/\s+/).filter(Boolean);
+		const head = segHead(raw);
 		if (MOVE_VERBS.has(head)) return PLAYBOOK_PATH.test(unquote(tok[tok.length - 1] ?? "")); // the destination is last: cp SRC PLAYBOOK
-		return WRITE_VERBS.test(seg); // python -c, node -e, sed -i, rm, truncate
+		if (READ_ONLY_HEADS.has(head) || (head === "sed" && !/\s-i\b/.test(raw))) return false; // cat/grep/ls and sed-as-a-printer read it
+		// what is left is the loose fallback — a write tool named in the clear. A wrapper's payload counts; everyone
+		// else's quoted text is prose, and prose about `cp`/`sed` is not a write (it refused a PR body describing #53).
+		return WRITE_VERBS.test(REEXEC_HEADS.has(head) ? raw : maskQuoted(raw));
 	});
 }
 
