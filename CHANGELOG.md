@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-10-18
+
+### Fixed
+
+- **The compaction pacing now counts the way pi counts** (operator report). The 0.35 safe-point compaction compared against the *built-in* `reserveTokens` default while pi compares against the effective one — settings and per-model overrides included. Any reserve above 16384 ate the 16 KiB margin directly; above 32768 pi's threshold sat *below* dev-flow's and always won. The trigger now reads the effective reserve through pi's own `SettingsManager`, and a `compaction.enabled = false` in settings is honored — dev-flow no longer compacts behind an operator who turned auto-compaction off. A malformed compaction setting bails the check instead of crashing every turn end.
+- **Safe points at pi's frequency.** pi checks its threshold between *every* turn, after tool results land; dev-flow only checked after a gate and when a run settled — a long implement run without a `flow` call got no check, and one fat tool batch (two 50 KB-capped reads already approach 16 KiB) jumped past the margin mid-run. `turn_end` is now a safe point too.
+- **A forced threshold compaction gets taken over.** The chat-only states (open tier-2 dialog, undigested plan discussion) deliberately never self-compact — but pi force-compacted that same transcript blind, and the plan dialog is the most token-hungry state there is. `session_before_compact` now redoes a threshold compaction with the flow-aware instructions (awaited before cancelling pi's, so it never races `prepareNextTurn`; if ours fails, pi's proceeds). Overflow recovery is left alone — cancelling it would drop pi's compact-and-retry.
+
 ## [0.38.0] - 2026-10-18
 
 ### Fixed
