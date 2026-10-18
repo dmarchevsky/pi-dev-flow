@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-10-18
+
+### Fixed
+
+- **The guards read commands, not prose.** `bashSegments` split on `;`, `|`, `&` and newlines without respecting quotes, so every line inside a quoted argument became a segment of its own: a `gh pr create --body "…"` whose body discussed a commit was refused as a main-branch commit, and `playbookTamper` — matching a write verb anywhere in a segment against the playbook path anywhere else — refused a PR body that quoted a copy of the playbook. Both fired during the v0.37.0 release, on the text describing the fix. Splitting now respects quotes, and quoted argument contents are masked before the playbook check, so the operator's words about a command are data.
+- **A wrapper cannot carry a git command past the guard.** `sh -c "git push origin main"` used to slip through: the guard only recognised `git` as the first word of a segment. Segments whose head executes its argument (`sh`, `bash`, `node`, `python`, `env`, `xargs`, `sudo`, …) are now judged on their payload, and their quoted text stays code rather than being masked. Unbalanced quoting keeps the old plain split, so a stray quote cannot be used to hide a command either.
+
 ## [0.37.1] - 2026-10-18
 
 ### Fixed

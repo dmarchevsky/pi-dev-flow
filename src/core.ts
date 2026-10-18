@@ -434,6 +434,17 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 			dir = unquote(tok[i + 1]);
 			continue;
 		}
+		if (REEXEC_HEADS.has(tok[i] ?? "")) {
+			// a wrapper that execs its argument: a git verb inside the payload is still that verb (sh -c "git push origin main")
+			const m = seg.match(/\bgit\s+(\S+)/); // a quote before `git` is normal here: sh -c "git push …"
+			if (m) {
+				const verb = m[1].replace(/["',)]+$/, "");
+				subs.push(verb);
+				if (verb === "push") pushes.push(seg.slice((m.index ?? 0) + m[0].length).replace(/["']/g, "").split(/\s+/).filter((x) => x && !x.startsWith("-")));
+				gitSegs.push({ seg: seg.trim(), dir });
+			}
+			continue;
+		}
 		if (!/(^|\/)git$/.test(tok[i] ?? "")) continue; // git must be the command (git, /usr/bin/git)
 		for (i++; i < tok.length; i++) {
 			const t = tok[i];
@@ -508,9 +519,11 @@ const MOVE_VERBS = new Set(["cp", "mv", "install", "tee", "dd"]);
  *  Decided per segment and by target, not by any verb anywhere: reading the playbook or copying it to
  *  a backup is safety, and blocking it cost the operator their only backup before a write (#53). */
 export function playbookTamper(command: string): boolean {
-	return bashSegments(command).some((seg) => {
+	return bashSegments(command).some((raw) => {
+		// a wrapper that execs its argument keeps the raw text; everyone else's quoted text is prose, not a write
+		const seg = REEXEC_HEADS.has(segHead(raw)) ? raw : maskQuoted(raw);
 		if (!PLAYBOOK_PATH.test(seg)) return false;
-		if (REDIRECT_INTO_PLAYBOOK.test(seg)) return true; // echo x > .dev-flow/project.md
+		if (REDIRECT_INTO_PLAYBOOK.test(seg)) return true; // a redirect whose target is the playbook
 		const tok = seg.split(/\s+/).filter(Boolean);
 		const head = (tok[0] ?? "").replace(/^\.\//, "");
 		if (READ_ONLY_HEADS.has(head) || (head === "sed" && !/\s-i\b/.test(seg))) return false; // cat/grep/ls and sed-as-a-printer read it
@@ -586,9 +599,50 @@ function normalizeGuardRules(raw: unknown[]): GuardRule[] {
 	return out;
 }
 
-/** Shell segment boundaries — the same split the git guard uses, so `cd … &&`, `;`, pipes and `&` each judge on their own. */
+/** Heads that execute their argument: inside these, quoted text is code, not prose. */
+export const REEXEC_HEADS = new Set(["sh", "bash", "zsh", "dash", "ksh", "node", "nodejs", "python", "python2", "python3", "perl", "ruby", "php", "env", "xargs", "sudo", "time", "nice", "nohup", "watch"]);
+
+/** The first command word of a segment (a leading ./ ignored). */
+export const segHead = (seg: string): string => (seg.trim().split(/\s+/)[0] ?? "").replace(/^\.\//, "");
+
+/** Quoted argument contents are what a command says, not what it does — collapse them to empty. */
+export function maskQuoted(seg: string): string {
+	return seg.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
+}
+
+function quotesBalanced(command: string): boolean {
+	let q: string | null = null;
+	for (let i = 0; i < command.length; i++) {
+		const c = command[i];
+		if (c === "\\" && q !== "'") { i++; continue; }
+		if (q === null) { if (c === '"' || c === "'") q = c; }
+		else if (c === q) q = null;
+	}
+	return q === null;
+}
+
+/** Split on shell separators — but only outside quotes. Text inside quotes is an argument's prose, not a
+ * command: a gh --body that discusses a commit is one segment, not five. Unbalanced quoting keeps the plain
+ * split, so a stray quote cannot be used to hide a real command. The same split the git guard uses, so
+ * `cd … &&`, `;`, pipes and `&` each judge on their own. */
 export function bashSegments(command: string): string[] {
-	return command.split(/[\n;|&]+/).map((s) => s.trim()).filter(Boolean);
+	if (!quotesBalanced(command)) return command.split(/[\n;|&]+/).map((s) => s.trim()).filter(Boolean);
+	const out: string[] = [];
+	let cur = "";
+	let q: string | null = null;
+	for (let i = 0; i < command.length; i++) {
+		const c = command[i];
+		const esc = i > 0 && command[i - 1] === "\\" && q !== "'";
+		if (!esc && (c === '"' || c === "'")) q = q === null ? c : q === c ? null : q;
+		if (q === null && /[\n;|&]/.test(c)) {
+			if (cur.trim()) out.push(cur.trim());
+			cur = "";
+			continue;
+		}
+		cur += c;
+	}
+	if (cur.trim()) out.push(cur.trim());
+	return out;
 }
 
 /** Heads whose arguments are data, not commands: a `grep "git push origin main"` in a docs search must not trip a deny rule. */

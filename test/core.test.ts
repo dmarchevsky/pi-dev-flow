@@ -7,6 +7,7 @@ import {
 	applyAnswer,
 	appendReflection,
 	approveGate,
+	bashSegments,
 	bashFlowGuard,
 	buildConfig,
 	checklistHash,
@@ -28,6 +29,7 @@ import {
 	healthRetry,
 	investigationBrief,
 	looksLikeShellError,
+	maskQuoted,
 	parsePushRefs,
 	playbookTamper,
 	pluginVersion,
@@ -494,6 +496,30 @@ test("compactionReflectionLine is a valid open reflection item", () => {
 // ---------------------------------------------------------------- flow-guard rules
 
 const rules = (o: Partial<GuardRules> = {}): GuardRules => ({ deny: [], confirm: [], protect: [], forbid: [], ...o });
+
+test("bashSegments: quoted text is an argument, not a command", () => {
+	assert.deepEqual(bashSegments('git add -A && gh pr create --title "x" --body "first line\ngit commit -m done\nthen push"'), [
+		"git add -A",
+		'gh pr create --title "x" --body "first line\ngit commit -m done\nthen push"',
+	]);
+	assert.deepEqual(bashSegments("echo 'a; b' && ls"), ["echo 'a; b'", "ls"], "separators inside quotes stay inside");
+	// an unbalanced quote is a typo, not an escape hatch: the plain split still shows the hidden command
+	assert.ok(bashSegments('echo "oops && git push origin main').some((s) => s.includes("git push")), "unbalanced quoting keeps the raw split");
+	assert.deepEqual(gitInvocation('gh pr create --body "line one\ngit commit -m x\nline three"').subs, [], "a quoted body discussing a commit runs no commit");
+	assert.deepEqual(gitInvocation('sh -c "git push origin main"').subs, ["push"], "a wrapper that execs its argument still runs git");
+});
+
+test("maskQuoted: what a command says is not what it does", () => {
+	assert.equal(maskQuoted('gh pr create --body "ship it"'), 'gh pr create --body ""');
+	assert.equal(maskQuoted("git commit -m 'ship it' -a"), 'git commit -m "" -a');
+});
+
+test("playbookTamper: prose about a write is not a write; a wrapper's payload is", () => {
+	// the real v0.37.0 incident: a PR body quoting a copy of the playbook was refused as if it were the copy
+	assert.equal(playbookTamper('gh pr create --title "t" --body "a safety copy was wrongly refused: cp the playbook to /tmp/project.md.bak .dev-flow/project.md"'), false);
+	assert.ok(playbookTamper("bash -c 'cp /tmp/project.md.bak .dev-flow/project.md'"), "a shell wrapper's payload is code");
+	assert.equal(playbookTamper("echo 'sed -i s/a/b/ .dev-flow/project.md' > /tmp/notes.md"), false, "a quoted mention, redirect elsewhere");
+});
 
 test("guardBash: deny blocks with the operator's reason, confirm is collected for the caller to ask", () => {
 	const g = rules({
