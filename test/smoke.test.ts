@@ -246,7 +246,8 @@ test("verify re-probes health after the dev deploy — a stale pre-deploy PASS c
 	const stage = (slug: string) => JSON.parse(readFileSync(path.join(repo, ".dev-flow", slug, "state.json"), "utf8")).stage;
 	await flow(["init"]);
 	// the probe passes before the deploy and fails after it: precisely the hole the post-deploy probe closes
-	await toImplement("stale", "test = node --version\ndev = touch deploy-up\nhealth = test ! -e deploy-up\n");
+	// healthWait = 0: this case is about the stale PASS, not the wait — keep it a single shot
+	await toImplement("stale", "test = node --version\ndev = touch deploy-up\nhealth = test ! -e deploy-up\nhealthWait = 0\n");
 	const failed = await flow(["verify", "--confirmed"]);
 	assert.ok(failed.isError, "a deploy the probe rejects cannot be verified");
 	assert.match(failed.content[0].text, /post-deploy probe FAILED \(test ! -e deploy-up\)/);
@@ -255,6 +256,86 @@ test("verify re-probes health after the dev deploy — a stale pre-deploy PASS c
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /dev ran \(touch dev-up\); health: PASS \(node --version\)/);
 	assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "probed", "state.json"), "utf8")).checks.health.ok, "the post-deploy PASS is what lands in state");
+});
+
+test("the health probe waits for a service that lags its deploy; healthWait 0 keeps the single shot (#42)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n`;
+	// the deploy stamps the second it ran; the probe only goes green 3s later — the boot-lag shape from #42
+	const bootLag = (wait: string) => `test = node --version\ndev = date +%s > flow-start\nhealth = test $(( $(date +%s) - $(cat flow-start) )) -ge 3\nhealthWait = ${wait}\n`;
+	const toImplement = async (slug: string, body: string) => {
+		await flow(["init", "--write", md(body)]);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		writeFileSync(path.join(repo, ".dev-flow", slug, "worktree", "flow-start"), "0"); // the app is up before the redeploy, so the pre-verify check passes
+		await flow(["check"]);
+	};
+	await flow(["init"]);
+	await toImplement("bootlag", bootLag("10"));
+	const ok = await flow(["verify", "--confirmed"]);
+	assert.match(ok.content[0].text, /health: PASS \(.*, 3 attempts\)/, `the gate waited and says how it tried: ${ok.content[0].text}`);
+	await toImplement("single", bootLag("0"));
+	const fast = await flow(["verify", "--confirmed"]);
+	assert.ok(fast.isError, "an opt-out of the wait fails as fast as it used to");
+	assert.match(fast.content[0].text, /gave up after 1 attempt\(s\)/);
+});
+
+test("docs mode runs no project command: approve skips setup, verify skips build/dev/health (#43 #49)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n`;
+	await flow(["init", "--write", md("setup = touch setup-ran\ntest = node --version\ndev = touch dev-up\n")]);
+	await flow(["start", "docflow", "--docs", "--confirmed"]);
+	const ap = await flow(["approve", "--confirmed"]);
+	assert.match(ap.content[0].text, /setup skipped \(docs mode/);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "docflow", "worktree", "setup-ran")), "a docs flow must not run the project's setup");
+	const v = await flow(["verify", "--confirmed"]);
+	assert.match(v.content[0].text, /docs mode: project commands skipped/);
+	assert.match(v.content[0].text, /entering pre-release/);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "docflow", "worktree", "dev-up")), "and no dev deploy either");
+});
+
+test("a failed setup runs again on the next approve — re-approve is not a no-op (#49)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n`;
+	const state = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "retry", "state.json"), "utf8"));
+	await flow(["init", "--write", md("setup = exit 1\ntest = node --version\n")]);
+	await flow(["start", "retry"]);
+	mkdirSync(path.join(repo, ".dev-flow", "retry", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "retry", "plan", "plan.md"), "# plan\n");
+	const first = await flow(["approve", "--confirmed"]);
+	assert.ok(first.isError && /setup failed in /.test(first.content[0].text), "setup still fails the gate");
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "retry", "worktree")), "the worktree is kept for the retry");
+	assert.ok(!state().setupAt, "no setup stamp before it succeeds");
+	await flow(["init", "--write", md("setup = touch setup-ran\ntest = node --version\n")]);
+	const second = await flow(["approve", "--confirmed"]);
+	assert.match(second.content[0].text, /setup ran in the worktree \(touch setup-ran\)/, `re-approve must actually set up: ${second.content[0].text}`);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "retry", "worktree", "setup-ran")), "setup ran in the reused worktree");
+	assert.ok(state().setupAt, "the stamp lands with the success");
+	assert.equal(state().stage, "implement");
+});
+
+test("reflect <note> --confirmed queues the note without the flag (#43)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const r = await flow(["reflect", "the", "verify", "gate", "lies", "--confirmed"]);
+	assert.match(r.content[0].text, /- \[ \] the verify gate lies — /, "the flag is not part of the operator's sentence");
+	assert.ok(!/--confirmed/.test(readFileSync(path.join(repo, ".dev-flow", "reflections.md"), "utf8")), "and nothing lands in the file");
+	const bare = await flow(["reflect", "--confirmed"]);
+	assert.match(bare.content[0].text, /flow reflect — session reflection/, "a flags-only reflect is a bare reflect");
 });
 
 test("first init in a TUI reviews the draft with the operator and writes only on confirm", async () => {

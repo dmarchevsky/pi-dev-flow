@@ -170,6 +170,15 @@ test("## pre-release parses like release: keys, checklist, prose", () => {
 	assert.match(buildDraft({ report: [], partial: { defaultBranch: "main", commands: {}, forge: "gitlab" } }), /forge = gitlab/, "the detected forge rides into the draft");
 });
 
+test("healthWait: the playbook knob parses to a number and survives a draft refresh (#42)", () => {
+	const md = "## implement\n```flow\ntest = npm test\nhealthWait = 45\n```\n";
+	assert.equal(mdToConfig(parseProjectMd(md)).healthWait, 45);
+	assert.equal(mdToConfig(parseProjectMd("## implement\n```flow\nhealthWait = soon\n```\n")).healthWait, 30, "junk falls back to the default");
+	const draft = buildDraft({ report: [], partial: { defaultBranch: "main", commands: {} } }, mdToConfig(parseProjectMd(md)));
+	assert.match(draft, /healthWait = 45/, "a refresh must not silently drop the wait budget");
+	assert.equal(mdToConfig(parseProjectMd(draft)).healthWait, 45, "and the draft re-reads");
+});
+
 test("mdToConfig: release.releases toggles forge release creation; the legacy github key still maps", () => {
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nversionFile = package.json\nreleases = false\n```\n")).release.releases, false);
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nreleases = no\n```\n")).release.releases, false);

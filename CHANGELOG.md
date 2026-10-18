@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **`healthWait` in playbook `## implement`** (#42): the seconds the post-deploy health probe may keep retrying — one immediate shot plus a retry every 2s, default 30, `healthWait = 0` restores the single shot. A service whose readiness lags its container start (a BFF answering `/readyz` only after its upstream connects) no longer needs a poll loop hand-written into the playbook, and the gate says how it tried: `health: PASS (curl … , 3 attempts)` / `gave up after 16 attempt(s), healthWait 30s`. `flow health` waits the same way; `flow check` stays single-shot — before any deploy there is nothing to wait for.
+
+### Fixed
+
+- **`approve` retries a setup that never succeeded** (#49). A failed `commands.setup` left the worktree behind and the next `approve` reused it in silence — "fix it and run approve again" was a no-op, and the damage (no `.env`, no `node_modules`) only surfaced later as an unrelated-looking `flow check` failure. Setup now stamps `setupAt` when it first exits 0 and reruns until it does.
+- **A `--docs` feature runs no project command** (#49 #43). Docs mode's contract was always "no tier-1 checks", but `approve` still copied `.env` and installed dependencies and `verify` still built, deployed and probed. Now: `setup skipped (docs mode)`, `docs mode: project commands skipped (build/dev/health)` — and the verify prompt no longer claims a dev deploy is up for review when none ran.
+- **`flow reflect "<note>" --confirmed` no longer pastes `--confirmed` into the note** (#43) — the flag belonged to the state gates and made the operator's own sentence in `reflections.md` read like a command line. A flags-only `reflect` is a bare reflect.
+
 ## [0.34.0] - 2026-10-17
 
 ### Changed

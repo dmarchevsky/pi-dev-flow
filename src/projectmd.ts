@@ -54,6 +54,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		seedData: "commands.seedData",
 		health: "commands.health",
 		dev: "commands.dev",
+		healthWait: "healthWait", // seconds the post-deploy probe may keep retrying (#42)
 	},
 	release: {
 		versionFile: "versioning.file",
@@ -229,6 +230,11 @@ function mergeInto(c: Config, r: Record<string, unknown>): void {
 	if (typeof r.commands === "object" && r.commands) Object.assign(c.commands, r.commands);
 	if (typeof r.versioning === "object" && r.versioning) Object.assign(c.versioning, r.versioning);
 	if (typeof r.release === "object" && r.release) Object.assign(c.release, r.release);
+	// playbook values arrive as strings; a junk healthWait must not make the gate wait forever
+	if (r.healthWait !== undefined) {
+		const n = Number(r.healthWait);
+		if (Number.isFinite(n) && n >= 0) c.healthWait = Math.floor(n);
+	}
 }
 
 /** Load the project config: project.md alone — the legacy project.json is no longer read. */
@@ -358,6 +364,8 @@ export function buildDraft(det: { report: string[]; partial: { defaultBranch: st
 	L.push("## plan", "", "- [ ] rendered mockups attached for every changed screen", "", "<!-- what the plan must contain, UI expectations -->", "");
 	L.push("## implement", "", "```flow");
 	for (const k of ["setup", "test", "build", "run", "seedData", "dev"]) if (cmd(k)) L.push(`${k} = ${cmd(k)}`);
+	// a hand-set wait budget is a real setting: a refresh that dropped it would silently make the probe single-shot again
+	if (!fresh && c.healthWait !== DEFAULTS.healthWait) L.push(`healthWait = ${c.healthWait}`);
 	L.push("```", "");
 	const healthCmd = cmd("health") || (fresh ? undefined : c.checkList.find((x) => x.name === "health")?.cmd);
 	// never invent a health check: a placeholder that can't pass blocks verify forever (dogfooded: curl localhost:3000 in a library repo)
