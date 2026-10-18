@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-10-18
+
+### Fixed
+
+- **The playbook-tracking chore finally has a legal path** (#53). `flow doctor` said *`.dev-flow/project.md is not tracked in git — git add -f .dev-flow/project.md`* while every route to doing it was closed: commits on the default branch are forbidden with no flow bound, and a docs flow's worktree cannot contain a file that is untracked in the checkout it was cut from. A commit whose **only** change in that checkout is the playbook is now allowed — tracking the operator's playbook is setup, not feature work — and any other dirty path closes the lane (`--amend` never uses it: that rewrites the default branch's history). Doctor, `flow init` and the skill now print the command that works: `git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"` (the env prefix is for the installed hook only).
+- **The playbook guard no longer blocks reads and backups** (#53). `playbookTamper` matched a write verb *anywhere* in the command against the path *anywhere else*, so `cp .dev-flow/project.md /tmp/project.md.bak` — the safety copy to make before a write — was refused, along with `grep -e health .dev-flow/project.md`, `git ls-files --error-unmatch .dev-flow/project.md` (a bare `-e` in the verb list), `sed -n 1,10p …` and a `cat > /tmp/issue.md` heredoc that merely mentions the path. Writes are now decided per segment and by target: redirect into the playbook, a copy/replace verb whose destination is the playbook, or a real write tool (`python -c`, `node -e`, `sed -i`) — everything else reads.
+
 ## [0.36.0] - 2026-10-18
 
 ### Fixed

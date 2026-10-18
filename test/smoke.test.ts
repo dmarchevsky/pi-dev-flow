@@ -1100,3 +1100,17 @@ test("tagNotesCommand prints an annotated tag's body through /bin/sh (#51)", () 
 	const out = execFileSync("/bin/sh", ["-c", tagNotesCommand("v1.0.0")], { cwd: repo, encoding: "utf8" }).trim();
 	assert.equal(out, "notes with (parens) and $vars", "the format must be quoted — an unquoted %(contents) is a /bin/sh syntax error");
 });
+
+test("the playbook tracking chore is legal on the default branch (#53)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n");
+	const ctx = makeCtx(repo);
+	const guard = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command } }, ctx);
+	const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args]);
+	git("add", "-f", ".dev-flow/project.md");
+	assert.equal(await guard('DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"'), undefined, "its only content is the operator's playbook — setup, not feature work");
+	writeFileSync(path.join(repo, "notes.txt"), "something else is dirty\n");
+	assert.match((await guard('DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"'))?.reason ?? "", /direct commits to main/, "any other dirty path closes the lane");
+});

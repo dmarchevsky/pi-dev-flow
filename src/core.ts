@@ -399,6 +399,7 @@ export interface GuardCtx {
 	stage: Stage | null; // active feature stage, null when no active feature
 	defaultBranch: string;
 	pushRefs?: PushRef[]; // caller-resolved push targets (bare names disambiguated tag vs branch); omit = guard parses raw command
+	playbookChore?: boolean; // the only change in this checkout is the playbook — tracking it is setup, not feature work (#53)
 }
 
 const unquote = (s: string): string => s.replace(/^(['"])(.*)\1$/, "$2");
@@ -488,13 +489,35 @@ export function stateTamper(command: string): boolean {
 	return /\.dev-flow\/\S*state\.json/.test(command) && /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|-e|node\s)/.test(command);
 }
 
-const WRITE_VERBS = /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|-e|node\s)/;
+const WRITE_VERBS = /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|node\s)/;
+const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
+const REDIRECT_INTO_PLAYBOOK = />>?\s*['"]?\.dev-flow\/[\w./-]*project\.md/;
+/** copy/replace verbs whose last positional token is the destination */
+const MOVE_VERBS = new Set(["cp", "mv", "install", "tee", "dd"]);
 
-/** True when a bash command looks like a direct write to the playbook (project.md) — the sanctioned
- *  channels are `flow init --write` (runs in-plugin, never matches) and edits inside a docs/patch
- *  flow's worktree. shortcut: same verb-before-path heuristic as stateTamper. */
+/** True when a bash command writes the playbook (project.md) — the sanctioned channels are
+ *  `flow init --write` (runs in-plugin, never matches) and edits inside a docs/patch flow's worktree.
+ *  Decided per segment and by target, not by any verb anywhere: reading the playbook or copying it to
+ *  a backup is safety, and blocking it cost the operator their only backup before a write (#53). */
 export function playbookTamper(command: string): boolean {
-	return /\.dev-flow\/[\w./-]*project\.md/.test(command) && WRITE_VERBS.test(command);
+	return bashSegments(command).some((seg) => {
+		if (!PLAYBOOK_PATH.test(seg)) return false;
+		if (REDIRECT_INTO_PLAYBOOK.test(seg)) return true; // echo x > .dev-flow/project.md
+		const tok = seg.split(/\s+/).filter(Boolean);
+		const head = (tok[0] ?? "").replace(/^\.\//, "");
+		if (READ_ONLY_HEADS.has(head) || (head === "sed" && !/\s-i\b/.test(seg))) return false; // cat/grep/ls and sed-as-a-printer read it
+		if (MOVE_VERBS.has(head)) return PLAYBOOK_PATH.test(unquote(tok[tok.length - 1] ?? "")); // the destination is last: cp SRC PLAYBOOK
+		return WRITE_VERBS.test(seg); // python -c, node -e, sed -i, rm, truncate
+	});
+}
+
+/** The playbook-tracking chore (#53): the playbook is the only change in the checkout, so whatever
+ *  the commit says it can only contain that file — setup, not feature work, legal on the default
+ *  branch with no flow bound. Any other dirty path refuses the lane, so there is nothing to widen
+ *  and no command parsing to fool. shortcut: a guard rail against accidents, not a sandbox. */
+export function playbookOnlyChange(porcelain: string): boolean {
+	const paths = porcelain.split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
+	return paths.length === 1 && PLAYBOOK_PATH.test(paths[0]);
 }
 
 /** Forge from an origin URL: github.com / github enterprise hosts → github, any gitlab host → gitlab. */
@@ -511,8 +534,11 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 	const onMain = o.branch === o.defaultBranch;
 	const git = (word: string) => subs.includes(word);
 
-	// release chores commit in the main checkout — same stage exception as push/merge below
-	if (git("commit") && onMain && o.stage !== "release") return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree`;
+	// release chores commit in the main checkout — same stage exception as push/merge below; the playbook
+	// tracking chore is the other legal main commit: its only content is the operator's own playbook (#53).
+	// --amend is not a chore: it rewrites the default branch's history.
+	const playbookCommit = o.playbookChore && !c.includes("--amend");
+	if (git("commit") && onMain && o.stage !== "release" && !playbookCommit) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree (tracking the playbook is legal: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit)`;
 	if (git("push")) {
 		// ref-aware: only pushes that WRITE the default branch need stage release — tags and other branches pass.
 		// unresolved bare names arrive pre-resolved by the caller (tag vs branch); no parse info → conservative onMain.
