@@ -116,7 +116,7 @@ export function buildConfig(raw: unknown): Config {
 	if (r.commands && typeof r.commands === "object")
 		for (const [k, v] of Object.entries(r.commands as Record<string, unknown>)) if (typeof v === "string") (c.commands as Record<string, string>)[k] = v;
 	if (r.release && typeof r.release === "object") Object.assign(c.release, r.release);
-	if (r.healthWait !== undefined) c.healthWait = toWait(r.healthWait) ?? c.healthWait;
+	if (r.healthWait !== undefined) c.healthWait = toSeconds(r.healthWait) ?? c.healthWait;
 	if (r.versioning && typeof r.versioning === "object") {
 		const v = r.versioning as Record<string, unknown>;
 		if (typeof v.file === "string") c.versioning.file = v.file;
@@ -141,8 +141,8 @@ export function healthProbe(c: Config): string | undefined {
 	return c.checkList.find((x) => x.name === "health")?.cmd;
 }
 
-/** A playbook number, or undefined when it is not a usable non-negative number. */
-function toWait(raw: unknown): number | undefined {
+/** A playbook number of seconds, or undefined when it is not a usable non-negative number. */
+export function toSeconds(raw: unknown): number | undefined {
 	const n = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
 	return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
 }
@@ -153,8 +153,8 @@ function toWait(raw: unknown): number | undefined {
  * plus one retry per interval, spanning `waitSeconds`; 0 keeps the old single-shot behaviour.
  */
 export function healthRetry(waitSeconds: number, intervalSeconds = 2): { attempts: number; delayMs: number } {
-	const wait = toWait(waitSeconds) ?? 0;
-	const interval = toWait(intervalSeconds) ?? 2;
+	const wait = toSeconds(waitSeconds) ?? 0;
+	const interval = toSeconds(intervalSeconds) ?? 2;
 	return { attempts: 1 + Math.ceil(wait / interval), delayMs: interval * 1000 };
 }
 

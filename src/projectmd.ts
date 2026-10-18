@@ -7,7 +7,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseVersion, type GuardRules } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseVersion, toSeconds, type GuardRules } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "pre-release", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
@@ -231,10 +231,8 @@ function mergeInto(c: Config, r: Record<string, unknown>): void {
 	if (typeof r.versioning === "object" && r.versioning) Object.assign(c.versioning, r.versioning);
 	if (typeof r.release === "object" && r.release) Object.assign(c.release, r.release);
 	// playbook values arrive as strings; a junk healthWait must not make the gate wait forever
-	if (r.healthWait !== undefined) {
-		const n = Number(r.healthWait);
-		if (Number.isFinite(n) && n >= 0) c.healthWait = Math.floor(n);
-	}
+	const wait = toSeconds(r.healthWait);
+	if (wait !== undefined) c.healthWait = wait;
 }
 
 /** Load the project config: project.md alone — the legacy project.json is no longer read. */

@@ -4,6 +4,8 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-10-18
+
 ### Added
 
 - **`healthWait` in playbook `## implement`** (#42): the seconds the post-deploy health probe may keep retrying — one immediate shot plus a retry every 2s, default 30, `healthWait = 0` restores the single shot. A service whose readiness lags its container start (a BFF answering `/readyz` only after its upstream connects) no longer needs a poll loop hand-written into the playbook, and the gate says how it tried: `health: PASS (curl … , 3 attempts)` / `gave up after 16 attempt(s), healthWait 30s`. `flow health` waits the same way; `flow check` stays single-shot — before any deploy there is nothing to wait for.

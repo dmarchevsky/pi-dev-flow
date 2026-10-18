@@ -115,6 +115,7 @@ async function runHealthProbe(cmd: string, cwd: string, waitSec: number): Promis
 		await sleep(delayMs);
 	}
 }
+
 const GATE_HELP =
 	"help | init [--force|--draft|--write <text>] | reflect [<note>] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
