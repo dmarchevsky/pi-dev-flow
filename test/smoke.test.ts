@@ -1159,3 +1159,16 @@ test("threshold compaction takeover: flow-aware recompact; cancel only when ours
 	assert.equal(await takeover({ reason: "manual" }, mk().c), undefined, "/compact stays the operator's");
 	assert.equal(await takeover({ reason: "overflow" }, mk().c), undefined, "overflow keeps pi's compact-and-retry");
 });
+
+test("turn_end compaction check survives a broken compaction setting", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n");
+	mkdirSync(path.join(repo, ".pi"));
+	writeFileSync(path.join(repo, ".pi", "settings.json"), JSON.stringify({ compaction: { reserveTokens: "bogus" } }));
+	const ctx = makeCtx(repo);
+	await pi.cmds.flow.handler("start demo-feature", ctx);
+	const c = { ...ctx, getContextUsage: () => ({ tokens: 190_000, contextWindow: 200_000, percent: 95 }), compact: () => { throw new Error("must not fire"); } };
+	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, c); // must not reject
+});

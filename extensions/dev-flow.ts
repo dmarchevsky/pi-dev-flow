@@ -226,8 +226,14 @@ function maybeCompactNow(ctx: ExtensionContext): void {
 	const key = sessionKey(ctx);
 	const st = boundFeature(ctx.cwd, key);
 	if (!st) return;
-	const settings = SettingsManager.create(ctx.cwd);
-	if (!settings.getCompactionEnabled()) return; // operator turned auto-compaction off — don't do it behind their back
+	let reserve: number;
+	try {
+		const settings = SettingsManager.create(ctx.cwd); // throws on a malformed compaction setting — pi surfaces that itself; we just stay out
+		if (!settings.getCompactionEnabled()) return; // operator turned auto-compaction off — don't do it behind their back
+		reserve = settings.getCompactionReserveTokens(ctx.model);
+	} catch {
+		return;
+	}
 	const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 	const decision = {
 		tokens: u.tokens,
@@ -237,7 +243,7 @@ function maybeCompactNow(ctx: ExtensionContext): void {
 		checklistPending: checklistPending(cfg, st, st.stage),
 		compacting: compacting.has(key),
 	};
-	if (!shouldSelfCompact(decision, settings.getCompactionReserveTokens(ctx.model))) return;
+	if (!shouldSelfCompact(decision, reserve)) return;
 	compacting.add(key);
 	const done = () => compacting.delete(key);
 	ctx.compact({
