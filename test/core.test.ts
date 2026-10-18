@@ -227,6 +227,7 @@ test("playbookTamper reads and backups are not changes; targets still are (#53)"
 	assert.ok(playbookTamper("cp /tmp/project.md.bak .dev-flow/project.md"), "restoring a backup IS a write to the playbook");
 	assert.ok(playbookTamper("printf '%s' x >> .dev-flow/project.md"));
 	assert.ok(playbookTamper('python -c "open(\'.dev-flow/project.md\',\'w\')"'), "scripted writes stay blocked");
+	assert.equal(playbookTamper("sed -n 1,10p .dev-flow/project.md"), false, "sed as a printer is a read");
 });
 
 test("playbookOnlyChange: the lane for the tracking chore (#53)", () => {
@@ -242,6 +243,7 @@ test("bashFlowGuard: the playbook tracking chore may land on the default branch 
 	assert.match(bashFlowGuard(base) ?? "", /direct commits to main/);
 	assert.equal(bashFlowGuard({ ...base, playbookChore: true }), null, "its only content is the operator's playbook");
 	assert.ok(bashFlowGuard({ ...base, playbookChore: true, command: "git push origin main" }), "the lane is commits, not pushes");
+	assert.match(bashFlowGuard({ ...base, playbookChore: true, command: "git commit --amend --no-edit" }) ?? "", /direct commits to main/, "amending the default branch is not a tracking chore");
 });
 
 test("detectForge: the origin URL decides", () => {

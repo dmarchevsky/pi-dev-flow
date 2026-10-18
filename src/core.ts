@@ -505,7 +505,7 @@ export function playbookTamper(command: string): boolean {
 		if (REDIRECT_INTO_PLAYBOOK.test(seg)) return true; // echo x > .dev-flow/project.md
 		const tok = seg.split(/\s+/).filter(Boolean);
 		const head = (tok[0] ?? "").replace(/^\.\//, "");
-		if (READ_ONLY_HEADS.has(head)) return false; // cat/grep/ls/sed-without-i read it
+		if (READ_ONLY_HEADS.has(head) || (head === "sed" && !/\s-i\b/.test(seg))) return false; // cat/grep/ls and sed-as-a-printer read it
 		if (MOVE_VERBS.has(head)) return PLAYBOOK_PATH.test(unquote(tok[tok.length - 1] ?? "")); // the destination is last: cp SRC PLAYBOOK
 		return WRITE_VERBS.test(seg); // python -c, node -e, sed -i, rm, truncate
 	});
@@ -535,8 +535,10 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 	const git = (word: string) => subs.includes(word);
 
 	// release chores commit in the main checkout — same stage exception as push/merge below; the playbook
-	// tracking chore is the other legal main commit: its only content is the operator's own playbook (#53)
-	if (git("commit") && onMain && o.stage !== "release" && !o.playbookChore) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree (tracking the playbook is legal: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit)`;
+	// tracking chore is the other legal main commit: its only content is the operator's own playbook (#53).
+	// --amend is not a chore: it rewrites the default branch's history.
+	const playbookCommit = o.playbookChore && !c.includes("--amend");
+	if (git("commit") && onMain && o.stage !== "release" && !playbookCommit) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree (tracking the playbook is legal: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit)`;
 	if (git("push")) {
 		// ref-aware: only pushes that WRITE the default branch need stage release — tags and other branches pass.
 		// unresolved bare names arrive pre-resolved by the caller (tag vs branch); no parse info → conservative onMain.
