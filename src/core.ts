@@ -299,6 +299,14 @@ export function pluginVersion(fromDir: string, pkgName = "pi-dev-flow"): { versi
 	}
 }
 
+/** A session keeps the code it loaded at start, while the manifest on disk moves past it after a release.
+ * `flow version` read the manifest, so a stale session reported the new number while running the old gate code —
+ * and shipped the previous session's broken release-notes path twice. Returns the loaded version when the session
+ * runs behind the checkout, "" when it is current or either side is unknown. */
+export function sessionRunsOlderBuild(loaded: string | null, disk: string | null): string {
+	return loaded && disk && loaded !== disk ? loaded : "";
+}
+
 /** Owner/slug from any GitHub repo reference — "owner/repo", "github.com/owner/repo", git+https or scp-style git@github.com:owner/repo.git; "" when it is not GitHub. */
 export function githubSlug(ref: string): string {
 	const m = ref.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?(?:\/|$)/) ?? /^[\w.-]+\/[\w.-]+$/.exec(ref);

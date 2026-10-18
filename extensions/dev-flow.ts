@@ -55,6 +55,7 @@ import {
 	reflectProtocol,
 	reflectSections,
 	reflectionRoutes,
+	sessionRunsOlderBuild,
 
 	listFiles,
 	looksLikeShellError,
@@ -83,6 +84,9 @@ import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, pa
 import { detectProject } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
+
+/** The dev-flow build this session actually loaded — see sessionRunsOlderBuild. */
+const LOADED_VERSION = pluginVersion(import.meta.dirname).version;
 
 interface Ui {
 	hasUI: boolean;
@@ -538,7 +542,9 @@ ${mdDigest(draftRefresh)}`))
 		case "version": {
 			// the plugin's own version — separate from the project's versioning.file version the release gates use
 			const self = pluginVersion(import.meta.dirname);
-			return { text: self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}` };
+			const behind = sessionRunsOlderBuild(LOADED_VERSION, self.version);
+			const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
+			return { text: behind ? `${head} — but this session runs ${behind}; /reload to run ${self.version}` : head };
 		}
 
 		case "approve": {
@@ -821,7 +827,17 @@ ${mdDigest(draftRefresh)}`))
 					ghNote = gr.ok ? `${forge} release ${tag} created. ${notesNote}`.trim() : `${forge} release skipped: ${tail(gr.out)}`;
 				}
 			}
-			const tailNote = [ghNote, artNote].filter(Boolean).join(" ");
+			const behind = sessionRunsOlderBuild(LOADED_VERSION, pluginVersion(import.meta.dirname).version);
+			const openRelease = checklistPending(cfg, state!, "release");
+			const tailNote = [
+				// a session that shipped from behind: the code it runs is not the code the checkout just released
+				behind ? `warning: this session runs dev-flow ${behind}, not the build in the checkout — /reload before trusting what it printed.` : "",
+				// release-stage items have no gate of their own: the operator's Finish? answer is what closes them, so name
+				// them here instead of letting the checklist vanish unnoticed at the last objective gate
+				openRelease ? `release-stage checklist still open (${openRelease}): ${applicableItems(cfg, state!, "release").map((i) => i.text).join(" | ")} — close these with the operator before finishing.` : "",
+				ghNote,
+				artNote,
+			].filter(Boolean).join(" ");
 			writeState(root, state!);
 			return { text: `release recorded as complete${state!.noVersion ? " (unversioned — this flow created no version or tag)" : ""}.${tailNote ? ` ${tailNote}` : ""}\n${nextHint(state!, cfg)}` };
 		}
@@ -1178,7 +1194,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every later gate question (Verified?/Release?/Finish?) — run the gates without asking; checks and guardrails stay fully enforced.");
 		if (cfg.prose[state.stage]) guidance.push(`Stage guidance (project.md): ${cfg.prose[state.stage]}`);
 		const pend = checklistPending(cfg, state, state.stage);
-		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}`);
+		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
 		const refl = readReflections(ctx.cwd);
 		if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — mention to the operator; run flow doctor to review and route them (fold in only on request).`);
 		return {

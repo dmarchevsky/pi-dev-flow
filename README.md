@@ -57,7 +57,7 @@ The flow is completely inert in repos without `.dev-flow/`.
 | `doctor ["<issue note>"]` | — | read-only findings: playbook drift, dead commands/scripts, untracked playbook, ghost feature dirs, orphan worktrees/branches — **plus a review of every open reflection, each routed to the flow that should fix it** (playbook item → docs flow; plugin item → upstream issue, or a patch/normal flow inside the dev-flow repo). It writes nothing and asks nothing, safe for agents and CI at any stage; the agent investigates, you confirm, the routed flow implements. `doctor "<note>"` prints an investigation brief and a fix route for a fresh observation |
 | `status [slug]` / `abort [slug]` | — | — |
 | `help` (`--help`, `-h`) | — | — (prints the gate help — answerable in any repo, at any stage, with no `.dev-flow/`) |
-| `version` | — | — (prints dev-flow's **own** version and the directory it was loaded from — which copy this session runs, this checkout vs an installed `pi-dev-flow`; answerable in any repo, at any stage, with no `.dev-flow/`) |
+| `version` | — | — (prints dev-flow's **own** version and the directory it was loaded from — which copy this session runs, this checkout vs an installed `pi-dev-flow`; when the checkout has moved past the build this session loaded it says so and names both, because the gates execute the loaded code — `/reload` to run the newer one; answerable in any repo, at any stage, with no `.dev-flow/`) |
 
 `--confirmed` is the operator-presence flag: pass it only after the operator literally answered the stage question in chat — one checkpoint per stage, no second dialog.
 
