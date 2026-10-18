@@ -38,6 +38,7 @@ import {
 	parseVersion,
 	pidAlive,
 	playbookOnlyChange,
+	sessionRunsOlderBuild,
 	reflectProtocol,
 	reflectSections,
 	reflectionRoutes,
@@ -562,6 +563,14 @@ test("cmpVersions: numeric segment compare (#52)", () => {
 	assert.ok(cmpVersions("0.10.0", "0.9.9") > 0, "numeric, not lexical");
 	assert.equal(cmpVersions("1.2", "1.2.0"), 0);
 	assert.ok(cmpVersions("1.2.3-rc1", "1.2.3") < 0, "a non-numeric segment counts as 0 — 1.2.3-rc1 reads as 1.2.0");
+});
+
+test("sessionRunsOlderBuild: which dev-flow a session actually runs", () => {
+	// the manifest on disk moved past the loaded code after a release, and the session kept shipping from behind (#51 dogfood)
+	assert.equal(sessionRunsOlderBuild("0.36.0", "0.37.0"), "0.36.0");
+	assert.equal(sessionRunsOlderBuild("0.37.0", "0.37.0"), "", "a current build says nothing");
+	assert.equal(sessionRunsOlderBuild(null, "0.37.0"), "", "unknown loaded build: no claim either way");
+	assert.equal(sessionRunsOlderBuild("0.37.0", null), "", "nothing to compare against");
 });
 
 test("what the forge already has: newestTaggedVersion and ls-remote parsing (#52)", () => {

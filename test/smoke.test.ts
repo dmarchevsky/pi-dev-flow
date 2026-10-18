@@ -572,8 +572,8 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	const repo = makeRepo();
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
-	const versioned = async (slug: string, ver: string, mdTail: string) => {
-		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nversionFile = package.json\nversionTag = v{version}\n${mdTail}\`\`\`\n`]);
+	const versioned = async (slug: string, ver: string, mdTail: string, mdAfter = "") => {
+		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nversionFile = package.json\nversionTag = v{version}\n${mdTail}\`\`\`\n${mdAfter}`]);
 		await flow(["start", slug]);
 		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
@@ -596,6 +596,10 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	const c = await flow(["release-done", "--confirmed"]);
 	assert.ok(!c.content[0].text.includes("release skipped"), "config-off: no attempt, no note");
 	assert.match(c.content[0].text, /release recorded as complete/);
+	// release-stage items have no gate of their own — release-done names them instead of swallowing them
+	await versioned("chores", "9.9.11", "", "\n- [ ] dogfood the shim in the released checkout\n");
+	const chores = await flow(["release-done", "--confirmed"]);
+	assert.match(chores.content[0].text, /release-stage checklist still open \(1\): dogfood the shim/, "release-stage items surface at the last gate; the operator's Finish? answer closes them");
 });
 
 test("release-teeth: tag must reach origin; release.artifact verifies the published artifact", async () => {
