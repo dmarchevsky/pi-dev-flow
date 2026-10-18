@@ -439,6 +439,19 @@ test("ref-aware push guard end-to-end: tags pass from main, default branch refus
 	assert.equal(await bash("git push origin main:refs/heads/main-backup"), undefined, "explicit non-default dest passes");
 });
 
+test("guard reads commands, not prose: a quoted body is data, a shell wrapper's payload is not", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	const ctx = makeCtx(repo);
+	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command } }, ctx);
+	// the v0.37.0 incident: a PR body whose text discussed a commit and the playbook path
+	const body = 'gh pr create --title "t" --body "the tracking chore: git add -f .dev-flow/project.md && git commit -m x\\nthe safety copy: cp .dev-flow/project.md /tmp/bak"';
+	assert.equal(await bash(body), undefined, "prose in a quoted argument is not a main-branch commit or a playbook write");
+	assert.match((await bash('sh -c "git push origin main"'))?.reason ?? "", /stage "release"|forbidden/, "a wrapper cannot carry a push past the guard");
+	assert.match((await bash("cp /tmp/bak .dev-flow/project.md"))?.reason ?? "", /operator playbook/, "the real write is still refused");
+});
+
 test("reflect <note>: section by wording, protocol lists open items, check-off semantics, status surfacing", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
