@@ -49,6 +49,7 @@ import {
 	parseLsRemoteTags,
 	parsePushRefs,
 	playbookTamper,
+	playbookOnlyChange,
 	pluginVersion,
 	preReleaseGate,
 	reflectProtocol,
@@ -265,7 +266,7 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 	for (const f of feats) if (f.worktree && !existsSync(path.resolve(root, f.worktree))) out.push(`feature ${f.slug} (${f.stage}) has no worktree at ${f.worktree}`);
 	// the playbook belongs in git — an untracked project.md is invisible to teammates and lost on machine changes
 	if (existsSync(path.join(root, ".dev-flow", "project.md")) && !(await sh("git ls-files --error-unmatch -- .dev-flow/project.md", root)).ok)
-		out.push(".dev-flow/project.md is not tracked in git — git add -f .dev-flow/project.md (force: a root .gitignore may exclude .dev-flow/ wholesale)");
+		out.push('.dev-flow/project.md is not tracked in git — track it: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force: a root .gitignore may exclude .dev-flow/ wholesale; the env prefix is for the installed hook — dev-flow allows a main commit whose only change is the playbook)');
 	return out;
 }
 
@@ -317,7 +318,7 @@ function setupQuestions(det: { partial: { defaultBranch: string; versioning?: { 
 	return q;
 }
 
-const GIT_TRACK_NOTE = "the playbook belongs in git: git add -f .dev-flow/project.md (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering)";
+const GIT_TRACK_NOTE = 'the playbook belongs in git: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering; the env prefix is for the pre-commit hook, dev-flow itself lets a main commit whose only change is the playbook)';
 
 /** `flow reflect <note>` — advisory queue, operator decides. The note lands in the
  *  playbook and/or plugin section of reflections.md, chosen from its wording. */
@@ -1138,7 +1139,14 @@ export default function devFlow(pi: ExtensionAPI) {
 						}),
 					);
 				}
-				const reason = bashFlowGuard({ command: g.seg, branch: await branchOf(g.dir), stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs });
+				// the playbook tracking chore: when the playbook is this checkout's only change, a commit here
+				// can only contain it — setup, not feature work, so it needs no flow (#53)
+				let playbookChore = false;
+				if (gitInvocation(g.seg).subs.includes("commit") && (await branchOf(g.dir)) === cfg.defaultBranch && bound?.stage !== "release") {
+					const dirty = await sh(`git -C ${JSON.stringify(gitDir)} status --porcelain`, ctx.cwd);
+					playbookChore = dirty.ok && playbookOnlyChange(dirty.out);
+				}
+				const reason = bashFlowGuard({ command: g.seg, branch: await branchOf(g.dir), stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore });
 				if (reason) return { block: true, reason };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
 				const target = checkoutTarget(g.seg);

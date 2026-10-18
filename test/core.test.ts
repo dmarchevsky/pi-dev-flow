@@ -37,6 +37,7 @@ import {
 	parseLsRemoteTags,
 	parseVersion,
 	pidAlive,
+	playbookOnlyChange,
 	reflectProtocol,
 	reflectSections,
 	reflectionRoutes,
@@ -211,6 +212,36 @@ test("playbookTamper catches direct project.md writes; reads and flow init --wri
 	assert.equal(playbookTamper("cat .dev-flow/project.md"), false);
 	assert.equal(playbookTamper('flow init --write "# dev-flow"'), false);
 	assert.equal(playbookTamper("git status"), false);
+});
+
+test("playbookTamper reads and backups are not changes; targets still are (#53)", () => {
+	assert.equal(playbookTamper("cp .dev-flow/project.md /tmp/project.md.bak"), false, "the safety copy the old guard refused");
+	assert.equal(playbookTamper("grep -e health .dev-flow/project.md"), false, "the bare -e in the old verb list matched any --exclude-style flag");
+	assert.equal(playbookTamper("git ls-files --error-unmatch .dev-flow/project.md"), false);
+	assert.equal(playbookTamper("ls .dev-flow/fix-x/"), false);
+	assert.equal(
+		playbookTamper("cat > /tmp/issue.md <<'EOF'\nthe guard blocks .dev-flow/project.md reads\nEOF"),
+		false,
+		"a heredoc that only mentions the path is not a write to it",
+	);
+	assert.ok(playbookTamper("cp /tmp/project.md.bak .dev-flow/project.md"), "restoring a backup IS a write to the playbook");
+	assert.ok(playbookTamper("printf '%s' x >> .dev-flow/project.md"));
+	assert.ok(playbookTamper('python -c "open(\'.dev-flow/project.md\',\'w\')"'), "scripted writes stay blocked");
+});
+
+test("playbookOnlyChange: the lane for the tracking chore (#53)", () => {
+	assert.equal(playbookOnlyChange("A  .dev-flow/project.md"), true);
+	assert.equal(playbookOnlyChange("M  .dev-flow/project.md"), true);
+	assert.equal(playbookOnlyChange(""), false, "nothing staged, nothing to grant");
+	assert.equal(playbookOnlyChange("A  .dev-flow/project.md\nM  src/app.ts"), false, "any other dirty path closes the lane");
+	assert.equal(playbookOnlyChange("M  README.md"), false);
+});
+
+test("bashFlowGuard: the playbook tracking chore may land on the default branch (#53)", () => {
+	const base = { command: 'DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"', branch: "main", stage: null, defaultBranch: "main" };
+	assert.match(bashFlowGuard(base) ?? "", /direct commits to main/);
+	assert.equal(bashFlowGuard({ ...base, playbookChore: true }), null, "its only content is the operator's playbook");
+	assert.ok(bashFlowGuard({ ...base, playbookChore: true, command: "git push origin main" }), "the lane is commits, not pushes");
 });
 
 test("detectForge: the origin URL decides", () => {
