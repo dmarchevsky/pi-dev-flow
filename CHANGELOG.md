@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-10-17
+
+### Changed
+
+- **Status bar is emoji-only: `<stage glyph> <slug>` plus markers.** Stages render as 📝 plan, 🔨 implement, 🔍 pre-release, 🚀 release, with ⚡ patch, 📚 docs, 🎱 yolo and ⚠️ while a check fails — no `◆` anchor, no stage word, no theme stage color (color-emoji ignore `theme.fg`). `flow status` is now the spelled-out surface (`stage=implement`, the `[ui]`/`[yolo]`/`[no-version]` tags, the `flow=<ver>` stamp).
+
+### Removed
+
+- **The `ctrl+,` detail panel is gone** (overlay, shortcut, `STAGE_COLORS`). It needed a real terminal — `ui.custom()` is a no-op in RPC/web mode — so the footer and `flow status` are the only status surfaces now. README's Status bar line is the glyph legend.
+
 ## [0.33.3] - 2026-10-17
 
 ### Fixed

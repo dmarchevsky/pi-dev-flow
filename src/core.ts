@@ -619,7 +619,14 @@ export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (p
 	return !!claim && claim.key !== myKey && alive(claim.pid);
 }
 
-/** Compact footer status text; coloring/theme is the extension's business. */
+/** Footer glyph per stage: the footer has no room for stage words and no legend of its own (README:Status bar is the legend). */
+export const STAGE_EMOJI: Record<Stage, string> = { plan: "📝", implement: "🔨", "pre-release": "🔍", release: "🚀", done: "🏁" };
+
+export function statusCompact(state: FlowState): { text: string; failed: boolean } {
+	const failed = Object.values(state.checks).some((c) => !c.ok);
+	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}`, failed };
+}
+
 /** Open (unchecked) reflection items in reflections.md content — the agent's suggestion queue. */
 export function openReflections(text: string): string[] {
 	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));
@@ -755,11 +762,6 @@ export function shouldSelfCompact(
 /** reflections.md line for a forced (non-manual) pi compaction while a flow is bound — advisory, never gates. */
 export function compactionReflectionLine(slug: string, stage: Stage, reason: string, today: string): string {
 	return `- [ ] pi auto-compacted (${reason}) at stage ${stage} — pace gates so work lands on disk before compaction; draft plan discussion into plan/ early — ${slug} ${today}`;
-}
-
-export function statusCompact(state: FlowState): { text: string; failed: boolean } {
-	const failed = Object.values(state.checks).some((c) => !c.ok);
-	return { text: `${state.slug}${state.patch ? " ⚡" : state.docs ? " 📄" : ""}${state.yolo ? " 🎱" : ""} ▸ ${state.stage}`, failed };
 }
 
 /** What the agent/user should do next, per stage. */

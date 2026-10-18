@@ -284,9 +284,9 @@ test("appendReflection writes the two sections and migrates a legacy flat file",
 	assert.ok(refreshed.includes("<!-- n -->"), "the real preamble survives");
 });
 
-test("statusCompact: slug ▸ stage with failing-check marker", () => {
+test("statusCompact: stage glyph + slug, failing-check flag", () => {
 	const s = newState("f", false);
-	assert.deepEqual(statusCompact(s), { text: "f ▸ plan", failed: false });
+	assert.deepEqual(statusCompact(s), { text: "📝 f", failed: false });
 	s.checks.test = { ok: false, at: "2026-01-01T10:00:00Z" };
 	assert.equal(statusCompact(s).failed, true);
 	s.checks.test = { ok: true, at: "2026-01-01T10:00:00Z" };
@@ -400,7 +400,7 @@ test("docs mode: no plan document, no tier-1 checks, release integrity intact", 
 	const cfg = buildConfig({ commands: { test: "x" } });
 	assert.equal(approveGate(newState("d", false, false, true), buildConfig({}), []).length, 0, "docs: empty plan/ passes the gate");
 	assert.ok(approveGate(newState("d", false), buildConfig({}), []).length === 1, "normal features still require plan/*.md");
-	assert.ok(statusCompact(newState("d", false, false, true)).text.includes("📄"), "status marks docs features");
+	assert.ok(statusCompact(newState("d", false, false, true)).text.includes("📚"), "status marks docs features");
 	const d = { ...newState("d", false, false, true), stage: "implement" as const };
 	assert.equal(verifyGate(d, cfg).length, 0, "docs skips the tier-1 check requirement");
 	assert.ok(verifyGate({ ...newState("d", false), stage: "implement" as const }, cfg).length > 0, "non-docs still demands green checks");
