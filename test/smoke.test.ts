@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import devFlow from "../extensions/dev-flow.ts";
+import { tagNotesCommand } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
@@ -591,7 +592,7 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	const f = await flow(["release-done", "--confirmed", "--no-release-create"]);
 	assert.match(f.content[0].text, /Forge release skipped \(--no-release-create\)/);
 	assert.match(f.content[0].text, /release recorded as complete/);
-	await versioned("optcfg", "9.9.8", "releases = false\n");
+	await versioned("optcfg", "9.9.10", "releases = false\n");
 	const c = await flow(["release-done", "--confirmed"]);
 	assert.ok(!c.content[0].text.includes("release skipped"), "config-off: no attempt, no note");
 	assert.match(c.content[0].text, /release recorded as complete/);
@@ -627,7 +628,7 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	assert.ok(noart.isError && noart.content[0].text.includes("artifact not published"), "release.artifact gates the published artifact");
 	writeFileSync(path.join(repo, "published.txt"), "sha256:deadbeef\n");
 	const okRun = await flow(["release-done", "--confirmed"]);
-	assert.match(okRun.content[0].text, /Artifact verified\./);
+	assert.match(okRun.content[0].text, /Artifact verified for 9\.9\.9\./, "the probe names the version it probed (#52)");
 	assert.match(okRun.content[0].text, /release recorded as complete/);
 });
 
@@ -1050,4 +1051,52 @@ test("unversioned release: --no-version skips the bump/tag machinery for that fl
 	assert.equal(st.noVersion, true, "the mode is persisted for release-done");
 	const rd = await flow(["release-done", "--confirmed"]);
 	assert.match(rd.content[0].text, /release recorded as complete \(unversioned — this flow created no version or tag\)/);
+});
+
+test("release-done publishes the version the release gate stamped, and refuses to go behind origin (#52)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const origin = mkdtempSync(path.join(tmpdir(), "devflow-origin-"));
+	execFileSync("git", ["init", "-q", "--bare", origin]);
+	execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const git = (args: string[], dir = repo) => execFileSync("git", ["-C", dir, ...args]);
+	const ship = async (slug: string, ver: string) => {
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		await flow(["verify", "--confirmed"]);
+		const wt = path.join(repo, ".dev-flow", slug, "worktree");
+		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`); // the bump lives on the branch
+		git(["add", "-A"], wt);
+		git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", `bump ${ver}`], wt);
+		assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
+		git(["merge", "-q", "--ff", `feat/${slug}`]);
+		git(["push", "-q", "origin", "main"]);
+		git(["-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", `v${ver}`, "-m", `v${ver} notes (with parens)`]);
+		git(["push", "-q", "origin", `refs/tags/v${ver}`]);
+	};
+	// the artifact probe only passes for 9.9.9: it proves which version release-done actually published
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\nreleases = false\nartifact = test \"{version}\" = 9.9.9\n```\n"]);
+	await ship("ahead", "9.9.9");
+	writeFileSync(path.join(repo, "package.json"), '{"name":"t","version":"0.1.0"}'); // the #52 shape: the main checkout is still behind
+	const done = await flow(["release-done", "--confirmed"]);
+	assert.match(done.content[0].text, /Artifact verified for 9\.9\.9\./, `a stale checkout must not change what is published: ${done.content[0].text}`);
+	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ahead", "state.json"), "utf8")).releaseVersion, "9.9.9", "the gate's version is the version of record");
+
+	git(["checkout", "-q", "--", "package.json"]);
+	git(["tag", "-d", "v9.9.9"]); // only origin knows about it now: the clone must not get to decide
+	await ship("behind", "9.9.8");
+	const refuse = await flow(["release-done", "--confirmed"]);
+	assert.ok(refuse.isError, "a release behind the forge is not a release");
+	assert.match(refuse.content[0].text, /v9\.9\.9 is already tagged — refusing to release v9\.9\.8 behind it/);
+});
+
+test("tagNotesCommand prints an annotated tag's body through /bin/sh (#51)", () => {
+	const repo = makeRepo();
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1.0.0", "-m", "notes with (parens) and $vars"]);
+	const out = execFileSync("/bin/sh", ["-c", tagNotesCommand("v1.0.0")], { cwd: repo, encoding: "utf8" }).trim();
+	assert.equal(out, "notes with (parens) and $vars", "the format must be quoted — an unquoted %(contents) is a /bin/sh syntax error");
 });

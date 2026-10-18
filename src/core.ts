@@ -38,6 +38,7 @@ export interface FlowState {
 	noVersion?: boolean; // operator chose: this flow releases without a version bump or tag
 	yolo?: boolean; // operator said "yolo" at approve: every later gate question pre-confirmed; checks and guardrails stay
 	setupAt?: string; // commands.setup exited 0 in this worktree — a reused worktree reruns it only when unset (#49)
+	releaseVersion?: string; // the manifest version the release gate approved — release-done publishes this, not whatever a checkout says later (#52)
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
@@ -208,8 +209,8 @@ export function verifyGate(state: FlowState, cfg: Config): string[] {
 export interface ReleasePrep {
 	/** Version parsed from the manifest (versioning.file), null when unset/unparsable. */
 	manifestVersion: string | null;
-	/** Local tag names. */
-	localTags: string[];
+	/** Tag names as the forge sees them (origin when the repo has one) — not what one clone happens to have fetched (#52). */
+	remoteTags: string[];
 	/** Changelog file + content when release.changelog names a file that exists, else null. */
 	changelog: { file: string; content: string } | null;
 }
@@ -229,7 +230,7 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 	if (!state.noVersion) {
 		if (cfg.versioning.file) {
 			if (!prep.manifestVersion) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — bump it to the version you will release`);
-			else if (prep.localTags.includes(cfg.versioning.pattern.replace("{version}", prep.manifestVersion)))
+			else if (prep.remoteTags.includes(cfg.versioning.pattern.replace("{version}", prep.manifestVersion)))
 				errs.push(`version ${prep.manifestVersion} is already tagged — bump the manifest to the next version`);
 		}
 		if (cfg.release.changelog) {
@@ -318,6 +319,61 @@ export function releaseGate(state: FlowState): string[] {
 	if (state.stage !== "release") errs.push(`stage is "${state.stage}", release-done only applies to "release"`);
 	if (!state.approvals.verify) errs.push("operator verify approval is missing");
 	return errs;
+}
+
+/**
+ * Version comparison for release guards: dot-separated numeric segments, a missing or non-numeric
+ * segment counts as 0 (`1.2` == `1.2.0`, `1.2.3-rc1` compares as `1.2.0`). Negative when `a` is older.
+ */
+export function cmpVersions(a: string, b: string): number {
+	const seg = (v: string, i: number) => Number(v.split(".")[i]) || 0;
+	const parts = Math.max(a.split(".").length, b.split(".").length);
+	for (let i = 0; i < parts; i++) {
+		if (seg(a, i) !== seg(b, i)) return seg(a, i) - seg(b, i);
+	}
+	return 0;
+}
+
+/** Tag names from `git ls-remote --tags` output: refs peeled with `^{}` collapse into their tag. */
+export function parseLsRemoteTags(out: string): string[] {
+	return [...new Set(out.split("\n").map((l) => (l.split("\t")[1] ?? "").trim().replace(/^refs\/tags\//, "").replace(/\^\{\}$/, "")).filter(Boolean))];
+}
+
+/** Newest version among tags matching the release pattern; null when none does (#52). */
+export function newestTaggedVersion(pattern: string, tags: string[]): string | null {
+	const parts = pattern.split("{version}");
+	if (parts.length !== 2) return null;
+	const re = new RegExp("^" + parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("(.+)") + "$");
+	let best: string | null = null;
+	for (const t of tags) {
+		const m = t.match(re);
+		if (m && (best === null || cmpVersions(m[1], best) > 0)) best = m[1];
+	}
+	return best;
+}
+
+/** The command that prints a tag's annotation. The format must be quoted for /bin/sh: an unquoted
+ *  `%(contents)` is a syntax error, and `sh()` folds stderr into its output, so the error text
+ *  landed in release bodies as if it were the notes (#51). */
+export function tagNotesCommand(tag: string): string {
+	return `git tag -l --format='%(contents)' ${JSON.stringify(tag)}`;
+}
+
+/** A changelog entry by version: the section whose heading names the version, up to the next heading
+ *  of the same or a higher level. "" when no heading mentions it — used as a deterministic release
+ *  body when the tag carries no annotation (#51). */
+export function changelogEntry(content: string, version: string): string {
+	const lines = content.split("\n");
+	const level = (l: string) => (l.match(/^#+/)?.[0].length ?? 99);
+	const i = lines.findIndex((l) => level(l) <= 3 && l.includes(version));
+	if (i === -1) return "";
+	const base = level(lines[i]);
+	const out: string[] = [];
+	for (const l of lines.slice(i + 1)) {
+		if (level(l) <= base) break;
+		out.push(l);
+	}
+	return out.join("\n").trim();
 }
 
 /**

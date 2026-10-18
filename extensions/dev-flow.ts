@@ -29,10 +29,12 @@ import {
 	applicableItems,
 	appendReflection,
 	bashFlowGuard,
+	changelogEntry,
 	checklistHash,
 	checklistPending,
 	checkoutTarget,
 	claimBlocks,
+	cmpVersions,
 	cleanupAssess,
 	compactionReflectionLine,
 	detectForge,
@@ -44,6 +46,7 @@ import {
 	healthProbe,
 	healthRetry,
 	investigationBrief,
+	parseLsRemoteTags,
 	parsePushRefs,
 	playbookTamper,
 	pluginVersion,
@@ -53,6 +56,7 @@ import {
 	reflectionRoutes,
 
 	listFiles,
+	newestTaggedVersion,
 	newState,
 	nextHint,
 	openReflections,
@@ -62,6 +66,7 @@ import {
 	stateTamper,
 	statusCompact,
 	subst,
+	tagNotesCommand,
 	validSlug,
 	verifyGate,
 	versionTagGate,
@@ -115,6 +120,17 @@ async function runHealthProbe(cmd: string, cwd: string, waitSec: number): Promis
 		await sleep(delayMs);
 	}
 }
+
+/** Tags to judge a release against: what origin holds — a clone that has not fetched must not get to
+ *  decide what is already tagged (#52). Local tags only when there is no remote to ask. */
+async function releaseTags(root: string): Promise<string[]> {
+	const remote = await sh("git ls-remote --tags origin", root);
+	if (remote.ok) return parseLsRemoteTags(remote.out);
+	return (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
+}
+
+/** A "release body" that is really a shell error — the shape that shipped to two forges (#51). */
+const SHELL_ERROR = /\/bin\/sh:|^\s*sh:|syntax error/i;
 
 const GATE_HELP =
 	"help | init [--force|--draft|--write <text>] | reflect [<note>] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
@@ -699,12 +715,12 @@ ${mdDigest(draftRefresh)}`))
 			const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
 				? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
 				: null;
-			const localTags = (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
+			const remoteTags = await releaseTags(root);
 			const changelog =
 				cfg.release.changelog && existsSync(path.join(wtCwd, cfg.release.changelog))
 					? { file: cfg.release.changelog, content: readFileSync(path.join(wtCwd, cfg.release.changelog), "utf8") }
 					: null;
-			const prep = { manifestVersion: manifestVer, localTags, changelog };
+			const prep = { manifestVersion: manifestVer, remoteTags, changelog };
 			// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 			const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 			if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
@@ -717,6 +733,9 @@ ${mdDigest(draftRefresh)}`))
 			state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
 			state!.approvals["pre-release"] = now();
 			state!.stage = "release";
+			// the version of record is fixed here, from the manifest this gate validated: release-done must not
+			// re-read a checkout that may still be behind (#52)
+			if (!state!.noVersion && manifestVer) state!.releaseVersion = manifestVer;
 			writeState(root, state!);
 			return { text: `release approved${audit}${state!.noVersion ? " — unversioned: this flow creates no version bump or tag" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}\n${nextHint(state!, cfg)}` };
 		}
@@ -725,22 +744,32 @@ ${mdDigest(draftRefresh)}`))
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			const errs = releaseGate(state!);
-			let manifestVer: string | null = null;
-			if (cfg.versioning.file && !state!.noVersion) {
-				const manifestPath = path.join(root, cfg.versioning.file);
-				if (!existsSync(manifestPath)) errs.push(`versioning.file "${cfg.versioning.file}" does not exist — fix project.json`);
-				const manifest = existsSync(manifestPath) ? parseVersion(cfg.versioning.file, readFileSync(manifestPath, "utf8")) : null;
-				if (manifest) manifestVer = manifest;
-				const tags = (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
-				const verrs = versionTagGate(manifest, cfg.versioning.pattern, tags);
-				errs.push(...verrs);
-				if (!verrs.length) {
-					const expected = cfg.versioning.pattern.replace("{version}", manifest!);
-					const reach = await sh(`git merge-base --is-ancestor ${JSON.stringify(expected)} origin/${cfg.defaultBranch} 2>/dev/null || git merge-base --is-ancestor ${JSON.stringify(expected)} ${cfg.defaultBranch}`, root);
-					if (!reach.ok) errs.push(`tag ${expected} is not reachable from ${cfg.defaultBranch} — tag what actually shipped on ${cfg.defaultBranch}`);
+			let manifestVer: string | null = state!.releaseVersion ?? null;
+			if (cfg.versioning.file && !state!.noVersion && !manifestVer) {
+				// a flow approved before releaseVersion existed: the worktree copy is what the release gate
+				// validated, the main checkout is the last resort (#52)
+				for (const dir of [gateCwd(root, state!), root]) {
+					const p = path.join(dir, cfg.versioning.file);
+					if (!existsSync(p)) continue;
+					manifestVer = parseVersion(cfg.versioning.file, readFileSync(p, "utf8"));
+					if (manifestVer) break;
 				}
+				if (!manifestVer) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — fix the playbook`);
 			}
 			const expectedTag = manifestVer ? cfg.versioning.pattern.replace("{version}", manifestVer) : null;
+			if (expectedTag && manifestVer) {
+				const tags = await releaseTags(root);
+				const verrs = versionTagGate(manifestVer, cfg.versioning.pattern, tags);
+				errs.push(...verrs);
+				// never publish behind what the forge already has — that is how a stale manifest republished
+				// the previous version and its artifact probe passed (#52)
+				const newest = newestTaggedVersion(cfg.versioning.pattern, tags);
+				if (newest && cmpVersions(newest, manifestVer) > 0) errs.push(`${cfg.versioning.pattern.replace("{version}", newest)} is already tagged — refusing to release ${expectedTag} behind it`);
+				if (!verrs.length) {
+					const reach = await sh(`git merge-base --is-ancestor ${JSON.stringify(expectedTag)} origin/${cfg.defaultBranch} 2>/dev/null || git merge-base --is-ancestor ${JSON.stringify(expectedTag)} ${cfg.defaultBranch}`, root);
+					if (!reach.ok) errs.push(`tag ${expectedTag} is not reachable from ${cfg.defaultBranch} — tag what actually shipped on ${cfg.defaultBranch}`);
+				}
+			}
 			let artNote = "";
 			if (expectedTag && (await sh("git remote get-url origin", root)).ok) {
 				// a release must have LEFT this laptop: CI publishes from the tag on the remote
@@ -751,7 +780,7 @@ ${mdDigest(draftRefresh)}`))
 				else {
 					const cmd = cfg.release.artifact.replaceAll("{version}", manifestVer!).replaceAll("{tag}", expectedTag);
 					const art = await sh(cmd, root);
-					if (art.ok) artNote = "Artifact verified.";
+					if (art.ok) artNote = `Artifact verified for ${manifestVer}.`;
 					else errs.push(`artifact not published — release.artifact check failed (${cmd}):\n${tail(art.out)}`);
 				}
 			}
@@ -767,12 +796,27 @@ ${mdDigest(draftRefresh)}`))
 				const forge = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
 				if (forge === "self") ghNote = "Forge release skipped (forge=self — publication stays manual).";
 				else {
-					const notes = (await sh(`git tag -l --format=%(contents) ${JSON.stringify(tag)}`, root)).out.trim();
+					// notes: the tag's annotation, else the changelog entry for this version, else nothing —
+					// and never the output of a failed command, which is how a shell error became a release body (#51)
+					const notesRes = await sh(tagNotesCommand(tag), root);
+					let notes = notesRes.ok ? notesRes.out.trim() : "";
+					let notesNote = "";
+					if (!notesRes.ok) notesNote = `no release notes (the tag command failed: ${tail(notesRes.out)}). `;
+					else if (SHELL_ERROR.test(notes)) {
+						notesNote = "no release notes (the tag command returned a shell error, not a body). ";
+						notes = "";
+					}
+					if (!notes && !notesNote && cfg.release.changelog) {
+						const cl = path.join(gateCwd(root, state!), cfg.release.changelog);
+						if (existsSync(cl)) notes = changelogEntry(readFileSync(cl, "utf8"), manifestVer!);
+						if (notes) notesNote = `notes from ${cfg.release.changelog}. `;
+					}
+					if (!notes && !notesNote) notesNote = `no release notes (tag ${tag} carries no annotation${cfg.release.changelog ? ` and ${cfg.release.changelog} has no ${manifestVer} entry` : ""} — tag with git tag -a). `;
 					const cmd = forge === "gitlab"
 						? `glab release create ${JSON.stringify(tag)} --name ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`
 						: `gh release create ${JSON.stringify(tag)} --title ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`;
 					const gr = await sh(cmd, root);
-					ghNote = gr.ok ? `${forge} release ${tag} created.` : `${forge} release skipped: ${tail(gr.out)}`;
+					ghNote = gr.ok ? `${forge} release ${tag} created. ${notesNote}`.trim() : `${forge} release skipped: ${tail(gr.out)}`;
 				}
 			}
 			const tailNote = [ghNote, artNote].filter(Boolean).join(" ");

@@ -12,7 +12,9 @@ import {
 	checklistHash,
 	checkoutTarget,
 	claimBlocks,
+	changelogEntry,
 	cleanupAssess,
+	cmpVersions,
 	compactionReflectionLine,
 	DEFAULTS,
 	detectForge,
@@ -30,6 +32,8 @@ import {
 	pluginVersion,
 	preReleaseGate,
 	newState,
+	newestTaggedVersion,
+	parseLsRemoteTags,
 	parseVersion,
 	pidAlive,
 	reflectProtocol,
@@ -39,6 +43,7 @@ import {
 	shouldSelfCompact,
 	stateTamper,
 	statusCompact,
+	tagNotesCommand,
 	openReflections,
 	verifyGate,
 	versionTagGate,
@@ -112,17 +117,17 @@ test("releaseGate requires verify approval and release stage", () => {
 test("preReleaseGate: stage, re-greened checks, bumped version, changelog mention", () => {
 	const s = { ...newState("f", false), stage: "pre-release" as const };
 	const c2 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
-	const prep = { manifestVersion: "1.2.0", localTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
+	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
 	assert.ok(preReleaseGate(s, c2, prep).some((e) => e.includes("flow check")), "checks must be rerun after prep edits");
 	s.checks.test = { ok: true, at: "" };
 	assert.equal(preReleaseGate(s, c2, prep).length, 0);
 	assert.ok(preReleaseGate({ ...s, stage: "implement" as const }, c2, prep).length > 0, "wrong stage");
-	assert.ok(preReleaseGate(s, c2, { ...prep, localTags: ["v1.2.0"] }).some((e) => e.includes("already tagged")), "version not bumped past the last tag");
+	assert.ok(preReleaseGate(s, c2, { ...prep, remoteTags: ["v1.2.0"] }).some((e) => e.includes("already tagged")), "version not bumped past the last tag");
 	assert.ok(preReleaseGate(s, c2, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")));
 	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: null }).some((e) => e.includes("does not exist")));
 	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: { file: "CHANGELOG.md", content: "## 1.1.0" } }).some((e) => e.includes("does not mention")));
 	// unversioned flow (operator granted release --no-version): bump and changelog requirements are off
-	assert.equal(preReleaseGate({ ...s, noVersion: true }, c2, { manifestVersion: null, localTags: ["v1.2.0"], changelog: null }).length, 0);
+	assert.equal(preReleaseGate({ ...s, noVersion: true }, c2, { manifestVersion: null, remoteTags: ["v1.2.0"], changelog: null }).length, 0);
 	// no versioning/changelog configured: only the check matters
 	assert.equal(preReleaseGate({ ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } }, buildConfig({ commands: { test: "x" } }), prep).length, 0);
 });
@@ -422,7 +427,7 @@ test("docs mode: no plan document, no tier-1 checks, release integrity intact", 
 	assert.ok(verifyGate({ ...newState("d", false), stage: "implement" as const }, cfg).length > 0, "non-docs still demands green checks");
 	const pre = { ...newState("d", false, false, true), stage: "pre-release" as const };
 	const c3 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
-	const prep = { manifestVersion: "1.2.0", localTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
+	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
 	assert.ok(!preReleaseGate(pre, c3, prep).some((e) => e.includes("flow check")), "docs release gate skips re-greened checks");
 	assert.ok(preReleaseGate(pre, c3, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")), "docs still needs the version bump");
 });
@@ -516,4 +521,25 @@ test("pidAlive probes process existence without signaling", () => {
 	assert.equal(pidAlive(process.pid), true, "our own process is alive");
 	assert.equal(pidAlive(2 ** 30), false, "a pid beyond the range is dead");
 	assert.equal(pidAlive("123" as unknown as number), false, "a corrupt pid value reads as dead, not as a crash");
+});
+
+test("cmpVersions: numeric segment compare (#52)", () => {
+	assert.ok(cmpVersions("1.2.0", "1.2.1") < 0);
+	assert.ok(cmpVersions("0.10.0", "0.9.9") > 0, "numeric, not lexical");
+	assert.equal(cmpVersions("1.2", "1.2.0"), 0);
+	assert.ok(cmpVersions("1.2.3-rc1", "1.2.3") < 0, "a non-numeric segment counts as 0 — 1.2.3-rc1 reads as 1.2.0");
+});
+
+test("what the forge already has: newestTaggedVersion and ls-remote parsing (#52)", () => {
+	assert.equal(newestTaggedVersion("v{version}", ["v0.9.0", "v0.10.0", "not-a-release"]), "0.10.0");
+	assert.equal(newestTaggedVersion("v{version}", ["release-1"]), null, "no matching tag");
+	assert.equal(newestTaggedVersion("rel-{version}", ["rel-1.0.1", "rel-1.0.2"]), "1.0.2", "a prefixed pattern too");
+	assert.deepEqual(parseLsRemoteTags("abc\trefs/tags/v1.0.0\ndef\trefs/tags/v1.0.0^{}\nghi\trefs/tags/v1.1.0\n"), ["v1.0.0", "v1.1.0"], "peeled refs collapse into their tag");
+});
+
+test("tagNotesCommand is /bin/sh safe and changelogEntry finds the section (#51)", () => {
+	assert.equal(tagNotesCommand("v1.2.3"), `git tag -l --format='%(contents)' "v1.2.3"`, "an unquoted %(contents) is a shell syntax error (#51)");
+	const md = "# Changelog\n\n## [0.35.0] - 2026-10-18\n\n### Added\n\n- thing\n\n## [0.34.0] - 2026-10-17\n\n### Fixed\n\n- older\n";
+	assert.equal(changelogEntry(md, "0.35.0"), "### Added\n\n- thing", "its own section, subsections included");
+	assert.equal(changelogEntry(md, "9.9.9"), "", "no section, no body");
 });
