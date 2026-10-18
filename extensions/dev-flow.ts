@@ -56,6 +56,7 @@ import {
 	reflectionRoutes,
 
 	listFiles,
+	looksLikeShellError,
 	newestTaggedVersion,
 	newState,
 	nextHint,
@@ -128,9 +129,6 @@ async function releaseTags(root: string): Promise<string[]> {
 	if (remote.ok) return parseLsRemoteTags(remote.out);
 	return (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
 }
-
-/** A "release body" that is really a shell error — the shape that shipped to two forges (#51). */
-const SHELL_ERROR = /\/bin\/sh:|^\s*sh:|syntax error/i;
 
 const GATE_HELP =
 	"help | init [--force|--draft|--write <text>] | reflect [<note>] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
@@ -757,10 +755,17 @@ ${mdDigest(draftRefresh)}`))
 				if (!manifestVer) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — fix the playbook`);
 			}
 			const expectedTag = manifestVer ? cfg.versioning.pattern.replace("{version}", manifestVer) : null;
+			const hasOrigin = (await sh("git remote get-url origin", root)).ok;
+			// one round-trip answers both questions about the tag: is it there, and did it leave this laptop (#52)
+			const tags = expectedTag ? await releaseTags(root) : [];
 			if (expectedTag && manifestVer) {
-				const tags = await releaseTags(root);
 				const verrs = versionTagGate(manifestVer, cfg.versioning.pattern, tags);
-				errs.push(...verrs);
+				if (verrs.length) {
+					// the actionable version of "not on the forge": the tag exists but never got pushed
+					const local = hasOrigin ? (await sh(`git tag --list ${JSON.stringify(expectedTag)}`, root)).out.trim() : "";
+					if (local) errs.push(`tag ${expectedTag} is local-only — git push origin ${expectedTag} (git push --follow-tags silently skips lightweight tags; tag with git tag -a and push the ref explicitly)`);
+					else errs.push(...verrs);
+				}
 				// never publish behind what the forge already has — that is how a stale manifest republished
 				// the previous version and its artifact probe passed (#52)
 				const newest = newestTaggedVersion(cfg.versioning.pattern, tags);
@@ -771,10 +776,6 @@ ${mdDigest(draftRefresh)}`))
 				}
 			}
 			let artNote = "";
-			if (expectedTag && (await sh("git remote get-url origin", root)).ok) {
-				// a release must have LEFT this laptop: CI publishes from the tag on the remote
-				if (!(await sh(`git ls-remote --tags origin "refs/tags/${expectedTag}"`, root)).out.trim()) errs.push(`tag ${expectedTag} is local-only — git push origin ${expectedTag} (git push --follow-tags silently skips lightweight tags; tag with git tag -a and push the ref explicitly)`);
-			}
 			if (expectedTag && cfg.release.artifact) {
 				if (flag("no-artifact-check")) artNote = "Artifact check skipped (--no-artifact-check).";
 				else {
@@ -802,7 +803,7 @@ ${mdDigest(draftRefresh)}`))
 					let notes = notesRes.ok ? notesRes.out.trim() : "";
 					let notesNote = "";
 					if (!notesRes.ok) notesNote = `no release notes (the tag command failed: ${tail(notesRes.out)}). `;
-					else if (SHELL_ERROR.test(notes)) {
+					else if (looksLikeShellError(notes)) {
 						notesNote = "no release notes (the tag command returned a shell error, not a body). ";
 						notes = "";
 					}

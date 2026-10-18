@@ -359,6 +359,13 @@ export function tagNotesCommand(tag: string): string {
 	return `git tag -l --format='%(contents)' ${JSON.stringify(tag)}`;
 }
 
+/** Is this "release body" actually a shell complaint? The #51 shape is
+ *  `/bin/sh: 1: Syntax error: "(" unexpected`. Deliberately narrow: a changelog line that merely
+ *  mentions a syntax error is a real body and must not be dropped. */
+export function looksLikeShellError(text: string): boolean {
+	return /Syntax error:|\bsh: ?\d+:/.test(text);
+}
+
 /** A changelog entry by version: the section whose heading names the version, up to the next heading
  *  of the same or a higher level. "" when no heading mentions it — used as a deterministic release
  *  body when the tag carries no annotation (#51). */

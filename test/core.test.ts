@@ -27,6 +27,7 @@ import {
 	type GuardRules,
 	healthRetry,
 	investigationBrief,
+	looksLikeShellError,
 	parsePushRefs,
 	playbookTamper,
 	pluginVersion,
@@ -542,4 +543,6 @@ test("tagNotesCommand is /bin/sh safe and changelogEntry finds the section (#51)
 	const md = "# Changelog\n\n## [0.35.0] - 2026-10-18\n\n### Added\n\n- thing\n\n## [0.34.0] - 2026-10-17\n\n### Fixed\n\n- older\n";
 	assert.equal(changelogEntry(md, "0.35.0"), "### Added\n\n- thing", "its own section, subsections included");
 	assert.equal(changelogEntry(md, "9.9.9"), "", "no section, no body");
+	assert.ok(looksLikeShellError('/bin/sh: 1: Syntax error: "(" unexpected'), "the shape #51 shipped as the release body");
+	assert.ok(!looksLikeShellError("### Fixed\n\n- the forge release body was a /bin/sh syntax error (#51)"), "a changelog line about the bug is a real body");
 });

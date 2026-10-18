@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-10-18
+
+### Fixed
+
+- **`release-done` publishes the version the release gate approved** (#52). The `release` gate read the manifest under the feature worktree, `release-done` read it from the main checkout — so a main checkout whose default branch was still behind republished the *previous* version, its `release.artifact` probe verified the previous artifact, and the gate reported `Artifact verified.` while nothing new shipped (this happened in the wild: a `v0.9.0` release came out as `v0.8.1`). The gate now stamps its validated version into the flow state (`releaseVersion`) and `release-done` publishes exactly that; the artifact line names what it probed (`Artifact verified for 0.9.0.`).
+- **Tags are judged by what origin holds, not by one clone** (#52): "already tagged" and "the tag exists" now come from `git ls-remote --tags origin` (local tags only when there is no remote), and a release older than the newest matching tag on origin is refused outright — `v9.9.9 is already tagged — refusing to release v9.9.8 behind it`.
+- **Forge release bodies stopped being shell errors** (#51). `git tag -l --format=%(contents)` is a `/bin/sh` syntax error (the unquoted `(`), and `sh()` folds stderr into its output, so `/bin/sh: 1: Syntax error: "(" unexpected` became the stored release notes — on two repos, including dev-flow's own `v0.34.0` and `v0.35.0`. The format is now quoted, notes are taken only from a *successful* tag command, and a body that looks like a shell complaint is dropped and reported instead of published. When a tag carries no annotation (a lightweight tag silently produced an empty body), the body falls back to that version's `release.changelog` entry, and if there is none the gate says so: `no release notes (tag v0.9.0 carries no annotation … — tag with git tag -a)`.
+
 ## [0.35.0] - 2026-10-18
 
 ### Added
