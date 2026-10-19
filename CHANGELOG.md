@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-10-19
+
+### Added
+
+- **Roadmap: a flow-aware backlog of future features** (operator request). `.dev-flow/roadmap.md` is a gitignored `- [ ]` checklist of features to build later — advisory like `reflections.md`, it never gates. `flow roadmap` lists the open items numbered; `add "<feature>"` appends one; `pick <n> <slug>` stamps open item *n* with the slug and prints the `flow start` line (one verb — it starts nothing itself), and when a flow with that slug reaches `finish`, **the stamped item checks itself off** (`— done: <date>`) — a picked feature closes its backlog line with no extra ceremony; `done <n>` checks off by hand for items shipped outside a flow, `tidy` drops the checked lines. The open count is surfaced in `flow status` (including the no-features answer — a backlog is most useful before a flow exists) and in the per-turn session context, bound and unbound; direct edits of the file are equally fine.
+
 ## [0.39.2] - 2026-10-19
 
 ### Fixed

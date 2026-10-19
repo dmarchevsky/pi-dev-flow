@@ -52,6 +52,13 @@ import {
 	sq,
 	tagNotesCommand,
 	openReflections,
+	appendRoadmapItem,
+	roadmapDone,
+	roadmapDoneCount,
+	roadmapDoneForSlug,
+	roadmapOpenCount,
+	roadmapPick,
+	roadmapTidy,
 	verifyGate,
 	versionTagGate,
 	writeGuard,
@@ -309,6 +316,49 @@ test("writeGuard: path attribution + session binding rules", () => {
 test("openReflections: unchecked items only", () => {
 	assert.deepEqual(openReflections("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
 	assert.deepEqual(openReflections(""), []);
+});
+
+test("roadmap: append mints the header once and adds open items", () => {
+	const one = appendRoadmapItem("", "dark mode");
+	assert.match(one, /^# dev-flow roadmap/);
+	assert.equal(roadmapOpenCount(one), 1);
+	const two = appendRoadmapItem(one, "  roadmap tidy  \n");
+	assert.ok(two.includes("- [ ] roadmap tidy\n"), "text is trimmed into the item");
+	assert.equal(roadmapOpenCount(two), 2);
+	assert.equal(roadmapDoneCount(two), 0);
+});
+
+test("roadmap: pick stamps the nth open item, idempotent per slug", () => {
+	const src = "# r\n- [ ] a\n- [x] gone\n- [ ] b\n";
+	assert.equal(roadmapPick(src, 2, "my-slug"), "# r\n- [ ] a\n- [x] gone\n- [ ] b (my-slug)\n");
+	assert.equal(roadmapPick(roadmapPick(src, 2, "s")!, 2, "s"), "# r\n- [ ] a\n- [x] gone\n- [ ] b (s)\n", "re-pick does not double-stamp");
+	assert.equal(roadmapPick(src, 3, "x"), null, "only open items are numberable");
+	// odd spacing is no item anywhere: counting and editing must never disagree
+	assert.equal(roadmapOpenCount("-  [ ] loose\n"), 0);
+	assert.equal(roadmapPick("-  [ ] loose\n", 1, "s"), null);
+});
+
+test("roadmap: done checks the nth open item with a stamp", () => {
+	const src = "- [ ] a\n- [x] old\n- [ ] b\n";
+	assert.match(roadmapDone(src, 2, "2025-10-19 fin")!, /- \[x\] b — done: 2025-10-19 fin/);
+	assert.equal(roadmapDone(src, 3, "x"), null);
+	assert.equal(roadmapDoneCount(roadmapDone(src, 1, "d")!), 2);
+});
+
+test("roadmap: finish hook checks off every item stamped (slug)", () => {
+	const src = "- [ ] pick me (fin)\n- [ ] also (fin) and more\n- [ ] other (later)\n- [x] history (fin)\n";
+	const r = roadmapDoneForSlug(src, "fin", "2025-10-19");
+	assert.equal(r.count, 2);
+	assert.ok(r.text.includes("- [x] pick me (fin) — done: 2025-10-19"));
+	assert.ok(r.text.includes("- [ ] other (later)"), "unstamped items stay open");
+	assert.equal(roadmapDoneForSlug(src, "nobody", "x").count, 0);
+});
+
+test("roadmap: tidy drops done items and keeps preamble and open items", () => {
+	const src = "# r\n\n<!-- note -->\n\n- [ ] keep\n- [x] drop — done: 2025-01-01\n\n- [ ] keep too\n";
+	const out = roadmapTidy(src);
+	assert.ok(out.includes("<!-- note -->") && out.includes("- [ ] keep\n") && out.includes("- [ ] keep too"));
+	assert.ok(!out.includes("[x]"));
 });
 
 test("reflectSections: plugin wording → plugin, playbook wording → playbook", () => {
