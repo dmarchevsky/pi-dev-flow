@@ -333,6 +333,9 @@ test("roadmap: pick stamps the nth open item, idempotent per slug", () => {
 	assert.equal(roadmapPick(src, 2, "my-slug"), "# r\n- [ ] a\n- [x] gone\n- [ ] b (my-slug)\n");
 	assert.equal(roadmapPick(roadmapPick(src, 2, "s")!, 2, "s"), "# r\n- [ ] a\n- [x] gone\n- [ ] b (s)\n", "re-pick does not double-stamp");
 	assert.equal(roadmapPick(src, 3, "x"), null, "only open items are numberable");
+	// odd spacing is no item anywhere: counting and editing must never disagree
+	assert.equal(roadmapOpenCount("-  [ ] loose\n"), 0);
+	assert.equal(roadmapPick("-  [ ] loose\n", 1, "s"), null);
 });
 
 test("roadmap: done checks the nth open item with a stamp", () => {

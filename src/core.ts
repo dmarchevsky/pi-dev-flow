@@ -926,9 +926,11 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 export const ROADMAP_HEADER =
 	"# dev-flow roadmap\n\n<!-- Backlog of features to build later. flow roadmap add/pick/done/tidy; a pick stamps its item (slug) and flow finish checks it off when that feature ships. -->\n";
 
+// one strict format rules them all: the tool writes "- [ ] "/"- [x] " and counts exactly that —
+// a looser matcher made `list` numbering disagree with what pick/done edit.
+const isOpenItem = (line: string) => line.trim().startsWith("- [ ] ");
 const isDoneItem = (line: string) => /^\s*-\s*\[[xX]\]\s/.test(line);
-const isOpenItem = (line: string) => /^\s*-\s*\[[ ]]\s/.test(line);
-const stampItem = (line: string, stamp: string) => `- [x] ${line.trim().replace(/^-\s*\[[ ]]\s+/, "")} — done: ${stamp}`;
+const stampItem = (line: string, stamp: string) => `- [x] ${line.trim().slice(6)} — done: ${stamp}`;
 
 /** Append an open item to roadmap.md content; a header is minted from empty content. */
 export function appendRoadmapItem(text: string, item: string): string {
@@ -969,7 +971,8 @@ export function roadmapDone(text: string, n: number, stamp: string): string | nu
 	return hit ? out.join("\n") : null;
 }
 
-/** Check every open item stamped `(slug)` by a pick — flow finish closes the backlog item a picked feature ships. */
+/** Check every open item stamped `(slug)` by a pick — flow finish closes the backlog item a picked feature ships.
+ *  shortcut: "(slug)" matches as substring — item prose literally containing "(fin)" closes when fin ships; only pick-minted stamps are meant to match. */
 export function roadmapDoneForSlug(text: string, slug: string, stamp: string): { text: string; count: number } {
 	let count = 0;
 	const out = text.split("\n").map((l) => {

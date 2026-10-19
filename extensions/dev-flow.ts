@@ -563,10 +563,7 @@ ${mdDigest(draftRefresh)}`))
 			const text = readRoadmap(root);
 			const open = roadmapOpenCount(text);
 			const done = roadmapDoneCount(text);
-			const save = (next: string) => {
-				mkdirSync(dfDir(root), { recursive: true });
-				writeFileSync(roadmapFile(root), next);
-			};
+			const save = (next: string) => writeFileSync(roadmapFile(root), next); // .dev-flow/ existence is runFlow's precondition
 			const idx = Number(args[0]);
 			const validIdx = Number.isInteger(idx) && idx >= 1 && idx <= open;
 			switch (verb) {
