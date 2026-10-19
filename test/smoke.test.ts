@@ -613,6 +613,10 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	await versioned("chores", "9.9.11", "", "\n- [ ] dogfood the shim in the released checkout\n");
 	const chores = await flow(["release-done", "--confirmed"]);
 	assert.match(chores.content[0].text, /release-stage checklist still open \(1\): dogfood the shim/, "release-stage items surface at the last gate; the operator's Finish? answer closes them");
+	// #63: the scratch repo has no forge — the failed create stamps the state and finish must say so before the state vanishes
+	assert.match(chores.content[0].text, /release skipped/, "a failed forge release is printed, not swallowed");
+	const finChores = await flow(["finish", "--confirmed"]);
+	assert.match(finChores.content[0].text, /WARNING: the forge release was not created/, "finish names the missing forge release — it cannot slip past (#63)");
 });
 
 test("release-teeth: tag must reach origin; release.artifact verifies the published artifact", async () => {
