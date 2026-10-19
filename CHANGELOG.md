@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.39.2] - 2026-10-19
+
+### Fixed
+
+- **A failed forge release can no longer slip past the flow** (#63). `release-done` created the forge release *advisory* — a failed `gh`/`glab release create` printed `github release skipped: <error>` and the release was recorded anyway; an operator who skimmed the line finished the feature with a tag but no release page. A failed create now **stamps the flow state** (`forgeReleaseSkipped`, cleared by a successful re-run of `release-done`) and **`finish` names it in the Finish? question**, in the no-UI refusal and in the `--confirmed` output — intentional skips (`--no-release-create`, `release.releases = false`, `forge = self`) stay silent, because declining is the operator's call, a failure never is.
+
 ## [0.39.1] - 2026-10-18
 
 ### Fixed
