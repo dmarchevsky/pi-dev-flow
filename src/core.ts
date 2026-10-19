@@ -363,8 +363,13 @@ export function newestTaggedVersion(pattern: string, tags: string[]): string | n
 /** The command that prints a tag's annotation. The format must be quoted for /bin/sh: an unquoted
  *  `%(contents)` is a syntax error, and `sh()` folds stderr into its output, so the error text
  *  landed in release bodies as if it were the notes (#51). */
+/** POSIX shell literal: embeds arbitrary text as one argument — the JSON-style quoting a template string suggests is not shell quoting (backticks and $() inside it still execute, #51 fallout). */
+export function sq(s: string): string {
+	return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 export function tagNotesCommand(tag: string): string {
-	return `git tag -l --format='%(contents)' ${JSON.stringify(tag)}`;
+	return `git tag -l --format='%(contents)' ${sq(tag)}`;
 }
 
 /** Is this "release body" actually a shell complaint? The #51 shape is

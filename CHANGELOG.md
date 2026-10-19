@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-10-18
+
+### Fixed
+
+- **Every argument that reaches `/bin/sh` is now a real shell literal** (the #51 leftover, from an open reflection). Gates built commands with `${JSON.stringify(x)}` — JavaScript quoting, which `/bin/sh` strips before expanding what is inside: an annotated tag whose body held backticks had its code spans *executed* by `gh release create` (v0.37.1), a semicolon killed it outright (v0.38.0); the #51 fix had quoted the notes on the way in, not the way out. A `sq()` helper (POSIX single quotes, `'\''` for embedded quotes) now escapes all 19 such embeddings — release commands, tag lookups, worktree and branch paths, remote refs — and the smoke round-trip runs a tag body full of backticks, `$()` and `;` through real `/bin/sh`, asserting it prints verbatim and nothing runs.
+
 ## [0.39.0] - 2026-10-18
 
 ### Fixed

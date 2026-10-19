@@ -49,6 +49,7 @@ import {
 	shouldTakeOverCompaction,
 	stateTamper,
 	statusCompact,
+	sq,
 	tagNotesCommand,
 	openReflections,
 	verifyGate,
@@ -626,7 +627,9 @@ test("what the forge already has: newestTaggedVersion and ls-remote parsing (#52
 });
 
 test("tagNotesCommand is /bin/sh safe and changelogEntry finds the section (#51)", () => {
-	assert.equal(tagNotesCommand("v1.2.3"), `git tag -l --format='%(contents)' "v1.2.3"`, "an unquoted %(contents) is a shell syntax error (#51)");
+	assert.equal(tagNotesCommand("v1.2.3"), `git tag -l --format='%(contents)' 'v1.2.3'`, "an unquoted %(contents) is a shell syntax error (#51)");
+	assert.equal(sq("it's"), `'it'\\''s'`, "single quotes survive the escape");
+	assert.equal(sq("`x` $(y) ; z"), "'`x` $(y) ; z'", "code spans and substitutions become literal argument text");
 	const md = "# Changelog\n\n## [0.35.0] - 2026-10-18\n\n### Added\n\n- thing\n\n## [0.34.0] - 2026-10-17\n\n### Fixed\n\n- older\n";
 	assert.equal(changelogEntry(md, "0.35.0"), "### Added\n\n- thing", "its own section, subsections included");
 	assert.equal(changelogEntry(md, "9.9.9"), "", "no section, no body");
