@@ -70,6 +70,7 @@ import {
 	stateTamper,
 	statusCompact,
 	subst,
+	sq,
 	tagNotesCommand,
 	validSlug,
 	verifyGate,
@@ -275,7 +276,7 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 			if (abs !== path.resolve(root) && abs.startsWith(wtRoot) && !owned.has(abs)) out.push(`orphan worktree ${path.relative(root, abs)} — no feature owns it (git worktree remove)`);
 		}
 	const ownedBr = new Set(feats.map((f) => f.branch));
-	const brRaw = await sh(`git branch --list ${JSON.stringify(`${featureBranchPrefix(cfg)}*`)}`, root);
+	const brRaw = await sh(`git branch --list ${sq(`${featureBranchPrefix(cfg)}*`)}`, root);
 	if (brRaw.ok)
 		// git marks the current branch with "* " and a worktree-checked-out one with "+ " — strip both, or an active feature's own branch never matches ownedBr
 		for (const b of brRaw.out.split("\n").map((x) => x.replace(/^[*+]?\s+/, "").trim()).filter(Boolean)) {
@@ -582,7 +583,7 @@ ${mdDigest(draftRefresh)}`))
 			if (!existsSync(wt)) {
 				// branch discipline: features branch off the default branch — never from a stale checkout HEAD
 				const base = (await sh(`git rev-parse --verify -q origin/${cfg.defaultBranch}`, root)).ok ? `origin/${cfg.defaultBranch}` : cfg.defaultBranch;
-				const res = await sh(`git worktree add ${JSON.stringify(wt)} -b ${branch} ${base}`, root);
+				const res = await sh(`git worktree add ${sq(wt)} -b ${branch} ${base}`, root);
 				if (!res.ok) return { text: `worktree creation failed:\n${res.out}`, isError: true };
 			}
 			// setup is worktree work of a normal feature: a docs flow runs no project command at all (#49),
@@ -783,7 +784,7 @@ ${mdDigest(draftRefresh)}`))
 				const verrs = versionTagGate(manifestVer, cfg.versioning.pattern, tags);
 				if (verrs.length) {
 					// the actionable version of "not on the forge": the tag exists but never got pushed
-					const local = hasOrigin ? (await sh(`git tag --list ${JSON.stringify(expectedTag)}`, root)).out.trim() : "";
+					const local = hasOrigin ? (await sh(`git tag --list ${sq(expectedTag)}`, root)).out.trim() : "";
 					if (local) errs.push(`tag ${expectedTag} is local-only — git push origin ${expectedTag} (git push --follow-tags silently skips lightweight tags; tag with git tag -a and push the ref explicitly)`);
 					else errs.push(...verrs);
 				}
@@ -792,7 +793,7 @@ ${mdDigest(draftRefresh)}`))
 				const newest = newestTaggedVersion(cfg.versioning.pattern, tags);
 				if (newest && cmpVersions(newest, manifestVer) > 0) errs.push(`${cfg.versioning.pattern.replace("{version}", newest)} is already tagged — refusing to release ${expectedTag} behind it`);
 				if (!verrs.length) {
-					const reach = await sh(`git merge-base --is-ancestor ${JSON.stringify(expectedTag)} origin/${cfg.defaultBranch} 2>/dev/null || git merge-base --is-ancestor ${JSON.stringify(expectedTag)} ${cfg.defaultBranch}`, root);
+					const reach = await sh(`git merge-base --is-ancestor ${sq(expectedTag)} origin/${cfg.defaultBranch} 2>/dev/null || git merge-base --is-ancestor ${sq(expectedTag)} ${cfg.defaultBranch}`, root);
 					if (!reach.ok) errs.push(`tag ${expectedTag} is not reachable from ${cfg.defaultBranch} — tag what actually shipped on ${cfg.defaultBranch}`);
 				}
 			}
@@ -835,8 +836,8 @@ ${mdDigest(draftRefresh)}`))
 					}
 					if (!notes && !notesNote) notesNote = `no release notes (tag ${tag} carries no annotation${cfg.release.changelog ? ` and ${cfg.release.changelog} has no ${manifestVer} entry` : ""} — tag with git tag -a). `;
 					const cmd = forge === "gitlab"
-						? `glab release create ${JSON.stringify(tag)} --name ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`
-						: `gh release create ${JSON.stringify(tag)} --title ${JSON.stringify(tag)}${notes ? ` --notes ${JSON.stringify(notes)}` : ""}`;
+						? `glab release create ${sq(tag)} --name ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`
+						: `gh release create ${sq(tag)} --title ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`;
 					const gr = await sh(cmd, root);
 					ghNote = gr.ok ? `${forge} release ${tag} created. ${notesNote}`.trim() : `${forge} release skipped: ${tail(gr.out)}`;
 				}
@@ -865,7 +866,7 @@ ${mdDigest(draftRefresh)}`))
 			const dirty = await sh("git status --porcelain", root);
 			if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
 			if ((await sh("git remote get-url origin", root)).ok) {
-				const pushed = await sh(`git merge-base --is-ancestor HEAD ${JSON.stringify(`origin/${cfg.defaultBranch}`)}`, root);
+				const pushed = await sh(`git merge-base --is-ancestor HEAD ${sq(`origin/${cfg.defaultBranch}`)}`, root);
 				if (!pushed.ok) return { text: `HEAD is not on origin/${cfg.defaultBranch} — push the release (git push origin ${cfg.defaultBranch}) before finish`, isError: true };
 			}
 			// the cleanup part of closing out: drop the worktree and branch the release consumed
@@ -873,8 +874,8 @@ ${mdDigest(draftRefresh)}`))
 			let closeNote: string;
 			let unmergedNote = "";
 			if (wt && existsSync(wt)) {
-				const status = await sh(`git -C ${JSON.stringify(wt)} status --porcelain`, root);
-				const unmerged = await sh(`git -C ${JSON.stringify(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${JSON.stringify(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
+				const status = await sh(`git -C ${sq(wt)} status --porcelain`, root);
+				const unmerged = await sh(`git -C ${sq(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${sq(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 				const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
 				if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
 				if (assess.unmerged.length) unmergedNote = ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?).`;
@@ -886,14 +887,14 @@ ${mdDigest(draftRefresh)}`))
 				if (!ok) return { text: "finish declined" };
 			}
 			if (wt && existsSync(wt)) {
-				const rm = await sh(`git worktree remove ${JSON.stringify(wt)} && git branch -D ${JSON.stringify(state!.branch)}`, root);
+				const rm = await sh(`git worktree remove ${sq(wt)} && git branch -D ${sq(state!.branch)}`, root);
 				if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow finish`, isError: true };
 				closeNote = `worktree and branch ${state!.branch} removed`;
 			} else {
 				await sh("git worktree prune", root);
 				closeNote = "worktree already gone";
 				if (state!.branch && (await sh(`git rev-parse --verify --quiet refs/heads/${state!.branch}`, root)).ok) {
-					const del = await sh(`git branch -d ${JSON.stringify(state!.branch)}`, root);
+					const del = await sh(`git branch -d ${sq(state!.branch)}`, root);
 					closeNote = del.ok ? `branch ${state!.branch} deleted` : `branch ${state!.branch} kept (not fully merged — git branch -D if sure)`;
 				}
 			}
@@ -904,21 +905,21 @@ ${mdDigest(draftRefresh)}`))
 				const br = state!.branch;
 				const onRemote = await sh("git ls-remote --heads origin", root);
 				if (onRemote.out.split("\n").some((l) => l.endsWith(`\trefs/heads/${br}`))) {
-					await sh(`git fetch -q origin ${JSON.stringify(br)}`, root);
-					let merged = (await sh(`git merge-base --is-ancestor origin/${JSON.stringify(br)} origin/${JSON.stringify(cfg.defaultBranch)}`, root)).ok;
+					await sh(`git fetch -q origin ${sq(br)}`, root);
+					let merged = (await sh(`git merge-base --is-ancestor origin/${sq(br)} origin/${sq(cfg.defaultBranch)}`, root)).ok;
 					if (!merged) {
 						// squash merges leave no ancestry — ask the forge: gh pr list, or the GitLab API via glab; self-hosted stays on ancestry proof
 						const originUrl = await sh("git remote get-url origin", root);
 						const forge = cfg.forge || detectForge(originUrl.out);
 						if (forge === "gitlab") {
-							const mr = await sh(`glab api ${JSON.stringify(`projects/:id/merge_requests?source_branch=${br}&state=merged&per_page=1`)}`, root);
+							const mr = await sh(`glab api ${sq(`projects/:id/merge_requests?source_branch=${br}&state=merged&per_page=1`)}`, root);
 							merged = mr.ok && mr.out.trim() !== "[]";
 						} else if (forge === "github") {
-							const pr = await sh(`gh pr list --state merged --head ${JSON.stringify(br)} --json number --jq length`, root);
+							const pr = await sh(`gh pr list --state merged --head ${sq(br)} --json number --jq length`, root);
 							merged = pr.ok && pr.out.trim() !== "0";
 						}
 					}
-					if (merged) remoteNote = (await sh(`git push origin --delete ${JSON.stringify(`refs/heads/${br}`)}`, root)).ok
+					if (merged) remoteNote = (await sh(`git push origin --delete ${sq(`refs/heads/${br}`)}`, root)).ok
 						? ` origin/${br} deleted (verified merged)`
 						: ` origin/${br} delete failed — git push origin --delete ${br}`;
 					else remoteNote = ` origin/${br} kept — merged state not verifiable from here (git push origin --delete ${br} when sure)`;
@@ -1173,7 +1174,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const branchOf = async (dir: string | null): Promise<string> => {
 				const at = dir ? path.resolve(ctx.cwd, dir) : ctx.cwd;
 				if (!branchCache.has(at)) {
-					const br = await sh(`git -C ${JSON.stringify(at)} branch --show-current`, ctx.cwd);
+					const br = await sh(`git -C ${sq(at)} branch --show-current`, ctx.cwd);
 					let b = (br.ok ? br.out : "").trim().split("\n")[0];
 					if (!b) b = (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] || "";
 					branchCache.set(at, b);
@@ -1189,7 +1190,7 @@ export default function devFlow(pi: ExtensionAPI) {
 					pushRefs = await Promise.all(
 						parsePushRefs(gp).map(async (r) => {
 							if (r.kind !== "branch" || !r.name || r.name === "*") return r;
-							const tag = await sh(`git rev-parse --verify -q refs/tags/${JSON.stringify(r.name)}`, gitDir);
+							const tag = await sh(`git rev-parse --verify -q refs/tags/${sq(r.name)}`, gitDir);
 							return tag.ok ? { kind: "tag" as const, name: r.name } : r;
 						}),
 					);
@@ -1198,7 +1199,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				// can only contain it — setup, not feature work, so it needs no flow (#53)
 				let playbookChore = false;
 				if (gitInvocation(g.seg).subs.includes("commit") && (await branchOf(g.dir)) === cfg.defaultBranch && bound?.stage !== "release") {
-					const dirty = await sh(`git -C ${JSON.stringify(gitDir)} status --porcelain`, ctx.cwd);
+					const dirty = await sh(`git -C ${sq(gitDir)} status --porcelain`, ctx.cwd);
 					playbookChore = dirty.ok && playbookOnlyChange(dirty.out);
 				}
 				const reason = bashFlowGuard({ command: g.seg, branch: await branchOf(g.dir), stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore });

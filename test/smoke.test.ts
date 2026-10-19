@@ -1113,9 +1113,11 @@ test("release-done publishes the version the release gate stamped, and refuses t
 
 test("tagNotesCommand prints an annotated tag's body through /bin/sh (#51)", () => {
 	const repo = makeRepo();
-	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1.0.0", "-m", "notes with (parens) and $vars"]);
+	const body = "notes with (parens), $HOME, `touch pwned`, $(touch pwned2) and ; semicolons"; // the payloads that executed or killed releases when the notes were quoted on the way in but not the way out
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", "v1.0.0", "-m", body]);
 	const out = execFileSync("/bin/sh", ["-c", tagNotesCommand("v1.0.0")], { cwd: repo, encoding: "utf8" }).trim();
-	assert.equal(out, "notes with (parens) and $vars", "the format must be quoted — an unquoted %(contents) is a /bin/sh syntax error");
+	assert.equal(out, body, "the format must be quoted — an unquoted %(contents) is a /bin/sh syntax error");
+	assert.ok(!existsSync(path.join(repo, "pwned")) && !existsSync(path.join(repo, "pwned2")), "code spans and substitutions stay literal argument text");
 });
 
 test("the playbook tracking chore is legal on the default branch (#53)", async () => {
