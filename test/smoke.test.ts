@@ -587,6 +587,7 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	const versioned = async (slug: string, ver: string, mdTail: string, mdAfter = "") => {
 		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nversionFile = package.json\nversionTag = v{version}\n${mdTail}\`\`\`\n${mdAfter}`]);
+		trackPlaybook(repo); // finish demands a clean main checkout — the self-ignoring .dev-flow/ needs its playbook tracked
 		await flow(["start", slug]);
 		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
@@ -609,10 +610,17 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	const c = await flow(["release-done", "--confirmed"]);
 	assert.ok(!c.content[0].text.includes("release skipped"), "config-off: no attempt, no note");
 	assert.match(c.content[0].text, /release recorded as complete/);
-	// release-stage items have no gate of their own — release-done names them instead of swallowing them
+	// release-stage items have no gate of their own — release-done names them; and a failing forge create (#63)
+	// must be named by finish before the state vanishes: forge=gitlab without a GitLab remote — glab is absent
+	// or has no matching repo, the create deterministically fails.
 	await versioned("chores", "9.9.11", "", "\n- [ ] dogfood the shim in the released checkout\n");
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n\n## global\n\n```flow\nforge = gitlab\n```\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n\n- [ ] dogfood the shim in the released checkout\n");
+	trackPlaybook(repo);
 	const chores = await flow(["release-done", "--confirmed"]);
 	assert.match(chores.content[0].text, /release-stage checklist still open \(1\): dogfood the shim/, "release-stage items surface at the last gate; the operator's Finish? answer closes them");
+	assert.match(chores.content[0].text, /release skipped/, "a failed forge release is printed, not swallowed");
+	const finChores = await flow(["finish", "--confirmed"]);
+	assert.match(finChores.content[0].text, /WARNING: the forge release was not created/, "finish names the missing forge release — it cannot slip past (#63)");
 });
 
 test("release-teeth: tag must reach origin; release.artifact verifies the published artifact", async () => {

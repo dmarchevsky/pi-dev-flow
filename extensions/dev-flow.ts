@@ -839,6 +839,9 @@ ${mdDigest(draftRefresh)}`))
 						? `glab release create ${sq(tag)} --name ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`
 						: `gh release create ${sq(tag)} --title ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`;
 					const gr = await sh(cmd, root);
+					// a failed create is the operator's call to decline, never a choice we make for them — stamp it so finish names it (#63)
+					if (gr.ok) delete state!.forgeReleaseSkipped; // a successful retry lifts the stamp
+					else state!.forgeReleaseSkipped = tail(gr.out);
 					ghNote = gr.ok ? `${forge} release ${tag} created. ${notesNote}`.trim() : `${forge} release skipped: ${tail(gr.out)}`;
 				}
 			}
@@ -880,10 +883,12 @@ ${mdDigest(draftRefresh)}`))
 				if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
 				if (assess.unmerged.length) unmergedNote = ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?).`;
 			}
+			// a forge release that failed at release-done is still the operator's call — but they must see it before the state vanishes (#63)
+			const forgeSkipNote = state!.forgeReleaseSkipped ? ` WARNING: the forge release was not created (${state!.forgeReleaseSkipped}) — recreate it manually or re-run release-done before finishing.` : "";
 			// the one finish question — asked after the safety checks so it can never be a wasted question
 			if (!flag("confirmed") && !state!.yolo) {
-				if (!ui.hasUI) return { text: `finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)`, isError: true };
-				const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
+				if (!ui.hasUI) return { text: `finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, isError: true };
+				const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 				if (!ok) return { text: "finish declined" };
 			}
 			if (wt && existsSync(wt)) {
@@ -927,7 +932,7 @@ ${mdDigest(draftRefresh)}`))
 			}
 			rmSync(featDir(root, state!.slug), { recursive: true, force: true });
 			if (sess.slug === state!.slug) sess.bind(null);
-			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.` };
+			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${forgeSkipNote}` };
 		}
 
 		case "use": {
