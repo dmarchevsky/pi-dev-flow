@@ -806,9 +806,14 @@ export function statusCompact(state: FlowState): { text: string; failed: boolean
 	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}`, failed };
 }
 
+/** `- [ ]` checklist items of a markdown document (reflections.md and roadmap.md share the format). */
+export function openChecklistItems(text: string): string[] {
+	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));
+}
+
 /** Open (unchecked) reflection items in reflections.md content — the agent's suggestion queue. */
 export function openReflections(text: string): string[] {
-	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));
+	return openChecklistItems(text);
 }
 
 export const REFLECT_HEADER =
@@ -915,6 +920,69 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 	}
 	for (const s of sections) buckets[s].push(line.trim());
 	return `${preamble || REFLECT_HEADER.trimEnd()}\n\n` + REFLECT_SECTIONS.filter((s) => buckets[s].length).map((s) => `## ${s}\n\n${buckets[s].join("\n")}\n`).join("\n");
+}
+
+/** Header of roadmap.md — the backlog of future features (gitignored, agent-editable like reflections.md). */
+export const ROADMAP_HEADER =
+	"# dev-flow roadmap\n\n<!-- Backlog of features to build later. flow roadmap add/pick/done/tidy; a pick stamps its item (slug) and flow finish checks it off when that feature ships. -->\n";
+
+const isDoneItem = (line: string) => /^\s*-\s*\[[xX]\]\s/.test(line);
+const isOpenItem = (line: string) => /^\s*-\s*\[[ ]]\s/.test(line);
+const stampItem = (line: string, stamp: string) => `- [x] ${line.trim().replace(/^-\s*\[[ ]]\s+/, "")} — done: ${stamp}`;
+
+/** Append an open item to roadmap.md content; a header is minted from empty content. */
+export function appendRoadmapItem(text: string, item: string): string {
+	return `${text.trimEnd() || ROADMAP_HEADER.trimEnd()}\n- [ ] ${item.trim()}\n`;
+}
+
+/** Number of open roadmap items. */
+export const roadmapOpenCount = (text: string) => openChecklistItems(text).length;
+/** Number of done roadmap items (tidy removes them). */
+export const roadmapDoneCount = (text: string) => text.split("\n").filter(isDoneItem).length;
+
+/** Stamp the nth open item (1-based, open items only) with `(slug)` — the pick→finish handshake.
+ *  Returns null when n is out of range. Re-picking the same slug is a no-op stamp. */
+export function roadmapPick(text: string, n: number, slug: string): string | null {
+	let seen = 0;
+	let hit = false;
+	const out = text.split("\n").map((l) => {
+		if (!isOpenItem(l)) return l;
+		++seen;
+		if (seen !== n) return l;
+		hit = true;
+		return l.trim().includes(`(${slug})`) ? l.trim() : `${l.trim()} (${slug})`;
+	});
+	return hit ? out.join("\n") : null;
+}
+
+/** Check the nth open item (1-based, open items only) with a done stamp. Returns null when n is out of range. */
+export function roadmapDone(text: string, n: number, stamp: string): string | null {
+	let seen = 0;
+	let hit = false;
+	const out = text.split("\n").map((l) => {
+		if (!isOpenItem(l)) return l;
+		++seen;
+		if (seen !== n) return l;
+		hit = true;
+		return stampItem(l, stamp);
+	});
+	return hit ? out.join("\n") : null;
+}
+
+/** Check every open item stamped `(slug)` by a pick — flow finish closes the backlog item a picked feature ships. */
+export function roadmapDoneForSlug(text: string, slug: string, stamp: string): { text: string; count: number } {
+	let count = 0;
+	const out = text.split("\n").map((l) => {
+		if (!isOpenItem(l) || !l.includes(`(${slug})`)) return l;
+		count++;
+		return stampItem(l, stamp);
+	});
+	return { text: out.join("\n"), count };
+}
+
+/** Drop the done (`- [x]`) items; preamble and open items stay verbatim. */
+export function roadmapTidy(text: string): string {
+	return text.split("\n").filter((l) => !isDoneItem(l)).join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** How far before pi's own compaction threshold dev-flow compacts (one fat tool turn). */

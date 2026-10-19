@@ -28,6 +28,7 @@ import {
 	approveGate,
 	applicableItems,
 	appendReflection,
+	appendRoadmapItem,
 	bashFlowGuard,
 	changelogEntry,
 	checklistHash,
@@ -62,9 +63,16 @@ import {
 	newestTaggedVersion,
 	newState,
 	nextHint,
+	openChecklistItems,
 	openReflections,
 	releaseGate,
 	parseVersion,
+	roadmapDone,
+	roadmapDoneCount,
+	roadmapDoneForSlug,
+	roadmapOpenCount,
+	roadmapPick,
+	roadmapTidy,
 	shouldSelfCompact,
 	shouldTakeOverCompaction,
 	stateTamper,
@@ -138,7 +146,7 @@ async function releaseTags(root: string): Promise<string[]> {
 }
 
 const GATE_HELP =
-	"help | init [--force|--draft|--write <text>] | reflect [<note>] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
+	"help | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -173,6 +181,12 @@ function unfinishedStates(root: string): FlowState[] {
 const readReflections = (root: string): string[] => {
 	const f = path.join(dfDir(root), "reflections.md");
 	return existsSync(f) ? openReflections(readFileSync(f, "utf8")) : [];
+};
+
+const roadmapFile = (root: string) => path.join(dfDir(root), "roadmap.md");
+const readRoadmap = (root: string): string => {
+	const f = roadmapFile(root);
+	return existsSync(f) ? readFileSync(f, "utf8") : "";
 };
 
 /** The session's feature: explicit binding, else the single unfinished feature — auto-bind unless another live session claims it. */
@@ -508,8 +522,11 @@ ${mdDigest(draftRefresh)}`))
 			// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
 			const findings = md ? doctorFindings(root, cfg, md) : [];
 			const warn = findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : [];
+			// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
+			const rmap = roadmapOpenCount(readRoadmap(root));
+			const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
 			const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
-			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn].join("\n") };
+			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
 			const un0 = unfinishedStates(root);
 			const cur = sess.slug ?? (un0.length === 1 ? un0[0].slug : null);
 			const lines = slugs.flatMap((s) => {
@@ -524,6 +541,7 @@ ${mdDigest(draftRefresh)}`))
 			if (warn.length) lines.push(...warn);
 			const refl = readReflections(root);
 			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — run flow doctor (it reviews and routes them)`);
+			lines.push(...rmapLine);
 			return { text: lines.join("\n") || "no features" };
 		}
 
@@ -537,6 +555,52 @@ ${mdDigest(draftRefresh)}`))
 			const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
 			return { text: reflectProtocol(readReflections(root), isSelfRepo(root), { version: self.version, upstream }).join("\n") };
 		}
+
+		case "roadmap": {
+			// the backlog is advisory — no state, no gating; direct file edits stay allowed like reflections.md
+			const words = rest.filter((a) => !a.startsWith("--")); // gate flags are not backlog prose (#43 applies here too)
+			const [verb = "list", ...args] = words;
+			const text = readRoadmap(root);
+			const open = roadmapOpenCount(text);
+			const done = roadmapDoneCount(text);
+			const save = (next: string) => {
+				mkdirSync(dfDir(root), { recursive: true });
+				writeFileSync(roadmapFile(root), next);
+			};
+			const idx = Number(args[0]);
+			const validIdx = Number.isInteger(idx) && idx >= 1 && idx <= open;
+			switch (verb) {
+				case "list": {
+					if (!open) return { text: done ? `roadmap: nothing open (${done} done — flow roadmap tidy drops them)` : "roadmap: empty — flow roadmap add \"<future feature>\"" };
+					return { text: [`roadmap — ${open} open (${done} done):`, ...openChecklistItems(text).map((l, i) => `  ${i + 1}. ${l.slice(6)}`)].join("\n") };
+				}
+				case "add": {
+					if (!args.length) return { text: 'usage: flow roadmap add "<future feature>"', isError: true };
+					save(appendRoadmapItem(text, args.join(" ")));
+					return { text: `roadmap: added — ${open + 1} open` };
+				}
+				case "pick": {
+					const slug = args[1] ?? "";
+					if (!validIdx) return { text: `pick: open item 1–${open} required — flow roadmap lists them`, isError: true };
+					if (!slug || !validSlug(slug)) return { text: `usage: flow roadmap pick <n> <slug> — the slug flow start will use (lowercase, dashes)`, isError: true };
+					save(roadmapPick(text, idx, slug)!);
+					return { text: `roadmap: item ${idx} picked for ${slug} — now: flow start ${slug} (flow finish checks the item off when it ships)` };
+				}
+				case "done": {
+					if (!validIdx) return { text: `done: open item 1–${open} required — flow roadmap lists them`, isError: true };
+					// stamped with date + bound slug, so history says what shipped it
+					save(roadmapDone(text, idx, [new Date().toISOString().slice(0, 10), sess.slug].filter(Boolean).join(" "))!);
+					return { text: `roadmap: item ${idx} marked done (${open - 1} open)` };
+				}
+				case "tidy": {
+					if (!done) return { text: `roadmap: nothing to tidy (${open} open, 0 done)` };
+					save(roadmapTidy(text));
+					return { text: `roadmap: dropped ${done} done item(s) — ${open} open` };
+				}
+				default:
+					return { text: "usage: flow roadmap [list|add <text>|pick <n> <slug>|done <n>|tidy]", isError: true };
+				}
+			}
 
 		case "doctor": {
 			// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
@@ -932,7 +996,16 @@ ${mdDigest(draftRefresh)}`))
 			}
 			rmSync(featDir(root, state!.slug), { recursive: true, force: true });
 			if (sess.slug === state!.slug) sess.bind(null);
-			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${forgeSkipNote}` };
+			// a feature picked from the backlog closes its own item: check off what `roadmap pick` stamped (slug)
+			let roadmapNote = "";
+			if (existsSync(roadmapFile(root))) {
+				const r = roadmapDoneForSlug(readRoadmap(root), state!.slug, new Date().toISOString().slice(0, 10));
+				if (r.count) {
+					writeFileSync(roadmapFile(root), r.text);
+					roadmapNote = ` roadmap: ${r.count} item(s) marked done.`;
+				}
+			}
+			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}` };
 		}
 
 		case "use": {
@@ -1233,6 +1306,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
 			const refl0 = readReflections(ctx.cwd);
 			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open — run flow doctor.`;
+			const rmap0 = roadmapOpenCount(readRoadmap(ctx.cwd));
+			if (rmap0) content += ` Also: ${rmap0} roadmap item(s) open — flow roadmap lists them, flow roadmap pick <n> <slug> hands one to flow start.`;
 			return { message: { customType: "dev-flow-context", display: false, content } };
 		}
 		const guidance: string[] = [];
@@ -1242,6 +1317,8 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
 		const refl = readReflections(ctx.cwd);
 		if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — mention to the operator; run flow doctor to review and route them (fold in only on request).`);
+		const rmap = roadmapOpenCount(readRoadmap(ctx.cwd));
+		if (rmap) guidance.push(`◇ ${rmap} roadmap item(s) open — flow roadmap lists them (pick only on the operator's word).`);
 		return {
 			message: {
 				customType: "dev-flow-context",

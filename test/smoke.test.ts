@@ -557,6 +557,27 @@ test("release tail: finish refuses to remove a dirty worktree", async () => {
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "dirt", "state.json")), "feature stays until the operator sorts it out");
 });
 
+test("roadmap: add → list → pick → done → tidy route through the backlog file", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n"]);
+	const rf = path.join(repo, ".dev-flow", "roadmap.md");
+	assert.match((await flow(["roadmap"])).content[0].text, /empty/, "empty roadmap is a listing, not an error");
+	assert.ok((await flow(["roadmap", "pick", "1", "nope"])).isError, "nothing to pick yet");
+	assert.match((await flow(["roadmap", "add", "dark", "mode"])).content[0].text, /added — 1 open/);
+	await flow(["roadmap", "add", "roadmap tidy"]);
+	assert.match((await flow(["roadmap"])).content[0].text, /1\. dark mode[\s\S]*2\. roadmap tidy/, "numbered open items");
+	assert.match((await flow(["roadmap", "pick", "1", "dark-mode"])).content[0].text, /now: flow start dark-mode/, "pick stamps and points at flow start (one verb)");
+	assert.match(readFileSync(rf, "utf8"), /- \[ \] dark mode \(dark-mode\)/);
+	assert.match((await flow(["roadmap", "done", "2"])).content[0].text, /item 2 marked done \(1 open\)/);
+	assert.match((await flow(["roadmap", "done", "5"])).content[0].text, /1–1 required/);
+	assert.match((await flow(["roadmap", "tidy"])).content[0].text, /dropped 1 done item/);
+	assert.ok(!readFileSync(rf, "utf8").includes("[x]"), "tidy drops the history line");
+	assert.match((await flow(["status"])).content[0].text, /1 roadmap item\(s\) open/, "status nudges the backlog");
+});
+
 test("finish closes a released feature only: refuses early, then removes worktree, branch and state", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -564,6 +585,8 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n"]);
 	trackPlaybook(repo);
+	await flow(["roadmap", "add", "the finishing move"]);
+	await flow(["roadmap", "pick", "1", "fin"]);
 	await flow(["start", "fin"]);
 	mkdirSync(path.join(repo, ".dev-flow", "fin", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "fin", "plan", "plan.md"), "# plan\n");
@@ -575,7 +598,8 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "state.json")), "a refused finish removes nothing");
 	await flow(["release", "--confirmed"]);
 	await flow(["release-done", "--confirmed"]);
-	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature fin done — worktree and branch feat\/fin removed/);
+	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature fin done — worktree and branch feat\/fin removed.*roadmap: 1 item\(s\) marked done/, "finish checks off the picked backlog item");
+	assert.match(readFileSync(path.join(repo, ".dev-flow", "roadmap.md"), "utf8"), /- \[x\] the finishing move \(fin\) — done: \d{4}-\d{2}-\d{2}/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "fin")), "the flow state folder is gone");
 	assert.throws(() => execFileSync("git", ["-C", repo, "rev-parse", "--verify", "feat/fin"]));
 });
