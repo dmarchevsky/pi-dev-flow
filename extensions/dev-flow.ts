@@ -40,6 +40,7 @@ import {
 	compactionReflectionLine,
 	detectForge,
 	featureBranchPrefix,
+	gateHelpJson,
 	gitInvocation,
 	githubSlug,
 	guardBash,
@@ -60,6 +61,7 @@ import {
 
 	listFiles,
 	looksLikeShellError,
+	needsOperator,
 	newestTaggedVersion,
 	newState,
 	nextHint,
@@ -77,6 +79,7 @@ import {
 	shouldTakeOverCompaction,
 	stateTamper,
 	statusCompact,
+	statusJson,
 	subst,
 	sq,
 	tagNotesCommand,
@@ -146,7 +149,7 @@ async function releaseTags(root: string): Promise<string[]> {
 }
 
 const GATE_HELP =
-	"help | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -368,7 +371,7 @@ function reflectNote(root: string, sess: Session, note: string[]): RunResult {
 async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Promise<RunResult> {
 	const [sub = "status", ...rest] = args;
 	// help and version are questions about the plugin, not the repo: answerable with no .dev-flow/ at all
-	if (sub === "help" || sub === "--help" || sub === "-h") return { text: `usage: flow <sub> — ${GATE_HELP}` };
+	if (sub === "help" || sub === "--help" || sub === "-h") return { text: rest.includes("--json") ? gateHelpJson(GATE_HELP, LOADED_VERSION) : `usage: flow <sub> — ${GATE_HELP}` };
 	if (!existsSync(dfDir(root)) && sub !== "init" && sub !== "version") return { text: "no .dev-flow/ in this repo — run /flow init first", isError: true };
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
@@ -526,9 +529,13 @@ ${mdDigest(draftRefresh)}`))
 			const rmap = roadmapOpenCount(readRoadmap(root));
 			const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
 			const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
-			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
 			const un0 = unfinishedStates(root);
 			const cur = sess.slug ?? (un0.length === 1 ? un0[0].slug : null);
+			if (flag("json")) {
+				const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
+				return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
+			}
+			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
 			const lines = slugs.flatMap((s) => {
 				const st = readState(root, s);
 				if (!st) return [];
@@ -632,7 +639,7 @@ ${mdDigest(draftRefresh)}`))
 			if (flag("yolo")) state!.yolo = true; // operator's word at Approve? — every later gate question is pre-confirmed; checks and guardrails stay
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 			if (!flag("confirmed")) {
-				if (!ui.hasUI) return { text: "plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", isError: true };
+				if (!ui.hasUI) return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
 				const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
 				if (!ok) return { text: "approval declined — keep iterating on the plan" };
 			}
@@ -737,7 +744,7 @@ ${mdDigest(draftRefresh)}`))
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 			if (!flag("confirmed") && !state!.yolo) {
 				// these commands already ran — say so even on the way out
-				if (!ui.hasUI) return { text: `verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat.\n${ran}`, isError: true };
+				if (!ui.hasUI) return { text: `${needsOperator("verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat.", "Verified?")}\n${ran}`, isError: true };
 				const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 				if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
 			}
@@ -817,7 +824,7 @@ ${mdDigest(draftRefresh)}`))
 			if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 			if (!flag("confirmed") && !state!.yolo) {
-				if (!ui.hasUI) return { text: "release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat", isError: true };
+				if (!ui.hasUI) return { text: needsOperator("release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat", "Release?"), isError: true };
 				const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${state!.noVersion ? " (unversioned — no version bump or tag for this flow)" : ""}? Publishing starts: PR, merge${state!.noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.`);
 				if (!ok) return { text: "release declined — keep preparing in pre-release" };
 			}
@@ -963,7 +970,7 @@ ${mdDigest(draftRefresh)}`))
 				state!.yolo = true;
 			}
 			if (!flag("confirmed") && !state!.yolo) {
-				if (!ui.hasUI) return { text: `finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, isError: true };
+				if (!ui.hasUI) return { text: needsOperator(`finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, "Finish?"), isError: true };
 				const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 				if (!ok) return { text: "finish declined" };
 			}
@@ -1095,7 +1102,7 @@ function refreshStatus(ctx: ExtensionContext): void {
 
 /** A project confirm rule with no operator present is a block — a hidden confirmation is not a confirmation. */
 async function askOperator(ctx: ExtensionContext, what: string, why: string): Promise<string | null> {
-	if (!ctx.hasUI) return `${why} — this needs an operator confirmation and no UI is available: ask them, or run it yourself outside Pi`;
+	if (!ctx.hasUI) return needsOperator(`${why}: this needs an operator confirmation and no UI is available — ask them, or run it yourself outside Pi`);
 	const ok = await ctx.ui.confirm("dev-flow project rule", `${what}\n\n${why}\n\nProceed?`);
 	return ok ? null : `operator declined — ${why}`;
 }
