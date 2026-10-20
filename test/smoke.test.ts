@@ -147,6 +147,9 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	const hj = JSON.parse((await pi.tools.flow.execute("id", { args: ["help", "--json"] }, undefined, undefined, ctx)).content[0].text);
 	assert.ok(hj.gates.includes("approve [--yolo]"), "gate contract is structured data");
 	assert.equal(hj.protocol.refusalMarker, "NEEDS-OPERATOR");
+	await pi.cmds.flow.handler("abort demo-feature", ctx); // the empty case must stay parseable too
+	const empty = JSON.parse((await pi.tools.flow.execute("id", { args: ["status", "--json"] }, undefined, undefined, ctx)).content[0].text);
+	assert.deepEqual(empty, { bound: null, features: [] }, "no features still answers JSON, not prose");
 });
 
 test("worktree isolation: commit guards follow the command's directory", async () => {

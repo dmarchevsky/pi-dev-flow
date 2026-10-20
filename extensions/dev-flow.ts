@@ -529,13 +529,13 @@ ${mdDigest(draftRefresh)}`))
 			const rmap = roadmapOpenCount(readRoadmap(root));
 			const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
 			const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
-			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
 			const un0 = unfinishedStates(root);
 			const cur = sess.slug ?? (un0.length === 1 ? un0[0].slug : null);
 			if (flag("json")) {
 				const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
-				return { text: statusJson(sts, cur, cfg) };
+				return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
 			}
+			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
 			const lines = slugs.flatMap((s) => {
 				const st = readState(root, s);
 				if (!st) return [];
