@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-20
+
+### Changed
+
+- **BREAKING: a shell call must state its own timeout** — `bashTimeout = require` is the new default. v0.43.0 started arming a deterministic class default whenever a call arrived without one, which ended the hangs but left the call line looking unarmed: the value is written into `event.input` by the `tool_call` handler *after* the transcript recorded the call, so neither operator nor model ever saw a `timeout` on it — a bare call read as "nothing will kill this". Now the call is **refused** until the model states one, and the refusal quotes the exact number the class table would have armed (`pass an explicit timeout on shell calls — the class default here is 900s …`), so the retry is a one-token fix and every shell call in the transcript shows the timer that is really running. The silent injection stays in place underneath both modes and is what protects a project that opts back — `bashTimeout = inject` in `## global` restores the 0.43.0 behaviour exactly. A session with no `.dev-flow/project.md` cannot opt out (no playbook to put the key in), so it applies to every agent loading this build; for that reason the guard is judged **after** the project's own `flow-guard` deny/confirm rules — an operator deny still answers with the operator's reason even on a call that forgot the timeout. The injected value also finally has a test asserting it lands on `input.timeout`: the smoke suite drove this handler for guard verdicts for two releases without ever checking the injection reached the call.
+
 ## [0.44.0] - 2026-10-20
 
 ### Added
