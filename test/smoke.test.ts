@@ -808,6 +808,7 @@ test("flow-guard wiring: deny blocks with the operator's reason, confirm needs a
 	const guard = pi.handlers.tool_call[0];
 	const bash = (command: string) => guard({ toolName: "bash", input: { command, timeout: 60 } }, ctx);
 	assert.match((await bash("git push --force-with-lease origin feat/x"))?.reason ?? "", /history stays linear/);
+	assert.match((await guard({ toolName: "bash", input: { command: "git push --force-with-lease origin feat/x" } }, ctx))?.reason ?? "", /history stays linear/, "the operator's deny outranks the timeout nag");
 	assert.match((await bash("docker compose restart app"))?.reason ?? "", /needs an operator confirmation/, "without UI a confirm rule is a block, never a silent pass");
 	assert.equal(await bash("git push origin feat/x"), undefined, "commands no rule matches pass");
 	assert.match((await bash("git worktree prune"))?.reason ?? "", /prunes other sessions/, "project deny rules apply in every stage and binding");

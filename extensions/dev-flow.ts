@@ -1243,10 +1243,10 @@ export default function devFlow(pi: ExtensionAPI) {
 		}
 		if (noDf) return undefined;
 		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
-		if (shellCmd && cfg.bashTimeout === "require") {
-			const why = requireTimeout(shellCmd, explicitTimeout);
-			if (why) return { block: true, reason: why };
-		}
+		const mustStateTimeout = shellCmd !== "" && explicitTimeout === undefined && cfg.bashTimeout === "require";
+		// for bash this verdict waits behind the operator's own deny/confirm rules further down;
+		// powershell meets no project rules at all, so it is answered here
+		if (mustStateTimeout && !isToolCallEventType("bash", event)) return { block: true, reason: requireTimeout(shellCmd)! };
 		const key = sessionKey(ctx);
 
 		if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
@@ -1284,6 +1284,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				const why = await askOperator(ctx, command, r.why || `project rule ${r.pattern}`);
 				if (why) return { block: true, reason: why };
 			}
+			// the operator's rules had their say — now the timeout must be stated
+			if (mustStateTimeout) return { block: true, reason: requireTimeout(command)! };
 			const inv = gitInvocation(command);
 			if (!inv.subs.length) return undefined; // git is not invoked as a command — nothing to guard
 			const bound = boundFeature(ctx.cwd, key);
