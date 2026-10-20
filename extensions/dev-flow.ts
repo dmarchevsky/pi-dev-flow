@@ -56,6 +56,7 @@ import {
 	preReleaseGate,
 	reflectProtocol,
 	reflectSections,
+	reflectionLine,
 	reflectionRoutes,
 	sessionRunsOlderBuild,
 
@@ -363,8 +364,10 @@ function reflectNote(root: string, sess: Session, note: string[]): RunResult {
 	const file = path.join(dfDir(root), "reflections.md");
 	const text = existsSync(file) ? readFileSync(file, "utf8") : "";
 	const sections = reflectSections(note.join(" "));
-	const line = `- [ ] ${note.join(" ")} — ${sess.slug ?? "-"} ${now().slice(0, 10)}`;
-	writeFileSync(file, appendReflection(text, sections, line));
+	const line = reflectionLine(note.join(" "), sess.slug, now().slice(0, 10));
+	const next = appendReflection(text, sections, line);
+	if (next === text) return { text: `already reflected (duplicate): ${line}` };
+	writeFileSync(file, next);
 	return { text: `reflected (${sections.join(" + ")}): ${line}` };
 }
 

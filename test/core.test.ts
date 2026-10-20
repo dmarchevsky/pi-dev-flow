@@ -45,6 +45,7 @@ import {
 	sessionRunsOlderBuild,
 	reflectProtocol,
 	reflectSections,
+	reflectionLine,
 	reflectionRoutes,
 	releaseGate,
 	shouldSelfCompact,
@@ -395,6 +396,26 @@ test("appendReflection writes the two sections and migrates a legacy flat file",
 	assert.equal(refreshed.split(/^## /m).length - 1, 1, "stale headers go away; only the non-empty section keeps a header");
 	assert.ok(!refreshed.includes("## plugin"), "an empty section is not resurrected by its stale header");
 	assert.ok(refreshed.includes("<!-- n -->"), "the real preamble survives");
+});
+
+test("appendReflection: a heading owns its items, an exact note is queued once (#69)", () => {
+	const start = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] old playbook item\n\n## plugin\n\n- [x] done plugin thing — fixed: earlier\n";
+	// the reported sequence: plugin, then playbook + plugin, then playbook.
+	const after = appendReflection(appendReflection(appendReflection(start, ["plugin"], "- [ ] linter note — s 2026-10-20"), ["playbook", "plugin"], "- [ ] gate note — s 2026-10-20"), ["playbook"], "- [ ] flaky note — s 2026-10-20");
+	assert.equal(
+		after,
+		"# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] old playbook item\n- [ ] gate note — s 2026-10-20\n- [ ] flaky note — s 2026-10-20\n\n## plugin\n\n- [x] done plugin thing — fixed: earlier\n- [ ] linter note — s 2026-10-20\n- [ ] gate note — s 2026-10-20\n",
+		"nothing moves out of its section, nothing is written twice",
+	);
+	// re-reflecting the same note is a no-op in one section, and in both.
+	assert.equal(appendReflection(after, ["plugin"], "- [ ] linter note — s 2026-10-21"), after, "the same note at another date is the same note");
+	assert.equal(appendReflection(after, ["playbook", "plugin"], "- [ ] gate note — s 2026-10-21"), after, "a both-sections note already in both adds nothing");
+	assert.equal(appendReflection(after, ["plugin"], "- [ ] flaky note — s 2026-10-21").split("flaky note").length - 1, 2, "a note the other section has is still queued here — dedupe is per section");
+});
+
+test("reflectionLine: the slug is left out with no flow bound (#69)", () => {
+	assert.equal(reflectionLine("a note", "my-slug", "2026-10-20"), "- [ ] a note — my-slug 2026-10-20");
+	assert.equal(reflectionLine("a note", null, "2026-10-20"), "- [ ] a note — 2026-10-20");
 });
 
 test("statusCompact: stage glyph + slug, failing-check flag", () => {

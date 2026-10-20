@@ -816,6 +816,17 @@ export function openReflections(text: string): string[] {
 	return openChecklistItems(text);
 }
 
+/** The note text of an item, without the checkbox and without the trailing ` — <attribution>`: what
+ *  two reflects are compared on, so the same note at another date is still the same note.
+ *  shortcut: split on the last em dash — matches what the tool writes; a hand-written item ending in
+ *  an em-dash clause compares wider than intended. */
+const reflectionBody = (l: string) => l.trim().replace(/^-\s*\[[ xX]\]\s*/, "").replace(/\s*—.*$/, "").trim();
+
+/** One reflections.md item line — with no flow bound the slug is left out; `— - <date>` read as a broken slug. */
+export function reflectionLine(note: string, slug: string | null, date: string): string {
+	return `- [ ] ${note.trim()} — ${slug ? `${slug} ` : ""}${date}`;
+}
+
 export const REFLECT_HEADER =
 	"# dev-flow reflections\n\n<!-- Suggestions queued by the agent; the operator decides. Fold playbook items in via flow init --write, file plugin items as issues; check off when handled. -->\n";
 
@@ -896,29 +907,43 @@ export function reflectProtocol(items: string[], selfRepo: boolean, facts: { ver
 
 /**
  * Rewrite reflections.md as a preamble + one section per non-empty bucket, with `line` appended to
- * each named section. Everything above the first item (title, comment, operator notes) is kept
- * verbatim. Legacy flat lines carry their target inline (`- [ ] (plugin) …`, `— to playbook`);
- * that marker buckets them and is then dropped, so an old file migrates on next write.
+ * the end of each named section. Everything above the first item (title, comment, operator notes) is
+ * kept verbatim. Below the first item a `## section` heading owns the lines under it, so an existing
+ * line never changes section. Legacy flat lines carry their target inline (`- [ ] (plugin) …`,
+ * `— to playbook`); that marker buckets them and is then dropped, so an old file migrates on next
+ * write. A note already in a section is not written there again — an all-duplicate call returns the
+ * content untouched so the caller can say so.
  */
 export function appendReflection(text: string, sections: ReflectSection[], line: string): string {
 	const lines = text.split("\n");
 	const firstItem = lines.findIndex((l) => l.trim().startsWith("- ["));
 	// shortcut: only the preamble above the first item survives verbatim; hand-written prose below the items is dropped.
 	// bare `## section` headers above the first item are leftovers of an earlier rewrite; dropped here so they never duplicate verbatim into every following file.
-	const staleHeader = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
+	const sectionHeader = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
 	const preamble = (firstItem < 0 ? lines : lines.slice(0, firstItem))
-		.filter((l) => !staleHeader.test(l.trim()))
+		.filter((l) => !sectionHeader.test(l.trim()))
 		.join("\n")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
 	const buckets = Object.fromEntries(REFLECT_SECTIONS.map((s) => [s, [] as string[]])) as Record<ReflectSection, string[]>;
+	let section: ReflectSection | null = null;
 	for (const raw of firstItem < 0 ? [] : lines.slice(firstItem)) {
 		const l = raw.trim();
+		const header = sectionHeader.exec(l);
+		if (header) {
+			// a heading is authoritative for the items under it: deriving the bucket from the inline
+			// marker instead moved every marker-less `## plugin` line into `## playbook` on the next write.
+			section = header[1].toLowerCase() as ReflectSection;
+			continue;
+		}
 		if (!l.startsWith("- [")) continue;
-		const key: ReflectSection = /\((plugin|doctor)\)/.test(l) || /\bto plugin\b/.test(l) ? "plugin" : "playbook";
+		// items above every heading come from a legacy flat file, where the inline marker is the only clue.
+		const key: ReflectSection = section ?? (/\((plugin|doctor)\)/.test(l) || /\bto plugin\b/.test(l) ? "plugin" : "playbook");
 		buckets[key].push(l.replace(/\((plugin|playbook|doctor)\)/, "").replace(/\s*[—-]\s*to\s+(playbook|plugin|doctor)/, "").replace(/\s{2,}/g, " ").trim());
 	}
-	for (const s of sections) buckets[s].push(line.trim());
+	const note = line.trim();
+	const body = reflectionBody(note);
+	for (const s of sections) if (!buckets[s].some((l) => reflectionBody(l) === body)) buckets[s].push(note);
 	return `${preamble || REFLECT_HEADER.trimEnd()}\n\n` + REFLECT_SECTIONS.filter((s) => buckets[s].length).map((s) => `## ${s}\n\n${buckets[s].join("\n")}\n`).join("\n");
 }
 
