@@ -116,9 +116,9 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	assert.equal(ok, undefined);
 
 	// main protection: a commit on main is always blocked
-	const bash = await guard({ toolName: "bash", input: { command: "git commit -m x" } }, ctx);
+	const bash = await guard({ toolName: "bash", input: { command: "git commit -m x", timeout: 60 } }, ctx);
 	assert.ok(bash?.block, "commit on main must be blocked");
-	const stateTamperBlock = await guard({ toolName: "bash", input: { command: "echo x > .dev-flow/demo-feature/state.json" } }, ctx);
+	const stateTamperBlock = await guard({ toolName: "bash", input: { command: "echo x > .dev-flow/demo-feature/state.json", timeout: 60 } }, ctx);
 	assert.ok(stateTamperBlock?.block, "state tampering must be blocked");
 
 	// approve gate: missing plan file fails before the UI ask (no UI in this test)
@@ -163,18 +163,18 @@ test("worktree isolation: commit guards follow the command's directory", async (
 	await pi.cmds.flow.handler("approve", ctx); // creates the worktree (branch feat/wt-feature)
 	const guard = pi.handlers.tool_call[0];
 	// commit at the session root (main checkout on main) stays blocked
-	assert.ok(await guard({ toolName: "bash", input: { command: "git commit -m x" } }, ctx), "commit on main must be blocked");
+	assert.ok(await guard({ toolName: "bash", input: { command: "git commit -m x", timeout: 60 } }, ctx), "commit on main must be blocked");
 	// commit inside the feature worktree passes however the command gets there
 	const wt = path.join(repo, ".dev-flow", "wt-feature", "worktree");
-	assert.equal(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(wt)} && git commit -m x` } }, ctx), undefined, "worktree commit via cd must pass");
-	assert.equal(await guard({ toolName: "bash", input: { command: `git -C ${JSON.stringify(wt)} commit -m x` } }, ctx), undefined, "worktree commit via -C must pass");
+	assert.equal(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(wt)} && git commit -m x`, timeout: 60 } }, ctx), undefined, "worktree commit via cd must pass");
+	assert.equal(await guard({ toolName: "bash", input: { command: `git -C ${JSON.stringify(wt)} commit -m x`, timeout: 60 } }, ctx), undefined, "worktree commit via -C must pass");
 	// reads are never misguarded
-	assert.equal(await guard({ toolName: "bash", input: { command: "cat .git/hooks/pre-commit" } }, ctx), undefined, "reading the hook is not a commit");
-	assert.equal(await guard({ toolName: "bash", input: { command: "git log --oneline" } }, ctx), undefined, "git log is not a commit");
+	assert.equal(await guard({ toolName: "bash", input: { command: "cat .git/hooks/pre-commit", timeout: 60 } }, ctx), undefined, "reading the hook is not a commit");
+	assert.equal(await guard({ toolName: "bash", input: { command: "git log --oneline", timeout: 60 } }, ctx), undefined, "git log is not a commit");
 	// per-segment attribution: a chain spanning directories must not inherit one verdict (the release-blocker bug)
-	assert.equal(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(wt)} && git commit -m x && cd ${JSON.stringify(repo)} && git pull` } }, ctx), undefined, "commit judged in the worktree even when the chain later cds to main");
-	assert.ok(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(repo)} && git log && cd ${JSON.stringify(repo)} && git commit -m x` } }, ctx), "commit after cd back to main checkout is blocked");
-	assert.ok(await guard({ toolName: "bash", input: { command: `git -C ${JSON.stringify(repo)} checkout -b feat/sneaky` } }, ctx), "checkout -b of a feature branch in the main checkout is blocked");
+	assert.equal(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(wt)} && git commit -m x && cd ${JSON.stringify(repo)} && git pull`, timeout: 60 } }, ctx), undefined, "commit judged in the worktree even when the chain later cds to main");
+	assert.ok(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(repo)} && git log && cd ${JSON.stringify(repo)} && git commit -m x`, timeout: 60 } }, ctx), "commit after cd back to main checkout is blocked");
+	assert.ok(await guard({ toolName: "bash", input: { command: `git -C ${JSON.stringify(repo)} checkout -b feat/sneaky`, timeout: 60 } }, ctx), "checkout -b of a feature branch in the main checkout is blocked");
 });
 
 test("init keeps an existing project.md; --force rewrites from fresh detection", async () => {
@@ -373,7 +373,7 @@ test("flow-by-default: unbound writes blocked; start needs default branch; featu
 	execFileSync("git", ["-C", repo, "checkout", "-qb", "work/two"]);
 	assert.match((await flow(["start", "y"])).content[0].text, /not main/, "start refuses off the default branch");
 	execFileSync("git", ["-C", repo, "checkout", "-q", "main"]);
-	const chk = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/z" } }, ctx);
+	const chk = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/z", timeout: 60 } }, ctx);
 	assert.match(chk?.reason ?? "", /worktree/, "feature branches stay out of the main checkout");
 });
 
@@ -386,7 +386,7 @@ test("feature-branch checkout allowed inside its own worktree", async () => {
 	mkdirSync(path.join(repo, ".dev-flow", "z"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "z", "state.json"), JSON.stringify(st));
 	const ctx = { cwd: wt, hasUI: false, notices: [] as string[], ui: { notify: () => {} } };
-	const res = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/z" } }, ctx);
+	const res = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/z", timeout: 60 } }, ctx);
 	assert.equal(res, undefined, "checkout inside the owning worktree passes");
 });
 
@@ -444,7 +444,7 @@ test("ref-aware push guard end-to-end: tags pass from main, default branch refus
 	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
 	const ctx = makeCtx(repo);
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "tag", "v9.9.9"]);
-	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command } }, ctx);
+	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ctx);
 	assert.equal(await bash("git push origin v9.9.9"), undefined, "tag name resolves to refs/tags — stage-free");
 	assert.match((await bash("git push origin main"))?.reason ?? "", /requires stage "release"/);
 	assert.equal(await bash("git push origin main:refs/heads/main-backup"), undefined, "explicit non-default dest passes");
@@ -455,7 +455,7 @@ test("guard reads commands, not prose: a quoted body is data, a shell wrapper's 
 	const repo = makeRepo();
 	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
 	const ctx = makeCtx(repo);
-	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command } }, ctx);
+	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ctx);
 	// the v0.37.0 incident: a PR body whose text discussed a commit and the playbook path
 	const body = 'gh pr create --title "t" --body "the tracking chore: git add -f .dev-flow/project.md && git commit -m x\\nthe safety copy: cp .dev-flow/project.md /tmp/bak"';
 	assert.equal(await bash(body), undefined, "prose in a quoted argument is not a main-branch commit or a playbook write");
@@ -806,7 +806,7 @@ test("flow-guard wiring: deny blocks with the operator's reason, confirm needs a
 	await flow(["init", "--write", GUARD_MD]);
 	await flow(["start", "gf"]);
 	const guard = pi.handlers.tool_call[0];
-	const bash = (command: string) => guard({ toolName: "bash", input: { command } }, ctx);
+	const bash = (command: string) => guard({ toolName: "bash", input: { command, timeout: 60 } }, ctx);
 	assert.match((await bash("git push --force-with-lease origin feat/x"))?.reason ?? "", /history stays linear/);
 	assert.match((await bash("docker compose restart app"))?.reason ?? "", /needs an operator confirmation/, "without UI a confirm rule is a block, never a silent pass");
 	assert.equal(await bash("git push origin feat/x"), undefined, "commands no rule matches pass");
@@ -815,9 +815,9 @@ test("flow-guard wiring: deny blocks with the operator's reason, confirm needs a
 	assert.match((await guard({ toolName: "edit", input: { path: path.join(repo, "docker", ".env") } }, ctx))?.reason ?? "", /gitignored live secrets/, "protect without UI is a block");
 
 	const declined = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false } };
-	assert.match((await guard({ toolName: "bash", input: { command: "docker compose restart app" } }, declined))?.reason ?? "", /operator declined/);
+	assert.match((await guard({ toolName: "bash", input: { command: "docker compose restart app", timeout: 60 } }, declined))?.reason ?? "", /operator declined/);
 	const approved = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true } };
-	assert.equal(await guard({ toolName: "bash", input: { command: "docker compose restart app" } }, approved), undefined, "an operator OK lets a confirm rule through");
+	assert.equal(await guard({ toolName: "bash", input: { command: "docker compose restart app", timeout: 60 } }, approved), undefined, "an operator OK lets a confirm rule through");
 	assert.match((await guard({ toolName: "edit", input: { path: path.join(repo, "docker", ".env") } }, approved))?.reason ?? "", /in plan/, "the operator OK clears the project rule; flow discipline still confines the write");
 });
 
@@ -1194,7 +1194,7 @@ test("the playbook tracking chore is legal on the default branch (#53)", async (
 	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n");
 	const ctx = makeCtx(repo);
-	const guard = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command } }, ctx);
+	const guard = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ctx);
 	const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args]);
 	git("add", "-f", ".dev-flow/project.md");
 	assert.equal(await guard('DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"'), undefined, "its only content is the operator's playbook — setup, not feature work");
@@ -1241,4 +1241,34 @@ test("turn_end compaction check survives a broken compaction setting", async () 
 	await pi.cmds.flow.handler("start demo-feature", ctx);
 	const c = { ...ctx, getContextUsage: () => ({ tokens: 190_000, contextWindow: 200_000, percent: 95 }), compact: () => { throw new Error("must not fire"); } };
 	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, c); // must not reject
+});
+
+test("shell calls must state their timeout by default; bashTimeout = inject restores the silent arming", async () => {
+	// one bash tool_call against a repo: the verdict plus the input the handler may have armed
+	const run = async (cwd: string, command: string, timeout?: number) => {
+		const pi = makePi();
+		const input: { command: string; timeout?: number } = { command };
+		if (timeout !== undefined) input.timeout = timeout;
+		return { verdict: await pi.handlers.tool_call[0]({ toolName: "bash", input }, makeCtx(cwd)), input };
+	};
+	const init = (repo: string, md: string) => {
+		const pi = makePi();
+		const ctx = makeCtx(repo);
+		return { pi, ctx, seed: pi.tools.flow.execute("id", { args: ["init", "--write", md] }, undefined, undefined, ctx) };
+	};
+	// 1. no .dev-flow at all: no playbook to opt out with, so the hard default rules
+	const bare = makeRepo();
+	assert.match(((await run(bare, "git status")).verdict as { reason: string }).reason, /class default here is 30s/, "a bare call is refused with the number it should have said");
+	assert.equal((await run(bare, "git status", 45)).verdict, undefined, "an explicit timeout passes untouched");
+	// 2. a playbook with no bashTimeout key: require is the default
+	const plain = init(makeRepo(), TEST_MD);
+	await plain.seed;
+	assert.match(((await run(plain.ctx.cwd, "git status")).verdict as { reason: string }).reason, /class default here is 30s/, "no key means the model must state it");
+	// 3. the same playbook opting back to inject: the call runs and the default is armed silently
+	const inj = init(makeRepo(), TEST_MD.replace("## implement", "## global\n```flow\nbashTimeout = inject\n```\n\n## implement"));
+	await inj.seed;
+	assert.equal(await inj.pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git status" } }, inj.ctx), undefined, "inject: the bare call runs");
+	const armed = { command: "git status" } as { command: string; timeout?: number };
+	await inj.pi.handlers.tool_call[0]({ toolName: "bash", input: armed }, inj.ctx);
+	assert.equal(armed.timeout, 30, "and the class default lands on the call input — that is what arms pi\u0027s kill timer");
 });

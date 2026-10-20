@@ -95,7 +95,7 @@ import {
 	type SessionClaim,
 } from "../src/core.ts";
 import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
-import { bashTimeout } from "../src/timeouts.ts";
+import { bashTimeout, requireTimeout } from "../src/timeouts.ts";
 import { detectProject } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
@@ -1230,13 +1230,23 @@ export default function devFlow(pi: ExtensionAPI) {
 		// pi kills a shell call only when a timeout was passed, and the model omits it in ~75% of
 		// calls (observed hangs: hours). Deterministic class defaults, clamped ceilings — runs for
 		// every session that loads this package, flow-bound or not.
-		if (isToolCallEventType("bash", event) || isToolCallEventType("powershell", event)) {
-			const input = event.input as { command?: unknown; timeout?: unknown };
-			const command = String(input.command ?? "");
-			if (command) input.timeout = bashTimeout(command, typeof input.timeout === "number" ? input.timeout : undefined);
+		const shellInput = isToolCallEventType("bash", event) || isToolCallEventType("powershell", event) ? (event.input as { command?: unknown; timeout?: unknown }) : undefined;
+		const shellCmd = shellInput ? String(shellInput.command ?? "") : "";
+		const explicitTimeout = typeof shellInput?.timeout === "number" ? shellInput.timeout : undefined;
+		// the silent default stays armed either way: it is the safety net for an `inject` project and the number the refusal quotes
+		if (shellCmd && shellInput) shellInput.timeout = bashTimeout(shellCmd, explicitTimeout);
+		const noDf = !existsSync(dfDir(ctx.cwd));
+		// with no playbook to opt out, the hard default rules: the model must say its own timeout
+		if (shellCmd && noDf) {
+			const why = requireTimeout(shellCmd, explicitTimeout);
+			if (why) return { block: true, reason: why };
 		}
-		if (!existsSync(dfDir(ctx.cwd))) return undefined;
+		if (noDf) return undefined;
 		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
+		if (shellCmd && cfg.bashTimeout === "require") {
+			const why = requireTimeout(shellCmd, explicitTimeout);
+			if (why) return { block: true, reason: why };
+		}
 		const key = sessionKey(ctx);
 
 		if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
