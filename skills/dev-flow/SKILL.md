@@ -46,6 +46,14 @@ Repo without `.dev-flow/`? Run `flow init` — it analyzes the repo and prints a
      (height: pick per-screen, re-render if content clips).
    - Embed every render in plan.md under its section: `![<screen> — phone](mockups/<screen>-390.png)`. The plan is then one self-contained reviewable document.
    - No chromium anywhere? Tell the user and ask — fall back to `*.html`-only plans only with their OK (they can set `mockupGlobs`); never fake or skip a screenshot silently.
+   - Harness gotchas, each one a render loop learned the hard way:
+     - An embed is the image syntax `![<alt>](mockups/<screen>-<width>.png)` — a filename named in prose renders as a broken link. Before Approve?, re-read plan.md and check every image tag points at a file that exists.
+     - For a component question prefer a **static strip**: a small standalone HTML that links the project's real stylesheet and carries only the markup in question — one first-try render instead of driving the whole app state machine through the harness. A full-page render is for layout context only.
+     - A shot always starts at the page's top-left; nothing scrolls. For a region below the fold, hide what is above it (inline `<style>`) or render a strip.
+     - A `--user-data-dir` profile **persists** between shots, so the previous shot's state leaks into this one — one fresh profile per intended UI state.
+     - A shot of *planned* behavior must actually show it (patched markup/CSS) and say so in its caption; never caption the current app's render with the behavior you plan to add.
+     - A transient state (an inline editor) can be destroyed by the app's own repaint while you shoot — freeze the repaint for the shot, e.g. stub the render entry point after opening it.
+     - Budget renders: when the harness fights the same shot twice, verify that state via DOM/code and move on — screenshots are a spot-check, not a test loop.
 5. Tell the user the plan is ready and **stop** — one word: **Approve?** They answer in chat (or run `/flow approve` themselves). When they answered, run `flow approve --confirmed` — **exactly one checkpoint per stage**: a chat answer must never trigger a second dialog. `--confirmed` is only for a literal operator answer, never your inference; without an answer and without interactive UI the gate refuses. If the operator answered **yolo**, run `flow approve --yolo --confirmed` instead — later gates then need no further questions.
 
 Approval creates the worktree and branch (running `commands.setup` inside it when configured — a failing setup fails the gate, and the next `approve` **retries** setup in the kept worktree instead of silently reusing it; it stamps `setupAt` once it succeeds). A `--docs` feature runs no project command: no setup, no build, no deploy, no probe. Until approval no code edits are possible. `(ui)`-marked playbook checklist items do not apply to non-UI features — they never appear in prompts or confirmations.
