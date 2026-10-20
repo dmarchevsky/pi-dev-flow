@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-10-19
+
+### Added
+
+- **Machine surfaces for headless orchestrators** (driving dev-flow from a remote agent via a Pi SDK session). `flow status --json` answers the prose view as stable JSON — bound slug plus per-feature stage, mode flags, branch, worktree, approvals, checks (name→ok) and the next hint — parseable in every case, an empty repo included; `flow help --json` returns the gate contract as data (the command list split from the one `GATE_HELP` source, the checkpoint questions, the flag names) so an orchestrator learns the interface without grepping prose. Both are additive: the human views are unchanged.
+- **`NEEDS-OPERATOR` refusal marker.** Every no-UI refusal that needs the operator's word now starts with the stable token `NEEDS-OPERATOR <Question?> — …` (the four checkpoint gates, and a project flow-guard `confirm` rule met without UI). A remote driver routes on the token — relay the question, then re-run the gate with `--confirmed` — instead of string-matching prose that is free to drift. The human-readable sentence follows the marker unchanged.
+- **README: “Driving dev-flow from an orchestrator (headless)”** — the refuse → relay → `--confirmed` loop, the honor-system trust of `--confirmed`, one-session-one-feature binding for reconnecting drivers, long-gate timeouts, check invalidation and version skew, and the read-only-safe command set.
+
 ## [0.41.0] - 2026-10-19
 
 ### Added
