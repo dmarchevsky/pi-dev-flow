@@ -84,6 +84,9 @@ export interface Config {
 	healthWait: number;
 	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
+	/** `require` (default): a shell call must carry its own visible timeout — the injected class
+	 *  default is armed silently and never shows in the transcript. `inject`: arm it silently. */
+	bashTimeout: "require" | "inject";
 	/** Operator safety rules from the project.md flow-guard block — stage-independent. */
 	guard: GuardRules;
 }
@@ -102,6 +105,7 @@ export const DEFAULTS: Config = {
 	healthWait: 30,
 	release: { review: "/ponytail-review", releases: true },
 	mainHook: true,
+	bashTimeout: "require",
 	guard: { deny: [], confirm: [], protect: [], forbid: [] },
 };
 

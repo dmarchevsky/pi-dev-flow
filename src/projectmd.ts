@@ -32,6 +32,7 @@ export interface ParsedMd {
 const KEYMAP: Record<string, Record<string, string>> = {
 	global: {
 		defaultBranch: "defaultBranch",
+		bashTimeout: "bashTimeout", // require (default) | inject — must a shell call state its own timeout?
 		branchPattern: "branchPattern",
 		worktreeDir: "worktreeDir",
 		mainHook: "mainHook",
@@ -152,6 +153,11 @@ export function parseProjectMd(text: string): ParsedMd {
 					if (!mapped) p.warn.push(`${where}: unknown key "${m[1]}" in ## ${stage} — ignored`);
 					else {
 						if (mapped === "release.releases" && m[1].endsWith("github")) p.warn.push(`${where}: key "${m[1]}" is renamed "releases" — rename it`);
+						// the only enum-valued key: a junk mode must not silently mean "block every shell call"
+						if (m[1] === "bashTimeout" && !/^(require|inject)$/i.test(m[2].trim())) {
+							p.warn.push(`${where}: bashTimeout = "${m[2]}" — expected require or inject, keeping require`);
+							return;
+						}
 						p.flow[stage as MdStage][mapped] = m[2];
 					}
 				}
@@ -227,6 +233,7 @@ function mergeInto(c: Config, r: Record<string, unknown>): void {
 	if (typeof r.mainHook === "boolean") c.mainHook = r.mainHook;
 	if (Array.isArray(r.mockupGlobs)) c.mockupGlobs = r.mockupGlobs.map(String);
 	if (typeof r.forge === "string") c.forge = r.forge;
+	if (r.bashTimeout === "require" || r.bashTimeout === "inject") c.bashTimeout = r.bashTimeout;
 	if (typeof r.commands === "object" && r.commands) Object.assign(c.commands, r.commands);
 	if (typeof r.versioning === "object" && r.versioning) Object.assign(c.versioning, r.versioning);
 	if (typeof r.release === "object" && r.release) Object.assign(c.release, r.release);
@@ -317,7 +324,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): 
 /** Compact per-stage digest of project.md content for dialog display (raw md walls are unreadable). */
 const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", release: "Release" };
 const DIGEST_CMDS: Record<string, string> = { setup: "setup", test: "test", build: "build", run: "run app", seedData: "seed data", dev: "dev deploy" };
-const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files", forge: "forge" };
+const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files", forge: "forge", bashTimeout: "shell-call timeout mode" };
 
 /** Human summary of a playbook for the init confirm: one line per stage, real values and full item/guidance text, nothing truncated. */
 export function mdDigest(text: string): string {

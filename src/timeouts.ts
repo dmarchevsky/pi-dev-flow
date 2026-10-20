@@ -65,3 +65,15 @@ export function bashTimeout(command: string, explicit?: number): number {
 	for (const seg of bashSegments(command)) t = Math.max(t, segTimeout(seg));
 	return t || DEFAULT_S;
 }
+
+/**
+ * `bashTimeout = require` (the default): the model must state the timeout itself, because the
+ * injected value never reaches the transcript — the tool call entry records the arguments the model
+ * emitted, and the handler mutates them afterwards. Returns the refusal, or undefined when the call
+ * already carries an explicit timeout. The refused call is not lost: the reason names the exact
+ * value the class table would have armed, so the retry is a one-token fix.
+ */
+export function requireTimeout(command: string, explicit?: number): string | undefined {
+	if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) return undefined;
+	return `pass an explicit timeout on shell calls — the class default here is ${bashTimeout(command)}s (it is armed silently either way; saying it makes it visible in the transcript)`;
+}
