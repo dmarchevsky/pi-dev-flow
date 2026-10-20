@@ -146,7 +146,7 @@ async function releaseTags(root: string): Promise<string[]> {
 }
 
 const GATE_HELP =
-	"help | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify | release [--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); approve --yolo = the operator said \"yolo\": all later gate questions pre-confirmed (checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
+	"help | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-version = this flow skips the version bump and tag (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -729,6 +729,11 @@ ${mdDigest(draftRefresh)}`))
 				} else did.push("dev: none configured");
 			}
 			const ran = did.join("; ");
+			// yolo is the operator's word at Verified? — answers this question and pre-confirms the later ones; --confirmed anchors it, checks and guardrails stay
+			if (flag("yolo")) {
+				if (!state!.yolo && !flag("confirmed")) return { text: "yolo is the operator's word — the operator must have said it in chat, then re-run with --yolo --confirmed", isError: true };
+				state!.yolo = true;
+			}
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 			if (!flag("confirmed") && !state!.yolo) {
 				// these commands already ran — say so even on the way out
@@ -791,6 +796,11 @@ ${mdDigest(draftRefresh)}`))
 			if (err) return err;
 			const items = applicableItems(cfg, state!, "pre-release");
 			if (flag("no-version")) state!.noVersion = true; // operator's word at Release?: this flow ships without a version bump or tag
+			// yolo is the operator's word at Release? — answers this question and pre-confirms Finish?; publishing guardrails stay enforced
+			if (flag("yolo")) {
+				if (!state!.yolo && !flag("confirmed")) return { text: "yolo is the operator's word — the operator must have said it in chat, then re-run with --yolo --confirmed", isError: true };
+				state!.yolo = true;
+			}
 			// prep evidence is read from the worktree: the bump and changelog entry exist on the branch before the PR merges
 			const wtCwd = gateCwd(root, state!);
 			const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
@@ -947,6 +957,11 @@ ${mdDigest(draftRefresh)}`))
 			// a forge release that failed at release-done is still the operator's call — but they must see it before the state vanishes (#63)
 			const forgeSkipNote = state!.forgeReleaseSkipped ? ` WARNING: the forge release was not created (${state!.forgeReleaseSkipped}) — recreate it manually or re-run release-done before finishing.` : "";
 			// the one finish question — asked after the safety checks so it can never be a wasted question
+			// yolo works uniformly at every gate: at Finish? nothing later remains to pre-confirm, the flag just answers this one
+			if (flag("yolo")) {
+				if (!state!.yolo && !flag("confirmed")) return { text: "yolo is the operator's word — the operator must have said it in chat, then re-run with --yolo --confirmed", isError: true };
+				state!.yolo = true;
+			}
 			if (!flag("confirmed") && !state!.yolo) {
 				if (!ui.hasUI) return { text: `finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, isError: true };
 				const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
@@ -1308,7 +1323,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			return { message: { customType: "dev-flow-context", display: false, content } };
 		}
 		const guidance: string[] = [];
-		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every later gate question (Verified?/Release?/Finish?) — run the gates without asking; checks and guardrails stay fully enforced.");
+		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every gate question from here on (Verified?/Release?/Finish?) — run the remaining gates (verify → release → release-done → finish) back to back without stopping to ask; guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
 		if (cfg.prose[state.stage]) guidance.push(`Stage guidance (project.md): ${cfg.prose[state.stage]}`);
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);

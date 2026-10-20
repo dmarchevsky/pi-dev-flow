@@ -1035,7 +1035,8 @@ test("flow help: usage answers everywhere, even with no .dev-flow/", async () =>
 		assert.ok(!r.isError, `flow ${args[0]} answers in a repo without .dev-flow/`);
 		assert.match(r.content[0].text, /^usage: flow <sub> — help \| init/);
 		assert.match(r.content[0].text, /approve \[--yolo\]/);
-		assert.match(r.content[0].text, /release \[--no-version\]/);
+		assert.match(r.content[0].text, /verify \[--yolo\]/);
+		assert.match(r.content[0].text, /release \[--yolo\|--no-version\]/);
 	}
 });
 
@@ -1077,6 +1078,30 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	await flow(["release-done"]);
 	assert.match((await flow(["finish"])).content[0].text, /feature yo done — worktree and branch feat\/yo removed/);
 	assert.equal(dialogs, 0, "yolo answered every checkpoint up front — gates must not ask");
+});
+
+test("yolo at any gate: verify --yolo answers that question and pre-confirms the rest to finish", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	let dialogs = 0;
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = exit 0\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "late"]);
+	mkdirSync(path.join(repo, ".dev-flow", "late", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "late", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	// yolo is the operator's word — never self-granted: --confirmed is the anchor
+	const bare = await flow(["verify", "--yolo"]);
+	assert.ok(bare.isError && /operator's word/.test(bare.content[0].text), "--yolo without --confirmed is refused");
+	assert.match((await flow(["verify", "--yolo", "--confirmed"])).content[0].text, /entering pre-release/);
+	// every later gate now runs with no flags and no dialogs — the flow completes on its own
+	await flow(["release"]);
+	await flow(["release-done"]);
+	assert.match((await flow(["finish"])).content[0].text, /feature late done — worktree and branch feat\/late removed/);
+	assert.equal(dialogs, 0, "yolo said at Verify? — later gates must not ask");
 });
 
 test("unversioned release: --no-version skips the bump/tag machinery for that flow", async () => {
