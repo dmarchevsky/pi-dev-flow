@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-10-20
+
+### Added
+
+- **The plan stage now teaches the mockup harness, not just the gate** (#70). Step 4 of the plan stage said "build mockups, render them, embed them" — correct as a gate, silent about the tool, and an agent mocking *stateful* UI paid for the gap: ~20 render attempts in one session, a List-view shot showing a control the real code hides, an "after" shot of a stale teardown state, renders written as bare filenames (prose, not `![]()` — broken links the operator flagged twice), a shared chromium profile leaking localStorage between shots, and below-the-fold regions coming back blank because a headless shot always captures from the page's top-left. Step 4 now carries the checklist that makes those impossible to hit blind: an embed is the image syntax and every tag is re-checked against the filesystem before Approve?; a component question gets a **static strip** against the project's real stylesheet instead of driving the app's state machine through the harness; nothing scrolls, so hide what is above the region or render a strip; one fresh profile dir per intended UI state; a shot of planned behavior must show it and be captioned as such; freeze the app's own repaint to catch a transient state (an inline editor); and when the harness fights the same shot twice, verify that state via DOM/code and move on — screenshots are a spot-check, not a test loop. Step 4's first sub-bullet, which rendered inside its sentence, is fixed on the way.
+
 ## [0.43.1] - 2026-10-20
 
 ### Fixed
