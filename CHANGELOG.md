@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.43.1] - 2026-10-20
+
+### Fixed
+
+- **`flow reflect` files notes where it says it does** (#69). `appendReflection` rebuilt `reflections.md` from two buckets and re-derived the bucket of **every existing line** from an inline `(plugin)` marker — which new-style items never carry, because the `## playbook` / `## plugin` heading above them is the only information. So each write re-moved the whole `## plugin` section into `## playbook` (a both-sections note then showed up twice under `## playbook`, and a checked-off plugin item wandered off too), and a file whose playbook section was empty lost its plugin items on the next reflect — while the printed `reflected (plugin)` line was the only feedback the agent got, and it was wrong. A heading is now authoritative for the lines under it, order is preserved and nothing relocates; an identical note already open in a section is not written there again (the call reports `already reflected (duplicate)` instead, and a checked-off note may be reported again when it comes back). Items above every heading keep the inline-marker reading, so the legacy flat-file migration is untouched. An unbound session also stopped signing notes `— - <date>` — no slug now means no slug, `— <date>`.
+
 ## [0.43.0] - 2026-10-20
 
 ### Added
