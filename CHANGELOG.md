@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-10-19
+
+### Added
+
+- **yolo works at any gate** (operator request). Until now `“you said yolo” could only be recorded at Approve? (`approve --yolo`); saying yolo later meant answering every remaining checkpoint one by one. Now **every state gate accepts `--yolo`** — `verify --yolo --confirmed`, `release --yolo --confirmed`, `finish --yolo --confirmed` answer that question and pre-confirm all later ones, so “yolo” at Verified? runs verify → release → release-done → finish to the end with no further questions. `--yolo` without `--confirmed` is refused — the flag is the operator's word, never self-granted. Guidance attached to the yolo word (“yolo, create a patch version release”) is a binding directive for the gate chain, and the YOLO stage guidance now spells the chaining rule out to the agent. Checks and guardrails stay fully enforced: tier-1 gates, version/changelog validation and flow-guard `confirm` rules are untouched by yolo.
+
 ## [0.40.0] - 2026-10-19
 
 ### Added
