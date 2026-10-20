@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-10-20
+
+### Added
+
+- **Shell calls can no longer hang a session forever** (operator request). pi arms its kill timer only when the model passed a `timeout`, and it omits one in ~75% of calls — this host's session logs showed hangs of hours (`gh pr merge` waiting on a prompt, `curl` to a dead port, `git push` on a credential prompt, foreground watchers). The `tool_call` handler now injects a **deterministic class default** whenever a shell call has no timeout, and clamps explicit ones to 1,800s: 30s quick inspection (ls/grep/`git status`) · 120s local git and anything unrecognized · 180s network (`git push`, curl, gh) · 300s containers/services (docker, systemctl) · 900s builds/tests/installs · 1,200s watchers (`gh run watch`, `logs -f`, `compose up` without `-d`). Compound commands split on `&&`/`;`/`|` and the slowest class wins; wrappers (`cd`, `export`, `sudo`) don't count. The numbers come from the measured duration distribution (99% of no-timeout calls end under ~70s; real builds under ~400s), so a premature kill is rare and self-correcting — the model sees `timeout:` and reruns with an explicit value. Sensible explicit timeouts pass through untouched. The policy applies to every session that loads the package, flow-bound or not.
+
 ## [0.42.0] - 2026-10-19
 
 ### Added

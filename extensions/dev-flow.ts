@@ -94,6 +94,7 @@ import {
 	type SessionClaim,
 } from "../src/core.ts";
 import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
+import { bashTimeout } from "../src/timeouts.ts";
 import { detectProject } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
@@ -1223,6 +1224,14 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		// pi kills a shell call only when a timeout was passed, and the model omits it in ~75% of
+		// calls (observed hangs: hours). Deterministic class defaults, clamped ceilings — runs for
+		// every session that loads this package, flow-bound or not.
+		if (isToolCallEventType("bash", event) || isToolCallEventType("powershell", event)) {
+			const input = event.input as { command?: unknown; timeout?: unknown };
+			const command = String(input.command ?? "");
+			if (command) input.timeout = bashTimeout(command, typeof input.timeout === "number" ? input.timeout : undefined);
+		}
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
 		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 		const key = sessionKey(ctx);
