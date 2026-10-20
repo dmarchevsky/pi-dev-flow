@@ -1045,6 +1045,63 @@ export function nextHint(state: FlowState, cfg: Config): string {
 	}
 }
 
+/** Stable token prefixing every no-UI operator refusal, so a headless orchestrator can route refusals without grepping prose. */
+export const NEEDS_OPERATOR = "NEEDS-OPERATOR";
+
+/** Refusal for "the gate needs the operator's word and no UI is present": `<TOKEN> [Question?] — <what to do>`. */
+export function needsOperator(detail: string, question?: string): string {
+	return `${NEEDS_OPERATOR}${question ? ` ${question}` : ""} — ${detail}`;
+}
+
+/** Machine-readable `flow status --json`: the prose view's facts as stable JSON (no git probes, same as prose). */
+export function statusJson(states: FlowState[], bound: string | null, cfg: Config): string {
+	return JSON.stringify(
+		{
+			bound,
+			features: states.map((st) => ({
+				slug: st.slug,
+				stage: st.stage,
+				current: st.slug === bound,
+				ui: st.ui,
+				patch: !!st.patch,
+				docs: !!st.docs,
+				yolo: !!st.yolo,
+				noVersion: !!st.noVersion,
+				branch: st.branch || null,
+				worktree: st.worktree || null,
+				flowVersion: st.flowVersion ?? null,
+				releaseVersion: st.releaseVersion ?? null,
+				approvals: Object.keys(st.approvals),
+				checks: Object.fromEntries(Object.entries(st.checks).map(([k, v]) => [k, v.ok])),
+				checklistConfirmed: !!st.confirmations?.implement,
+				next: nextHint(st, cfg),
+			})),
+		},
+		null,
+		"\t",
+	);
+}
+
+/** Machine-readable `flow help --json` from the one GATE_HELP source: the command list splits on " | " (bracketed alternations carry no spaces around the pipe), the shared note starts at the first " — ". No parallel help text to drift. */
+export function gateHelpJson(gateHelp: string, version: string | null): string {
+	const i = gateHelp.indexOf(" — ");
+	return JSON.stringify(
+		{
+			version,
+			gates: (i < 0 ? gateHelp : gateHelp.slice(0, i)).split(" | "),
+			notes: i < 0 ? "" : gateHelp.slice(i + 3),
+			protocol: {
+				checkpointQuestions: ["Approve?", "Verified?", "Release?", "Finish?"],
+				refusalMarker: NEEDS_OPERATOR,
+				confirmFlag: "--confirmed",
+				yoloFlag: "--yolo",
+			},
+		},
+		null,
+		"\t",
+	);
+}
+
 export function getPath(obj: Record<string, unknown>, key: string): unknown {
 	let cur: unknown = obj;
 	for (const seg of key.split(".")) {

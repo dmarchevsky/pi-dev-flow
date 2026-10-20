@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -20,6 +20,7 @@ import {
 	DEFAULTS,
 	detectForge,
 	featureBranchPrefix,
+	gateHelpJson,
 	getPath,
 	gitInvocation,
 	githubSlug,
@@ -30,6 +31,7 @@ import {
 	investigationBrief,
 	looksLikeShellError,
 	maskQuoted,
+	needsOperator,
 	parsePushRefs,
 	playbookTamper,
 	pluginVersion,
@@ -49,6 +51,7 @@ import {
 	shouldTakeOverCompaction,
 	stateTamper,
 	statusCompact,
+	statusJson,
 	sq,
 	tagNotesCommand,
 	openReflections,
@@ -685,4 +688,41 @@ test("tagNotesCommand is /bin/sh safe and changelogEntry finds the section (#51)
 	assert.equal(changelogEntry(md, "9.9.9"), "", "no section, no body");
 	assert.ok(looksLikeShellError('/bin/sh: 1: Syntax error: "(" unexpected'), "the shape #51 shipped as the release body");
 	assert.ok(!looksLikeShellError("### Fixed\n\n- the forge release body was a /bin/sh syntax error (#51)"), "a changelog line about the bug is a real body");
+});
+
+test("statusJson: stable machine view of the prose status (headless orchestrators)", () => {
+	const st = newState("demo", false);
+	st.branch = "feat/demo";
+	st.worktree = ".dev-flow/demo/worktree";
+	st.checks = { test: { ok: true, at: "x" }, health: { ok: false, at: "y" } };
+	st.approvals = { approve: "t" };
+	const j = JSON.parse(statusJson([st], "demo", DEFAULTS));
+	assert.equal(j.bound, "demo");
+	assert.equal(j.features.length, 1);
+	const f = j.features[0];
+	assert.deepEqual(f.checks, { test: true, health: false }, "checks reduce to name→ok");
+	assert.equal(f.current, true);
+	assert.deepEqual(f.approvals, ["approve"]);
+	assert.equal(f.stage, "plan");
+	assert.equal(f.worktree, ".dev-flow/demo/worktree");
+	assert.equal(f.noVersion, false, "mode flags are always present booleans");
+	assert.match(f.next, /plan/);
+});
+
+test("needsOperator: marker-first refusal for no-UI gates", () => {
+	assert.equal(needsOperator("do it", "Approve?"), "NEEDS-OPERATOR Approve? — do it");
+	assert.equal(needsOperator("do it"), "NEEDS-OPERATOR — do it");
+});
+
+test("gateHelpJson splits the real GATE_HELP without losing a gate", () => {
+	const src = readFileSync(new URL("../extensions/dev-flow.ts", import.meta.url), "utf8");
+	const m = src.match(/const GATE_HELP =\s*("(?:[^"\\]|\\.)*");/);
+	assert.ok(m, "GATE_HELP literal found in the extension source");
+	const j = JSON.parse(gateHelpJson(JSON.parse(m![1]), "9.9.9"));
+	assert.ok(j.gates.length >= 15, `every gate survived the split (${j.gates.length})`);
+	assert.ok(j.gates.every((g: string) => !g.includes(" — ") && !g.includes(" | ")), "no note prose leaked into the command list");
+	assert.ok(j.gates.some((g: string) => g.startsWith("status [slug] [--json]")));
+	assert.ok(j.notes.includes("reflect <note> queues"));
+	assert.deepEqual(j.protocol.checkpointQuestions, ["Approve?", "Verified?", "Release?", "Finish?"]);
+	assert.equal(j.protocol.refusalMarker, "NEEDS-OPERATOR");
 });

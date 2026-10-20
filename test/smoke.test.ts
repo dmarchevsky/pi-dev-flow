@@ -131,6 +131,7 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	writeFileSync(path.join(repo, ".dev-flow", "demo-feature", "plan", "plan.md"), "# plan\n");
 	await pi.cmds.flow.handler("approve", ctx);
 	assert.ok(ctx.notices.at(-1)?.includes("needs the operator"), "approve without an operator answer refuses");
+	assert.match(ctx.notices.at(-1) ?? "", /NEEDS-OPERATOR Approve\? — plan approval needs the operator/, "no-UI refusal carries the machine marker before the prose");
 
 	// stage context injection
 	const inj = (await pi.handlers.before_agent_start[0]({}, ctx)) as { message?: { content: string } };
@@ -139,6 +140,13 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	// the model-facing tool routes through the same runner
 	const res = await pi.tools.flow.execute("id", { args: ["status"] }, undefined, undefined, ctx);
 	assert.match(res.content[0].text, /demo-feature/);
+	// machine surfaces for headless orchestrators
+	const sj = JSON.parse((await pi.tools.flow.execute("id", { args: ["status", "--json"] }, undefined, undefined, ctx)).content[0].text);
+	assert.equal(sj.bound, "demo-feature");
+	assert.deepEqual(sj.features.map((f: { slug: string; stage: string }) => [f.slug, f.stage]), [["demo-feature", "plan"]]);
+	const hj = JSON.parse((await pi.tools.flow.execute("id", { args: ["help", "--json"] }, undefined, undefined, ctx)).content[0].text);
+	assert.ok(hj.gates.includes("approve [--yolo]"), "gate contract is structured data");
+	assert.equal(hj.protocol.refusalMarker, "NEEDS-OPERATOR");
 });
 
 test("worktree isolation: commit guards follow the command's directory", async () => {
@@ -1033,7 +1041,7 @@ test("flow help: usage answers everywhere, even with no .dev-flow/", async () =>
 	for (const args of [["help"], ["--help"], ["-h"]]) {
 		const r = (await pi.tools.flow.execute("id", { args }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
 		assert.ok(!r.isError, `flow ${args[0]} answers in a repo without .dev-flow/`);
-		assert.match(r.content[0].text, /^usage: flow <sub> — help \| init/);
+		assert.match(r.content[0].text, /^usage: flow <sub> — help \[--json\] \| init/);
 		assert.match(r.content[0].text, /approve \[--yolo\]/);
 		assert.match(r.content[0].text, /verify \[--yolo\]/);
 		assert.match(r.content[0].text, /release \[--yolo\|--no-version\]/);
