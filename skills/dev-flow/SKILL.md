@@ -39,7 +39,8 @@ Repo without `.dev-flow/`? Run `flow init` — it analyzes the repo and prints a
 1. Research the code needed for the plan (reads are always allowed).
 2. **Clarify before drafting** — do not jump to the plan file. Present a preliminary direction to the operator in chat (what you found, the shape of the fix, open unknowns), propose the mode (normal / patch / docs) with a one-line reason, ask your clarifying questions and let the operator ask his. Draft only after the direction is confirmed.
 3. Write the plan to `.dev-flow/<slug>/plan/plan.md`: problem, approach, files to touch, test strategy, risks. Keep it reviewable, not exhaustive. Before asking for approval check `git log origin/<default>..<default> --oneline` — local-only default-branch commits fall out of the worktree's base (push them or re-plan around them).
-4. **UI flag set?** Build the mockups in `plan/mockups/` and render them — a mockup that was never rendered is not a mockup:   - Write one HTML per screen/state at `plan/mockups/<screen>.html`. Reuse the project's real stylesheet and class names where it exists (relative links work from inside `.dev-flow/`) — fidelity by construction.
+4. **UI flag set?** Build the mockups in `plan/mockups/` and render them — a mockup that was never rendered is not a mockup:
+   - Write one HTML per screen/state at `plan/mockups/<screen>.html`. Reuse the project's real stylesheet and class names where it exists (relative links work from inside `.dev-flow/`) — fidelity by construction.
    - Find a headless chromium: probe `chromium`, `chromium-browser`, `google-chrome` on PATH; else playwright's shell at `~/.cache/ms-playwright/*/chrome-headless-shell-linux64/chrome-headless-shell`.
    - Render each screen at the widths the project cares for (default: phone 390, desktop 1280):
      `<binary> --no-sandbox --disable-gpu --hide-scrollbars --virtual-time-budget=5000 --window-size=<width>,<height> --screenshot=plan/mockups/<screen>-<width>.png file://<absolute path to html>`
@@ -50,7 +51,7 @@ Repo without `.dev-flow/`? Run `flow init` — it analyzes the repo and prints a
      - An embed is the image syntax `![<alt>](mockups/<screen>-<width>.png)` — a filename named in prose renders as a broken link. Before Approve?, re-read plan.md and check every image tag points at a file that exists.
      - For a component question prefer a **static strip**: a small standalone HTML that links the project's real stylesheet and carries only the markup in question — one first-try render instead of driving the whole app state machine through the harness. A full-page render is for layout context only.
      - A shot always starts at the page's top-left; nothing scrolls. For a region below the fold, hide what is above it (inline `<style>`) or render a strip.
-     - A `--user-data-dir` profile **persists** between shots, so the previous shot's state leaks into this one — one fresh profile per intended UI state.
+     - Profile state persists: if your invocation passes `--user-data-dir`, that profile keeps localStorage between shots, so the previous shot's view-state leaks into this one — use a fresh profile dir per intended UI state.
      - A shot of *planned* behavior must actually show it (patched markup/CSS) and say so in its caption; never caption the current app's render with the behavior you plan to add.
      - A transient state (an inline editor) can be destroyed by the app's own repaint while you shoot — freeze the repaint for the shot, e.g. stub the render entry point after opening it.
      - Budget renders: when the harness fights the same shot twice, verify that state via DOM/code and move on — screenshots are a spot-check, not a test loop.
