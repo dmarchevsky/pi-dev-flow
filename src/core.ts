@@ -36,7 +36,7 @@ export interface FlowState {
 	docs?: boolean; // docs-only release: no plan document, no tier-1 checks; worktree discipline and the full release stay
 	flowVersion?: string; // dev-flow build that started the feature (stamped at start, shown by status)
 	noVersion?: boolean; // operator chose: this flow releases without a version bump or tag
-	yolo?: boolean; // operator said "yolo" at approve: every later gate question pre-confirmed; checks and guardrails stay
+	yolo?: boolean; // operator said "yolo" at any gate question: that one answered, every later one pre-confirmed; checks and guardrails stay
 	setupAt?: string; // commands.setup exited 0 in this worktree — a reused worktree reruns it only when unset (#49)
 	releaseVersion?: string; // the manifest version the release gate approved — release-done publishes this, not whatever a checkout says later (#52)
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
