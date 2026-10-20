@@ -396,6 +396,13 @@ test("appendReflection writes the two sections and migrates a legacy flat file",
 	assert.equal(refreshed.split(/^## /m).length - 1, 1, "stale headers go away; only the non-empty section keeps a header");
 	assert.ok(!refreshed.includes("## plugin"), "an empty section is not resurrected by its stale header");
 	assert.ok(refreshed.includes("<!-- n -->"), "the real preamble survives");
+	// a file whose playbook section is empty starts with `## plugin` — that header must own its items too.
+	const pluginOnly = "# dev-flow reflections\n\n<!-- n -->\n\n## plugin\n\n- [ ] upstream thing — s 2026-10-19\n";
+	assert.equal(
+		appendReflection(pluginOnly, ["plugin"], "- [ ] another — s 2026-10-20"),
+		"# dev-flow reflections\n\n<!-- n -->\n\n## plugin\n\n- [ ] upstream thing — s 2026-10-19\n- [ ] another — s 2026-10-20\n",
+		"the leading header is not mistaken for preamble and its items do not fall to playbook",
+	);
 });
 
 test("appendReflection: a heading owns its items, an exact note is queued once (#69)", () => {
@@ -410,6 +417,7 @@ test("appendReflection: a heading owns its items, an exact note is queued once (
 	// re-reflecting the same note is a no-op in one section, and in both.
 	assert.equal(appendReflection(after, ["plugin"], "- [ ] linter note — s 2026-10-21"), after, "the same note at another date is the same note");
 	assert.equal(appendReflection(after, ["playbook", "plugin"], "- [ ] gate note — s 2026-10-21"), after, "a both-sections note already in both adds nothing");
+	assert.equal(appendReflection(after, ["plugin"], "- [ ] done plugin thing — s 2026-10-21").split("done plugin thing").length - 1, 2, "a checked-off note may be queued again — it came back");
 	assert.equal(appendReflection(after, ["plugin"], "- [ ] flaky note — s 2026-10-21").split("flaky note").length - 1, 2, "a note the other section has is still queued here — dedupe is per section");
 });
 

@@ -916,18 +916,17 @@ export function reflectProtocol(items: string[], selfRepo: boolean, facts: { ver
  */
 export function appendReflection(text: string, sections: ReflectSection[], line: string): string {
 	const lines = text.split("\n");
-	const firstItem = lines.findIndex((l) => l.trim().startsWith("- ["));
-	// shortcut: only the preamble above the first item survives verbatim; hand-written prose below the items is dropped.
-	// bare `## section` headers above the first item are leftovers of an earlier rewrite; dropped here so they never duplicate verbatim into every following file.
 	const sectionHeader = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
-	const preamble = (firstItem < 0 ? lines : lines.slice(0, firstItem))
-		.filter((l) => !sectionHeader.test(l.trim()))
+	// shortcut: only the preamble above the first header or item survives verbatim; hand-written prose below the items is dropped.
+	// a header is part of the body, not of the preamble: it owns the items under it, and one with no items left simply disappears from the rewrite.
+	const firstBody = lines.findIndex((l) => l.trim().startsWith("- [") || sectionHeader.test(l.trim()));
+	const preamble = (firstBody < 0 ? lines : lines.slice(0, firstBody))
 		.join("\n")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
 	const buckets = Object.fromEntries(REFLECT_SECTIONS.map((s) => [s, [] as string[]])) as Record<ReflectSection, string[]>;
 	let section: ReflectSection | null = null;
-	for (const raw of firstItem < 0 ? [] : lines.slice(firstItem)) {
+	for (const raw of firstBody < 0 ? [] : lines.slice(firstBody)) {
 		const l = raw.trim();
 		const header = sectionHeader.exec(l);
 		if (header) {
@@ -943,7 +942,8 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 	}
 	const note = line.trim();
 	const body = reflectionBody(note);
-	for (const s of sections) if (!buckets[s].some((l) => reflectionBody(l) === body)) buckets[s].push(note);
+	// only open items block a duplicate: a checked-off note may be reported again when it comes back.
+	for (const s of sections) if (!buckets[s].some((l) => l.trim().startsWith("- [ ]") && reflectionBody(l) === body)) buckets[s].push(note);
 	return `${preamble || REFLECT_HEADER.trimEnd()}\n\n` + REFLECT_SECTIONS.filter((s) => buckets[s].length).map((s) => `## ${s}\n\n${buckets[s].join("\n")}\n`).join("\n");
 }
 
