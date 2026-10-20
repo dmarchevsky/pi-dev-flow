@@ -246,6 +246,23 @@ test("playbookTamper reads and backups are not changes; targets still are (#53)"
 	assert.equal(playbookTamper("sed -n 1,10p .dev-flow/project.md"), false, "sed as a printer is a read");
 });
 
+test("playbookTamper: a redirect elsewhere is not a write to the playbook (0.45.0 release blocker)", () => {
+	// the fallback used to match a bare `>`, so this — the exact shape of a release PR call — was refused
+	assert.equal(
+		playbookTamper('gh pr create --title "t" --body "the guard protects .dev-flow/project.md" 2>&1 | tail -1'),
+		false,
+		"stderr redirection next to prose about the playbook is not a write",
+	);
+	assert.equal(playbookTamper("cat notes.md > /tmp/out.log; echo done .dev-flow/project.md"), false, "a redirect to another file stays harmless");
+	assert.equal(playbookTamper("grep -rn health .dev-flow/project.md > /dev/null 2>&1"), false, "a read whose output is discarded");
+	// the real writes still land
+	assert.ok(playbookTamper("echo x > .dev-flow/project.md"), "redirect into the playbook");
+	assert.ok(playbookTamper("echo x >> '.dev-flow/project.md'"), "quoted target");
+	assert.ok(playbookTamper('sh -c "echo x > .dev-flow/project.md"'), "a re-exec wrapper payload is still code");
+	assert.ok(playbookTamper("tee .dev-flow/project.md"), "tee");
+	assert.ok(playbookTamper("truncate -s 0 .dev-flow/project.md"), "truncate");
+});
+
 test("playbookOnlyChange: the lane for the tracking chore (#53)", () => {
 	assert.equal(playbookOnlyChange("A  .dev-flow/project.md"), true);
 	assert.equal(playbookOnlyChange("M  .dev-flow/project.md"), true);

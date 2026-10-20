@@ -518,7 +518,10 @@ export function stateTamper(command: string): boolean {
 	return /\.dev-flow\/\S*state\.json/.test(command) && /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|-e|node\s)/.test(command);
 }
 
-const WRITE_VERBS = /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|node\s)/;
+// write tools that can overwrite a file. A bare `>` is deliberately absent: a redirect into the
+// playbook is caught by REDIRECT_INTO_PLAYBOOK, and testing for any `>` here refused every segment
+// that merely mentioned the playbook path while redirecting elsewhere (`gh pr create … 2>&1`).
+const WRITE_TOOLS = /\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|node\s/;
 const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
 const REDIRECT_INTO_PLAYBOOK = />>?\s*['"]?\.dev-flow\/[\w./-]*project\.md/;
 /** copy/replace verbs whose last positional token is the destination */
@@ -538,7 +541,7 @@ export function playbookTamper(command: string): boolean {
 		if (READ_ONLY_HEADS.has(head) || (head === "sed" && !/\s-i\b/.test(raw))) return false; // cat/grep/ls and sed-as-a-printer read it
 		// what is left is the loose fallback — a write tool named in the clear. A wrapper's payload counts; everyone
 		// else's quoted text is prose, and prose about `cp`/`sed` is not a write (it refused a PR body describing #53).
-		return WRITE_VERBS.test(REEXEC_HEADS.has(head) ? raw : maskQuoted(raw));
+		return WRITE_TOOLS.test(REEXEC_HEADS.has(head) ? raw : maskQuoted(raw));
 	});
 }
 
