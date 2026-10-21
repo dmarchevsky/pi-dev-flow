@@ -36,6 +36,11 @@ versionTag = v{version}
 
 ## release
 
+```flow
+artifact = npm view pi-dev-flow@{version} version
+```
+
 - [ ] dogfood: `flow doctor` here reports no shim finding, and the operator was told that already-running sessions keep the old code until `/reload`
+- [ ] CI published pi-dev-flow from the tag (Actions `release` run green — a failed publish is re-run on the same tag, never re-tagged; if the artifact check raced the publish, wait for the job and run release-done again)
 
 <!-- e.g. PR/merge/tag policy, who publishes artifacts -->
