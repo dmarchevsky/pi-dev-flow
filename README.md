@@ -42,8 +42,13 @@ them with `flow doctor` and decide what to fix. [More here.](docs/playbook.md)
 ## Install
 
 ```bash
-pi install git:<your-host>/dev-flow      # or: pi install ./dev-flow (local checkout)
+pi install npm:pi-dev-flow                        # a published release
+pi install git:github.com/dmarchevsky/pi-dev-flow # or from git — pin a ref with @v0.49.1
+pi install ./pi-dev-flow                          # or a local checkout
 ```
+
+Later releases arrive with `pi update --extensions` (an npm install reconciles to the newest version);
+then `/reload` — a running session keeps the code it loaded at startup.
 
 Then, once per project repo, `/flow init`. It reads the repo (default branch and forge from git,
 package manager, test/build/run conventions, version manifest) and writes **`.dev-flow/project.md`

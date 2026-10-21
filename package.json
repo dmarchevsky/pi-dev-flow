@@ -1,13 +1,25 @@
 {
   "name": "pi-dev-flow",
-  "version": "0.51.2",
+  "version": "0.52.0",
   "description": "Enforced plan → implement → pre-release → release → done flow for Pi, as a pi package",
   "type": "module",
   "keywords": [
     "pi-package"
   ],
   "license": "MIT",
-  "repository": "https://github.com/dmarchevsky/dev-flow",
+  "repository": "https://github.com/dmarchevsky/pi-dev-flow",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extensions/",
+    "src/",
+    "skills/",
+    "docs/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

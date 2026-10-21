@@ -573,7 +573,7 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
 	assert.match(readFileSync(reflFile, "utf8"), /## playbook\n\n- \[ \] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}/);
 	const proto = await flow(["reflect"]);
-	assert.match(proto.content[0].text, /flow reflect — session reflection \(dev-flow \d+\.\d+\.\d+, upstream: dmarchevsky\/dev-flow\)/);
+	assert.match(proto.content[0].text, /flow reflect — session reflection \(dev-flow \d+\.\d+\.\d+, upstream: dmarchevsky\/pi-dev-flow\)/);
 	assert.match(proto.content[0].text, /open items \(2\)/);
 	assert.match(proto.content[0].text, /\[playbook\] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}/);
 	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + "- [x] already handled\n");
@@ -593,7 +593,7 @@ test("bare reflect prints the protocol in a foreign repo: plugin items route ups
 	await flow(["reflect", "the gate prompt asks twice"]);
 	const proto = await flow(["reflect"]);
 	assert.match(proto.content[0].text, /1\. review the current session log in full/);
-	assert.match(proto.content[0].text, /gh issue list --repo dmarchevsky\/dev-flow --state all --search/);
+	assert.match(proto.content[0].text, /gh issue list --repo dmarchevsky\/pi-dev-flow --state all --search/);
 	assert.match(proto.content[0].text, /b\. playbook items: run flow doctor/);
 	assert.match(proto.content[0].text, /file an issue against pi-dev-flow upstream/, "a foreign repo routes plugin items upstream");
 });
