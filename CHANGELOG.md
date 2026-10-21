@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.52.0] - 2026-10-21
+
+### Added
+
+- **The release publishes the package.** `pi-dev-flow` is on npm, and `.github/workflows/release.yml` is what puts it there: the `v*` tag `flow release` pushes triggers a job that checks the tag against the manifest version, proves the tag is on the default branch (an npm version is immutable — a tag cut from a feature branch would burn the number and ship code main never had), runs `npm ci && npm run build && npm test`, and publishes with `--provenance`. Authorization is npm **trusted publishing**: the job's OIDC identity is the credential, so there is no token in the repo to leak or rotate. Nothing publishes from a developer machine, and a failed publish is re-run on the same tag rather than re-tagged. The published manifest finally says what it ships (`files`), carries the `LICENSE` it had only claimed, states `engines.node`, and names the renamed repository; a new guard test refuses a pi-discoverable resource directory that `files` would silently drop, since that break is invisible to the author and fatal to whoever installs the package.
+
+### Changed
+
+- **`flow reflect` sends updates to npm.** The session-reflection protocol probed `git ls-remote` tags and recommended `pi install git:github.com/<upstream>`, because git was the only channel. It now compares the running version with `npm view pi-dev-flow version` and recommends `pi install npm:pi-dev-flow` then `/reload`, with the git probe kept as the fallback for git-installed copies (an installed fork still carries the same package name, so the probe stays correct). The README install section leads with the npm source and names the update path (`pi update --extensions`), and the publish workflow is documented for maintainers.
+
 ## [0.51.2] - 2026-10-21
 
 ### Changed
