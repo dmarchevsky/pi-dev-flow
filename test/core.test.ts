@@ -309,6 +309,7 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: feats, boundSlug: null }) ?? "", /flow use/);
 	assert.ok(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: feats, boundSlug: "a" }));
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/a/plan/plan.md", dfDir: df, features: feats, boundSlug: "a" }), null);
+	assert.match(writeGuard({ abs: "/repo/.dev-flow/b/plan/plan.md", dfDir: df, features: feats, boundSlug: "a" }) ?? "", /write only inside its own/, "one session may not write another feature's plan");
 	assert.ok(writeGuard({ abs: "/repo/wt-a/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/wt-a" }], boundSlug: "b" }), "plan-owned worktree stays closed even when bound elsewhere");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/worktree/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/.dev-flow/a/worktree" }], boundSlug: null }), "default worktreeDir inside .dev-flow is still stage-gated by its owner");
 	assert.equal(writeGuard({ abs: `${wtB}/src/app.ts`, dfDir: df, features: feats, boundSlug: "a" }), null, "b implement worktree open even when bound to a");
@@ -640,6 +641,23 @@ test("playbookTamper: prose about a write is not a write; a wrapper's payload is
 	assert.equal(playbookTamper("echo 'sed -i s/a/b/ .dev-flow/project.md' > /tmp/notes.md"), false, "a quoted mention, redirect elsewhere");
 });
 
+test("stateTamper: the folder is state — deleting it is tampering, reads are not", () => {
+	// the old guard matched one path shape: it blocked a read through a bare `-e` and let the folder go
+	assert.ok(stateTamper("rm -rf .dev-flow/my-feature"), "deleting the feature dir deletes its state and its plan");
+	assert.ok(stateTamper("rm -rf .dev-flow"), "deleting the folder deletes every feature");
+	assert.ok(stateTamper("cd .dev-flow/my-feature && mv state.json /tmp/bak"), "a cd-relative move of state.json still destroys it");
+	assert.ok(stateTamper("sh -c 'rm -rf .dev-flow/my-feature'"), "a wrapper's payload is the same command");
+	assert.equal(stateTamper("jq -e .stage .dev-flow/my-feature/state.json"), false, "a read is not a write");
+	assert.equal(stateTamper("rm src/state.json"), false, "a project's own state.json is none of our business");
+	assert.equal(stateTamper("rm .dev-flow/roadmap.md"), false, "the advisory backlog stays deletable");
+	assert.equal(stateTamper("rm -rf .dev-flow/my-feature/worktree/node_modules"), false, "inside a worktree is the feature's own working area");
+	assert.equal(stateTamper("ls .dev-flow"), false, "a listing is a listing");
+});
+
+test("playbookTamper: moving the playbook away is a write to it too", () => {
+	assert.ok(playbookTamper("mv .dev-flow/project.md /tmp/gone"), "mv out of the way destroys the operator's rules");
+});
+
 test("guardBash: deny blocks with the operator's reason, confirm is collected for the caller to ask", () => {
 	const g = rules({
 		deny: [{ pattern: "\\bgit\\b[^]*--force(?!\\w)", why: "history stays linear" }],
@@ -659,6 +677,16 @@ test("guardBash: read-only segments are skipped — quoted text is not a command
 	assert.equal(guardBash("git push origin feat && grep -- --force NOTES.md", g).block, null, "a later segment's word cannot complete an earlier segment's rule");
 	assert.equal(guardBash("git log --oneline && git push --force", g).block, "project rule: no force pushes", "the doing-segment still trips");
 	assert.match(guardBash('echo "git push --force" >> notes.md', g).block ?? "", /no force pushes/, "a redirect makes even echo a write");
+});
+
+test("guardBash: a read-only head that can still write is judged like a writer", () => {
+	const del = rules({ deny: [{ pattern: "\\brm\\b", why: "no deletes" }] });
+	assert.equal(guardBash("find src -name '*.test.ts' -exec rm {} ;", del).block, "project rule: no deletes", "find -exec runs the denied verb");
+	const push = rules({ deny: [{ pattern: "git push", why: "no push" }] });
+	assert.equal(guardBash('find . -name x -exec git push origin main {} +', push).block, "project rule: no push", "find -delete/-exec are not reads");
+	assert.equal(guardBash('awk "BEGIN{system(\'git push origin main\')}"', push).block, "project rule: no push", "awk system() executes");
+	assert.equal(guardBash("find src -name '*.test.ts'", push).block, null, "a plain find still reads");
+	assert.equal(guardBash('grep -rn "git push origin main" docs/', push).block, null, "the doc search stays a read");
 });
 
 test("guardBash: deny beats confirm inside one chain", () => {
