@@ -87,19 +87,25 @@ claiming a gate result it never produced. → [Gate reference](docs/gates.md)
 
 ### What a feature looks like
 
-> **you** sessions expire silently — sliding renewal, plus a test
-> **agent** *(reads the code, proposes `flow start session-renewal --ui`, asks its questions, writes
-> `.dev-flow/session-renewal/plan/plan.md` with the renders)* **Approve?**
-> **you** approve
-> **agent** *(worktree + `feat/session-renewal`)* → implements in small commits → `check` green →
-> walks the manual checklist with you → **Verified?**
-> **you** works — verified
-> **agent** review → docs → changelog + version bump → `check` again → shows you the PR summary,
-> version and changelog entry → **Release?**
-> **you** release
-> **agent** PR → merge → annotated tag → release notes → **Finish?**
-> **you** finish
-> **agent** worktree, branch and `.dev-flow/session-renewal/` are gone; main is clean and pushed
+Say: *"sessions expire silently — add sliding renewal and a test for it."* That becomes the feature
+`session-renewal`, and it walks five stages. In each one the agent does the work and asks you exactly
+one question:
+
+1. **plan** — it reads the code, asks you its clarifying questions, and writes the spec to
+   `.dev-flow/session-renewal/plan/plan.md` (with screenshots, since this touches the UI).
+   → it asks **Approve?**
+2. **implement** — it works in a fresh worktree on branch `feat/session-renewal`, commits in small
+   steps, runs your `test` command until it is green, then walks the manual checks with you.
+   → it asks **Verified?** — after you have used the running app
+3. **pre-release** — code review and fixes, docs, changelog entry, version bump, checks re-run; it
+   shows you the PR summary with the version it means to tag. → it asks **Release?**
+4. **release** — PR → merge → annotated tag → release notes. Only here is git allowed to touch main.
+   → it asks **Finish?**
+5. **done** — the worktree, the branch and `.dev-flow/session-renewal/` are gone; main is clean and
+   pushed.
+
+You answered four times. Everything between the answers was the agent's problem and your playbook's
+gates.
 
 If the feature grows mid-flight, it is folded into this one (the plan gains an `Added mid-stage:`
 line, checks re-run). A *different* problem waits for the next flow — one feature, one plan, one PR.
