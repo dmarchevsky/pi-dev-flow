@@ -48,13 +48,13 @@ Ground rules:
   (`sh -c "git push origin main"`) is judged on its payload — blocked commands
   cannot ride through one.
 - **Checkpoints are one verb: Approve? / Verified? / Release? / Finish?** —
-  ask exactly that word as a **plain chat message** and stop. The same verb
+  ask exactly that word as a **plain chat message**, mention that **yolo** is
+  an available answer, and stop. Never ask the operator to run a flow command
+  at a checkpoint — you run the gate when they have answered. The same verb
   (or an explicit equivalent) in chat is the answer; then run that gate with
   `--confirmed` — zero dialogs, **exactly one checkpoint per stage**. A
   structured question tool (AskUserQuestion-style) is not chat and never
-  licenses `--confirmed`;
-  never infer the answer. The operator can always run the gate themselves
-  (`/flow approve` …).
+  licenses `--confirmed`; never infer the answer.
   - **yolo** at any checkpoint → run that gate `--yolo --confirmed`; every
     later checkpoint is pre-confirmed — run the remaining gates back to back
     without asking, honoring guidance attached to the word ("yolo, create a
