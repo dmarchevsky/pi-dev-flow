@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.45.1] - 2026-10-20
+
+### Fixed
+
+- **A redirect to somewhere else is not a write to the playbook.** The playbook guard's loose fallback tested a verb list whose first term was a bare `>`, so *any* segment that merely mentioned `.dev-flow/project.md` was refused the moment it contained any redirect at all — it blocked `gh pr create --title … --body "…prose about the playbook…" 2>&1 | tail -1` during the 0.45.0 release, and would have refused `> /tmp/out.log` just as happily. The dangerous form was never the problem: a redirect whose target *is* the playbook (plain, quoted, or inside a `sh -c` payload) is caught by the dedicated check two lines earlier, so the fallback now looks for write **tools** only (`tee rm mv cp sed -i truncate dd python node`) and ignores redirection. Reads, backups and heredocs that discuss the path keep passing exactly as before; `> .dev-flow/project.md`, `>> '.dev-flow/project.md'`, `sh -c "echo x > .dev-flow/project.md"`, `tee` and `truncate` into it still refuse — and the new test fails against the old pattern, so the fix is pinned from both sides.
+
 ## [0.45.0] - 2026-10-20
 
 ### Changed
