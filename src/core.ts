@@ -462,9 +462,20 @@ export interface GuardCtx {
 	defaultBranch: string;
 	pushRefs?: PushRef[]; // caller-resolved push targets (bare names disambiguated tag vs branch); omit = guard parses raw command
 	playbookChore?: boolean; // the only change in this checkout is the playbook — tracking it is setup, not feature work (#53)
+	dir?: string; // absolute directory this segment runs in; named in the refusal so a wrong verdict is diagnosable
 }
 
 const unquote = (s: string): string => s.replace(/^(['"])(.*)\1$/, "$2");
+
+/** The shell expands a leading `~` or `$HOME` before git sees the path and path.resolve does not: an
+ *  unexpanded `~/wt` resolved against the session cwd, so a worktree commit was judged from the main
+ *  checkout. shortcut: any other $var stays literal — resolving it needs a shell, and a wrong guess is
+ *  what produced the bogus verdict in the first place. */
+export function expandHome(p: string): string {
+	const home = process.env.HOME;
+	if (!home) return p;
+	return p.replace(/^\$(?:HOME|\{HOME\})(?=$|\/)/, home).replace(/^~(?=$|\/)/, home);
+}
 
 /** git usage in a bash command, parsed per shell segment (split on ; | & newline):
  *  the git subcommands invoked — empty when git is not a command, so paths like
@@ -485,7 +496,7 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 		while (i < tok.length && /^[\w.]+=/.test(tok[i])) i++; // leading ENV=val prefixes
 		if (tok[i] === "sudo") i++;
 		if (tok[i] === "cd" && tok[i + 1]) {
-			dir = unquote(tok[i + 1]);
+			dir = expandHome(unquote(tok[i + 1]));
 			continue;
 		}
 		if (REEXEC_HEADS.has(tok[i] ?? "")) {
@@ -510,7 +521,7 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 			const eq = t.indexOf("=");
 			const name = eq === -1 ? t : t.slice(0, eq);
 			if (name === "-C") {
-				dir = eq === -1 ? unquote(tok[++i] ?? "") : unquote(t.slice(eq + 1));
+				dir = expandHome(eq === -1 ? unquote(tok[++i] ?? "") : unquote(t.slice(eq + 1)));
 				continue;
 			}
 			if (OPT_VAL.has(name) && eq === -1) i++;
@@ -665,7 +676,10 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 	// tracking chore is the other legal main commit: its only content is the operator's own playbook (#53).
 	// --amend is not a chore: it rewrites the default branch's history.
 	const playbookCommit = o.playbookChore && !c.includes("--amend");
-	if (git("commit") && onMain && o.stage !== "release" && !playbookCommit) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree (tracking the playbook is legal: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit)`;
+	// a cd earlier in the command picks the directory this verdict is about — name it, or a misjudged segment
+	// reads as "the rule is broken" instead of "the guard looked in the wrong place".
+	const judgedIn = o.dir ? ` — judged in ${o.dir}; a cd or git -C earlier in the command picks the directory` : "";
+	if (git("commit") && onMain && o.stage !== "release" && !playbookCommit) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree (tracking the playbook is legal: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit)${judgedIn}`;
 	if (git("push")) {
 		// ref-aware: only pushes that WRITE the default branch need stage release — tags and other branches pass.
 		// unresolved bare names arrive pre-resolved by the caller (tag vs branch); no parse info → conservative onMain.

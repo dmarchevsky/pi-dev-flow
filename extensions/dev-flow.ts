@@ -1376,10 +1376,10 @@ export default function devFlow(pi: ExtensionAPI) {
 			const branchOf = async (dir: string | null): Promise<string> => {
 				const at = dir ? path.resolve(ctx.cwd, dir) : ctx.cwd;
 				if (!branchCache.has(at)) {
+					// no session-cwd fallback: when the probe could not answer (a path that resolved nowhere, a
+					// detached HEAD) it reported the session's branch, and a worktree commit got the main rule
 					const br = await sh(`git -C ${sq(at)} branch --show-current`, ctx.cwd);
-					let b = (br.ok ? br.out : "").trim().split("\n")[0];
-					if (!b) b = (await sh("git branch --show-current", ctx.cwd)).out.trim().split("\n")[0] || "";
-					branchCache.set(at, b);
+					branchCache.set(at, (br.ok ? br.out : "").trim().split("\n")[0]);
 				}
 				return branchCache.get(at)!;
 			};
@@ -1407,7 +1407,7 @@ export default function devFlow(pi: ExtensionAPI) {
 					const dirty = await sh(`git -C ${sq(gitDir)} status --porcelain`, ctx.cwd);
 					playbookChore = dirty.ok && playbookOnlyChange(dirty.out);
 				}
-				const reason = bashFlowGuard({ command: g.seg, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore });
+				const reason = bashFlowGuard({ command: g.seg, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore, dir: gitDir });
 				if (reason) return { block: true, reason };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
 				const target = checkoutTarget(g.seg);

@@ -186,6 +186,16 @@ test("worktree isolation: commit guards follow the command's directory", async (
 	assert.equal(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(wt)} && git commit -m x && cd ${JSON.stringify(repo)} && git pull`, timeout: 60 } }, ctx), undefined, "commit judged in the worktree even when the chain later cds to main");
 	assert.ok(await guard({ toolName: "bash", input: { command: `cd ${JSON.stringify(repo)} && git log && cd ${JSON.stringify(repo)} && git commit -m x`, timeout: 60 } }, ctx), "commit after cd back to main checkout is blocked");
 	assert.ok(await guard({ toolName: "bash", input: { command: `git -C ${JSON.stringify(repo)} checkout -b feat/sneaky`, timeout: 60 } }, ctx), "checkout -b of a feature branch in the main checkout is blocked");
+	// the reported failure: ~ is the shell's to expand, path.resolve does not, so `~/wt` resolved under the
+	// session cwd and the failed probe fell back to main — a worktree commit got the default branch's rule
+	const home = process.env.HOME;
+	process.env.HOME = path.dirname(repo);
+	try {
+		assert.equal(await guard({ toolName: "bash", input: { command: `cd ~/${path.relative(process.env.HOME, wt)} && git commit -m x`, timeout: 60 } }, ctx), undefined, "worktree commit via a ~ cd must pass");
+	} finally {
+		process.env.HOME = home;
+	}
+	assert.equal(await guard({ toolName: "bash", input: { command: "cd /nonexistent-dir-xyz && git commit -m x", timeout: 60 } }, ctx), undefined, "a directory git cannot answer for invents no main verdict — git itself fails there");
 });
 
 test("init keeps an existing project.md; --force rewrites from fresh detection", async () => {
