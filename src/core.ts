@@ -530,6 +530,7 @@ const WRITE_TOOLS = /\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|py
 const COPY_HEADS = new Set(["cp", "install", "tee", "dd"]);
 /** verbs that destroy the file they name — copying a file somewhere safe is not one of them. */
 const DESTROY_HEADS = new Set(["rm", "mv", "truncate"]);
+const DESTROY_ANY = /\b(rm|mv|truncate)\b/;
 
 /** The file a `>`/`>>` writes (`2>` allowed), or null. */
 function redirectTarget(seg: string): string | null {
@@ -543,10 +544,10 @@ function redirectTarget(seg: string): string | null {
  *  `jq -e .stage .dev-flow/x/state.json` and waved through `rm -rf .dev-flow/x`. Each caller asks about
  *  its own subject so the block message names what was actually touched. */
 function ownedWrite(seg: string, what: "state" | "playbook", flowState: boolean): boolean {
+	const stateNamed = (q: string): boolean => (flowState ? STATE_PATH.test(q) : STATE_PATH_ABS.test(q));
 	const owned = (p: string): boolean => {
 		const q = unquote(p);
-		if (what === "playbook") return PLAYBOOK_PATH.test(q);
-		return (flowState ? STATE_PATH.test(q) : STATE_PATH_ABS.test(q)) || DF_FOLDER.test(q);
+		return what === "playbook" ? PLAYBOOK_PATH.test(q) : stateNamed(q) || DF_FOLDER.test(q);
 	};
 	const tok = seg.split(/\s+/).filter(Boolean);
 	if (!tok.some((t) => owned(t))) return false;
@@ -559,7 +560,12 @@ function ownedWrite(seg: string, what: "state" | "playbook", flowState: boolean)
 	if (COPY_HEADS.has(head)) return owned(tok[tok.length - 1] ?? "");
 	// what is left is the loose fallback — a write tool named in the clear. A wrapper's payload counts; everyone
 	// else's quoted text is prose, and prose about `cp`/`sed` is not a write (it refused a PR body describing #53).
-	return WRITE_TOOLS.test(REEXEC_HEADS.has(head) ? seg : maskQuoted(seg));
+	const payload = REEXEC_HEADS.has(head) ? seg : maskQuoted(seg);
+	if (!WRITE_TOOLS.test(payload)) return false;
+	// a generic writer (interpreter, wrapper): state and playbook always count; the folder only when the
+	// payload really destroys it — `python tools/x.py --dir .dev-flow/<slug>` points at a directory, it does not delete it.
+	if (what === "playbook") return true;
+	return tok.some((t) => stateNamed(unquote(t))) || (tok.some((t) => DF_FOLDER.test(unquote(t))) && DESTROY_ANY.test(payload));
 }
 
 /** True when a bash command writes, moves or deletes flow state — or the `.dev-flow` folder/feature

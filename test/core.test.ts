@@ -652,6 +652,7 @@ test("stateTamper: the folder is state — deleting it is tampering, reads are n
 	assert.equal(stateTamper("rm .dev-flow/roadmap.md"), false, "the advisory backlog stays deletable");
 	assert.equal(stateTamper("rm -rf .dev-flow/my-feature/worktree/node_modules"), false, "inside a worktree is the feature's own working area");
 	assert.equal(stateTamper("ls .dev-flow"), false, "a listing is a listing");
+	assert.equal(stateTamper("python tools/render.py --dir .dev-flow/my-feature"), false, "pointing a script at a feature dir is not deleting it");
 });
 
 test("playbookTamper: moving the playbook away is a write to it too", () => {

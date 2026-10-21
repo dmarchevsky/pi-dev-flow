@@ -470,8 +470,9 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				}
 				notes.push(...brief);
 			} else if (flag("force")) {
-				// a destructive reset of the operator's own file needs the same anchor as every other grant
-				if (!flag("confirmed")) return { text: "flow init --force overwrites the operator playbook — that needs the operator's word: re-run with --confirmed (the current file is kept as project.md.bak)", isError: true };
+				// a destructive reset of the operator's own file needs their word: --confirmed for an agent, one dialog for a human
+				const ok = flag("confirmed") || (ui.hasUI && (await ui.confirm("Overwrite project.md?", `flow init --force replaces the operator playbook with a fresh detection draft. Hand-written rules, checklist items and guidance are lost (a copy is kept as project.md.bak).`)));
+				if (!ok) return { text: "flow init --force overwrites the operator playbook — that needs the operator's word: re-run with --confirmed (the current file is kept as project.md.bak)", isError: true };
 				copyFileSync(mdFile, `${mdFile}.bak`);
 				writeFileSync(mdFile, draftFresh);
 				notes.push("project.md OVERWRITTEN (--force; previous copy kept as project.md.bak):", ...det.report.map((r) => `  ${r}`), GIT_TRACK_NOTE);
@@ -840,7 +841,8 @@ ${mdDigest(draftRefresh)}`))
 			const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
 				? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
 				: null;
-			const remoteTags = await releaseTags(root);
+			// tags are only needed on the versioned path; a project without versioning must not be held up by an offline origin
+			const remoteTags = cfg.versioning.file && !state!.noVersion ? await releaseTags(root) : [];
 			if (remoteTags === null) return { text: "release gate FAILED:\n- cannot list tags on origin (offline?) — retry; local tags do not decide what is already released", isError: true };
 			const changelog =
 				cfg.release.changelog && existsSync(path.join(wtCwd, cfg.release.changelog))
