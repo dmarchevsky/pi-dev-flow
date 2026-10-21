@@ -982,13 +982,15 @@ ${mdDigest(draftRefresh)}`))
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 			// no checkpoint here — the operator's Release? answer covered the whole publication; everything left is objective checks
 			const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;
-			state!.approvals.release = now();
 			let ghNote = "";
+			const forgeName = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
 			if (manifestVer && flag("no-release-create")) ghNote = "Forge release skipped (--no-release-create).";
+			else if (manifestVer && !releasesWanted) ghNote = "no forge release created (release.releases = false — the playbook says publication is manual; a stale key is how a repo ends up with tags and an empty Releases page #85).";
 			else if (manifestVer && releasesWanted) {
-				// advisory: forge release for the verified tag — gh for GitHub, glab for GitLab; a note on failure, never a block
+				// forge release for the verified tag — gh for GitHub, glab for GitLab. A failed create is no
+				// longer the end of the story: the proof below asks the forge whether anything is there (#63, #85)
 				const tag = expectedTag!;
-				const forge = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
+				const forge = forgeName;
 				if (forge === "self") ghNote = "Forge release skipped (forge=self — publication stays manual).";
 				else {
 					// notes: the tag's annotation, else the changelog entry for this version, else nothing —
@@ -1019,12 +1021,24 @@ ${mdDigest(draftRefresh)}`))
 			}
 			const behind = sessionRunsOlderBuild(LOADED_VERSION, pluginVersion(import.meta.dirname).version);
 			const openRelease = checklistPending(cfg, state!, "release");
+			// release-stage items have no gate of their own: the operator's Finish? answer is what closes them, so
+			// name them at the last objective gate — on the way out too, or the refusal hides half the story
+			const openNote = openRelease ? `release-stage checklist still open (${openRelease}): ${applicableItems(cfg, state!, "release").map((i) => i.text).join(" | ")} — close these with the operator before finishing.` : "";
+			// #85: ask the forge whether the release exists instead of trusting the attempt. #51, #60 and #63
+			// were three ways of recording a release nothing published, and the artifact probe saw none of them
+			if (releasesWanted && expectedTag && forgeName !== "self") {
+				const view = forgeName === "gitlab" ? `glab release view ${sq(expectedTag)}` : `gh release view ${sq(expectedTag)}`;
+				if (!(await sh(view, root)).ok) {
+					return { text: `release gate FAILED:\n- no ${forgeName} release exists for ${expectedTag} — create it (${view.split(" ")[0]} release create ${expectedTag}) or, if publication is deliberately manual, say so with release.releases = false in project.md${ghNote ? `. ${ghNote}` : ""}${openNote ? ` ${openNote}` : ""}`, isError: true };
+				}
+				delete state!.forgeReleaseSkipped; // the forge has it, whatever the create call reported
+				ghNote += `${ghNote ? " " : ""}Release ${expectedTag} verified on ${forgeName}.`;
+			}
+			state!.approvals.release = now();
 			const tailNote = [
 				// a session that shipped from behind: the code it runs is not the code the checkout just released
 				behind ? `warning: this session runs dev-flow ${behind}, not the build in the checkout — /reload before trusting what it printed.` : "",
-				// release-stage items have no gate of their own: the operator's Finish? answer is what closes them, so name
-				// them here instead of letting the checklist vanish unnoticed at the last objective gate
-				openRelease ? `release-stage checklist still open (${openRelease}): ${applicableItems(cfg, state!, "release").map((i) => i.text).join(" | ")} — close these with the operator before finishing.` : "",
+				openNote,
 				ghNote,
 				artNote,
 			].filter(Boolean).join(" ");

@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -745,19 +745,24 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	assert.match(f.content[0].text, /release recorded as complete/);
 	await versioned("optcfg", "9.9.10", "releases = false\n");
 	const c = await flow(["release-done", "--confirmed"]);
-	assert.ok(!c.content[0].text.includes("release skipped"), "config-off: no attempt, no note");
+	assert.match(c.content[0].text, /no forge release created \(release\.releases = false/, "config-off says it out loud — a stale key is how a repo ends up with an empty Releases page (#85)");
 	assert.match(c.content[0].text, /release recorded as complete/);
-	// release-stage items have no gate of their own — release-done names them; and a failing forge create (#63)
-	// must be named by finish before the state vanishes: forge=gitlab without a GitLab remote — glab is absent
-	// or has no matching repo, the create deterministically fails.
+	// a failing forge create used to be a note the release rode past (#63); now the gate asks the forge and refuses
+	// when nothing is there: forge=gitlab without a GitLab remote — glab is absent, the create fails deterministically
 	await versioned("chores", "9.9.11", "", "\n- [ ] dogfood the shim in the released checkout\n");
 	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n\n## global\n\n```flow\nforge = gitlab\n```\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n\n- [ ] dogfood the shim in the released checkout\n");
 	trackPlaybook(repo);
 	const chores = await flow(["release-done", "--confirmed"]);
-	assert.match(chores.content[0].text, /release-stage checklist still open \(1\): dogfood the shim/, "release-stage items surface at the last gate; the operator's Finish? answer closes them");
-	assert.match(chores.content[0].text, /release skipped/, "a failed forge release is printed, not swallowed");
-	const finChores = await flow(["finish", "--confirmed"]);
-	assert.match(finChores.content[0].text, /WARNING: the forge release was not created/, "finish names the missing forge release — it cannot slip past (#63)");
+	assert.ok(chores.isError, "a release the forge does not have is not a release (#85 closes what #63 only stamped)");
+	assert.match(chores.content[0].text, /no gitlab release exists for v9\.9\.11/, "the refusal says what is missing and both ways out");
+	assert.match(chores.content[0].text, /release-stage checklist still open \(1\): dogfood the shim/, "the refusal says everything the success path would have said");
+	// and the way out it offers: this project publishes by hand
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n\n## global\n\n```flow\nforge = self\n```\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n\n- [ ] dogfood the shim in the released checkout\n");
+	trackPlaybook(repo);
+	const manual = await flow(["release-done", "--confirmed"]);
+	assert.match(manual.content[0].text, /Forge release skipped \(forge=self/);
+	assert.match(manual.content[0].text, /release recorded as complete/);
+	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature chores done/, "a manual-publication project finishes clean");
 });
 
 test("release-teeth: tag must reach origin; release.artifact verifies the published artifact", async () => {
@@ -1332,6 +1337,58 @@ test("tagNotesCommand prints an annotated tag's body through /bin/sh (#51)", () 
 	const out = execFileSync("/bin/sh", ["-c", tagNotesCommand("v1.0.0")], { cwd: repo, encoding: "utf8" }).trim();
 	assert.equal(out, body, "the format must be quoted — an unquoted %(contents) is a /bin/sh syntax error");
 	assert.ok(!existsSync(path.join(repo, "pwned")) && !existsSync(path.join(repo, "pwned2")), "code spans and substitutions stay literal argument text");
+});
+
+test("release-done proves the forge release exists instead of trusting the attempt (#85)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const origin = mkdtempSync(path.join(tmpdir(), "devflow-origin-"));
+	execFileSync("git", ["init", "-q", "--bare", origin]);
+	execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
+	const bin = mkdtempSync(path.join(tmpdir(), "devflow-bin-"));
+	const ghState = mkdtempSync(path.join(tmpdir(), "devflow-gh-"));
+	// a gh stand-in: it only has what it created, and either step can be told to misbehave — a create that
+	// "succeeded" while publishing nothing is exactly how #51, #60 and #63 ended with an empty Releases page
+	writeFileSync(path.join(bin, "gh"), '#!/bin/sh\ncase "$1 $2" in\n  "release create") if [ -f "$GH_FAIL" ]; then echo "gh: mock create failed" >&2; exit 1; fi; touch "$GH_STATE/$3"; exit 0 ;;\n  "release view") if [ -f "$GH_VIEWFAIL" ]; then exit 1; fi; test -f "$GH_STATE/$3" ;;\nesac\nexit 0\n');
+	chmodSync(path.join(bin, "gh"), 0o755);
+	const savedPath = process.env.PATH;
+	process.env.PATH = `${bin}:${process.env.PATH}`;
+	process.env.GH_STATE = ghState;
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const git = (args: string[], dir = repo) => execFileSync("git", ["-C", dir, ...args]);
+	const ship = async (slug: string, ver: string) => {
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		commitWt(repo, slug);
+		await flow(["verify", "--confirmed"]);
+		const wt = path.join(repo, ".dev-flow", slug, "worktree");
+		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`);
+		writeFileSync(path.join(wt, "CHANGELOG.md"), `# Changelog\n\n## [Unreleased]\n\n## [${ver}]\n- shipped\n`);
+		git(["add", "-A"], wt);
+		git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", `bump ${ver}`], wt);
+		assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
+		git(["merge", "-q", "--ff", `feat/${slug}`]);
+		git(["push", "-q", "origin", "main"]);
+		git(["-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", `v${ver}`, "-m", `v${ver}`]);
+		git(["push", "-q", "origin", `refs/tags/v${ver}`]);
+	};
+	await flow(["init", "--write", "# dev-flow\n\n## global\n\n```flow\nforge = github\n```\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
+	await ship("shown", "9.9.7");
+	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /Release v9\.9\.7 verified on github/, "the proof asks the forge, not the create exit code");
+	writeFileSync(path.join(ghState, "viewfail"), "");
+	process.env.GH_VIEWFAIL = path.join(ghState, "viewfail");
+	await ship("ghost", "9.9.8");
+	const refuse = await flow(["release-done", "--confirmed"]);
+	assert.ok(refuse.isError && /no github release exists for v9\.9\.8/.test(refuse.content[0].text), "recorded is not the same as published");
+	assert.match(refuse.content[0].text, /release\.releases = false/, "the refusal names both ways out: create it, or say publication is manual");
+	assert.ok(!JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ghost", "state.json"), "utf8")).approvals.release, "a refused release-done records nothing");
+	delete process.env.GH_VIEWFAIL;
+	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /release recorded as complete/, "and the retry once the release really exists passes");
+	process.env.PATH = savedPath;
+	delete process.env.GH_STATE;
 });
 
 test("the playbook tracking chore is legal on the default branch (#53)", async () => {
