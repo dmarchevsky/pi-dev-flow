@@ -56,6 +56,8 @@ function makeRepo(): string {
 	const dir = mkdtempSync(path.join(tmpdir(), "devflow-"));
 	execFileSync("git", ["init", "-b", "main", dir]);
 	writeFileSync(path.join(dir, "README.md"), "# scratch\n");
+	// release.changelog is on by default — every test repo has one, entries added per test as needed
+	writeFileSync(path.join(dir, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
 	const id = ["-c", "user.email=t@t", "-c", "user.name=t"];
 	execFileSync("git", ["-C", dir, ...id, "add", "-A"]);
 	execFileSync("git", ["-C", dir, ...id, "commit", "-qm", "init"]);
@@ -637,6 +639,7 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 		await flow(["verify", "--confirmed"]);
 		const wt = path.join(repo, ".dev-flow", slug, "worktree");
 		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`); // pre-release bump lives on the branch
+		writeFileSync(path.join(wt, "CHANGELOG.md"), `# Changelog\n\n## [Unreleased]\n\n## [${ver}]\n- shipped\n`); // the gate wants the version mentioned
 		execFileSync("git", ["-C", wt, "add", "-A"]);
 		execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", `bump ${ver}`]);
 		assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
@@ -681,6 +684,7 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	await flow(["verify", "--confirmed"]);
 	const wt = path.join(repo, ".dev-flow", "teeth", "worktree");
 	writeFileSync(path.join(wt, "package.json"), '{"name":"t","version":"9.9.9"}'); // the bump lives on the branch
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n## [9.9.9]\n- shipped\n"); // the gate wants the version mentioned
 	execFileSync("git", ["-C", wt, "add", "-A"]);
 	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "bump 9.9.9"]);
 	await flow(["release", "--confirmed"]);
@@ -1146,9 +1150,9 @@ test("yolo at any gate: verify --yolo answers that question and pre-confirms the
 	assert.equal(dialogs, 0, "yolo said at Verify? — later gates must not ask");
 });
 
-test("unversioned release: --no-version skips the bump/tag machinery for that flow", async () => {
+test("unversioned release: --no-version ships merge + changelog and skips the bump/tag machinery", async () => {
 	const pi = makePi();
-	const repo = makeRepo();
+	const repo = makeRepo(); // already carries a committed CHANGELOG with an empty Unreleased
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
@@ -1161,12 +1165,17 @@ test("unversioned release: --no-version skips the bump/tag machinery for that fl
 	// default stays versioned: no manifest in the worktree → the gate refuses
 	const versioned = await flow(["release", "--confirmed"]);
 	assert.ok(versioned.isError && /no parsable version/.test(versioned.content[0].text), "default release still demands the version bump");
+	// unversioned still owes a changelog line: an untouched one is a refusal
+	const cold = await flow(["release", "--no-version", "--confirmed"]);
+	assert.ok(cold.isError && /unchanged on this branch/.test(cold.content[0].text), "an unversioned release must change the changelog");
+	const wt = path.join(repo, ".dev-flow", "nv", "worktree");
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- nv ships\n");
 	const r = await flow(["release", "--no-version", "--confirmed"]);
-	assert.match(r.content[0].text, /unversioned: this flow creates no version bump or tag/);
+	assert.match(r.content[0].text, /unversioned: no bump or tag; your changelog entry rides under Unreleased/);
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "nv", "state.json"), "utf8"));
 	assert.equal(st.noVersion, true, "the mode is persisted for release-done");
 	const rd = await flow(["release-done", "--confirmed"]);
-	assert.match(rd.content[0].text, /release recorded as complete \(unversioned — this flow created no version or tag\)/);
+	assert.match(rd.content[0].text, /release recorded as complete \(unversioned — the changelog entry ships under Unreleased; the next versioned release folds it\)/);
 });
 
 test("release-done publishes the version the release gate stamped, and refuses to go behind origin (#52)", async () => {
@@ -1186,6 +1195,7 @@ test("release-done publishes the version the release gate stamped, and refuses t
 		await flow(["verify", "--confirmed"]);
 		const wt = path.join(repo, ".dev-flow", slug, "worktree");
 		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`); // the bump lives on the branch
+		writeFileSync(path.join(wt, "CHANGELOG.md"), `# Changelog\n\n## [Unreleased]\n\n## [${ver}]\n- shipped\n`); // the gate wants the version mentioned
 		git(["add", "-A"], wt);
 		git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", `bump ${ver}`], wt);
 		assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);

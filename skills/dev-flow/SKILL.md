@@ -62,7 +62,9 @@ Ground rules:
     Checks and guardrails stay fully enforced — a flow-guard `confirm` rule
     still asks the operator.
   - At Release?, choosing **no version/tag for this flow** →
-    `flow release --no-version --confirmed` (default is versioned: bump + tag).
+    `flow release --no-version --confirmed` — the merge still owes a changelog
+    entry under `Unreleased`, which the next versioned release folds under its
+    version heading (default is versioned: bump + tag).
 - **Modes are proposed, never taken**: every `flow start` carries the mode and
   a one-line why; the operator grants it in chat and the gate refuses
   `--patch`/`--docs` until the grant is anchored with `--confirmed` — never
@@ -218,14 +220,18 @@ invent one mid-release. Sequence:
 2. Update documentation to reflect the change.
 3. Update the changelog and bump the manifest to the exact version you will
    tag — manifest, changelog and tag must agree; commit the prep on the feature
-   branch.
+   branch. A versioned release **folds the `Unreleased` section** (entries
+   `--no-version` flows left there) under the new version heading — the gate
+   refuses while it still holds entries.
 4. `flow check` — the prep edits invalidated the implement checks; the release
    gate demands them green again.
 5. State what the PR will contain, present version and changelog entry,
    **stop** — **Release?** → `flow release --confirmed`. The gate re-checks
    tier-1, requires the manifest **ahead of the last tag** and the changelog to
    mention it. Operator ships this flow **without version/tag** →
-   `flow release --no-version --confirmed` — no bump, no changelog edit.
+   `flow release --no-version --confirmed` — no bump, but the changelog entry
+   under `Unreleased` is still required: the gate proves the branch changed the
+   changelog.
 
 ## Stage: release
 
@@ -244,8 +250,9 @@ the worktree unless noted:
    actually shipped. If CI publishes from the tag, set `release.artifact` in
    the playbook — `release-done` then verifies the published artifact and
    refuses local-only tags outright. Unversioned flow (`--no-version` granted):
-   no bump, no tag — publish the merge only, `release-done` asks nothing
-   version-side.
+   no bump, no tag — publish the merge only (your entry rides under
+   `Unreleased` until the next versioned release folds it), `release-done`
+   asks nothing version-side.
 3. `flow release-done` — **no question** (the Release? answer covered the
    publication). It re-verifies (tag on the default branch, on origin, artifact
    when configured) against **the version the release gate stamped** — never a

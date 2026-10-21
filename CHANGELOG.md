@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-21
+
+### Changed
+
+- **`release --no-version` now ships merge + changelog instead of skipping both.** The flow still cuts no version, tag or forge release, but the Release? gate refuses until the branch changes the changelog — the entry rides under `Unreleased` until the next versioned release folds it. The versioned gate grew the matching rule: it refuses while the `Unreleased` section (`## Unreleased` / `## [Unreleased]`, nested `###` sub-headings included) still holds entries — several `--no-version` flows accumulate there and a full release must gather them under its new version heading. `release.changelog` defaults to `CHANGELOG.md` (set it empty in project.md to opt out); with no changelog file at all an unversioned release is refused, since its changelog line is all it ships.
+
 ## [0.46.3] - 2026-10-21
 
 ### Fixed

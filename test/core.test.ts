@@ -36,6 +36,7 @@ import {
 	playbookTamper,
 	pluginVersion,
 	preReleaseGate,
+	unreleasedPending,
 	newState,
 	newestTaggedVersion,
 	parseLsRemoteTags,
@@ -135,7 +136,7 @@ test("releaseGate requires verify approval and release stage", () => {
 test("preReleaseGate: stage, re-greened checks, bumped version, changelog mention", () => {
 	const s = { ...newState("f", false), stage: "pre-release" as const };
 	const c2 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
-	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
+	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" }, changelogChanged: false };
 	assert.ok(preReleaseGate(s, c2, prep).some((e) => e.includes("flow check")), "checks must be rerun after prep edits");
 	s.checks.test = { ok: true, at: "" };
 	assert.equal(preReleaseGate(s, c2, prep).length, 0);
@@ -144,10 +145,29 @@ test("preReleaseGate: stage, re-greened checks, bumped version, changelog mentio
 	assert.ok(preReleaseGate(s, c2, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")));
 	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: null }).some((e) => e.includes("does not exist")));
 	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: { file: "CHANGELOG.md", content: "## 1.1.0" } }).some((e) => e.includes("does not mention")));
-	// unversioned flow (operator granted release --no-version): bump and changelog requirements are off
-	assert.equal(preReleaseGate({ ...s, noVersion: true }, c2, { manifestVersion: null, remoteTags: ["v1.2.0"], changelog: null }).length, 0);
-	// no versioning/changelog configured: only the check matters
-	assert.equal(preReleaseGate({ ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } }, buildConfig({ commands: { test: "x" } }), prep).length, 0);
+	// unversioned flow (--no-version granted): bump/tag rules off, but the changelog entry is owed
+	const uPrep = { manifestVersion: "9.9.9", remoteTags: ["v1.2.0"], changelog: { file: "CHANGELOG.md", content: "## [Unreleased]\n- entry" }, changelogChanged: false };
+	assert.ok(preReleaseGate({ ...s, noVersion: true }, c2, uPrep).some((e) => e.includes("unchanged on this branch")));
+	assert.equal(preReleaseGate({ ...s, noVersion: true }, c2, { ...uPrep, changelogChanged: true }).length, 0, "unversioned: no bump/tag rules, a changed changelog passes");
+	assert.ok(preReleaseGate({ ...s, noVersion: true }, c2, { ...uPrep, changelog: null }).some((e) => e.includes("does not exist")));
+	// versioning unset and changelog explicitly cleared: only the check matters
+	assert.equal(preReleaseGate({ ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } }, buildConfig({ commands: { test: "x" }, release: { changelog: "" } }), prep).length, 0);
+	// release.changelog ships on by default — a bare playbook still owes changelog prep
+	assert.equal(buildConfig({}).release.changelog, "CHANGELOG.md");
+});
+
+test("preReleaseGate: versioned release folds the Unreleased backlog (--no-version entries)", () => {
+	const s = { ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } };
+	const c2 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" } });
+	const base = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelogChanged: false };
+	const cl = (content: string) => ({ ...base, changelog: { file: "CHANGELOG.md", content } });
+	assert.ok(preReleaseGate(s, c2, cl("# Changelog\n\n## [Unreleased]\n\n- left by a --no-version flow\n\n## [1.1.0] - 2026\n")).some((e) => e.includes("fold them under the v1.2.0 heading")));
+	assert.equal(preReleaseGate(s, c2, cl("# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026\n- done\n")).length, 0, "empty Unreleased passes");
+	assert.equal(preReleaseGate(s, c2, cl("## 1.2.0\n- done\n")).length, 0, "no Unreleased section: vacuously clean");
+	assert.ok(unreleasedPending("## Unreleased\n- entry"));
+	assert.ok(unreleasedPending("## [Unreleased]\n### Added\n- entry\n## [1.0.0]\n"), "entries under a nested sub-heading still count");
+	assert.ok(!unreleasedPending("prose mentions Unreleased in passing\n## 1.0.0"));
+	assert.ok(!unreleasedPending("## [Unreleased]\n\n## 1.0.0"));
 });
 
 test("bashFlowGuard: main protection and release-stage release", () => {
@@ -566,7 +586,7 @@ test("docs mode: no plan document, no tier-1 checks, release integrity intact", 
 	assert.ok(verifyGate({ ...newState("d", false), stage: "implement" as const }, cfg).length > 0, "non-docs still demands green checks");
 	const pre = { ...newState("d", false, false, true), stage: "pre-release" as const };
 	const c3 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
-	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" } };
+	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" }, changelogChanged: false };
 	assert.ok(!preReleaseGate(pre, c3, prep).some((e) => e.includes("flow check")), "docs release gate skips re-greened checks");
 	assert.ok(preReleaseGate(pre, c3, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")), "docs still needs the version bump");
 });

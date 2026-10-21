@@ -35,7 +35,7 @@ export interface FlowState {
 	patch?: boolean; // chore release: no plan document, all gates intact
 	docs?: boolean; // docs-only release: no plan document, no tier-1 checks; worktree discipline and the full release stay
 	flowVersion?: string; // dev-flow build that started the feature (stamped at start, shown by status)
-	noVersion?: boolean; // operator chose: this flow releases without a version bump or tag
+	noVersion?: boolean; // operator chose: this flow ships merge + changelog only — no bump, no tag, no forge release; the entry rides under Unreleased until the next versioned release folds it
 	yolo?: boolean; // operator said "yolo" at any gate question: that one answered, every later one pre-confirmed; checks and guardrails stay
 	setupAt?: string; // commands.setup exited 0 in this worktree — a reused worktree reruns it only when unset (#49)
 	releaseVersion?: string; // the manifest version the release gate approved — release-done publishes this, not whatever a checkout says later (#52)
@@ -103,7 +103,7 @@ export const DEFAULTS: Config = {
 	prose: {},
 	versioning: { pattern: "v{version}" },
 	healthWait: 30,
-	release: { review: "/ponytail-review", releases: true },
+	release: { review: "/ponytail-review", changelog: "CHANGELOG.md", releases: true },
 	mainHook: true,
 	bashTimeout: "require",
 	guard: { deny: [], confirm: [], protect: [], forbid: [] },
@@ -218,12 +218,17 @@ export interface ReleasePrep {
 	remoteTags: string[];
 	/** Changelog file + content when release.changelog names a file that exists, else null. */
 	changelog: { file: string; content: string } | null;
+	/** True when the branch changed the changelog vs its merge base with the default branch —
+	 *  the proof an unversioned release ships a changelog entry although it cuts no version. */
+	changelogChanged: boolean;
 }
 
 /**
  * Gate: pre-release → release ("Release?"). Machine-proves the parts of release prep that can be
  * proven — checks re-greened after the prep edits, manifest bumped past the last tag, changelog
- * mentions the version. Review/docs quality stays tier-2 (operator confirms the checklist).
+ * mentions the version and holds no pending Unreleased entries. An unversioned (--no-version)
+ * flow skips the version rules but still owes a changelog line under Unreleased, proving the
+ * branch changed the changelog. Review/docs quality stays tier-2 (operator confirms the checklist).
  */
 export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep): string[] {
 	const errs: string[] = [];
@@ -231,8 +236,14 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
 	const pend = checklistPending(cfg, state, "pre-release");
 	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow release after ticking them off`);
-	// unversioned flow (operator granted --no-version): the release publishes as-is — no bump, changelog-entry or tag requirement
-	if (!state.noVersion) {
+	if (state.noVersion) {
+		// unversioned flow (operator granted --no-version): no bump, no tag, no forge release —
+		// but the merge still owes a changelog line under Unreleased, folded by the next versioned release
+		if (cfg.release.changelog) {
+			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — an unversioned release must record its entry there (under Unreleased)`);
+			else if (!prep.changelogChanged) errs.push(`${prep.changelog.file} is unchanged on this branch — an unversioned release must add its entry (under Unreleased)`);
+		}
+	} else {
 		if (cfg.versioning.file) {
 			if (!prep.manifestVersion) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — bump it to the version you will release`);
 			else if (prep.remoteTags.includes(cfg.versioning.pattern.replace("{version}", prep.manifestVersion)))
@@ -240,11 +251,32 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 		}
 		if (cfg.release.changelog) {
 			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog`);
-			else if (prep.manifestVersion && !prep.changelog.content.includes(prep.manifestVersion))
-				errs.push(`${prep.changelog.file} does not mention version ${prep.manifestVersion} — add its entry before releasing`);
+			else {
+				if (prep.manifestVersion && !prep.changelog.content.includes(prep.manifestVersion))
+					errs.push(`${prep.changelog.file} does not mention version ${prep.manifestVersion} — add its entry before releasing`);
+				if (unreleasedPending(prep.changelog.content))
+					errs.push(`${prep.changelog.file} still has entries under Unreleased — fold them under the v${prep.manifestVersion ?? "new"} heading before releasing (they were left by --no-version flows)`);
+			}
 		}
 	}
 	return errs;
+}
+
+/** True when the changelog's Unreleased section still holds entries — --no-version flows park
+ *  their lines there and a versioned release must fold them under its own heading. Matches
+ *  `## Unreleased` / `## [Unreleased]`; deeper `###` sub-headings stay inside the section, the
+ *  next h1/h2 ends it; no section = nothing pending (the convention is opt-in). */
+export function unreleasedPending(content: string): boolean {
+	let inside = false;
+	for (const line of content.split("\n")) {
+		if (/^#{1,2}\s/.test(line)) {
+			if (inside) return false; // section ended without entries
+			inside = /^#{2,3}\s*\[?Unreleased\]?\s*$/.test(line);
+			continue;
+		}
+		if (inside && line.trim()) return true;
+	}
+	return false;
 }
 
 export function checklistHash(items: ChecklistItem[]): string {
@@ -1113,7 +1145,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return state.approvals.release
 				? "release recorded — commit and push the release chores in the main checkout (prefix the commit with DEV_FLOW_ALLOW_MAIN=1 — the installed pre-commit hook otherwise blocks main commits), ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
 				: state.noVersion
-					? "publish: commit and push the branch, open and merge the PR — unversioned release: no manifest bump, no tag; then run flow release-done (no further question)"
+					? "publish: commit and push the branch, open and merge the PR — unversioned release: no manifest bump, no tag, your changelog entry rides under Unreleased; then run flow release-done (no further question)"
 					: "publish: commit and push the branch, open and merge the PR, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)";
 		default:
 			return "feature finished";
