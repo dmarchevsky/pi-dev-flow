@@ -88,6 +88,7 @@ import {
 	verifyGate,
 	versionTagGate,
 	writeGuard,
+	type BranchState,
 	type Config,
 	type FeatureRef,
 	type FlowState,
@@ -338,6 +339,29 @@ function droppableLines(current: string, draft: string): string[] {
 function gateCwd(root: string, state: FlowState): string {
 	const wt = worktreeAbs(root, state);
 	return wt && existsSync(wt) ? wt : root;
+}
+
+/** Commits the feature branch holds over its merge base with the default branch, plus how many
+ *  paths sit uncommitted: verify's proof that there is a committed state behind the operator's
+ *  question. Local refs only — same offline-safe stance as the changelog proof — and an
+ *  unanswerable merge base reports null instead of refusing on a measurement failure. */
+async function branchState(cwd: string, defaultBranch: string): Promise<BranchState> {
+	const mb = await sh(`git merge-base origin/${sq(defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(defaultBranch)} HEAD 2>/dev/null || true`, cwd);
+	const base = mb.out.trim();
+	if (!mb.ok || !base) return { commitsAhead: null, uncommitted: 0 };
+	const ahead = await sh(`git rev-list --count ${sq(base)}..HEAD`, cwd);
+	const n = Number.parseInt(ahead.out.trim(), 10);
+	const dirty = await sh("git status --porcelain", cwd);
+	return {
+		commitsAhead: Number.isFinite(n) ? n : null,
+		uncommitted: dirty.ok ? dirty.out.split("\n").filter((l) => l.trim()).length : 0,
+	};
+}
+
+function describeBranchState(b: BranchState, defaultBranch: string): string {
+	return b.commitsAhead === null
+		? `commits: unknown (no merge base with ${defaultBranch} — the commit proof is skipped)`
+		: `commits: ${b.commitsAhead} ahead of ${defaultBranch}, ${b.uncommitted} uncommitted path(s)`;
 }
 
 // ---------------------------------------------------------------- gate runner
@@ -716,9 +740,11 @@ ${mdDigest(draftRefresh)}`))
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			const items = applicableItems(cfg, state!, "implement");
+			const branch = await branchState(gateCwd(root, state!), cfg.defaultBranch);
+			const branchLine = describeBranchState(branch, cfg.defaultBranch);
 			// tier-1 gate first (tier-2 confirmation is recorded by this very command, so it is excluded here)
-			const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg);
-			if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
+			const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg, branch);
+			if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}\n${branchLine}`, isError: true };
 			// commands that take minutes and touch live services must say so (#38): a terse gate let the
 			// agent tell the operator the dev deploy had never run, right after it recreated a container.
 			const did: string[] = [];
@@ -763,7 +789,7 @@ ${mdDigest(draftRefresh)}`))
 					}
 				} else did.push("dev: none configured");
 			}
-			const ran = did.join("; ");
+			const ran = [branchLine, ...did].join("; ");
 			// yolo is the operator's word at Verified? — answers this question and pre-confirms the later ones; --confirmed anchors it, checks and guardrails stay
 			if (flag("yolo")) {
 				if (!state!.yolo && !flag("confirmed")) return { text: "yolo is the operator's word — the operator must have said it in chat, then re-run with --yolo --confirmed", isError: true };
@@ -777,7 +803,7 @@ ${mdDigest(draftRefresh)}`))
 				if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
 			}
 			state!.confirmations = { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } };
-			const final = verifyGate(state!, cfg);
+			const final = verifyGate(state!, cfg, branch);
 			if (final.length) return { text: `verify gate FAILED:\n- ${final.join("\n- ")}`, isError: true };
 			state!.approvals.verify = now();
 			state!.stage = "pre-release";

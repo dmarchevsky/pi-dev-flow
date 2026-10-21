@@ -201,10 +201,22 @@ export function approveGate(state: FlowState, cfg: Config, planFiles: string[]):
 	return errs;
 }
 
-/** Gate: implement → release. Tier 1: every parsed check green; tier 2: checklist confirmed. */
-export function verifyGate(state: FlowState, cfg: Config): string[] {
+/** What the feature branch has proved when verify is asked: commits it holds over its merge
+ *  base with the default branch, and paths sitting uncommitted. commitsAhead is null when git
+ *  could not answer (no merge base — shallow clone, unfetched origin): a gate must not refuse
+ *  on its own measurement failure. */
+export interface BranchState {
+	commitsAhead: number | null;
+	uncommitted: number;
+}
+
+/** Gate: implement → release. Tier 1: every parsed check green; tier 2: checklist confirmed;
+ *  the branch must hold at least one commit — checks describe the working tree, so with nothing
+ *  committed the operator is asked to approve state no gate has ever seen. */
+export function verifyGate(state: FlowState, cfg: Config, branch?: BranchState | null): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "implement") errs.push(`stage is "${state.stage}", verify only applies to "implement"`);
+	if (branch && branch.commitsAhead === 0) errs.push("nothing committed on the feature branch yet — commit as you go, verify proves a committed state");
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
 	const pend = checklistPending(cfg, state, "implement");
 	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow verify after ticking them off`);

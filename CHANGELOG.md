@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-10-21
+
+### Changed
+
+- **`flow verify` refuses a branch with nothing committed.** Checks describe the working tree, so an agent that committed nothing could ask **Verified?** about a state no gate had ever seen — the first hard commit wall was `flow finish`, long after the answer. The gate now counts the branch's commits over its merge base with the default branch (local refs only, so it stays offline-safe) and refuses at zero **before** build / `dev` / health spend minutes on a deploy; a branch whose merge base cannot be resolved prints `commits: unknown` and is never blocked on a measurement failure. Every verify line now names `commits: N ahead of <default>, M uncommitted path(s)` alongside what it ran, so the operator sees what they are approving — uncommitted paths are reported, not gated, so fixing something the operator spotted still costs a re-verify and not a commit ceremony. `--docs` features follow the same rule.
+
 ## [0.47.0] - 2026-10-21
 
 ### Changed

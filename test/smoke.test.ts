@@ -90,6 +90,15 @@ function trackPlaybook(repo: string) {
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 }
 
+/** verify proves a committed branch, so every test that walks a feature to Verified? needs a
+ *  commit in the worktree — what a real flow does as it goes. Empty is fine: these tests carry
+ *  no feature content, only the commit proof. */
+function commitWt(repo: string, slug: string, msg = "work") {
+	const wt = path.join(repo, ".dev-flow", slug, "worktree");
+	execFileSync("git", ["-C", wt, "add", "-A"]);
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", msg]);
+}
+
 test("init → start → guards → gate ordering, end to end", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -237,6 +246,7 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
 		await flow(["approve", "--confirmed"]);
 		await flow(["check"]);
+		commitWt(repo, slug);
 	};
 	await flow(["init"]);
 	await toImplement("ran", "test = node --version\ndev = touch dev-up\n");
@@ -244,9 +254,30 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	const early = await flow(["verify"]);
 	assert.ok(early.isError, "no UI and no --confirmed: verification still needs the operator");
 	assert.match(early.content[0].text, /dev ran \(touch dev-up\)/);
-	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /verified .* — entering pre-release stage\.\ndev ran \(touch dev-up\)/);
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); dev ran \(touch dev-up\)/);
 	await toImplement("nodev", "test = node --version\n");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /dev: none configured/);
+});
+
+test("verify refuses a branch with nothing committed, and names what a passing verify asks you to approve", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n"]);
+	await flow(["start", "uncommitted"]);
+	mkdirSync(path.join(repo, ".dev-flow", "uncommitted", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "uncommitted", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	writeFileSync(path.join(repo, ".dev-flow", "uncommitted", "worktree", "f.txt"), "the whole change, uncommitted\n");
+	await flow(["check"]);
+	const refused = await flow(["verify"]);
+	assert.ok(refused.isError && /nothing committed on the feature branch/.test(refused.content[0].text), "an uncommitted branch cannot be verified");
+	assert.match(refused.content[0].text, /commits: 0 ahead of main, 1 uncommitted path\(s\)/, "the refusal says what the branch holds");
+	assert.ok(!/build ran|dev ran/.test(refused.content[0].text), "the commit proof is judged before the gate spends minutes deploying");
+	commitWt(repo, "uncommitted");
+	const ok = await flow(["verify", "--confirmed"]);
+	assert.match(ok.content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 0 uncommitted path\(s\)/, "the operator sees the committed state they are approving");
 });
 
 test("verify re-probes health after the dev deploy — a stale pre-deploy PASS cannot carry the gate", async () => {
@@ -262,6 +293,7 @@ test("verify re-probes health after the dev deploy — a stale pre-deploy PASS c
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
 		await flow(["approve", "--confirmed"]);
 		await flow(["check"]);
+		commitWt(repo, slug);
 	};
 	const stage = (slug: string) => JSON.parse(readFileSync(path.join(repo, ".dev-flow", slug, "state.json"), "utf8")).stage;
 	await flow(["init"]);
@@ -294,6 +326,7 @@ test("the health probe waits for a service that lags its deploy; healthWait 0 ke
 		await flow(["approve", "--confirmed"]);
 		writeFileSync(path.join(repo, ".dev-flow", slug, "worktree", "flow-start"), "0"); // the app is up before the redeploy, so the pre-verify check passes
 		await flow(["check"]);
+		commitWt(repo, slug);
 	};
 	await flow(["init"]);
 	await toImplement("bootlag", bootLag("10"));
@@ -316,6 +349,7 @@ test("docs mode runs no project command: approve skips setup, verify skips build
 	const ap = await flow(["approve", "--confirmed"]);
 	assert.match(ap.content[0].text, /setup skipped \(docs mode/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "docflow", "worktree", "setup-ran")), "a docs flow must not run the project's setup");
+	commitWt(repo, "docflow");
 	const v = await flow(["verify", "--confirmed"]);
 	assert.match(v.content[0].text, /docs mode: project commands skipped/);
 	assert.match(v.content[0].text, /entering pre-release/);
@@ -533,6 +567,7 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	writeFileSync(path.join(repo, ".dev-flow", "ck", "plan", "plan.md"), "# plan\n");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved \(confirmed by operator instruction\)/);
 	await flow(["check"]);
+	commitWt(repo, "ck");
 	const v = await flow(["verify", "--confirmed"]);
 	assert.match(v.content[0].text, /verified \(confirmed by operator instruction\) — entering pre-release/);
 	assert.equal(dialogs, 0, "operator answered in chat — gates must not ask again");
@@ -566,6 +601,7 @@ test("release tail: finish refuses to remove a dirty worktree", async () => {
 	writeFileSync(path.join(repo, ".dev-flow", "dirt", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
+	commitWt(repo, "dirt");
 	await flow(["verify", "--confirmed"]);
 	writeFileSync(path.join(repo, ".dev-flow", "dirt", "worktree", "loose.txt"), "uncommitted\n");
 	await flow(["release", "--confirmed"]);
@@ -611,6 +647,7 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	writeFileSync(path.join(repo, ".dev-flow", "fin", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
+	commitWt(repo, "fin");
 	await flow(["verify", "--confirmed"]);
 	const early = await flow(["finish"]);
 	assert.ok(early.isError && early.content[0].text.includes("release-done"), "finish refuses until the release is recorded");
@@ -636,6 +673,7 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
 		await flow(["approve", "--confirmed"]);
 		await flow(["check"]);
+		commitWt(repo, slug);
 		await flow(["verify", "--confirmed"]);
 		const wt = path.join(repo, ".dev-flow", slug, "worktree");
 		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`); // pre-release bump lives on the branch
@@ -681,6 +719,7 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	writeFileSync(path.join(repo, ".dev-flow", "teeth", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
+	commitWt(repo, "teeth");
 	await flow(["verify", "--confirmed"]);
 	const wt = path.join(repo, ".dev-flow", "teeth", "worktree");
 	writeFileSync(path.join(wt, "package.json"), '{"name":"t","version":"9.9.9"}'); // the bump lives on the branch
@@ -713,6 +752,7 @@ test("a release gate refuses to guess when origin cannot be asked (offline)", as
 	mkdirSync(path.join(repo, ".dev-flow", "offline", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "offline", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "offline");
 	await flow(["verify", "--confirmed"]);
 	const wt = path.join(repo, ".dev-flow", "offline", "worktree");
 	writeFileSync(path.join(wt, "package.json"), '{"name":"t","version":"1.2.3"}');
@@ -755,6 +795,7 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	assert.ok(!noPlan.content[0].text.includes("plan gate FAILED"), "patch does not require plan/*.md");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/);
 	await flow(["check"]);
+	commitWt(repo, "chore");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
 	await flow(["release", "--confirmed"]);
 	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/, "release-done is check-only — asks the operator nothing");
@@ -771,6 +812,7 @@ test("docs feature: no plan file, no tier-1 checks, full release end to end", as
 	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /operator-granted/, "--docs without the operator's chat grant is refused");
 	assert.match((await flow(["start", "readme-typo", "--docs", "--confirmed"])).content[0].text, /docs/, "docs mode announced at start");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/, "docs approves with no plan file written");
+	commitWt(repo, "readme-typo");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "docs verify passes with no flow check run");
 	await flow(["release", "--confirmed"]);
 	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/);
@@ -978,6 +1020,7 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	await flow(["approve", "--confirmed"]);
 	assert.equal(stage(), "implement");
 	await flow(["check"]);
+	commitWt(repo, "rel");
 	await flow(["verify", "--confirmed"]);
 	assert.equal(stage(), "pre-release", "verify now lands in pre-release");
 	// a guarded prep edit in the worktree must invalidate the checks again — the release gate re-demands them
@@ -1051,6 +1094,7 @@ test("finish deletes merged feature branches on origin and keeps unverifiable on
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
 		await flow(["approve", "--confirmed"]);
 		await flow(["check"]);
+		commitWt(repo, slug);
 		await flow(["verify", "--confirmed"]);
 		await flow(["release", "--confirmed"]);
 		await flow(["release-done", "--confirmed"]);
@@ -1058,6 +1102,8 @@ test("finish deletes merged feature branches on origin and keeps unverifiable on
 	// (a) the origin branch is contained in origin/main (merge-commit shape) -> finish deletes it
 	await cycle("gone");
 	git("push", "-q", "origin", "feat/gone");
+	git("merge", "-q", "--no-edit", "feat/gone"); // the case is a merged branch: now it really is contained in origin/main
+	git("push", "-q", "origin", "main");
 	const gone = await flow(["finish", "--confirmed"]);
 	assert.match(gone.content[0].text, /origin\/feat\/gone deleted \(verified merged\)/);
 	assert.ok(!remoteHas("feat/gone"), "the released branch is gone from origin too");
@@ -1114,6 +1160,7 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	assert.match((await flow(["approve", "--yolo", "--confirmed"])).content[0].text, /yolo: later gate questions pre-confirmed/);
 	// a failing check still blocks verify — yolo pre-confirms questions, not checks
 	await flow(["check"]);
+	commitWt(repo, "yo");
 	const v = await flow(["verify"]);
 	assert.ok(v.isError && /check "test" has not passed/.test(v.content[0].text), "yolo never bypasses tier-1 checks");
 	await flow(["init", "--write", "# dev-flow\n"]);
@@ -1139,6 +1186,7 @@ test("yolo at any gate: verify --yolo answers that question and pre-confirms the
 	writeFileSync(path.join(repo, ".dev-flow", "late", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
+	commitWt(repo, "late");
 	// yolo is the operator's word — never self-granted: --confirmed is the anchor
 	const bare = await flow(["verify", "--yolo"]);
 	assert.ok(bare.isError && /operator's word/.test(bare.content[0].text), "--yolo without --confirmed is refused");
@@ -1161,6 +1209,7 @@ test("unversioned release: --no-version ships merge + changelog and skips the bu
 	writeFileSync(path.join(repo, ".dev-flow", "nv", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
+	commitWt(repo, "nv");
 	await flow(["verify", "--confirmed"]);
 	// default stays versioned: no manifest in the worktree → the gate refuses
 	const versioned = await flow(["release", "--confirmed"]);
@@ -1192,6 +1241,7 @@ test("release-done publishes the version the release gate stamped, and refuses t
 		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
 		await flow(["approve", "--confirmed"]);
+		commitWt(repo, slug);
 		await flow(["verify", "--confirmed"]);
 		const wt = path.join(repo, ".dev-flow", slug, "worktree");
 		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`); // the bump lives on the branch
