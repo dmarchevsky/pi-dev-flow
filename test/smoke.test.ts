@@ -207,9 +207,9 @@ test("a forced push is confirmed with the operator; the prefix the refusal print
 	const guard = pi.handlers.tool_call[0];
 	assert.equal(await guard({ toolName: "bash", input: { command: "git push origin feat/x", timeout: 60 } }, ctx), undefined, "an ordinary push asks nobody");
 	assert.ok(await guard({ toolName: "bash", input: { command: "git push --force origin feat/x", timeout: 60 } }, ctx), "a forced push needs the operator (#83)");
+	assert.equal(await guard({ toolName: "bash", input: { command: "DEV_FLOW_ALLOW_REWRITE=1 git push -f origin feat/x", timeout: 60 } }, ctx), undefined, "the sanctioned prefix is the operator's word spelled out — no dialog, so it works headless");
 	answer = true;
 	assert.equal(await guard({ toolName: "bash", input: { command: "git push -f origin feat/x", timeout: 60 } }, ctx), undefined, "the operator said yes in the dialog");
-	assert.equal(await guard({ toolName: "bash", input: { command: "DEV_FLOW_ALLOW_REWRITE=1 git push -f origin feat/x", timeout: 60 } }, ctx), undefined, "the sanctioned prefix is the operator's word spelled out");
 	answer = false;
 	assert.ok(await guard({ toolName: "bash", input: { command: "git push -f origin feat/x && git status", timeout: 60 } }, ctx), "a declined dialog blocks the call");
 	assert.equal(await guard({ toolName: "bash", input: { command: "git filter-branch --force --index-filter 'git rm --cached --ignore-unmatch k' main..HEAD", timeout: 60 } }, ctx), undefined, "the local rewrite tool stays free — no blunt flag deny needed");

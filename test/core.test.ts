@@ -246,6 +246,9 @@ test("forcePushInvocation: the verb carries the flag, not any git command (#82)"
 	assert.equal(forcePushInvocation("git show -f"), false, "a flag that means something else on another verb");
 	assert.equal(forcePushInvocation("gh pr comment --body 'ask them to git push --force'"), false, "quoted prose is not a command");
 	assert.equal(forcePushInvocation("git push origin feat/x"), false, "an ordinary push asks nobody");
+	assert.equal(forcePushInvocation("DEV_FLOW_ALLOW_REWRITE=1 git push -f origin feat/x"), false, "the operator's word, spelled on the command");
+	assert.ok(forcePushInvocation("sudo git push -f origin feat/x"), "a wrapper is neither an authorisation nor an escape");
+	assert.ok(forcePushInvocation("git push -f origin main # DEV_FLOW_ALLOW_REWRITE=1"), "a mention is not a prefix — the word must be on the command");
 });
 
 test("parsePushRefs: what does each push actually write", () => {

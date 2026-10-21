@@ -1371,7 +1371,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (mustStateTimeout) return { block: true, reason: requireTimeout(command)! };
 			// a forced push rewrites history CI and other sessions already have. dev-flow asks the operator
 			// itself so a project never needs a blunt `--force` deny of its own (#82, #83)
-			if (forcePushInvocation(command) && !command.includes(ALLOW_REWRITE)) {
+			if (forcePushInvocation(command)) {
 				const why = await askOperator(ctx, command, `a forced push rewrites a pushed branch — CI and other sessions lose these commits (with the operator's word, prefix the push with ${ALLOW_REWRITE})`);
 				if (why) return { block: true, reason: why };
 			}

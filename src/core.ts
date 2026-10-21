@@ -670,7 +670,11 @@ export function forcePushInvocation(command: string): boolean {
 	return bashSegments(command).some((seg) => {
 		const tok = maskQuoted(seg).trim().split(/\s+/);
 		let i = 0;
-		while (i < tok.length && /^[\w.]+=/.test(tok[i])) i++; // env prefixes (the authorisation spells itself)
+		while (i < tok.length && /^[\w.]+=/.test(tok[i])) {
+			if (tok[i] === ALLOW_REWRITE) return false; // the operator's word, spelled on the command itself
+			i++;
+		}
+		if (tok[i] === "sudo") i++; // a wrapper is not an authorisation and not an escape either
 		if (!/(^|\/)git$/.test(tok[i] ?? "") || !tok.includes("push")) return false;
 		return tok.some((t) => /^--force\S*$/.test(t) || /^-[a-z]*f[a-z]*$/.test(t));
 	});
