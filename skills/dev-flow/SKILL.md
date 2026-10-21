@@ -234,7 +234,9 @@ here) — this stage publishes; the preparation happened in pre-release. Run in
 the worktree unless noted:
 
 1. Commit everything, push the feature branch, open the PR, wait for the merge
-   (`gh pr merge` or ask the user).
+   (`gh pr merge` or ask the user) — without `--delete-branch`: it fails when
+   the default branch is checked out in the main worktree, and `flow finish`
+   deletes the branch on merge proof anyway.
 2. `git fetch`, confirm the merge landed, create the **annotated** tag
    (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) —
    never `--follow-tags` (it silently skips lightweight tags: they never reach
