@@ -265,8 +265,19 @@ the worktree unless noted:
 
 ## Stage: finish
 
-Ask **Finish?** → `flow finish --confirmed`; the one question covers the whole
-cleanup and mentions any commits that look unmerged. `flow finish [slug]`:
+**Reflect before you finish** — `flow finish` deletes `.dev-flow/<slug>/` and
+the session context goes with it. Run the end-of-session reflection (bare
+`flow reflect` protocol under *Reflect*) now and park real issues with
+`flow reflect`; then:
+
+- issues parked → ask **Fold? Fix? Drop?** and stop: fold = write the items
+  into `.dev-flow/reflections.md` (your queue), fix = route them now via
+  `flow doctor`, drop = discard them. The answer replaces **Finish?** — act
+  on it, then run `flow finish --confirmed` without asking again;
+- nothing parked → ask the operator **Finish?** → `flow finish --confirmed`.
+
+The question covers the whole cleanup and mentions any commits that look
+unmerged. `flow finish [slug]`:
 
 - refuses until `release-done` recorded the release — abandoned features go
   through `flow abort` instead;
@@ -302,8 +313,9 @@ a note about both goes to both. The open count shows in status and stage
 context; the operator decides:
 
 - Reflect real friction only, one line each, never the same issue twice.
-- **Bare `flow reflect` is the end-of-session reflection** — run when the
-  operator asks or after a long friction-laden session. It prints the
+- **Bare `flow reflect` is the end-of-session reflection** — it runs as part
+  of every finish (before the slug folder is deleted — see Stage: finish) and
+  whenever the operator asks. It prints the
   protocol: review the full session log (messages, tool calls, results);
   re-check each open item against the current playbook and newer dev-flow
   versions (`git ls-remote` vs the running version — a newer one that fixes an
