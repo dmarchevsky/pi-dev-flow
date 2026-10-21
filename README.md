@@ -47,6 +47,9 @@ pi install git:github.com/dmarchevsky/pi-dev-flow # or from git — pin a ref wi
 pi install ./pi-dev-flow                          # or a local checkout
 ```
 
+Later releases arrive with `pi update --extensions` (an npm install reconciles to the newest version);
+then `/reload` — a running session keeps the code it loaded at startup.
+
 Then, once per project repo, `/flow init`. It reads the repo (default branch and forge from git,
 package manager, test/build/run conventions, version manifest) and writes **`.dev-flow/project.md`
 — your playbook**: the commands that count as checks, the manual checklist, the version and tag

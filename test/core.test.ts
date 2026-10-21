@@ -581,20 +581,21 @@ test("githubSlug: owner/slug from manifest strings, URLs and scp-style remotes",
 	assert.equal(githubSlug(""), "");
 });
 
-test("reflectProtocol: session-review steps, git-based update probe, routed open items", () => {
+test("reflectProtocol: session-review steps, npm-based update probe, routed open items", () => {
 	const out = reflectProtocol(["- [ ] the gate prompt asks twice — x 2026-01-01"], false, { version: "1.2.3", upstream: "dmarchevsky/dev-flow" }).join("\n");
 	assert.match(out, /flow reflect — session reflection \(dev-flow 1\.2\.3, upstream: dmarchevsky\/dev-flow\)/);
 	assert.match(out, /this output is your work instruction: execute these steps now/);
 	assert.match(out, /gitignored and yours to edit/);
 	assert.match(out, /1\. review the current session log in full/);
-	assert.match(out, /git ls-remote --tags --sort=-v:refname https:\/\/github\.com\/dmarchevsky\/dev-flow \| head -1/);
-	assert.match(out, /pi install git:github\.com\/dmarchevsky\/dev-flow, then \/reload/);
+	assert.match(out, /git ls-remote --tags --sort=-v:refname https:\/\/github\.com\/dmarchevsky\/dev-flow \| head -1/, "a git-installed copy still gets a git probe");
+	assert.match(out, /npm view pi-dev-flow version/);
+	assert.match(out, /pi install npm:pi-dev-flow, then \/reload/);
 	assert.match(out, /gh issue list --repo dmarchevsky\/dev-flow --state all --search/);
 	assert.match(out, /gh issue create --repo dmarchevsky\/dev-flow/);
 	assert.match(out, /b\. playbook items: run flow doctor/);
 	assert.match(out, /\[plugin\] the gate prompt asks twice/);
 	assert.match(out, /file an issue against pi-dev-flow upstream/);
-	assert.ok(!out.includes("npm"), "dev-flow ships from git — the npm registry must not appear");
+	assert.ok(out.indexOf("npm view pi-dev-flow") < out.indexOf("git ls-remote"), "npm is the primary update route; the git probe is the fallback for git installs");
 	const empty = reflectProtocol([], true, { version: null, upstream: "" }).join("\n");
 	assert.match(empty, /dev-flow version unknown/);
 	assert.match(empty, /<upstream-url>/);

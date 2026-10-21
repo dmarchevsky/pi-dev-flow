@@ -342,7 +342,8 @@ context; the operator decides:
   whenever the operator asks. It prints the
   protocol: review the full session log (messages, tool calls, results);
   re-check each open item against the current playbook and newer dev-flow
-  versions (`git ls-remote` vs the running version — a newer one that fixes an
+  versions (`npm view pi-dev-flow version` vs the running version, or
+  `git ls-remote` for a git-installed copy — a newer one that fixes an
   item → recommend updating the plugin, check it off); queue deduplicated new
   findings; report playbook vs plugin items structurally; ask whether to fix
   now. The command writes nothing; you execute the protocol.
