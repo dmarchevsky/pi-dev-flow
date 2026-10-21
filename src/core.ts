@@ -619,6 +619,17 @@ export function stateTamper(command: string): boolean {
 	return bashSegments(command).some((seg) => ownedWrite(seg, "state", flowState));
 }
 
+/** True when a bash segment runs a command named `flow`. There is no flow CLI — gates live inside the
+ *  session as the flow tool — and a bare 127 taught agents nothing, so the habit repeated.
+ *  Head token of a masked segment only: `grep flow status`, `skills/dev-flow/SKILL.md` and a commit
+ *  message quoting a gate are prose/arguments, not invocations. */
+export function flowShellInvocation(command: string): boolean {
+	return bashSegments(command).some((seg) => segHead(maskQuoted(seg).replace(/^(?:\w+=\S*\s+)+/, "")) === "flow");
+}
+
+/** Refusal for a bash call named `flow` — it names the call that works, like bashTimeout's hint does. */
+export const FLOW_SHELL_HINT = 'there is no "flow" shell command — gates live in the session: call the flow tool with an args array, e.g. flow {args:["status"]}';
+
 /** True when a bash command writes the playbook (project.md) — the sanctioned channels are
  *  `flow init --write` (runs in-plugin, never matches) and edits inside a docs/patch flow's worktree.
  *  Decided per segment and by target, not by any verb anywhere: reading the playbook or copying it to
@@ -1145,12 +1156,12 @@ export function compactionReflectionLine(slug: string, stage: Stage, reason: str
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
-			if (state.patch) return `patch: describe the change to the operator in one line, then ask them to approve — no plan file needed (all gates still apply)`;
-			if (state.docs) return `docs: describe the change to the operator in one line, then ask them to approve — no plan file and no tier-1 checks (worktree and release stay intact)`;
-			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator to run /flow approve`;
+			if (state.patch) return `patch: describe the change to the operator in one line, then ask them Approve? in chat and run flow approve --confirmed when they answer — no plan file needed (all gates still apply)`;
+			if (state.docs) return `docs: describe the change to the operator in one line, then ask them Approve? in chat and run flow approve --confirmed when they answer — no plan file and no tier-1 checks (worktree and release stay intact)`;
+			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator Approve? in chat and run flow approve --confirmed when they answer`;
 		case "implement":
-			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
-			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them to run /flow verify`;
+			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
+			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
 		case "pre-release":
 			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":

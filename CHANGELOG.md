@@ -4,6 +4,17 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-10-21
+
+### Changed
+
+- **The operator answers words; the agent runs the gates.** The stage hints injected into the model's context every minute ended with "ask the operator to run `/flow approve`" / `/flow verify`", which trained exactly the hand-off the skill forbids — the operator reading a command line instead of a question. The plan and implement hints now end with the checkpoint word and the gate the agent runs itself (`ask the operator Approve? in chat and run flow approve --confirmed`), and the every-turn rules line says outright that gates run through the flow tool, that the operator never types commands, and that `/flow` is their manual override. Same for the stage-context header's `/flow init` pointer.
+- **README rewritten human-first, reference detail split into `docs/`.** It now leads with the idea (spec before code, gated phases, git hygiene, parallel worktrees) and a stage/gate diagram with what each gate refuses, one table of stage → what the agent does → the word it asks you, your checkpoint answers (`yes`/`no`/`yolo`/`no version`), what reflections are and what you do with them, and a short enforcement list. The gate table, playbook reference, full guardrail list, concurrency, headless contract and development notes moved to `docs/{gates,playbook,guardrails,concurrency,headless,development}.md` — moved, not rewritten, so nothing was lost in the move.
+
+### Added
+
+- **A bash segment whose head is `flow` is refused.** There is no `flow` CLI — gates live inside the session — but agents kept calling `flow status` in a shell, collecting an exit 127 with no pointer, and repeating the mistake. The refusal names the call that works (`flow {args:["status"]}`), the same shape as the `bashTimeout` hint. Matching is the head token of a masked segment: `grep flow status`, a `skills/dev-flow/SKILL.md` path and a commit message quoting a gate are arguments, not invocations; a project that really ships a `flow` binary calls it by path or through `npx` (see Limitations).
+
 ## [0.48.0] - 2026-10-21
 
 ### Changed

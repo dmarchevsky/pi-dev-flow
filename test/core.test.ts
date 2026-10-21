@@ -20,6 +20,8 @@ import {
 	DEFAULTS,
 	detectForge,
 	featureBranchPrefix,
+	FLOW_SHELL_HINT,
+	flowShellInvocation,
 	gateHelpJson,
 	getPath,
 	gitInvocation,
@@ -256,6 +258,20 @@ test("playbookTamper catches direct project.md writes; reads and flow init --wri
 	assert.equal(playbookTamper("cat .dev-flow/project.md"), false);
 	assert.equal(playbookTamper('flow init --write "# dev-flow"'), false);
 	assert.equal(playbookTamper("git status"), false);
+});
+
+test("flowShellInvocation: a bash command named flow is a mistake, everything that only mentions it is not", () => {
+	assert.ok(flowShellInvocation("flow status"));
+	assert.ok(flowShellInvocation("flow approve --confirmed"));
+	assert.ok(flowShellInvocation("cd .. && flow use my-slug"), "any segment of the chain");
+	assert.ok(flowShellInvocation("DEV_FLOW_ALLOW_MAIN=1 flow status"), "env-prefixed still invokes flow");
+	assert.ok(flowShellInvocation("./flow status"), "a local copy is still the same mistake");
+	assert.equal(flowShellInvocation('git commit -m "flow approve landed"'), false, "quoted prose is an argument");
+	assert.equal(flowShellInvocation("grep flow status"), false, "flow as an argument");
+	assert.equal(flowShellInvocation("cat skills/dev-flow/SKILL.md"), false);
+	assert.equal(flowShellInvocation("echo flow-guard"), false);
+	assert.equal(flowShellInvocation("myflow status"), false);
+	assert.ok(FLOW_SHELL_HINT.includes("flow tool"), "the refusal names the call that works");
 });
 
 test("playbookTamper reads and backups are not changes; targets still are (#53)", () => {

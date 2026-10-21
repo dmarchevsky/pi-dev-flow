@@ -1,0 +1,132 @@
+# The playbook — `.dev-flow/project.md`
+
+The operator-owned file that says how *your* project is tested, run, versioned and guarded. Written once per repo with `flow init`, edited by you.
+
+`.dev-flow/` ignores itself — its own `.dev-flow/.gitignore` is `*` with the single exception
+`!project.md`, so no state, plan or worktree path is ever tracked by accident. Tracking the playbook
+in a repo that ignores the folder is a deliberate one-off:
+`git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"` — the
+env prefix is for dev-flow's `pre-commit` hook, which allows a main commit whose only change is the
+playbook.
+
+It is **committed to git**; you edit it (the agent is blocked from writing the main-checkout copy
+and may edit it only inside a docs/patch flow's worktree, or apply it through `flow init --write`
+on your word, which validates). Content is organized per stage
+(`## plan`, `## implement`, `## pre-release`, `## release`…) in **three tiers** — tier 1 splits into
+executable checks and hard safety rules:
+
+| Tier | Notation | Enforcement |
+|---|---|---|
+| 1 — executable | ` ```flow` (`key = value`) config blocks; ` ```flow-check <name>` command blocks | gates run every check, record pass/fail, worktree edits invalidate — hard |
+| 1 — guard | ` ```flow-guard ` (`deny`/`confirm`/`protect`/`forbid`) rules in `## global` | enforced on every bash command and every edit/write path, at every stage — hard block or operator confirmation |
+| 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features) | gate confirms cover them as a set (hashed, invalidated on edits); `(ui)` items never appear for non-UI features |
+| 3 — prose | any other text | injected to the agent when its stage begins — advisory |
+
+Example `## implement` section:
+
+````markdown
+## implement
+```flow
+test = npm test
+run = npm run dev
+health = curl -fs localhost:3000/healthz
+healthWait = 30
+```
+```flow-check overflow
+node scripts/check-overflow.mjs
+```
+- [ ] visual pass at 390px and 1280px: no overflows, no stray scrollbars
+Prefer feature flags for risky paths.
+````
+
+`healthWait` (default 30) is the seconds the post-deploy probe may keep retrying, every 2s — a service
+whose readiness lags its container start needs a wait, not a poll loop hand-written into the playbook.
+`healthWait = 0` restores the single shot.
+
+Your project's own safety rules are a `flow-guard` block in `## global` — the reason a project
+adopting dev-flow can delete its own guard extension:
+
+````markdown
+## global
+```flow-guard
+deny    \bgit\b[^\n]*--force(?!\w)   :: history stays linear — PRs squash-merge
+deny    \bgit\b[^\n]*\bworktree\s+prune\b :: it prunes other sessions' worktrees
+confirm \bgit\b[^\n]*\bbranch\s+(?:-D\b|--delete\b) :: deletes a squash-merged branch git cannot see as merged
+confirm \bdocker\b[^\n]*\bcompose\b[^\n]*\brestart\b :: drops a permanent upstream connection
+protect docker/.env                  :: gitignored live secrets — never echo the values
+forbid  docker/secrets               :: gitignored secret storage
+```
+````
+
+| Verb | Applies to | What happens |
+|---|---|---|
+| `deny` | one segment of a bash command | hard block — no confirmation offered |
+| `confirm` | one segment of a bash command | asks the operator; **blocked when no UI is present** — a hidden confirmation is not a confirmation |
+| `protect` | an edit/write path | asks the operator, same no-UI rule |
+| `forbid` | an edit/write path | hard block |
+
+` :: ` separates the matcher from the reason, so reasons are free text and show up verbatim when a
+rule fires. `deny`/`confirm` matchers are JS regex sources — an unparseable regex is a hard finding,
+so `flow init --write` refuses the file (an unknown verb is a warning). `protect`/`forbid` take a
+repo-relative path; a rule on a directory covers its subtree, including files that do not exist yet.
+The block belongs to `## global` — these rules are never stage-scoped, and one under a stage warns and
+applies nothing.
+
+Matching is per shell segment (the guard splits on `;`, `|`, `&&` and newlines, honouring `cd … &&` and
+`git -C`), and a segment whose head only reads (`grep`, `cat`, `ls`, `git log`, `jq`, …) is skipped — so
+`grep "git push --force" docs/` searches, it does not push. A read-only head that can still write
+(`find -delete`, `find -exec …`, `sort -o FILE`, `awk 'BEGIN{system(…)}'`) is judged like a writer —
+your `deny` rules do not have a back door through the read-only list.
+
+`## pre-release` prose is where rules like “follow semver: minor for user-facing features, patch
+otherwise; confirm the number before tagging” live — the agent sees them at stage entry, and
+`flow release` / `flow release-done` hard-check the manifest side (bumped past the last tag, then
+manifest↔tag agreement). `## global` holds
+`defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = require`
+(default: every shell call must state its own timeout) `| inject`, `release.review`,
+`release.changelog` (default `CHANGELOG.md`; set it empty to opt out), `release.releases` and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
+`dev`. Of those, `setup` runs once inside a freshly created worktree at `approve` (where `cp .env` +
+`npm install` belong — a failing setup fails the gate), and `run` is advisory: the agent starts the app
+with it for the running-and-healthy walk, dev-flow never runs it itself. `dev` is the dev deploy run by
+`flow verify` before the operator question — it must background and exit,
+e.g. `docker compose up -d .`; the gate names what it ran (`dev ran (<cmd>)`, or
+`dev: none configured`) so minutes of deploys never read as "nothing happened". After a deploy that
+ran, verify re-runs the health probe (`commands.health` or a `flow-check` block named `health`, with
+`seedData` first when set) in the worktree and refuses the gate when it fails — the pre-deploy
+`flow check` PASS describes a container that no longer exists. What "healthy and serving this
+build" means stays the project's own assertion: the probe runs with the worktree as cwd, so it can
+wait for readiness and compare the served build stamp with `git rev-parse HEAD`. No probe → the
+gate prints `health: none configured` and `flow doctor` flags the combination. The pre-release and release stages take
+`versionFile`/`versionTag` (defaults `v{version}`; accepted under either section). `## global` also takes
+`forge = github | gitlab | self` — the release machinery's target; when unset it is detected from the
+`origin` URL at the moment of use (GitHub gets `gh`, GitLab gets `glab`, self-hosted stays forge-neutral:
+no automatic release creation, merge proof by ancestry only), and `release.releases = false` skips
+automatic release creation entirely (the legacy `github` key still parses, with a rename warning).
+A leftover `project.json` is no longer read — the doctor tells you to fold it in and delete it.
+
+`flow init` is the dialogue around this file: **fresh repo** → prints the setup brief (detection report
+plus one question per undetected knob — forge, version convention, releases, artifacts, checks, prose),
+the agent asks you each question, fills the draft and writes your answers back validated
+(`--write <content>`; `--draft` prints the draft or current file whenever you'd rather read raw — an
+interactive init may also confirm the draft with you on the spot and write it then); **existing file** → doctor mode (drift, dead commands/scripts,
+unparseable manifest, dual configs, **ghost feature dirs** (a `.dev-flow/<slug>/` whose `state.json`
+is gone — it offers to delete those, on your confirm, and says so instead when no UI is present) —
+it never runs your commands) offering a refresh — which it
+**refuses** whenever your file has lines a regenerated draft cannot reproduce (prose, your own
+checklist items, hand-set keys): it prints the findings and the lines it would drop instead of
+overwriting them. `--force` remains the deliberate overwrite — with your word (`--confirmed`, or one
+confirm dialog) and a `project.md.bak` of what was there. At any time
+you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doctor) validates and
+flags problems, and `flow doctor` runs the same probes on demand without offering to change
+anything (findings are also printed whenever `flow init` runs without a UI, e.g. in CI). `--force`
+rewrites from fresh detection. Improvement
+ideas the agent notices along the way queue up in `.dev-flow/reflections.md` under `## playbook`
+(what to change in *your* playbook) and `## plugin` (what to change in dev-flow itself) —
+`flow reflect "<note>"` appends them, plain `flow doctor` reviews the open ones and routes
+each fix to the flow that implements it (docs flow for playbook items — those edits only pass a
+docs/patch flow's worktree), bare `flow reflect` hands the agent the full end-of-session
+reflection protocol (review the session log, re-check open items against fixes that already
+shipped, dedupe new findings, put the fix decision to the operator) — and nothing there ever gates.
+Future features have their own file: `.dev-flow/roadmap.md`, a gitignored backlog `flow roadmap`
+manages (add / pick → `flow start` / done / tidy) — a picked item is checked off by `finish` when
+its feature ships, and it never gates either.

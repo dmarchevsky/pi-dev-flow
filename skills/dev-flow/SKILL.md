@@ -12,9 +12,19 @@ description: >
 
 Only the **flow tool** advances stages, and each gate refuses until its exit
 criteria hold. Drive it with args arrays — `["start", "dark-mode", "--ui"]`,
-`["test"]`, `["status"]`; the operator can run the same as `/flow ...`.
+`["test"]`, `["status"]`.
 
 Ground rules:
+
+- **The flow tool is the only invocation.** `flow` is **not a shell command**: a
+  bash call named `flow` has no binary behind it (the guard refuses it and names
+  the tool call) — never reach for bash, `npx`, or a path to run a gate.
+- **You run the gates; the operator says words.** Never ask the operator to type
+  a `/flow ...` command — not at a checkpoint, not "just to check status", not as
+  a shortcut. Ask the checkpoint word in chat, then run the gate yourself.
+  `/flow` is the operator's **manual override**: surface it only when the session
+  is demonstrably wrong, stuck, or claiming a gate result it never ran (and
+  `/reload` when `flow version` says this session runs an older build).
 
 - **One session = exactly one feature** (flow + branch + worktree); parallel
   sessions, one feature each, are the model. The bind is automatic when one
