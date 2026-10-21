@@ -33,6 +33,12 @@ covers commits made outside Pi.
 as you want in parallel. A write inside worktree X is judged by X's stage whoever made it, so
 sessions cannot dirty each other's branches or borrow each other's approvals. [More here.](docs/concurrency.md)
 
+**It learns from friction.** Every time the agent hits something that cost it a step — a playbook
+command that no longer exists, a guard that refused the wrong thing, a gate that forced a detour — it
+writes the observation down in `.dev-flow/reflections.md` instead of just working around it. Those
+notes are advisory and never gate anything, but they are how your playbook stops drifting: you review
+them with `flow doctor` and decide what to fix. [More here.](docs/playbook.md)
+
 ## Install
 
 ```bash
@@ -113,6 +119,22 @@ Nothing here trusts the agent in either direction: a checkpoint gate refuses if 
 `flow` command. `/flow …` is your manual override — for when the session is stuck, wrong, or
 claiming a gate result it never produced. → [Gate reference](docs/gates.md)
 
+### Reflections: the agent's notes to you
+
+When something costs the agent a step — a playbook command that stopped existing, a guard that
+refused the wrong thing, a gate that forced a detour, a rough edge in dev-flow itself — it does not
+just work around it. It parks a one-line note in `.dev-flow/reflections.md`, under **playbook**
+(something about your project) or **plugin** (something about dev-flow); the open count surfaces in
+`flow status` and in the agent's stage context (`↻ 2 reflection(s) open`).
+
+They never gate anything, and the fix is never the agent's call alone. You ask it to go through them
+— usually with `flow doctor`, which reviews each open item and routes it: a playbook item becomes a
+small docs flow that edits `project.md` through the flow (so the change is committed and reviewed like
+any other), a dev-flow item goes upstream as an issue. At the end of a session the agent does the same
+review over the whole exchange before `Finish?`, so friction it noticed but never filed shows up too.
+Fold, fix or drop them — but leaving them is the one option that lets the same friction come back next
+feature.
+
 ## What is enforced
 
 While a feature is active, every tool call passes a guard:
@@ -145,9 +167,8 @@ While a feature is active, every tool call passes a guard:
     state.json          stage, approvals, checks (agent cannot write)
 ```
 
-`reflections.md` and `roadmap.md` never gate anything: the first is where the agent parks "your
-playbook / dev-flow should change" notes for you to `flow doctor`, the second is the backlog
-`flow roadmap` manages, and a shipped feature checks its picked item off itself.
+`roadmap.md` is your backlog of future features (`flow roadmap add / pick / done`), also advisory — a
+shipped feature checks off the item it was picked from.
 
 ## Documentation
 
