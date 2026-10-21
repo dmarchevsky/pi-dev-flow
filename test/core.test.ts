@@ -183,6 +183,7 @@ test("preReleaseGate: versioned release folds the Unreleased backlog (--no-versi
 test("bashFlowGuard: main protection and release-stage release", () => {
 	const base = { branch: "main", stage: null as "plan" | null, defaultBranch: "main" };
 	assert.ok(bashFlowGuard({ ...base, command: "git commit -m x" }));
+	assert.match(bashFlowGuard({ ...base, command: "git commit -m x", dir: "/home/me/wt/x" })!, /judged in \/home\/me\/wt\/x/, "the refusal names the directory the verdict came from, so a cd misjudgment reads as one");
 	assert.equal(bashFlowGuard({ ...base, branch: "feat/x", command: "git commit -m x" }), null);
 	assert.equal(bashFlowGuard({ ...base, stage: "release", command: "git commit -m x" }), null, "release chores may commit in the main checkout");
 	assert.ok(bashFlowGuard({ ...base, command: "git push origin main" }));
@@ -228,6 +229,10 @@ test("gitInvocation: subcommands and effective directory", () => {
 	assert.deepEqual(gitInvocation("cd wt; git status; git push"), { subs: ["status", "push"], dir: "wt", pushes: [[]], gitSegs: [{ seg: "git status", dir: "wt" }, { seg: "git push", dir: "wt" }] });
 	assert.deepEqual(gitInvocation("sudo git commit -m x"), { subs: ["commit"], dir: null, pushes: [], gitSegs: [{ seg: "sudo git commit -m x", dir: null }] });
 	assert.deepEqual(gitInvocation("cd wt && git commit -m x && cd main && git pull").gitSegs.map((g) => [g.seg.split(" ")[1], g.dir]), [["commit", "wt"], ["pull", "main"]], "per-segment dirs: last-cd must not leak into earlier segments");
+	const home = process.env.HOME || "/home/me";
+	assert.equal(gitInvocation("cd ~/wt && git commit -m x").dir, `${home}/wt`, "the shell expands ~ before git runs; an unexpanded one resolved against the session cwd and main got the blame");
+	assert.equal(gitInvocation("git -C $HOME/wt commit").dir, `${home}/wt`, "$HOME is expanded the same way");
+	assert.equal(gitInvocation("cd $WT/wt && git commit -m x").dir, "$WT/wt", "any other var stays literal — a guess is worse than a literal");
 });
 
 test("parsePushRefs: what does each push actually write", () => {
