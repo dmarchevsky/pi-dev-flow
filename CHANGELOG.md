@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.45.2] - 2026-10-20
+
+### Fixed
+
+- **A flow-bound threshold compaction deadlocked the session instead of compacting it.** The takeover awaited `ctx.compact()` from inside `session_before_compact` — but pi's `compact()` opens with `abort()` + `waitForIdle()`, and the run awaiting the hook can only go idle once the hook returns: a full cycle. The summarize request was never issued (nothing ever reached the provider), no compaction entry landed, the UI spun on "Compacting…" forever, and Stop could not free it — the takeover ignored the very abort signal compaction events carry. The unit test mocked the exact `ctx.compact` call that deadlocked, which is how a 100%-deadlocking takeover shipped. The takeover now never re-enters `compact()`: it calls the same `compact()` pi itself calls — same split-turn merge, file lists and structured prompts — with the flow-aware instructions and the event's signal, and returns the summary through the event's custom-compaction channel, which pi appends itself (no cancel dance; Stop now really cancels the summarize call). Any takeover failure returns `undefined` and pi's own compaction proceeds — a broken takeover can no longer block compaction at all. The rewritten test drives the real path through a one-line seam and asserts auth and signal forwarding, the fallback, and that a failed takeover releases the in-flight mark.
+
 ## [0.45.1] - 2026-10-20
 
 ### Fixed

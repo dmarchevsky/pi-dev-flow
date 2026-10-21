@@ -1237,6 +1237,8 @@ test("threshold compaction takeover: flow-aware compact() returned as custom com
 			throw new Error("boom");
 		}) as typeof compactionTakeover.run;
 		assert.equal(await takeover(mk().event, mk().c), undefined, "a failed takeover must NOT cancel pi's own compaction");
+		compactionTakeover.run = (async (preparation: { firstKeptEntryId: string; tokensBefore: number }) => ({ summary: "retry", firstKeptEntryId: preparation.firstKeptEntryId, tokensBefore: preparation.tokensBefore })) as typeof compactionTakeover.run;
+		assert.equal((await takeover(mk().event, mk().c))?.compaction?.summary, "retry", "the failed takeover released the in-flight mark — the next one is not skipped");
 	} finally {
 		compactionTakeover.run = orig;
 	}
