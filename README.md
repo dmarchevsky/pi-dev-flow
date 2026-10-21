@@ -2,11 +2,8 @@
 
 An enforced feature workflow for [Pi](https://pi.dev), shipped as a pi package. You say what you
 want; an agent builds it; **the harness — not the agent's good manners — decides whether a stage
-may advance.** One feature at a time, five stages, four questions asked of you:
-```
-   plan  ──▶  implement  ──▶  pre-release  ──▶  release  ──▶  done
-Approve?         Verified?        Release?                  Finish?
-```
+may advance.** One feature at a time, five stages, and four questions asked of you —
+`plan → implement → pre-release → release → done`, mapped out under [How you work it](#how-you-work-it).
 
 ## The idea
 
@@ -55,14 +52,45 @@ The flow is completely inert in repos with no `.dev-flow/`.
 
 ## How you work it
 
-You are not a command runner. You answer **four words** and read what comes back:
+You are not a command runner. You ask for a feature and then answer four words — say *"sessions
+expire silently, add sliding renewal and a test"* and it becomes the feature `session-renewal`,
+walking five stages with a gate between each:
 
-| Asked | You mean | The gate behind it |
+```
+        you ask for a feature
+                 │
+        ┌────────▼────────┐
+        │      plan       │  spec (+ mockups) in .dev-flow/<slug>/plan/
+        └────────┬────────┘
+         Approve?  · refuses without the written plan (and renders for UI work)
+        ┌────────▼────────┐
+        │    implement    │  code + tests, only inside the feature worktree
+        └────────┬────────┘
+        Verified?  · refuses until checks are green and the deployed app is healthy
+        ┌────────▼────────┐
+        │   pre-release   │  review, docs, changelog entry, version bump
+        └────────┬────────┘
+          Release?  · refuses unless the version passes the last tag and the changelog agrees
+        ┌────────▼────────┐
+        │     release     │  PR → merge → annotated tag → release notes
+        └────────┬────────┘
+           Finish?  · refuses until the release is recorded and main is clean and pushed
+        ┌────────▼────────┐
+        │      done       │  worktree, branch and feature folder removed
+        └─────────────────┘
+```
+
+| Stage | What the agent does | It asks you |
 |---|---|---|
-| **Approve?** | the plan is right — build it | worktree + branch are created |
-| **Verified?** | you used it running, it works | feature moves to pre-release |
-| **Release?** | ship it | main-repo git unlocks for the publish |
-| **Finish?** | clean up, we're done | worktree, branch and feature folder are removed |
+| **plan** | reads the code, asks its clarifying questions, writes the spec to `.dev-flow/session-renewal/plan/plan.md` | **Approve?** — the plan is right, build it |
+| **implement** | works in a fresh worktree on `feat/session-renewal`, commits in small steps, runs your `test` command to green, walks the manual checks with you | **Verified?** — after you used it running |
+| **pre-release** | review and fixes, docs, changelog, version bump, checks re-run; shows the PR summary and the version it means to tag | **Release?** — ship it |
+| **release** | PR → merge → annotated tag → release notes; only here may git touch main | **Finish?** — clean up, we're done |
+| **done** | removes the worktree, branch and `.dev-flow/session-renewal/` | — |
+
+Four answers from you; everything between them was the agent's problem and your playbook's gates. If
+the feature grows mid-flight it is folded into this one (the plan gains an `Added mid-stage:` line and
+checks re-run); a *different* problem waits for the next flow — one feature, one plan, one PR.
 
 Your answers at a checkpoint:
 
@@ -84,31 +112,6 @@ Nothing here trusts the agent in either direction: a checkpoint gate refuses if 
 (its refusal begins `NEEDS-OPERATOR Approve?`), and the agent is told never to ask *you* to type a
 `flow` command. `/flow …` is your manual override — for when the session is stuck, wrong, or
 claiming a gate result it never produced. → [Gate reference](docs/gates.md)
-
-### What a feature looks like
-
-Say: *"sessions expire silently — add sliding renewal and a test for it."* That becomes the feature
-`session-renewal`, and it walks five stages. In each one the agent does the work and asks you exactly
-one question:
-
-1. **plan** — it reads the code, asks you its clarifying questions, and writes the spec to
-   `.dev-flow/session-renewal/plan/plan.md` (with screenshots, since this touches the UI).
-   → it asks **Approve?**
-2. **implement** — it works in a fresh worktree on branch `feat/session-renewal`, commits in small
-   steps, runs your `test` command until it is green, then walks the manual checks with you.
-   → it asks **Verified?** — after you have used the running app
-3. **pre-release** — code review and fixes, docs, changelog entry, version bump, checks re-run; it
-   shows you the PR summary with the version it means to tag. → it asks **Release?**
-4. **release** — PR → merge → annotated tag → release notes. Only here is git allowed to touch main.
-   → it asks **Finish?**
-5. **done** — the worktree, the branch and `.dev-flow/session-renewal/` are gone; main is clean and
-   pushed.
-
-You answered four times. Everything between the answers was the agent's problem and your playbook's
-gates.
-
-If the feature grows mid-flight, it is folded into this one (the plan gains an `Added mid-stage:`
-line, checks re-run). A *different* problem waits for the next flow — one feature, one plan, one PR.
 
 ## What is enforced
 
