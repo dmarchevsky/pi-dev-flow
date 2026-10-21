@@ -1,10 +1,22 @@
 {
   "name": "pi-dev-flow",
-  "version": "0.52.0",
-  "description": "Enforced plan → implement → pre-release → release → done flow for Pi, as a pi package",
+  "version": "0.52.1",
+  "description": "Enforced feature workflow for Pi: plan → implement → pre-release → release, gated checkpoints, self-improvement reflections, one git worktree per feature, changelog + publish as part of the release",
   "type": "module",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "workflow",
+    "dev-flow",
+    "spec",
+    "plan",
+    "release",
+    "semver",
+    "changelog",
+    "git-worktree",
+    "guardrails"
   ],
   "license": "MIT",
   "repository": "https://github.com/dmarchevsky/pi-dev-flow",
@@ -16,10 +28,21 @@
     "src/",
     "skills/",
     "docs/",
+    "banner.svg",
+    "banner.png",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "pi": {
+    "extensions": [
+      "./extensions/dev-flow.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "image": "./banner.png"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

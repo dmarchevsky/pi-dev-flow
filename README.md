@@ -1,5 +1,7 @@
 # dev-flow
 
+![dev-flow stages: plan, implement, pre-release, release, done — with the four operator checkpoints and the tag that publishes to npm](banner.png)
+
 An enforced feature workflow for [Pi](https://pi.dev), shipped as a pi package. You say what you
 want; an agent builds it; **the harness — not the agent's good manners — decides whether a stage
 may advance.** One feature at a time, five stages, and four questions asked of you —
