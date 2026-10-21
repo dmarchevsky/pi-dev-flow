@@ -126,6 +126,14 @@ test("verifyGate requires green test check when configured", () => {
 	assert.ok(verifyGate(s, c2).length > 0);
 });
 
+test("verifyGate refuses a branch with nothing committed — checks describe the working tree, not a commit", () => {
+	const s = { ...newState("f", false), stage: "implement" as const };
+	assert.match(verifyGate(s, cfg, { commitsAhead: 0, uncommitted: 3 }).join(" "), /nothing committed on the feature branch/);
+	assert.equal(verifyGate(s, cfg, { commitsAhead: 1, uncommitted: 3 }).length, 0, "one commit with a dirty tree passes: the iterate-and-re-verify loop stays cheap");
+	assert.equal(verifyGate(s, cfg).length, 0, "no branch state measured → nothing claimed");
+	assert.equal(verifyGate(s, cfg, { commitsAhead: null, uncommitted: 0 }).length, 0, "an unanswerable merge base must not refuse the gate");
+});
+
 test("releaseGate requires verify approval and release stage", () => {
 	const s = newState("f", false);
 	assert.ok(releaseGate(s).length === 2);
