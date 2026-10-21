@@ -161,7 +161,12 @@ feature).
 1. Implement per the approved plan with project conventions and the **stage
    guidance injected at stage start** (tier-3 prose). Commit in the worktree
    **as you go** — small reviewable commits; a twelve-file monolith saved for
-   the end faces review blind and is not crash-safe.
+   the end faces review blind and is not crash-safe. The gate enforces the
+   habit: `flow verify` refuses while the branch holds **no commit** (checks
+   describe the working tree, so nothing committed means nothing reviewed was
+   ever recorded) and every verify line reports
+   `commits: N ahead of <default>, M uncommitted path(s)` — uncommitted paths
+   never block verify, they are what the operator sees they are approving.
 2. Write tests as you go (project framework: the `test` key / `flow-check`
    blocks).
 3. `flow check` runs every tier-1 check (test, health, named `flow-check`
