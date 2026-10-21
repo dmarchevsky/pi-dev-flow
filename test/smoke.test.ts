@@ -286,6 +286,34 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /dev: none configured/);
 });
 
+test("verify runs the checks it gates on instead of asking for them (#84)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n`;
+	// deliberately no `flow check`: entering the stage leaves the records empty, which used to be a refusal
+	const toImplement = async (slug: string, body: string) => {
+		await flow(["init", "--write", md(body)]);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		commitWt(repo, slug);
+	};
+	await flow(["init"]);
+	await toImplement("selfrun", "test = node --version\n");
+	const ok = await flow(["verify", "--confirmed"]);
+	assert.match(ok.content[0].text, /entering pre-release stage/, "the gate ran its own checks");
+	assert.match(ok.content[0].text, /checks ran at the gate \(test\)/, "and says which ones it ran");
+	assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "selfrun", "state.json"), "utf8")).checks.test.ok, "the PASS is recorded, not only printed");
+	await toImplement("selffail", "test = exit 3\n");
+	const bad = await flow(["verify", "--confirmed"]);
+	assert.ok(bad.isError && /a check run at the gate failed/.test(bad.content[0].text), "a failing check still refuses the gate");
+	assert.match(bad.content[0].text, /test: FAIL \(exit 3\)/, "with the run output instead of a pointer");
+	assert.ok(!/has not passed/.test(bad.content[0].text), "no run-flow-check-and-come-back round trip left");
+});
+
 test("verify refuses a branch with nothing committed, and names what a passing verify asks you to approve", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -1189,7 +1217,7 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	await flow(["check"]);
 	commitWt(repo, "yo");
 	const v = await flow(["verify"]);
-	assert.ok(v.isError && /check "test" has not passed/.test(v.content[0].text), "yolo never bypasses tier-1 checks");
+	assert.ok(v.isError && /a check run at the gate failed/.test(v.content[0].text), "yolo never bypasses tier-1 checks — the gate reruns what is not green and refuses on it (#84)");
 	await flow(["init", "--write", "# dev-flow\n"]);
 	trackPlaybook(repo);
 	await flow(["check"]);

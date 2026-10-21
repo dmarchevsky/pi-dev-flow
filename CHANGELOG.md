@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.51.1] - 2026-10-21
+
+### Changed
+
+- **`flow verify` runs the checks it gates on.** Entering a stage — and every edit of the worktree since — clears the recorded results, so the gate answered "check `test` has not passed — run flow check" and made the agent run it and come back: three round trips to say what one could, and the operator answering **Verified?** about a state the gate had never seen that round. A check with no passing record is now run by `flow verify` itself, the PASS is recorded like `flow check` records it, and the line says `checks ran at the gate (test)`. A check that fails there refuses the gate with its output instead of a pointer. `health` is left to the post-deploy probe when there is a deploy to prove — probing twice only waits twice.
+
 ## [0.51.0] - 2026-10-21
 
 ### Added

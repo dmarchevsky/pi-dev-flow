@@ -96,6 +96,7 @@ import {
 	type Config,
 	type FeatureRef,
 	type FlowState,
+	type StageCheck,
 	type PushRef,
 	type SessionClaim,
 } from "../src/core.ts";
@@ -343,6 +344,36 @@ function droppableLines(current: string, draft: string): string[] {
 function gateCwd(root: string, state: FlowState): string {
 	const wt = worktreeAbs(root, state);
 	return wt && existsSync(wt) ? wt : root;
+}
+
+/** Tier-1 checks the gate still has to see green. Entering a stage — and every edit of the worktree —
+ * clears the records, so "run flow check first" cost three round trips to say what one could (#84).
+ * `health` is left to the post-deploy probe when there is a deploy to prove: probing twice only waits twice. */
+function pendingChecks(state: FlowState, cfg: Config): StageCheck[] {
+	if (state.docs) return [];
+	return cfg.checkList.filter((c) => !state.checks[c.name]?.ok && !(c.name === "health" && cfg.commands.dev && healthProbe(cfg)));
+}
+
+/** Run tier-1 checks in the feature cwd and record each result (health seeds first, as `flow health` does). */
+async function runChecks(root: string, state: FlowState, cfg: Config, checks: StageCheck[]): Promise<{ lines: string[]; failed: boolean }> {
+	const lines: string[] = [];
+	let failed = false;
+	for (const c of checks) {
+		if (c.name === "health" && cfg.commands.seedData) {
+			const seed = await sh(cfg.commands.seedData, gateCwd(root, state));
+			if (!seed.ok) {
+				lines.push(`seedData FAILED:\n${tail(seed.out)}`);
+				failed = true;
+				break;
+			}
+		}
+		const res = await sh(c.cmd, gateCwd(root, state));
+		state.checks[c.name] = { ok: res.ok, at: now() };
+		lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd})${res.ok ? "" : `\n${tail(res.out)}`}`);
+		if (!res.ok) failed = true;
+	}
+	writeState(root, state);
+	return { lines, failed };
 }
 
 /** Commits the feature branch holds over its merge base with the default branch, plus how many
@@ -746,12 +777,18 @@ ${mdDigest(draftRefresh)}`))
 			const items = applicableItems(cfg, state!, "implement");
 			const branch = await branchState(gateCwd(root, state!), cfg.defaultBranch);
 			const branchLine = describeBranchState(branch, cfg.defaultBranch);
+			// a check with no record is run here, not asked for: entering the stage — and every edit since —
+			// cleared it, and telling the agent to run flow check cost three round trips (#84)
+			const pending = pendingChecks(state!, cfg);
+			const gateRun = pending.length ? await runChecks(root, state!, cfg, pending) : null;
+			if (gateRun?.failed) return { text: `verify gate FAILED — a check run at the gate failed:\n${gateRun.lines.join("\n")}\n${branchLine}`, isError: true };
 			// tier-1 gate first (tier-2 confirmation is recorded by this very command, so it is excluded here)
 			const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg, branch);
 			if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}\n${branchLine}`, isError: true };
 			// commands that take minutes and touch live services must say so (#38): a terse gate let the
 			// agent tell the operator the dev deploy had never run, right after it recreated a container.
 			const did: string[] = [];
+			if (gateRun) did.push(`checks ran at the gate (${pending.map((c) => c.name).join(", ")})`);
 			if (state!.docs) {
 				// docs mode's contract: no tier-1 work happens, so a docs flow neither builds, deploys nor probes (#43 #49)
 				did.push("docs mode: project commands skipped (build/dev/health)");
@@ -819,24 +856,8 @@ ${mdDigest(draftRefresh)}`))
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
-			const lines: string[] = [];
-			let failed = false;
-			for (const c of cfg.checkList) {
-				if (c.name === "health" && cfg.commands.seedData) {
-					const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
-					if (!seed.ok) {
-						lines.push(`seedData FAILED:\n${tail(seed.out)}`);
-						failed = true;
-						break;
-					}
-				}
-				const res = await sh(c.cmd, gateCwd(root, state!));
-				state!.checks[c.name] = { ok: res.ok, at: now() };
-				lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd})${res.ok ? "" : `\n${tail(res.out)}`}`);
-				if (!res.ok) failed = true;
-			}
-			writeState(root, state!);
-			return { text: `tier-1 checks:\n${lines.join("\n")}`, isError: failed };
+			const ran = await runChecks(root, state!, cfg, cfg.checkList);
+			return { text: `tier-1 checks:\n${ran.lines.join("\n")}`, isError: ran.failed };
 		}
 
 		case "health": {
