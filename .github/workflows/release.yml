@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # needed to ask whether this tag is on the default branch
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -29,6 +31,11 @@ jobs:
       # a tag made from the wrong commit must not publish that commit's code under its version
       - name: tag matches the manifest version
         run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      # npm versions are immutable: a tag cut from a feature branch would burn the version number and
+      # ship code that main never had, and `flow release-done` only notices after the publish
+      - name: tag is on the default branch
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main # playbook defaultBranch = main
       - run: npm ci
+      - run: npm run build # node --test strips types without checking them
       - run: npm test
       - run: npm publish --provenance
