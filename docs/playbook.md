@@ -49,7 +49,7 @@ adopting dev-flow can delete its own guard extension:
 ````markdown
 ## global
 ```flow-guard
-deny    \bgit\b[^\n]*--force(?!\w)   :: history stays linear — PRs squash-merge
+deny    \bgit\b[^\n]*\bpush\b[^\n]*--force(?!\w) :: history stays linear — PRs squash-merge
 deny    \bgit\b[^\n]*\bworktree\s+prune\b :: it prunes other sessions' worktrees
 confirm \bgit\b[^\n]*\bbranch\s+(?:-D\b|--delete\b) :: deletes a squash-merged branch git cannot see as merged
 confirm \bdocker\b[^\n]*\bcompose\b[^\n]*\brestart\b :: drops a permanent upstream connection
@@ -67,8 +67,13 @@ forbid  docker/secrets               :: gitignored secret storage
 
 ` :: ` separates the matcher from the reason, so reasons are free text and show up verbatim when a
 rule fires. `deny`/`confirm` matchers are JS regex sources — an unparseable regex is a hard finding,
-so `flow init --write` refuses the file (an unknown verb is a warning). `protect`/`forbid` take a
-repo-relative path; a rule on a directory covers its subtree, including files that do not exist yet.
+so `flow init --write` refuses the file (an unknown verb is a warning). Anchor a matcher on the **verb**
+you mean, not on a flag that can appear anywhere after `git`: `\bgit\b[^\n]*--force` also refuses
+`git filter-branch --force` (a local rewrite) and `git show -f`, and a rule that blocks unrelated
+commands gets routed around. You do not need a rule for forced pushes at all — dev-flow confirms every
+`git push --force` / `-f` with the operator itself, and prints the one prefix that answers for it
+(`DEV_FLOW_ALLOW_REWRITE=1`). `protect`/`forbid` take a repo-relative path; a rule on a directory covers
+its subtree, including files that do not exist yet.
 The block belongs to `## global` — these rules are never stage-scoped, and one under a stage warns and
 applies nothing.
 

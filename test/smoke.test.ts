@@ -198,6 +198,23 @@ test("worktree isolation: commit guards follow the command's directory", async (
 	assert.equal(await guard({ toolName: "bash", input: { command: "cd /nonexistent-dir-xyz && git commit -m x", timeout: 60 } }, ctx), undefined, "a directory git cannot answer for invents no main verdict — git itself fails there");
 });
 
+test("a forced push is confirmed with the operator; the prefix the refusal prints answers for it", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	let answer = false;
+	const ctx = { cwd: repo, hasUI: true, ui: { notify: () => {}, confirm: async () => answer, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	await pi.cmds.flow.handler("init", ctx);
+	const guard = pi.handlers.tool_call[0];
+	assert.equal(await guard({ toolName: "bash", input: { command: "git push origin feat/x", timeout: 60 } }, ctx), undefined, "an ordinary push asks nobody");
+	assert.ok(await guard({ toolName: "bash", input: { command: "git push --force origin feat/x", timeout: 60 } }, ctx), "a forced push needs the operator (#83)");
+	answer = true;
+	assert.equal(await guard({ toolName: "bash", input: { command: "git push -f origin feat/x", timeout: 60 } }, ctx), undefined, "the operator said yes in the dialog");
+	assert.equal(await guard({ toolName: "bash", input: { command: "DEV_FLOW_ALLOW_REWRITE=1 git push -f origin feat/x", timeout: 60 } }, ctx), undefined, "the sanctioned prefix is the operator's word spelled out");
+	answer = false;
+	assert.ok(await guard({ toolName: "bash", input: { command: "git push -f origin feat/x && git status", timeout: 60 } }, ctx), "a declined dialog blocks the call");
+	assert.equal(await guard({ toolName: "bash", input: { command: "git filter-branch --force --index-filter 'git rm --cached --ignore-unmatch k' main..HEAD", timeout: 60 } }, ctx), undefined, "the local rewrite tool stays free — no blunt flag deny needed");
+});
+
 test("init keeps an existing project.md; --force rewrites from fresh detection", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
