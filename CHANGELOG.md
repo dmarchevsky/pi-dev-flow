@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-10-21
+
+### Added
+
+- **A forced push asks the operator instead of being someone's regex problem.** A secret reached a pushed branch and the only way back was a rewrite of that branch — which the guard chain refused with no authorised path: the playbook's own deny rule is unconditional, and the refusal's advice ("update it by merging main into it") is exactly the option that cannot be taken when the commits are the leak. The workaround the session found (scrub locally, push `-v2`, second PR, close the first) split one feature's audit trail and left the blob reachable on the old branch anyway. dev-flow now confirms `git push` carrying `--force`, `--force-with-lease…` or `-f` with the operator itself, and the refusal prints the one prefix that answers for it — `DEV_FLOW_ALLOW_REWRITE=1`, the same "the operator said so" contract as `DEV_FLOW_ALLOW_MAIN`, so it works headless too.
+
+### Changed
+
+- **Playbook guidance anchors a guard rule on the verb, not on a flag.** The documented example was `deny \bgit\b[^\n]*--force`, which also refuses `git filter-branch --force` (a purely local rewrite) and `git show -f` — and a rule that blocks unrelated commands gets routed around until it means nothing. The example now reads `\bgit\b[^\n]*\bpush\b[^\n]*--force`, and the docs say plainly that a project needs no force-push rule of its own now that dev-flow confirms it.
+
 ## [0.49.1] - 2026-10-21
 
 ### Fixed

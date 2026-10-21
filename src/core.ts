@@ -658,6 +658,28 @@ export function playbookOnlyChange(porcelain: string): boolean {
 	return paths.length === 1 && PLAYBOOK_PATH.test(paths[0]);
 }
 
+/** The operator's authorisation for rewriting a branch that is already pushed — same contract as
+ *  DEV_FLOW_ALLOW_MAIN: the guard prints it, the operator grants it, the agent types it. (#83) */
+export const ALLOW_REWRITE = "DEV_FLOW_ALLOW_REWRITE=1";
+
+/** True when a segment force-pushes: `git push` carrying a force flag (`--force`, `--force-with-lease…`,
+ *  `-f`, `-uf`). Decided on the verb per segment, not on a flag anywhere after `git` — `filter-branch
+ *  --force` rewrites a local copy and `git show -f` lists files, and a blunt flag-only deny blocks both,
+ *  which agents learn to route around. (#82, #83) */
+export function forcePushInvocation(command: string): boolean {
+	return bashSegments(command).some((seg) => {
+		const tok = maskQuoted(seg).trim().split(/\s+/);
+		let i = 0;
+		while (i < tok.length && /^[\w.]+=/.test(tok[i])) {
+			if (tok[i] === ALLOW_REWRITE) return false; // the operator's word, spelled on the command itself
+			i++;
+		}
+		if (tok[i] === "sudo") i++; // a wrapper is not an authorisation and not an escape either
+		if (!/(^|\/)git$/.test(tok[i] ?? "") || !tok.includes("push")) return false;
+		return tok.some((t) => /^--force\S*$/.test(t) || /^-[a-z]*f[a-z]*$/.test(t));
+	});
+}
+
 /** Forge from an origin URL: github.com / github enterprise hosts → github, any gitlab host → gitlab. */
 export function detectForge(remoteUrl: string): string {
 	return /github/i.test(remoteUrl) ? "github" : /gitlab/i.test(remoteUrl) ? "gitlab" : "self";

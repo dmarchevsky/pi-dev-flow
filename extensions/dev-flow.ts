@@ -25,6 +25,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { compact, defineTool, isToolCallEventType, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+	ALLOW_REWRITE,
 	approveGate,
 	applicableItems,
 	appendReflection,
@@ -42,6 +43,7 @@ import {
 	featureBranchPrefix,
 	FLOW_SHELL_HINT,
 	flowShellInvocation,
+	forcePushInvocation,
 	gateHelpJson,
 	gitInvocation,
 	githubSlug,
@@ -1367,6 +1369,12 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (flowShellInvocation(command)) return { block: true, reason: FLOW_SHELL_HINT };
 			// the operator's rules had their say — now the timeout must be stated
 			if (mustStateTimeout) return { block: true, reason: requireTimeout(command)! };
+			// a forced push rewrites history CI and other sessions already have. dev-flow asks the operator
+			// itself so a project never needs a blunt `--force` deny of its own (#82, #83)
+			if (forcePushInvocation(command)) {
+				const why = await askOperator(ctx, command, `a forced push rewrites a pushed branch — CI and other sessions lose these commits (with the operator's word, prefix the push with ${ALLOW_REWRITE})`);
+				if (why) return { block: true, reason: why };
+			}
 			const inv = gitInvocation(command);
 			if (!inv.subs.length) return undefined; // git is not invoked as a command — nothing to guard
 			const bound = boundFeature(ctx.cwd, key);

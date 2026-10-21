@@ -22,6 +22,7 @@ import {
 	featureBranchPrefix,
 	FLOW_SHELL_HINT,
 	flowShellInvocation,
+	forcePushInvocation,
 	gateHelpJson,
 	getPath,
 	gitInvocation,
@@ -233,6 +234,21 @@ test("gitInvocation: subcommands and effective directory", () => {
 	assert.equal(gitInvocation("cd ~/wt && git commit -m x").dir, `${home}/wt`, "the shell expands ~ before git runs; an unexpanded one resolved against the session cwd and main got the blame");
 	assert.equal(gitInvocation("git -C $HOME/wt commit").dir, `${home}/wt`, "$HOME is expanded the same way");
 	assert.equal(gitInvocation("cd $WT/wt && git commit -m x").dir, "$WT/wt", "any other var stays literal — a guess is worse than a literal");
+});
+
+test("forcePushInvocation: the verb carries the flag, not any git command (#82)", () => {
+	assert.ok(forcePushInvocation("git push --force origin feat/x"));
+	assert.ok(forcePushInvocation("git push -f"), "short flag");
+	assert.ok(forcePushInvocation("git push -uf origin feat/x"), "short flag cluster");
+	assert.ok(forcePushInvocation("git push --force-with-lease=feat/x origin"), "a value-carrying lease flag still forces");
+	assert.ok(forcePushInvocation("cd wt && git push -f"), "a cd does not hide the verb");
+	assert.equal(forcePushInvocation("git filter-branch --force --index-filter 'git rm --cached --ignore-unmatch k' main..HEAD"), false, "a local rewrite is not a push");
+	assert.equal(forcePushInvocation("git show -f"), false, "a flag that means something else on another verb");
+	assert.equal(forcePushInvocation("gh pr comment --body 'ask them to git push --force'"), false, "quoted prose is not a command");
+	assert.equal(forcePushInvocation("git push origin feat/x"), false, "an ordinary push asks nobody");
+	assert.equal(forcePushInvocation("DEV_FLOW_ALLOW_REWRITE=1 git push -f origin feat/x"), false, "the operator's word, spelled on the command");
+	assert.ok(forcePushInvocation("sudo git push -f origin feat/x"), "a wrapper is neither an authorisation nor an escape");
+	assert.ok(forcePushInvocation("git push -f origin main # DEV_FLOW_ALLOW_REWRITE=1"), "a mention is not a prefix — the word must be on the command");
 });
 
 test("parsePushRefs: what does each push actually write", () => {
