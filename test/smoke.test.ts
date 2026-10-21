@@ -186,8 +186,14 @@ test("init keeps an existing project.md; --force rewrites from fresh detection",
 	writeFileSync(mdFile, "# dev-flow\n\n## implement\n\n```flow\ntest = custom-cmd\n```\n");
 	await pi.cmds.flow.handler("init", ctx);
 	assert.match(readFileSync(mdFile, "utf8"), /custom-cmd/, "a second init must keep operator config");
-	await pi.cmds.flow.handler("init --force", ctx);
+	await pi.cmds.flow.handler("init", ctx);
+	const refused = (await pi.tools.flow.execute("id", { args: ["init", "--force"] }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
+	assert.ok(refused.isError && /operator's word/.test(refused.content[0].text), "overwriting the operator's playbook needs their word");
+	assert.match(readFileSync(mdFile, "utf8"), /custom-cmd/, "a refused --force touches nothing");
+	await pi.cmds.flow.handler("init --force --confirmed", ctx);
 	assert.match(readFileSync(mdFile, "utf8"), /## implement/, "--force writes a full draft");
+	assert.ok(!/custom-cmd/.test(readFileSync(mdFile, "utf8")), "the draft replaces the hand-set value");
+	assert.match(readFileSync(`${mdFile}.bak`, "utf8"), /custom-cmd/, "the operator's previous playbook is kept");
 });
 
 test("init --write stores validated project.md (tool path)", async () => {
@@ -692,6 +698,26 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	assert.match(okRun.content[0].text, /release recorded as complete/);
 });
 
+test("a release gate refuses to guess when origin cannot be asked (offline)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	execFileSync("git", ["-C", repo, "remote", "add", "origin", path.join(tmpdir(), `no-such-remote-${Date.now()}`)]);
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
+	await flow(["start", "offline"]);
+	mkdirSync(path.join(repo, ".dev-flow", "offline", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "offline", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["verify", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "offline", "worktree");
+	writeFileSync(path.join(wt, "package.json"), '{"name":"t","version":"1.2.3"}');
+	execFileSync("git", ["-C", wt, "add", "-A"]);
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "bump 1.2.3"]);
+	const gate = await flow(["release", "--confirmed"]);
+	assert.ok(gate.isError && /cannot list tags on origin/.test(gate.content[0].text), `an unreachable origin is not answered with local tags: ${gate.content[0].text}`);
+});
+
 test("abort at plan stage drops the feature; approved features keep recoverable state", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -989,6 +1015,10 @@ test("a live foreign claim refuses auto-bind; flow use takes over explicitly", a
 	const injB = (await pi.handlers.before_agent_start[0]({}, b)) as { message?: { content: string } };
 	assert.match(injB.message?.content ?? "", /no flow bound/, "a foreign live claim refuses the auto-bind");
 	assert.match(injB.message?.content ?? "", /claim-feature is claimed by another live session/, "the unbound context names the blocked feature");
+
+	// a foreign session passing the slug is not a takeover of the gates
+	const stolen = (await pi.tools.flow.execute("id", { args: ["approve", "claim-feature", "--confirmed"] }, undefined, undefined, b)) as { content: [{ text: string }]; isError?: boolean };
+	assert.ok(stolen.isError && /claimed by another live session/.test(stolen.content[0].text), "gates follow the claim, not whoever passes a slug");
 
 	// explicit use succeeds and says it took over from a live holder
 	await pi.cmds.flow.handler("use claim-feature", b);
