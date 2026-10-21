@@ -7,7 +7,19 @@
     "pi-package"
   ],
   "license": "MIT",
-  "repository": "https://github.com/dmarchevsky/dev-flow",
+  "repository": "https://github.com/dmarchevsky/pi-dev-flow",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extensions/",
+    "src/",
+    "skills/",
+    "docs/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

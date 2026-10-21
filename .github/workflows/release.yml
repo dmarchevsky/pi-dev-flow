@@ -1,0 +1,34 @@
+# Publishing is part of the release: `flow release` pushes an annotated v<version> tag and this
+# workflow publishes exactly that commit to npm. `flow release-done` then proves the version is live
+# (playbook `release.artifact`), so a tag that never published cannot close a flow.
+#
+# Auth is npm trusted publishing (OIDC) — there is no NPM_TOKEN to rotate or leak. The publisher is
+# registered on npmjs.com for this repo and THIS FILE NAME: renaming release.yml means editing the
+# trusted publisher on npm first, or the next publish is rejected.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # the job's OIDC identity is the npm credential
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # trusted publishing needs npm >= 11.5.1; Node 22 ships 10.9
+      - run: npm install -g npm@11
+      # a tag made from the wrong commit must not publish that commit's code under its version
+      - name: tag matches the manifest version
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      - run: npm ci
+      - run: npm test
+      - run: npm publish --provenance

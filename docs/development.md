@@ -16,3 +16,17 @@ resolve. `flow doctor` flags a missing or edited shim.
 
 A release cannot update a session that is already running — pi keeps the code it loaded at startup.
 After merging and tagging, `/reload` in every session that must carry the new behavior.
+
+## Publishing
+
+`pi-dev-flow` is published to npm by `.github/workflows/release.yml`, triggered by the `v*` tag the
+release stage pushes: it checks out that tag, runs `npm ci && npm test`, and `npm publish --provenance`
+from exactly that commit. Nothing publishes from a developer machine.
+
+Auth is npm **trusted publishing** — the workflow's OIDC identity, no token in the repo. The publisher
+registered on npmjs.com names this repo **and the workflow file name**, so after renaming either one,
+re-register it there or the next publish is rejected.
+
+If the job fails, fix the cause and **Re-run jobs** on the same failed run: the tag already points at what
+should ship, so no re-tag. `flow release-done` then runs `npm view pi-dev-flow@<version> version` and
+refuses to close the flow while the version is missing — which also catches a tag that never published.
