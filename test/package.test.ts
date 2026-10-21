@@ -10,6 +10,9 @@ const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as
 	repository?: string;
 	engines?: { node?: string };
 	files?: string[];
+	keywords?: string[];
+	description?: string;
+	pi?: { image?: string };
 };
 const files = pkg.files ?? [];
 
@@ -29,4 +32,12 @@ test("the published manifest is self-describing", () => {
 	assert.ok(pkg.engines?.node, "engines.node states the floor pi requires");
 	assert.match(pkg.repository ?? "", /^https:\/\/github\.com\/[^/]+\/pi-dev-flow$/, "repository must name the repo CI publishes from");
 	assert.ok(!files.includes("test"), "tests stay out of the runtime artifact");
+	// the pi.dev gallery lists and searches by these, and renders pi.image as its preview
+	assert.ok((pkg.keywords ?? []).includes("pi-package"), "pi.dev discovers packages by the pi-package keyword");
+	assert.ok((pkg.description ?? "").length > 40, "the gallery search matches the description — spend words there");
+	if (pkg.pi?.image) {
+		const img = pkg.pi.image.replace(/^\.\//, "");
+		assert.ok(existsSync(path.join(root, img)), `pi.image points at ${img}, which must exist`);
+		assert.ok(files.includes(img), `pi.image points at ${img}, which npm would drop from the tarball`);
+	}
 });
