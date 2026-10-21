@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -774,6 +774,17 @@ test("guardPath: subtree, paths that do not exist yet, and no escaping the root"
 	assert.equal(guardPath(path.join(root, "src/app.ts"), root, g).block, null);
 	const elsewhere = mkdtempSync(path.join(tmpdir(), "outside-"));
 	assert.equal(guardPath(path.join(elsewhere, "docker/.env"), root, g).confirm, null, "the same relative path in another checkout is not this repo's file");
+	// a basename glob is a sibling set: the backup beside a secret is the same secret (#87)
+	const glob = rules({ protect: [{ pattern: "docker/.env*", why: "live secrets and their backups" }], forbid: [{ pattern: "docker/keys-?", why: "one-off key dumps" }] });
+	assert.equal(guardPath(path.join(root, "docker/.env"), root, glob).confirm, "live secrets and their backups", "the rule's own file still matches");
+	assert.equal(guardPath(path.join(root, "docker/.env.bak-20261021"), root, glob).confirm, "live secrets and their backups", "the backup beside it is covered");
+	assert.equal(guardPath(path.join(root, "docker/app.py"), root, glob).confirm, null, "a sibling that does not match is nobody's business");
+	assert.equal(guardPath(path.join(root, "docker/sub/.env"), root, glob).confirm, null, "a basename glob is a sibling set, not a subtree");
+	assert.equal(guardPath(path.join(root, "docker/keys-7"), root, glob).block, "project rule: one-off key dumps", "? matches one character, in forbid too");
+	assert.equal(guardPath(path.join(root, "docker/keys-77"), root, glob).block, null, "? is exactly one character");
+	const linkRoot = mkdtempSync(path.join(tmpdir(), "link-"));
+	symlinkSync(path.join(root, "docker"), path.join(linkRoot, "d"));
+	assert.deepEqual(guardPath(path.join(linkRoot, "d/.env.bak"), linkRoot, rules({ protect: [{ pattern: "d/.env*", why: "via symlink" }] })), { block: null, confirm: "via symlink" }, "a symlinked directory cannot dodge a glob rule");
 });
 
 test("buildConfig reads guard rules (bare patterns and objects)", () => {

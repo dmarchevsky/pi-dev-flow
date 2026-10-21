@@ -104,6 +104,14 @@ function parseGuardRules(entries: { line: string; where: string }[], stage: stri
 				continue;
 			}
 		}
+		if (verb === "protect" || verb === "forbid") {
+			// only a basename glob is a sibling set; a glob mid-path names one literal file and guards nothing —
+			// the same silent no-op as an invalid regex, so it gets the same loud treatment (#87).
+			// The rule is kept: the operator hears it is a no-op and fixes the file, and doctor re-reads it.
+			if (pattern.split("/").slice(0, -1).some((s) => /[*?]/.test(s))) {
+				p.warn.push(`${where}: flow-guard ${verb} pattern globs outside its last segment — only a basename glob (docker/.env*) matches; as written this names one literal path and guards nothing`);
+			}
+		}
 		p.guard[verb].push({ pattern, why });
 	}
 }

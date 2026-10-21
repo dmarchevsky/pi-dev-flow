@@ -53,7 +53,7 @@ deny    \bgit\b[^\n]*\bpush\b[^\n]*--force(?!\w) :: history stays linear — PRs
 deny    \bgit\b[^\n]*\bworktree\s+prune\b :: it prunes other sessions' worktrees
 confirm \bgit\b[^\n]*\bbranch\s+(?:-D\b|--delete\b) :: deletes a squash-merged branch git cannot see as merged
 confirm \bdocker\b[^\n]*\bcompose\b[^\n]*\brestart\b :: drops a permanent upstream connection
-protect docker/.env                  :: gitignored live secrets — never echo the values
+protect docker/.env*                 :: gitignored live secrets — and any backup copied beside them
 forbid  docker/secrets               :: gitignored secret storage
 ```
 ````
@@ -73,7 +73,11 @@ you mean, not on a flag that can appear anywhere after `git`: `\bgit\b[^\n]*--fo
 commands gets routed around. You do not need a rule for forced pushes at all — dev-flow confirms every
 `git push --force` / `-f` with the operator itself, and prints the one prefix that answers for it
 (`DEV_FLOW_ALLOW_REWRITE=1`). `protect`/`forbid` take a repo-relative path; a rule on a directory covers
-its subtree, including files that do not exist yet.
+its subtree, including files that do not exist yet. A rule whose **last segment** globs
+(`protect docker/.env*`) covers the siblings in that directory whose name matches — the backup copied
+beside a secret is the same secret, and the commit that adds it never names the file, so no `deny` regex
+ever sees it. A glob anywhere else in the path warns at `flow init`: it names one literal file called
+`.env*` and guards nothing.
 The block belongs to `## global` — these rules are never stage-scoped, and one under a stage warns and
 applies nothing.
 
