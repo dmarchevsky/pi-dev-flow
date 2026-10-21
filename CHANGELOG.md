@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.51.2] - 2026-10-21
+
+### Changed
+
+- **`release-done` proves the forge release exists instead of trusting the attempt.** A repository carried an annotated tag, published images and a **completely empty Releases page** — the playbook had the forge-release key off, `release-done` verified the registry artifact, printed `release recorded as complete`, and nobody looked at the web page. Three earlier failures (#51, #60, #63 — quoting that shipped a shell error as the body, quoting that killed `gh release create`, and a create whose failure was stamped as a note the release rode past) are the same shape: recorded, nothing published. The gate now asks the forge (`gh release view <tag>` / `glab release view <tag>`) and refuses when nothing is there, naming both ways out: create it, or say publication is manual with `release.releases = false`. Skipping stays deliberate and loud — `--no-release-create`, `release.releases = false` and `forge = self` each print that no release was created, and the proof is skipped for them. This replaces #63's advisory note: a failed create is no longer something a release can ride past, so `finish`'s "the forge release was not created" warning can only fire for flows released by an older build.
+
 ## [0.51.1] - 2026-10-21
 
 ### Changed
