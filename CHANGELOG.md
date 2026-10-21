@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.46.1] - 2026-10-20
+
+### Changed
+
+- **The skill now states the rules the plugin only enforced silently.** Every shell call must pass an explicit `timeout` (the `bashTimeout = require` guard, shipped in 0.45.0, was undocumented in the skill). Checkpoint grammar is enforced: the agent asks the one-verb question (Approve?/Verified?/Release?/Finish?) in plain chat, mentions that **yolo** is an available answer, and runs the gate when the operator answers — it never routes the operator to a `/flow` command at a checkpoint. `skills/dev-flow/SKILL.md` was also compacted ~18% with every rule kept: the checkpoint/`--confirmed`/mode-grant grammar that was stated up to four times now lives once in the ground rules, and rationale prose was trimmed.
+
 ## [0.46.0] - 2026-10-20
 
 ### Fixed
