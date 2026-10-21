@@ -25,7 +25,12 @@ from exactly that commit. Nothing publishes from a developer machine.
 
 Auth is npm **trusted publishing** — the workflow's OIDC identity, no token in the repo. The publisher
 registered on npmjs.com names this repo **and the workflow file name**, so after renaming either one,
-re-register it there or the next publish is rejected.
+re-register it there or the next publish is rejected. And the publisher must be registered on a package
+that already exists: npm has no place to put the credential before the first publish.
+
+`--provenance` requires a **public** source repository — npm refuses the attestation from a private one
+(`422 … Unsupported GitHub Actions source repository visibility: "private"`), which is why this repo is
+public. If it ever goes private, drop the flag rather than the release.
 
 If the job fails, fix the cause and **Re-run jobs** on the same failed run: the tag already points at what
 should ship, so no re-tag. `flow release-done` then runs `npm view pi-dev-flow@<version> version` and

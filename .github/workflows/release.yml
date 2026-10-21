@@ -38,4 +38,4 @@ jobs:
       - run: npm ci
       - run: npm run build # node --test strips types without checking them
       - run: npm test
-      - run: npm publish --provenance
+      - run: npm publish --provenance # provenance needs a public source repo: npm rejects it from a private one
