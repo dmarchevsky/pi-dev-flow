@@ -4,6 +4,8 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-10-21
+
 ### Fixed
 
 - **A `cd ~/<worktree> && git commit` was judged from the session cwd and refused as a commit on the default branch.** The git guard took the `cd` / `git -C` target verbatim, and `path.resolve` treats `~/wt` as a relative path — it became `<session cwd>/~/wt`, where the branch probe could not answer. The probe then fell back to the session's own branch, so a legal worktree commit was blocked with "direct commits to main are forbidden": a message about a rule the command was never near. `~`, `$HOME` and `${HOME}` are now expanded where the directory is captured (any other `$VAR` stays literal — resolving it needs a shell, and guessing is how the wrong path appeared), the silent session-cwd fallback is gone (a directory git cannot answer for yields no verdict, and git itself fails there), and the commit refusal names the directory it judged so a future misjudgment reads as one.
