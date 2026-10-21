@@ -208,6 +208,17 @@ test("mdDigest: human phase-grouped summary with real values, nothing truncated"
 	assert.match(d, /nothing is executed or uploaded now/);
 });
 
+test("mdDigest shows ## pre-release — the draft writes the version rules there", () => {
+	const d = mdDigest("# dev-flow\n\n## pre-release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n\n- [ ] changelog entry reviewed\n");
+	assert.match(d, /Pre-release — version in package\.json → tag v\{version\}/, "the version rules are the point of the dialog");
+	assert.match(d, /manual check: "changelog entry reviewed"/, "and its checklist item is not silently dropped");
+});
+
+test("project.md HTML comments are operator notes, not injected stage guidance", () => {
+	const p = parseProjectMd("## implement\n\n```flow\ntest = npm test\n```\n\n<!-- tier-3: standing guidance for this stage -->\n\nalways run the migration before verify\n");
+	assert.equal(p.prose.implement, "always run the migration before verify", "real prose still gets injected");
+});
+
 // ---------------------------------------------------------------- flow-guard block
 
 const GUARD_LINES = [

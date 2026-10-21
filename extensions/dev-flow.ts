@@ -18,7 +18,7 @@
  * Inactive (fully pass-through) in repos without a .dev-flow/ directory.
  */
 import { exec } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
@@ -143,11 +143,13 @@ async function runHealthProbe(cmd: string, cwd: string, waitSec: number): Promis
 }
 
 /** Tags to judge a release against: what origin holds — a clone that has not fetched must not get to
- *  decide what is already tagged (#52). Local tags only when there is no remote to ask. */
-async function releaseTags(root: string): Promise<string[]> {
+ *  decide what is already tagged (#52). Local tags only when there is no remote to ask; null when an
+ *  origin exists but could not be asked (offline, no ssh agent) — then local tags must not stand in. */
+async function releaseTags(root: string): Promise<string[] | null> {
+	if (!(await sh("git remote get-url origin", root)).ok) return (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
 	const remote = await sh("git ls-remote --tags origin", root);
-	if (remote.ok) return parseLsRemoteTags(remote.out);
-	return (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
+	if (!remote.ok) return null;
+	return parseLsRemoteTags(remote.out);
 }
 
 const GATE_HELP =
@@ -165,7 +167,16 @@ function readState(root: string, slug: string): FlowState | null {
 }
 
 function writeState(root: string, state: FlowState): void {
-	writeFileSync(stateFile(root, state.slug), `${JSON.stringify(state, null, "\t")}\n`);
+	atomicWrite(stateFile(root, state.slug), `${JSON.stringify(state, null, "\t")}\n`);
+}
+
+/** Replace a file in one move. Gates write state after every check, and a kill in the middle left a
+ *  truncated state.json — which reads as "no such feature", silently orphaning the worktree, the plan
+ *  and every recorded check, with the folder gitignored so nothing else could restore it. */
+function atomicWrite(file: string, text: string): void {
+	const tmp = `${file}.tmp`;
+	writeFileSync(tmp, text);
+	renameSync(tmp, file);
 }
 
 /** Session bindings: one flow per pi session; persisted per session branch via appendEntry. */
@@ -222,7 +233,7 @@ function readClaim(root: string, slug: string): SessionClaim | null {
 }
 
 const writeClaim = (root: string, slug: string, key: string) =>
-	writeFileSync(claimFile(root, slug), `${JSON.stringify({ key, pid: process.pid, at: now() })}\n`);
+	atomicWrite(claimFile(root, slug), `${JSON.stringify({ key, pid: process.pid, at: now() })}\n`);
 
 /** The auto-bind this session was denied by another live session's claim — lets the unbound-context message name the feature. */
 function claimBlocker(root: string, key: string): { state: FlowState; claim: SessionClaim } | null {
@@ -267,13 +278,17 @@ function maybeCompactNow(ctx: ExtensionContext): void {
 		compacting: compacting.has(key),
 	};
 	if (!shouldSelfCompact(decision, reserve)) return;
-	compacting.add(key);
-	const done = () => compacting.delete(key);
-	ctx.compact({
-		customInstructions: flowCompactInstructions(st),
-		onComplete: done,
-		onError: done,
-	});
+			compacting.add(key);
+			const done = () => compacting.delete(key);
+			try {
+				ctx.compact({
+					customInstructions: flowCompactInstructions(st),
+					onComplete: done,
+					onError: done,
+				});
+			} catch {
+				done(); // a throw before the run started must not leave the flag set: that switched off self-compaction and the takeover for the rest of the session
+			}
 }
 
 function featureRefs(root: string): FeatureRef[] {
@@ -420,6 +435,8 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const writeMd = (text: string): RunResult | null => {
 				const parsed = parseProjectMd(text);
 				if (parsed.hard.length) return { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true };
+				// the operator's rules are not regenerable — keep what was there before any overwrite
+				if (existsSync(mdFile)) copyFileSync(mdFile, `${mdFile}.bak`);
 				writeFileSync(mdFile, text.endsWith("\n") ? text : `${text}\n`);
 				return null;
 			};
@@ -453,8 +470,12 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				}
 				notes.push(...brief);
 			} else if (flag("force")) {
+				// a destructive reset of the operator's own file needs their word: --confirmed for an agent, one dialog for a human
+				const ok = flag("confirmed") || (ui.hasUI && (await ui.confirm("Overwrite project.md?", `flow init --force replaces the operator playbook with a fresh detection draft. Hand-written rules, checklist items and guidance are lost (a copy is kept as project.md.bak).`)));
+				if (!ok) return { text: "flow init --force overwrites the operator playbook — that needs the operator's word: re-run with --confirmed (the current file is kept as project.md.bak)", isError: true };
+				copyFileSync(mdFile, `${mdFile}.bak`);
 				writeFileSync(mdFile, draftFresh);
-				notes.push("project.md OVERWRITTEN (--force):", ...det.report.map((r) => `  ${r}`), GIT_TRACK_NOTE);
+				notes.push("project.md OVERWRITTEN (--force; previous copy kept as project.md.bak):", ...det.report.map((r) => `  ${r}`), GIT_TRACK_NOTE);
 			} else if (!ui.hasUI) {
 				// the CI/agent path: the doctor's findings have to be printed, not just promised
 				const findings = doctorFindings(root, loaded.cfg, loaded.md);
@@ -684,7 +705,7 @@ ${mdDigest(draftRefresh)}`))
 		case "test": {
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
-			if (!cfg.commands.test) return { text: "no commands.test configured in .dev-flow/project.json", isError: true };
+			if (!cfg.commands.test) return { text: "no commands.test configured — add `test = <command>` under ## implement in .dev-flow/project.md", isError: true };
 			const res = await sh(cfg.commands.test, gateCwd(root, state!));
 			state!.checks.test = { ok: res.ok, at: now() };
 			writeState(root, state!);
@@ -791,7 +812,7 @@ ${mdDigest(draftRefresh)}`))
 		case "health": {
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
-			if (!cfg.commands.health) return { text: "no commands.health configured in .dev-flow/project.json", isError: true };
+			if (!cfg.commands.health) return { text: "no commands.health configured — add `health = <command>` (or a flow-check health block) under ## implement in .dev-flow/project.md", isError: true };
 			if (cfg.commands.seedData) {
 				const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
 				state!.checks.seedData = { ok: seed.ok, at: now() };
@@ -820,7 +841,9 @@ ${mdDigest(draftRefresh)}`))
 			const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
 				? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
 				: null;
-			const remoteTags = await releaseTags(root);
+			// tags are only needed on the versioned path; a project without versioning must not be held up by an offline origin
+			const remoteTags = cfg.versioning.file && !state!.noVersion ? await releaseTags(root) : [];
+			if (remoteTags === null) return { text: "release gate FAILED:\n- cannot list tags on origin (offline?) — retry; local tags do not decide what is already released", isError: true };
 			const changelog =
 				cfg.release.changelog && existsSync(path.join(wtCwd, cfg.release.changelog))
 					? { file: cfg.release.changelog, content: readFileSync(path.join(wtCwd, cfg.release.changelog), "utf8") }
@@ -865,7 +888,8 @@ ${mdDigest(draftRefresh)}`))
 			const hasOrigin = (await sh("git remote get-url origin", root)).ok;
 			// one round-trip answers both questions about the tag: is it there, and did it leave this laptop (#52)
 			const tags = expectedTag ? await releaseTags(root) : [];
-			if (expectedTag && manifestVer) {
+			if (tags === null) errs.push("cannot list tags on origin (offline?) — retry: local tags must not decide what is already released");
+			else if (expectedTag && manifestVer) {
 				const verrs = versionTagGate(manifestVer, cfg.versioning.pattern, tags);
 				if (verrs.length) {
 					// the actionable version of "not on the forge": the tag exists but never got pushed
@@ -1079,6 +1103,11 @@ function needState(root: string, sess: Session, slugArg?: string): { state: Flow
 	}
 	const state = readState(root, slug);
 	if (!state) return { state: null, err: { text: `no state for feature ${slug}`, isError: true } };
+	// passing a slug is not a takeover: a live session that holds the claim drives its gates, or the two
+	// sessions overwrite one state file (last write wins) while both believe they own the stage.
+	const claim = readClaim(root, slug);
+	if (sess.slug !== slug && claimBlocks(claim, sess.key))
+		return { state: null, err: { text: `${slug} is claimed by another live session (pid ${claim!.pid}) — flow use ${slug} takes it over explicitly`, isError: true } };
 	return { state };
 }
 
@@ -1214,8 +1243,10 @@ export default function devFlow(pi: ExtensionAPI) {
 		try {
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) return undefined;
+			// ProviderHeaders allows null values; compact() takes plain string headers
+			const headers = auth.headers ? (Object.fromEntries(Object.entries(auth.headers).filter(([, v]) => v !== null)) as Record<string, string>) : undefined;
 			// same function pi itself calls — same split-turn merge, file lists and prompts, just flow-aware instructions
-			const result = await compactionTakeover.run(event.preparation, model, auth.apiKey, auth.headers, flowCompactInstructions(st!), event.signal, undefined, undefined, auth.env);
+			const result = await compactionTakeover.run(event.preparation, model, auth.apiKey, headers, flowCompactInstructions(st!), event.signal, undefined, undefined, auth.env);
 			return { compaction: result };
 		} catch {
 			return undefined; // pi's default compaction proceeds untouched
@@ -1282,7 +1313,7 @@ export default function devFlow(pi: ExtensionAPI) {
 
 		if (isToolCallEventType("bash", event)) {
 			const command = String(event.input.command ?? "");
-			if (stateTamper(command)) return { block: true, reason: "state.json is dev-flow-owned — advance stages with the flow tool only" };
+			if (stateTamper(command)) return { block: true, reason: "flow state under .dev-flow/ is dev-flow-owned — advance stages with the flow tool only" };
 			if (playbookTamper(command)) return { block: true, reason: "project.md is the operator playbook — change it with flow init --write or inside a docs/patch flow's worktree" };
 			// project safety rules first: they cover docker/gh/npm and everything else, not only git,
 			// and the operator's deny outranks dev-flow's own stage verdicts
@@ -1310,10 +1341,13 @@ export default function devFlow(pi: ExtensionAPI) {
 				}
 				return branchCache.get(at)!;
 			};
+			const worktrees = featureRefs(ctx.cwd).map((f) => f.worktreeAbs).filter((w): w is string => !!w);
 			for (const g of inv.gitSegs) {
 				const gitDir = g.dir ? path.resolve(ctx.cwd, g.dir) : ctx.cwd;
+				const seg = gitInvocation(g.seg); // parsed once per segment — this runs on every bash call of every session
+				const branch = await branchOf(g.dir);
 				let pushRefs: PushRef[] | undefined;
-				const gp = gitInvocation(g.seg).pushes;
+				const gp = seg.pushes;
 				if (gp.length) {
 					// push targets are judged by ref; bare names disambiguated against that repo's own tags (read-only probe)
 					pushRefs = await Promise.all(
@@ -1327,16 +1361,16 @@ export default function devFlow(pi: ExtensionAPI) {
 				// the playbook tracking chore: when the playbook is this checkout's only change, a commit here
 				// can only contain it — setup, not feature work, so it needs no flow (#53)
 				let playbookChore = false;
-				if (gitInvocation(g.seg).subs.includes("commit") && (await branchOf(g.dir)) === cfg.defaultBranch && bound?.stage !== "release") {
+				if (seg.subs.includes("commit") && branch === cfg.defaultBranch && bound?.stage !== "release") {
 					const dirty = await sh(`git -C ${sq(gitDir)} status --porcelain`, ctx.cwd);
 					playbookChore = dirty.ok && playbookOnlyChange(dirty.out);
 				}
-				const reason = bashFlowGuard({ command: g.seg, branch: await branchOf(g.dir), stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore });
+				const reason = bashFlowGuard({ command: g.seg, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore });
 				if (reason) return { block: true, reason };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
 				const target = checkoutTarget(g.seg);
 				if (target && target.startsWith(featureBranchPrefix(cfg))) {
-					const inWorktree = featureRefs(ctx.cwd).some((f) => f.worktreeAbs && (gitDir === f.worktreeAbs || gitDir.startsWith(f.worktreeAbs + path.sep)));
+					const inWorktree = worktrees.some((w) => gitDir === w || gitDir.startsWith(w + path.sep));
 					if (!inWorktree) return { block: true, reason: `branch ${target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };
 				}
 			}

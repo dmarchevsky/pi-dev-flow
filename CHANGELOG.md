@@ -4,6 +4,30 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-20
+
+### Fixed
+
+- **A type error shipped in 0.45.2 because nothing typechecked.** The compaction takeover passed pi's `ProviderHeaders` (values may be `null`) into `compact()`, which takes plain string headers — `npx tsc --noEmit` failed on main and every gate stayed green, because tier-1 was only `npm test`. Null headers are dropped at the call site and `npm run build` (`tsc --noEmit`) is now a script; add `build = npm run build` under `## implement` in your playbook to gate on it.
+- **Deleting flow state was not blocked; reading it was.** The state guard matched one path shape plus a loose verb list: `rm -rf .dev-flow/<slug>` (state *and* plan, gitignored, unrecoverable) and `cd .dev-flow/<slug> && mv state.json /tmp/bak` passed it, while `jq -e .stage .dev-flow/x/state.json` — a read — was refused for a `-e`. Both tamper checks now share one per-segment, target-based verdict (the same shape the playbook check learned in #53): the folder, the feature directory and `state.json` are owned, reads and backups stay free, and the block message names what was actually touched. Writing state files is now atomic (tmp + rename), so a kill mid-write no longer truncates a feature out of existence.
+- **`flow init --force` overwrote the operator playbook with no confirmation and no backup** — an agent that misread a doctor finding could replace every `flow-guard` rule, checklist item and piece of guidance with a detection draft. It now needs the operator's word (`--confirmed`, or one confirm dialog for a human) and every sanctioned playbook overwrite keeps the previous file as `project.md.bak`.
+- **A release could be recorded from tags that never left the laptop.** When `git ls-remote` failed (offline, no ssh agent) the tag list silently fell back to local tags, so `release-done` declared a release whose tag had not been pushed. An origin that exists but cannot be asked now refuses both release gates.
+- **`mdDigest` skipped `## pre-release` entirely** — `buildDraft` writes `versionFile`/`versionTag` there, so the init dialog never showed the version rules, the tag pattern or that stage's checklist items. Pre-release now renders like release.
+- **`<!-- operator notes -->` in project.md were injected as stage guidance** on every turn of every session (this repo's own `<!-- tier-3: standing guidance -->` placeholder included). HTML comments are inert again; real prose still injects.
+- **`flow test` / `flow health` pointed at `.dev-flow/project.json`** — a file the plugin no longer reads and the guard refuses to create. Both messages now name `## implement` in project.md.
+- **A failed `ctx.compact()` left the in-flight mark set**, switching off flow-aware self-compaction (and the takeover) for the rest of the session.
+
+### Changed
+
+- **Gates follow the session claim.** Passing another live session's slug to `flow approve`/`verify`/`finish` is refused with "flow use <slug> takes it over explicitly" — before, two sessions drove one feature and clobbered each other's state file, which is exactly what claims exist to prevent.
+- **`deny`/`confirm` rules now see write-capable read-only heads**: `find -delete`, `find -exec …`, `sort -o FILE` and `awk 'BEGIN{system(…)}'` no longer slip past the read-only skip list, while `grep "git push --force" docs/` stays a search.
+- A plan-stage session may only write inside **its own** `.dev-flow/<slug>/` — it can no longer edit another feature's plan and let that feature's approval gate accept text it never wrote.
+- The bash guard parses each git segment once instead of four times, and `featureRefs` is built once per call.
+
+### Removed
+
+- The duplicate `StageCheck` interface in `projectmd.ts` (core's is imported) and the always-empty `findings` field of `loadProject`, which nothing read.
+
 ## [0.45.2] - 2026-10-20
 
 ### Fixed

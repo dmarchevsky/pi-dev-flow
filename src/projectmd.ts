@@ -7,15 +7,10 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseVersion, toSeconds, type GuardRules } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseVersion, toSeconds, type GuardRules, type StageCheck } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "pre-release", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
-
-export interface StageCheck {
-	name: string;
-	cmd: string;
-}
 
 export interface ParsedMd {
 	hard: string[]; // errors: init --write refuses on these
@@ -191,7 +186,7 @@ export function parseProjectMd(text: string): ParsedMd {
 			(p.checklist[stage] ??= []).push({ text: uiOnly ? rawItem.slice(5).trim() : rawItem, uiOnly });
 			return;
 		}
-		if (/^(#|```|\s*$)/.test(line) && !line.startsWith("### ")) return; // h1/comments/blank not prose
+		if (/^(#|```|<!--|\s*$)/.test(line) && !line.startsWith("### ")) return; // h1/html comments/blank are not prose
 		(prose[stage] ??= []).push(line.trim());
 	});
 	if (inFence) p.hard.push(`unterminated \`\`\`${inFence === "code" ? "" : inFence} block`);
@@ -243,7 +238,7 @@ function mergeInto(c: Config, r: Record<string, unknown>): void {
 }
 
 /** Load the project config: project.md alone — the legacy project.json is no longer read. */
-export function loadProject(dfDir: string): { cfg: Config; md: ParsedMd | null; findings: string[] } {
+export function loadProject(dfDir: string): { cfg: Config; md: ParsedMd | null } {
 	const mdFile = path.join(dfDir, "project.md");
 	let mdText: string | null = null;
 	try {
@@ -251,9 +246,9 @@ export function loadProject(dfDir: string): { cfg: Config; md: ParsedMd | null; 
 	} catch {
 		mdText = null;
 	}
-	if (mdText === null) return { cfg: structuredClone(DEFAULTS), md: null, findings: [] };
+	if (mdText === null) return { cfg: structuredClone(DEFAULTS), md: null };
 	const md = parseProjectMd(mdText);
-	return { cfg: mdToConfig(md), md, findings: [] };
+	return { cfg: mdToConfig(md), md };
 }
 
 const safeJson = (s: string): unknown => {
@@ -322,7 +317,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): 
 }
 
 /** Compact per-stage digest of project.md content for dialog display (raw md walls are unreadable). */
-const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", release: "Release" };
+const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", "pre-release": "Pre-release", release: "Release" };
 const DIGEST_CMDS: Record<string, string> = { setup: "setup", test: "test", build: "build", run: "run app", seedData: "seed data", dev: "dev deploy" };
 const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files", forge: "forge", bashTimeout: "shell-call timeout mode" };
 
@@ -333,15 +328,18 @@ export function mdDigest(text: string): string {
 	for (const s of MD_STAGES) {
 		const label = DIGEST_STAGES[s];
 		if (!label) continue;
+		// pre-release owns release preparation and renders exactly like release — buildDraft writes the
+		// version keys there, so without this the init dialog never showed the version rules at all.
+		const relStage = s === "release" || s === "pre-release";
 		const bits: string[] = [];
 		const keys: Record<string, string> = {};
 		for (const [k, v] of Object.entries(p.flow[s] as Record<string, string>)) keys[k.split(".").pop()!] = v; // config dot-paths → display keys
 		for (const [k, v] of Object.entries(keys)) {
-			if (s === "release" && ["file", "pattern", "github", "artifact"].includes(k)) continue; // rendered specially below
+			if (relStage && ["file", "pattern", "github", "artifact"].includes(k)) continue; // rendered specially below
 			bits.push(DIGEST_CMDS[k] ? `${DIGEST_CMDS[k]}: ${JSON.stringify(v)}` : `${DIGEST_WORDS[k] ?? k}: ${v}`);
 		}
 		if (s === "implement" && p.checks.length) bits.push(`named checks: ${p.checks.map((c) => c.name).join(", ")}`);
-		if (s === "release" && keys.file) {
+		if (relStage && keys.file) {
 			bits.push(`version in ${keys.file} → tag ${keys.pattern ?? "v{version}"}`);
 			bits.push(keys.releases === "false" || keys.releases === "no" ? "forge release: off" : "forge release: created automatically (gh/glab)");
 			bits.push(`artifact check: ${keys.artifact ?? "none set"}`);

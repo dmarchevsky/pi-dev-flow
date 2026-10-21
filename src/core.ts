@@ -512,37 +512,75 @@ export function parsePushRefs(pushes: string[][]): PushRef[] {
 	return out;
 }
 
-/** True when a bash command looks like a direct write to flow state. */
-export function stateTamper(command: string): boolean {
-	// shortcut: verb-before-path order assumed; a state.json mention + any write verb blocks.
-	return /\.dev-flow\/\S*state\.json/.test(command) && /(>>?|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|-e|node\s)/.test(command);
+/** Flow state by full path, or a bare `state.json` when the command also touches `.dev-flow`
+ *  (that is how `cd .dev-flow/<slug> && mv state.json …` reaches it). */
+const STATE_PATH = /(^|[\s'"\/])state\.json$/;
+const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*state\.json$/;
+const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
+const DF_ANYWHERE = /\.dev-flow\b/;
+/** The `.dev-flow/` folder itself or one feature directory under it — deleting either destroys the flow
+ *  state and its plan for good. The advisory files the agent owns, and anything deeper (a worktree, a
+ *  plan/mockups path), are not "the folder". */
+const DF_FOLDER = /(?:^|[\s'"])\.dev-flow(?:\/(?!project\.md$|roadmap\.md$|reflections\.md$|\.gitignore$)[\w.-]+)?(?=$|[\s'"])/;
+// write tools that can overwrite a file. A bare `>` is deliberately absent: the redirect target is
+// checked on its own, and testing for any `>` here refused every segment that merely mentioned an
+// owned path while redirecting elsewhere (`gh pr create … 2>&1`).
+const WRITE_TOOLS = /\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|node\s/;
+/** copy/replace verbs: only the destination (last positional) is written to. */
+const COPY_HEADS = new Set(["cp", "install", "tee", "dd"]);
+/** verbs that destroy the file they name — copying a file somewhere safe is not one of them. */
+const DESTROY_HEADS = new Set(["rm", "mv", "truncate"]);
+const DESTROY_ANY = /\b(rm|mv|truncate)\b/;
+
+/** The file a `>`/`>>` writes (`2>` allowed), or null. */
+function redirectTarget(seg: string): string | null {
+	const m = seg.match(/(?:^|\s)\d?>+ ?(\S+)/);
+	return m ? unquote(m[1]) : null;
 }
 
-// write tools that can overwrite a file. A bare `>` is deliberately absent: a redirect into the
-// playbook is caught by REDIRECT_INTO_PLAYBOOK, and testing for any `>` here refused every segment
-// that merely mentioned the playbook path while redirecting elsewhere (`gh pr create … 2>&1`).
-const WRITE_TOOLS = /\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\b|\btruncate\b|\bdd\b|python|node\s/;
-const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
-const REDIRECT_INTO_PLAYBOOK = />>?\s*['"]?\.dev-flow\/[\w./-]*project\.md/;
-/** copy/replace verbs whose last positional token is the destination */
-const MOVE_VERBS = new Set(["cp", "mv", "install", "tee", "dd"]);
+/** One shell segment: does it write, move or delete a path dev-flow owns? Decided per segment and by
+ *  target, never by "owned path anywhere + write verb anywhere": reading flow state or backing the
+ *  playbook up is safety, prose about `cp` is not a write (#53), and the loose match both refused
+ *  `jq -e .stage .dev-flow/x/state.json` and waved through `rm -rf .dev-flow/x`. Each caller asks about
+ *  its own subject so the block message names what was actually touched. */
+function ownedWrite(seg: string, what: "state" | "playbook", flowState: boolean): boolean {
+	const stateNamed = (q: string): boolean => (flowState ? STATE_PATH.test(q) : STATE_PATH_ABS.test(q));
+	const owned = (p: string): boolean => {
+		const q = unquote(p);
+		return what === "playbook" ? PLAYBOOK_PATH.test(q) : stateNamed(q) || DF_FOLDER.test(q);
+	};
+	const tok = seg.split(/\s+/).filter(Boolean);
+	if (!tok.some((t) => owned(t))) return false;
+	const redir = redirectTarget(seg);
+	if (redir && owned(redir)) return true; // a redirect into an owned path is a write even behind `echo`
+	const head = segHead(seg);
+	if (READ_ONLY_HEADS.has(head)) return false; // cat/grep/ls/jq read it
+	if (head === "sed" && !/\s-i\b/.test(seg)) return false; // sed as a printer is a read
+	if (DESTROY_HEADS.has(head)) return tok.slice(1).some((t) => !t.startsWith("-") && owned(t));
+	if (COPY_HEADS.has(head)) return owned(tok[tok.length - 1] ?? "");
+	// what is left is the loose fallback — a write tool named in the clear. A wrapper's payload counts; everyone
+	// else's quoted text is prose, and prose about `cp`/`sed` is not a write (it refused a PR body describing #53).
+	const payload = REEXEC_HEADS.has(head) ? seg : maskQuoted(seg);
+	if (!WRITE_TOOLS.test(payload)) return false;
+	// a generic writer (interpreter, wrapper): state and playbook always count; the folder only when the
+	// payload really destroys it — `python tools/x.py --dir .dev-flow/<slug>` points at a directory, it does not delete it.
+	if (what === "playbook") return true;
+	return tok.some((t) => stateNamed(unquote(t))) || (tok.some((t) => DF_FOLDER.test(unquote(t))) && DESTROY_ANY.test(payload));
+}
+
+/** True when a bash command writes, moves or deletes flow state — or the `.dev-flow` folder/feature
+ *  directory that holds it. */
+export function stateTamper(command: string): boolean {
+	const flowState = DF_ANYWHERE.test(command); // a bare state.json counts only next to .dev-flow
+	return bashSegments(command).some((seg) => ownedWrite(seg, "state", flowState));
+}
 
 /** True when a bash command writes the playbook (project.md) — the sanctioned channels are
  *  `flow init --write` (runs in-plugin, never matches) and edits inside a docs/patch flow's worktree.
  *  Decided per segment and by target, not by any verb anywhere: reading the playbook or copying it to
  *  a backup is safety, and blocking it cost the operator their only backup before a write (#53). */
 export function playbookTamper(command: string): boolean {
-	return bashSegments(command).some((raw) => {
-		if (!PLAYBOOK_PATH.test(raw)) return false;
-		if (REDIRECT_INTO_PLAYBOOK.test(raw)) return true; // a redirect whose target is the playbook (quotes allowed)
-		const tok = raw.split(/\s+/).filter(Boolean);
-		const head = segHead(raw);
-		if (MOVE_VERBS.has(head)) return PLAYBOOK_PATH.test(unquote(tok[tok.length - 1] ?? "")); // the destination is last: cp SRC PLAYBOOK
-		if (READ_ONLY_HEADS.has(head) || (head === "sed" && !/\s-i\b/.test(raw))) return false; // cat/grep/ls and sed-as-a-printer read it
-		// what is left is the loose fallback — a write tool named in the clear. A wrapper's payload counts; everyone
-		// else's quoted text is prose, and prose about `cp`/`sed` is not a write (it refused a PR body describing #53).
-		return WRITE_TOOLS.test(REEXEC_HEADS.has(head) ? raw : maskQuoted(raw));
-	});
+	return bashSegments(command).some((seg) => ownedWrite(seg, "playbook", false));
 }
 
 /** The playbook-tracking chore (#53): the playbook is the only change in the checkout, so whatever
@@ -661,6 +699,9 @@ export function bashSegments(command: string): string[] {
 /** Heads whose arguments are data, not commands: a `grep "git push origin main"` in a docs search must not trip a deny rule. */
 const READ_ONLY_HEADS = new Set(["grep", "rg", "cat", "bat", "head", "tail", "less", "awk", "jq", "find", "fd", "ls", "tree", "wc", "sort", "uniq", "column", "cut", "diff", "cmp", "stat", "file", "du", "echo", "printf", "which", "man"]);
 /** `sed` is deliberately absent — `sed -i` writes. */
+/** Write-capable flags that make a READ_ONLY head a writer after all: `find -delete`, `find -exec`,
+ *  `sort -o FILE`, `awk 'BEGIN{system(...)}'`. Over-flagging only means a rule gets evaluated. */
+const WRITE_FLAG = /(?:^|\s)(?:-delete|-exec(dir)?\b|-o\s)|\bsystem\(/;
 const READ_ONLY_GIT = new Set(["log", "show", "diff", "status", "blame", "cat-file", "ls-files", "rev-parse"]);
 const GIT_INVOKED = /(^|[\s/;|&(])git\s+(\S+)/;
 
@@ -685,6 +726,7 @@ export function guardBash(command: string, g: GuardRules): { block: string | nul
 	const confirms: GuardRule[] = [];
 	const skip = (seg: string): boolean => {
 		if (/[<>]/.test(seg)) return false; // a redirect makes even a read-only head a write
+		if (WRITE_FLAG.test(seg)) return false; // `find -delete`/`-exec`, `sort -o`, awk system() write behind a read-only head
 		const head = seg.split(/\s+/)[0].replace(/^\.\//, "");
 		if (READ_ONLY_HEADS.has(head)) return true;
 		const gm = seg.match(GIT_INVOKED);
@@ -758,15 +800,16 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
 		return null; // implement/pre-release/release: own worktree is the working area
 	}
+	const bound = o.boundSlug ? o.features.find((f) => f.state.slug === o.boundSlug) : undefined;
+	// A plan-stage session may only write its own feature directory: otherwise one session edits another
+	// feature's plan and that feature's approval gate then rubber-stamps text it never wrote.
+	if (bound?.state.stage === "plan" && !within(o.abs, path.join(o.dfDir, bound.state.slug)))
+		return `bound feature ${bound.state.slug} is in plan — write only inside its own .dev-flow/${bound.state.slug}/`;
 	if (within(o.abs, o.dfDir)) return null;
-	if (o.boundSlug) {
-		const bound = o.features.find((f) => f.state.slug === o.boundSlug);
-		if (bound) {
-			if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
-				return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout`;
-			if (bound.state.stage === "plan") return `bound feature ${o.boundSlug} is in plan — code is read-only until approved`;
-			return null; // release: release chores may touch the main checkout
-		}
+	if (bound) {
+		if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
+			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout`;
+		return null; // release: release chores may touch the main checkout
 	}
 	if (!o.features.length) return "no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature";
 	return `unfinished features: ${o.features.map((f) => f.state.slug).join(", ")} — bind this session with flow use <slug> (or pass an explicit slug to gates)`;
