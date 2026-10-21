@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.52.1] - 2026-10-21
+
+### Changed
+
+- **The npm listing describes the flow instead of the pipeline.** The pi.dev package gallery builds its cards from name + description + keywords — its search box matches exactly that text, and the page renders no images — so the manifest now carries a description that says what the flow *is* (gated checkpoints, self-improvement reflections, one worktree per feature, changelog + publish as part of the release) plus thirteen keywords in the shape the other pi packages use. It also ships a banner (`banner.svg`, rasterized to `banner.png`, declared as `pi.image`): the five stages with the four checkpoint words over the gates, and the release stage pointing at "registry · image · release page" — deliberately generic, because where a release ships is the project's playbook, not dev-flow's. The package now names its resource directories explicitly under `pi` rather than relying on conventional discovery (the packed tarball was loaded against the real pi binary).
+
 ## [0.52.0] - 2026-10-21
 
 ### Added
