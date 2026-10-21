@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.46.3] - 2026-10-21
+
+### Fixed
+
+- **Skill release step now forbids `gh pr merge --delete-branch`** — it aborts with "'main' is already used by worktree" whenever the default branch is checked out in the main checkout (hit in two consecutive flows), and `flow finish` deletes the merged feature branch on proof anyway.
+
 ## [0.46.2] - 2026-10-20
 
 ### Changed
