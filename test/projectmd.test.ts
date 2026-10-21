@@ -246,6 +246,8 @@ test("flow-guard block: each verb maps to its rule list", () => {
 });
 
 test("flow-guard block: hard findings and warnings", () => {
+	assert.ok(parseProjectMd("## global\n```flow-guard\nprotect docker/.env* :: secrets and backups\n```\n").warn.length === 0, "a basename glob is the supported shape (#87)");
+	assert.ok(parseProjectMd("## global\n```flow-guard\nforbid docker/*/keys :: x\n```\n").warn.some((w) => w.includes("guards nothing")), "a glob outside the last segment names one literal path — say so");
 	assert.ok(parseProjectMd("## global\n```flow-guard\ndeny git push :: \n```\n").hard.length === 0, "empty reason is allowed (free text)");
 	assert.ok(parseProjectMd("## global\n```flow-guard\ndeny git push\n```\n").hard.some((h) => h.includes("::")), "missing separator is hard");
 	assert.ok(parseProjectMd("## global\n```flow-guard\ndeny    :: why\n```\n").hard.some((h) => h.includes("no pattern")), "empty pattern is hard");

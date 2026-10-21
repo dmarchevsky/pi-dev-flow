@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-10-21
+
+### Added
+
+- **`protect`/`forbid` can name a sibling set: `protect docker/.env*`.** A playbook guarded `docker/.env`, a session flipped a variable by copying the file aside to `docker/.env.bak-<date>`, and the backup went into a commit and out to a public repository. The guard never spoke: the path rule was prefix-only, so `.env*` was not expressible, and no `deny` regex could have caught it either — the commit (`git add -A`) never names the file. A glob in the **last** segment now matches the basenames in that directory (realpath'd like every other path rule, so a symlinked or `..`-reached directory cannot dodge it); a glob anywhere else in the pattern still means one literal path, and `flow init` / `flow doctor` now say so instead of letting a rule silently guard nothing.
+
 ## [0.50.0] - 2026-10-21
 
 ### Added

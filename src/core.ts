@@ -847,11 +847,30 @@ function realAbs(abs: string): string {
 	return real;
 }
 
+/** A protect/forbid pattern whose last segment globs (`docker/.env*`) is a sibling set: the files in that
+ *  directory whose basename matches. A secret's backup beside it is the same secret, and a prefix rule
+ *  cannot say that — `docker/.env*` as a path names one file literally called `.env*` and guards nothing.
+ *  Anywhere else in the pattern a glob is not supported (see the parse warning in projectmd.ts). */
+function globSegment(pattern: string): { dir: string; re: RegExp } | null {
+	const base = path.basename(pattern);
+	if (!/[*?]/.test(base)) return null;
+	const re = base
+		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+		.replace(/\*/g, ".*")
+		.replace(/\?/g, ".");
+	return { dir: path.dirname(pattern), re: new RegExp(`^${re}$`) };
+}
+
 /** Protect/forbid verdict for an edit/write target: a rule on a directory covers its subtree, and
  *  comparing realpaths means `../` cannot reach out of the root. */
 export function guardPath(abs: string, root: string, g: GuardRules): { block: string | null; confirm: string | null } {
 	const real = realAbs(path.resolve(abs)); // resolve collapses lexical `..` so an escape cannot dodge the rule
 	const hit = (rule: GuardRule): boolean => {
+		const glob = globSegment(rule.pattern);
+		if (glob) {
+			// the directory is realpath'd the same way, so a symlinked or `..`-reached dir cannot dodge the rule
+			return path.dirname(real) === realAbs(path.resolve(root, glob.dir)) && glob.re.test(path.basename(real));
+		}
 		const target = realAbs(path.resolve(root, rule.pattern));
 		return real === target || real.startsWith(target + path.sep);
 	};
