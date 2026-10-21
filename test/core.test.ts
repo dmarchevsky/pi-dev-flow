@@ -165,6 +165,7 @@ test("preReleaseGate: versioned release folds the Unreleased backlog (--no-versi
 	assert.equal(preReleaseGate(s, c2, cl("# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026\n- done\n")).length, 0, "empty Unreleased passes");
 	assert.equal(preReleaseGate(s, c2, cl("## 1.2.0\n- done\n")).length, 0, "no Unreleased section: vacuously clean");
 	assert.ok(unreleasedPending("## Unreleased\n- entry"));
+	assert.ok(unreleasedPending("## [Unreleased]\n### Added\n- entry\n## [1.0.0]\n"), "entries under a nested sub-heading still count");
 	assert.ok(!unreleasedPending("prose mentions Unreleased in passing\n## 1.0.0"));
 	assert.ok(!unreleasedPending("## [Unreleased]\n\n## 1.0.0"));
 });

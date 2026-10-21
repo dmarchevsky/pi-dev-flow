@@ -264,12 +264,13 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 
 /** True when the changelog's Unreleased section still holds entries — --no-version flows park
  *  their lines there and a versioned release must fold them under its own heading. Matches
- *  `## Unreleased` / `## [Unreleased]`; no section = nothing pending (convention is opt-in). */
+ *  `## Unreleased` / `## [Unreleased]`; deeper `###` sub-headings stay inside the section, the
+ *  next h1/h2 ends it; no section = nothing pending (the convention is opt-in). */
 export function unreleasedPending(content: string): boolean {
 	let inside = false;
 	for (const line of content.split("\n")) {
-		if (/^#{1,6}\s/.test(line)) {
-			if (inside) return false; // section ended without content
+		if (/^#{1,2}\s/.test(line)) {
+			if (inside) return false; // section ended without entries
 			inside = /^#{2,3}\s*\[?Unreleased\]?\s*$/.test(line);
 			continue;
 		}

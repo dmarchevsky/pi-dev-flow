@@ -856,7 +856,7 @@ ${mdDigest(draftRefresh)}`))
 				const mb = await sh(`git merge-base origin/${sq(cfg.defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(cfg.defaultBranch)} HEAD 2>/dev/null || true`, wtCwd);
 				if (mb.ok && mb.out.trim()) {
 					const p = sq(cfg.release.changelog!);
-					const changes = await sh(`git diff --name-only ${sq(mb.out.trim())} -- ${p} 2>/dev/null; git ls-files --others -- ${p}`, wtCwd);
+					const changes = await sh(`git diff --name-only ${sq(mb.out.trim())} -- ${p} 2>/dev/null; git ls-files --others --exclude-standard -- ${p}`, wtCwd);
 					changelogChanged = changes.out.split("\n").some((l) => l.trim());
 				}
 			}
