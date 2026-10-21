@@ -40,6 +40,8 @@ import {
 	compactionReflectionLine,
 	detectForge,
 	featureBranchPrefix,
+	FLOW_SHELL_HINT,
+	flowShellInvocation,
 	gateHelpJson,
 	gitInvocation,
 	githubSlug,
@@ -418,7 +420,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 	const [sub = "status", ...rest] = args;
 	// help and version are questions about the plugin, not the repo: answerable with no .dev-flow/ at all
 	if (sub === "help" || sub === "--help" || sub === "-h") return { text: rest.includes("--json") ? gateHelpJson(GATE_HELP, LOADED_VERSION) : `usage: flow <sub> — ${GATE_HELP}` };
-	if (!existsSync(dfDir(root)) && sub !== "init" && sub !== "version") return { text: "no .dev-flow/ in this repo — run /flow init first", isError: true };
+	if (!existsSync(dfDir(root)) && sub !== "init" && sub !== "version") return { text: "no .dev-flow/ in this repo — run flow init first", isError: true };
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
 	const slugArg = rest.find((a) => !a.startsWith("--"));
@@ -1361,6 +1363,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				const why = await askOperator(ctx, command, r.why || `project rule ${r.pattern}`);
 				if (why) return { block: true, reason: why };
 			}
+			// `flow` in a shell is a 127 with no pointer, so the mistake repeated — name the call that works
+			if (flowShellInvocation(command)) return { block: true, reason: FLOW_SHELL_HINT };
 			// the operator's rules had their say — now the timeout must be stated
 			if (mustStateTimeout) return { block: true, reason: requireTimeout(command)! };
 			const inv = gitInvocation(command);
@@ -1448,7 +1452,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				display: false,
 				content: `[dev-flow] this session is bound to: ${state.slug}${state.patch ? " (patch)" : state.docs ? " (docs)" : ""} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
 Next: ${nextHint(state, cfg)}.
-${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: follow the dev-flow skill playbook; drive gates with the flow tool (/flow as user); stage guards block out-of-stage edits and main-branch git ops — do not work around them.`,
+${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: follow the dev-flow skill playbook; gates run through the flow tool only — \`flow\` is not a shell command, and the operator answers words in chat, never commands: you run the gate. \`/flow\` is the operator's manual override, not yours. Stage guards block out-of-stage edits and main-branch git ops — do not work around them.`,
 			},
 		};
 	});
