@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.46.2] - 2026-10-20
+
+### Changed
+
+- **Reflection is now part of every finish.** Before `flow finish` deletes `.dev-flow/<slug>/` and the session context with it, the agent runs the end-of-session reflection and parks real issues via `flow reflect`. With issues parked the closing question becomes **Fold? Fix? Drop?** (fold = queue them in `reflections.md`, fix = route them now via `flow doctor`, drop = discard) and its answer replaces **Finish?** — no second question; with nothing parked, Finish? stays as before.
+
 ## [0.46.1] - 2026-10-20
 
 ### Changed
