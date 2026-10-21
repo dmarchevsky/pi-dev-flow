@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
-import { defineTool, isToolCallEventType, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { compact, defineTool, isToolCallEventType, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	approveGate,
@@ -173,6 +173,9 @@ const bindings = new Map<string, string | null>();
 const sessionKey = (ctx: { cwd: string; sessionManager?: { getSessionId(): string } }) => ctx.sessionManager?.getSessionId() ?? ctx.cwd;
 /** Sessions with a dev-flow-initiated compaction in flight (prevents stacked compactions). */
 const compacting = new Set<string>();
+
+/** Seam for the takeover's summarize call (pi's own compact()); tests replace `.run` — mutable object stands in for ESM mocking. */
+export const compactionTakeover: { run: typeof compact } = { run: compact };
 
 function unfinishedStates(root: string): FlowState[] {
 	if (!existsSync(dfDir(root))) return [];
@@ -1194,26 +1197,31 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
 	pi.on("agent_settled", async (_event, ctx) => maybeCompactNow(ctx));
-	// pi forcing a threshold compaction while a flow is bound means our safe-point pacing missed — redo it
-	// with flow-aware instructions: cancel pi's blind summary, await our own (compaction is appended by the
-	// time the handler resumes), then cancel. If ours fails, return undefined and let pi's proceed.
+	// pi forcing a threshold compaction while a flow is bound means our safe-point pacing missed — rebuild the
+	// summary here with flow-aware instructions and hand it back through the event's custom-compaction channel.
+	// Never ctx.compact() from this hook: AgentSession.compact() opens with abort() + waitForIdle(), and the run
+	// awaiting this handler can never go idle — the takeover would deadlock the session (no summarize request ever
+	// reaches the provider). If our summary fails we return undefined and pi's own compaction proceeds.
 	// overflow is never taken over (cancelling it would drop pi's compact-and-retry); manual is the operator's or ours.
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
 		const key = sessionKey(ctx);
 		const st = boundFeature(ctx.cwd, key);
 		if (!shouldTakeOverCompaction({ reason: event.reason, bound: !!st, inFlight: compacting.has(key) })) return undefined;
+		const model = ctx.model;
+		if (!model) return undefined;
 		compacting.add(key);
-		let ok = false;
-		await new Promise<void>((resolve) => {
-			const done = (success: boolean) => () => {
-				ok = success;
-				compacting.delete(key);
-				resolve();
-			};
-			ctx.compact({ customInstructions: flowCompactInstructions(st!), onComplete: done(true), onError: done(false) });
-		});
-		return ok ? { cancel: true } : undefined;
+		try {
+			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+			if (!auth.ok) return undefined;
+			// same function pi itself calls — same split-turn merge, file lists and prompts, just flow-aware instructions
+			const result = await compactionTakeover.run(event.preparation, model, auth.apiKey, auth.headers, flowCompactInstructions(st!), event.signal, undefined, undefined, auth.env);
+			return { compaction: result };
+		} catch {
+			return undefined; // pi's default compaction proceeds untouched
+		} finally {
+			compacting.delete(key);
+		}
 	});
 	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
 	pi.on("session_compact", async (event, ctx) => {

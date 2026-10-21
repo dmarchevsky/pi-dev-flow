@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import devFlow from "../extensions/dev-flow.ts";
+import devFlow, { compactionTakeover } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -1203,7 +1203,7 @@ test("the playbook tracking chore is legal on the default branch (#53)", async (
 	assert.match((await guard('DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"'))?.reason ?? "", /direct commits to main/, "any other dirty path closes the lane");
 });
 
-test("threshold compaction takeover: flow-aware recompact; cancel only when ours landed", async () => {
+test("threshold compaction takeover: flow-aware compact() returned as custom compaction; pi's own on failure", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
@@ -1211,22 +1211,35 @@ test("threshold compaction takeover: flow-aware recompact; cancel only when ours
 	const ctx = makeCtx(repo);
 	await pi.cmds.flow.handler("start demo-feature", ctx);
 	const takeover = pi.handlers.session_before_compact[0] as unknown as (
-		e: { reason: string },
+		e: { reason: string; preparation?: unknown; signal?: AbortSignal },
 		c: unknown,
-	) => Promise<{ cancel?: boolean } | undefined>;
-	const mk = (fail = false) => {
-		const calls: string[] = [];
-		return {
-			calls,
-			c: { ...ctx, compact: (o: { customInstructions: string; onComplete: () => void; onError: () => void }) =>
-				setTimeout(fail ? o.onError : o.onComplete, 0) && calls.push(o.customInstructions) },
-		};
-	};
-	const ok = mk();
-	assert.equal((await takeover({ reason: "threshold" }, ok.c))?.cancel, true, "our compaction landed — pi's blind summary is cancelled");
-	assert.match(ok.calls[0], /demo-feature/, "the recompact carries the flow-aware instructions");
-	const bad = mk(true);
-	assert.equal(await takeover({ reason: "threshold" }, bad.c), undefined, "a failed takeover must NOT cancel pi's own compaction");
+	) => Promise<{ cancel?: boolean; compaction?: { summary: string } } | undefined>;
+	// never ctx.compact here — awaiting it inside this hook deadlocks the run (compact() starts with abort + waitForIdle)
+	const mk = () => ({
+		event: { reason: "threshold", preparation: { firstKeptEntryId: "keep-me", tokensBefore: 123 }, signal: new AbortController().signal },
+		c: { ...ctx, model: { id: "m" }, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "k", headers: { h: "1" }, env: { E: "x" } }) } },
+	});
+	const orig = compactionTakeover.run;
+	try {
+		const calls: Record<string, unknown>[] = [];
+		compactionTakeover.run = (async (preparation: { firstKeptEntryId: string; tokensBefore: number }, _m: unknown, apiKey: string, headers: unknown, instructions: string, signal: unknown) => {
+			calls.push({ preparation, apiKey, headers, instructions, signal });
+			return { summary: "flow-aware summary", firstKeptEntryId: preparation.firstKeptEntryId, tokensBefore: preparation.tokensBefore };
+		}) as typeof compactionTakeover.run;
+		const t = mk();
+		const res = await takeover(t.event, t.c);
+		assert.equal(res?.compaction?.summary, "flow-aware summary", "our summary lands via the custom-compaction channel — no cancel dance, no re-entry");
+		assert.equal(res?.cancel, undefined, "pi appends the returned compaction itself — nothing to cancel");
+		assert.match(String(calls[0].instructions), /demo-feature/, "the summary carries the flow-aware instructions");
+		assert.equal(calls[0].apiKey, "k", "request-time auth is resolved and forwarded");
+		assert.equal(calls[0].signal, t.event.signal, "the event's abort signal is forwarded — Stop really cancels the summarize call");
+		compactionTakeover.run = (async () => {
+			throw new Error("boom");
+		}) as typeof compactionTakeover.run;
+		assert.equal(await takeover(mk().event, mk().c), undefined, "a failed takeover must NOT cancel pi's own compaction");
+	} finally {
+		compactionTakeover.run = orig;
+	}
 	assert.equal(await takeover({ reason: "manual" }, mk().c), undefined, "/compact stays the operator's");
 	assert.equal(await takeover({ reason: "overflow" }, mk().c), undefined, "overflow keeps pi's compact-and-retry");
 });
