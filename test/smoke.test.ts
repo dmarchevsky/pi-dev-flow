@@ -717,6 +717,43 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	assert.throws(() => execFileSync("git", ["-C", repo, "rev-parse", "--verify", "feat/fin"]));
 });
 
+test("release gate (#97): the entry is prepared on the branch and pending lines survive the fold", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const git = (args: string[], dir = repo) => execFileSync("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...args]);
+	// a --no-version flow landed this entry on main: the next versioned release owes it a home
+	writeFileSync(path.join(repo, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- parked by the unversioned ship\n\n## [1.0.0]\n- old\n");
+	git(["add", "-A"]); // the pending entry is part of the branch base
+	git(["commit", "-qm", "pending entry"]);
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "fold"]);
+	mkdirSync(path.join(repo, ".dev-flow", "fold", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "fold", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "fold");
+	await flow(["verify", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "fold", "worktree");
+	const prep = (changelog: string | null, ver = "1.1.0") => {
+		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`);
+		if (changelog !== null) writeFileSync(path.join(wt, "CHANGELOG.md"), changelog);
+		git(["add", "-A"], wt);
+		git(["commit", "-qm", "release prep"], wt);
+	};
+	prep(null); // only the bump: the changelog is main's, untouched by this branch
+	const cold = await flow(["release", "--confirmed"]);
+	assert.ok(cold.isError && /unchanged on this branch/.test(cold.content[0].text), "an inherited changelog is not release prep (#97)");
+	prep("# Changelog\n\n## [Unreleased]\n\n## [1.1.0]\n- this ship's own line\n");
+	const dropped = await flow(["release", "--confirmed"]);
+	assert.ok(dropped.isError && /drops 1 Unreleased entry/.test(dropped.content[0].text), "an empty Unreleased is not enough: folding means moving");
+	assert.match(dropped.content[0].text, /parked by the unversioned ship/, "the refusal quotes the line that vanished");
+	prep("# Changelog\n\n## [Unreleased]\n\n## [1.1.0]\n\n- parked by the unversioned ship\n- this ship's own line\n");
+	assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/, "the verbatim fold passes");
+});
+
 test("release opt-out: per-release flag and per-project config skip forge release creation", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -1191,7 +1228,7 @@ test("flow help: usage answers everywhere, even with no .dev-flow/", async () =>
 		assert.match(r.content[0].text, /^usage: flow <sub> — help \[--json\] \| init/);
 		assert.match(r.content[0].text, /approve \[--yolo\]/);
 		assert.match(r.content[0].text, /verify \[--yolo\]/);
-		assert.match(r.content[0].text, /release \[--yolo\|--no-version\]/);
+		assert.match(r.content[0].text, /release \[--yolo\|--no-version\|--no-fold-check\]/);
 	}
 });
 
@@ -1352,7 +1389,7 @@ test("release-done proves the forge release exists instead of trusting the attem
 	const ghState = mkdtempSync(path.join(tmpdir(), "devflow-gh-"));
 	// a gh stand-in: it only has what it created, and either step can be told to misbehave — a create that
 	// "succeeded" while publishing nothing is exactly how #51, #60 and #63 ended with an empty Releases page
-	writeFileSync(path.join(bin, "gh"), '#!/bin/sh\ncase "$1 $2" in\n  "release create") if [ -f "$GH_FAIL" ]; then echo "gh: mock create failed" >&2; exit 1; fi; touch "$GH_STATE/$3"; exit 0 ;;\n  "release view") if [ -f "$GH_VIEWFAIL" ]; then exit 1; fi; test -f "$GH_STATE/$3" ;;\nesac\nexit 0\n');
+	writeFileSync(path.join(bin, "gh"), '#!/bin/sh\ncase "$1 $2" in\n  "release create") if [ -f "$GH_FAIL" ]; then echo "gh: mock create failed" >&2; exit 1; fi; touch "$GH_STATE/$3"; if [ "$6" = "--notes" ]; then printf "%s\\n" "$7" > "$GH_STATE/$3.body"; fi; exit 0 ;;\n  "release view") if [ -f "$GH_VIEWFAIL" ]; then exit 1; fi; test -f "$GH_STATE/$3" || exit 1; if [ "$4" = "--json" ]; then cat "$GH_STATE/$3.body" 2>/dev/null; fi; exit 0 ;;\nesac\nexit 0\n');
 	chmodSync(path.join(bin, "gh"), 0o755);
 	const savedPath = process.env.PATH;
 	process.env.PATH = `${bin}:${process.env.PATH}`;
@@ -1381,6 +1418,7 @@ test("release-done proves the forge release exists instead of trusting the attem
 	await flow(["init", "--write", "# dev-flow\n\n## global\n\n```flow\nforge = github\n```\n\n## release\n\n```flow\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
 	await ship("shown", "9.9.7");
 	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /Release v9\.9\.7 verified on github/, "the proof asks the forge, not the create exit code");
+	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /Release v9\.9\.7 body matches CHANGELOG\.md/, "the release page carries the changelog entry, not the tag annotation (#97)");
 	writeFileSync(path.join(ghState, "viewfail"), "");
 	process.env.GH_VIEWFAIL = path.join(ghState, "viewfail");
 	await ship("ghost", "9.9.8");

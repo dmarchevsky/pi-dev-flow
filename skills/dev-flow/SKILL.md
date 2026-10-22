@@ -236,17 +236,21 @@ invent one mid-release. Sequence:
 3. Update the changelog and bump the manifest to the exact version you will
    tag — manifest, changelog and tag must agree; commit the prep on the feature
    branch. A versioned release **folds the `Unreleased` section** (entries
-   `--no-version` flows left there) under the new version heading — the gate
-   refuses while it still holds entries.
+   `--no-version` flows left there) under the new version heading: the gate
+   refuses while entries remain, refuses a fold that **drops or rewrites** one
+   (move the lines as they are and reword afterwards in a follow-up), and
+   refuses a changelog this branch never touched. `--no-fold-check` skips only
+   the line proofs, on the operator's word.
 4. `flow check` — the prep edits invalidated the implement checks; the release
    gate demands them green again.
 5. State what the PR will contain, present version and changelog entry,
    **stop** — **Release?** → `flow release --confirmed`. The gate re-checks
-   tier-1, requires the manifest **ahead of the last tag** and the changelog to
-   mention it. Operator ships this flow **without version/tag** →
-   `flow release --no-version --confirmed` — no bump, but the changelog entry
-   under `Unreleased` is still required: the gate proves the branch changed the
-   changelog.
+   tier-1, requires the manifest **ahead of the last tag**, a changelog
+   **heading** naming that version (a mention in prose is not an entry) and that
+   this branch prepared the entry. Operator ships this flow **without
+   version/tag** → `flow release --no-version --confirmed` — no bump, but the
+   changelog entry under `Unreleased` is still required: the gate proves the
+   branch **added a line there**, not that it edited some older section.
 
 ## Stage: release
 
@@ -275,9 +279,11 @@ the worktree unless noted:
    the newest matching tag on origin (lists come from `git ls-remote`, so an
    unfetched clone never decides what is tagged). It creates the forge release
    — `gh` for GitHub, `glab` for GitLab, nothing for `forge = self`, advisory
-   note if a CLI or remote is missing; body = the tag's annotation, else the
-   `release.changelog` entry for that version, else nothing with the reason
-   printed (annotate with `git tag -a`) — and records the release;
+   note if a CLI or remote is missing; body = the `release.changelog` entry for
+   that version — the changelog is what the release page must read like — else
+   the tag's annotation, else nothing with the reason printed (annotate with
+   `git tag -a`), and it reads the stored body back and refuses a mismatch
+   (#97) — and records the release;
    `flow finish` closes the feature out. Skipping the forge release
    (`--no-release-create`, once, or `release.releases = false`, always) and
    the artifact check (`--no-artifact-check`, once) are operator calls only —
