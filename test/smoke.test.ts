@@ -670,6 +670,42 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	assert.equal(dialogs, 0, "still zero dialogs at the end");
 });
 
+test("release with a stale session build: warn and ask, never block; the operator's proceed is recorded", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	await flow(["start", "stale"]);
+	mkdirSync(path.join(repo, ".dev-flow", "stale", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "stale", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "stale");
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
+	// pretend this session loaded a long-ago build: the release gate must ask, not refuse outright
+	process.env.DEV_FLOW_LOADED_VERSION = "0.0.1";
+	try {
+		const head = await flow(["version"]);
+		assert.match(head.content[0].text, /this session runs 0\.0\.1/, "flow version names the stale build");
+		const refused = await flow(["release"]);
+		assert.ok(refused.isError, "a stale headless release waits for the operator's word");
+		assert.match(refused.content[0].text, /runs dev-flow 0\.0\.1, the checkout ships \d/, "names both builds");
+		assert.match(refused.content[0].text, /proofs shipped between the two will NOT run/, "says what will not run");
+		assert.match(refused.content[0].text, /Update \(\/reload.*proceed with the old release/, "asks update-or-proceed, and never refuses the choice itself");
+		const ok = await flow(["release", "--confirmed"]);
+		assert.match(ok.content[0].text, /release approved/, "the operator's proceed walks the gate");
+		assert.match(ok.content[0].text, /released under dev-flow 0\.0\.1.*operator choice/, "the decision is recorded in the gate output");
+		const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "stale", "state.json"), "utf8"));
+		assert.match(st.staleBuild, /^0\.0\.1 \(checkout /, "stamped for release-done's backstop");
+		const rd = await flow(["release-done"]);
+		assert.match(rd.content[0].text, /release recorded as complete/, "the release records normally");
+		assert.match(rd.content[0].text, /stale build acknowledged at release gate/, "release-done repeats the operator's choice instead of the bare warning");
+	} finally {
+		delete process.env.DEV_FLOW_LOADED_VERSION;
+	}
+});
+
 test("release tail: finish refuses to remove a dirty worktree", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

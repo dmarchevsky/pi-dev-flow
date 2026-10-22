@@ -58,6 +58,7 @@ import {
 	pidAlive,
 	playbookOnlyChange,
 	sessionRunsOlderBuild,
+	changelogVersionsBetween,
 	reflectProtocol,
 	reflectSections,
 	reflectionLine,
@@ -833,6 +834,16 @@ test("sessionRunsOlderBuild: which dev-flow a session actually runs", () => {
 	assert.equal(sessionRunsOlderBuild("0.37.0", "0.37.0"), "", "a current build says nothing");
 	assert.equal(sessionRunsOlderBuild(null, "0.37.0"), "", "unknown loaded build: no claim either way");
 	assert.equal(sessionRunsOlderBuild("0.37.0", null), "", "nothing to compare against");
+});
+
+test("changelogVersionsBetween: what a stale session is missing", () => {
+	const cl = "# Changelog\n\n## [Unreleased]\n\n## [0.54.0] - 2026-10-22\nx\n\n## [0.53.2] - 2026-10-22\ny\n\n## [0.53.0]\nz\n\n## [0.52.0]\nw\n";
+	assert.deepEqual(changelogVersionsBetween(cl, "0.53.0", "0.54.0"), ["0.54.0", "0.53.2"], "from exclusive, to inclusive, newest first");
+	assert.deepEqual(changelogVersionsBetween(cl, "0.54.0", "0.54.0"), [], "a current build misses nothing");
+	assert.deepEqual(changelogVersionsBetween(cl, "0.54.0", "0.55.0"), [], "nothing shipped above the newest heading");
+	assert.deepEqual(changelogVersionsBetween("## not-a-version\n## [1.2.3]\n", "0.0.1", "9.9.9"), ["1.2.3"], "bracketed headings parse; prose headings are skipped");
+	assert.deepEqual(changelogVersionsBetween(cl, "garbage", "0.54.0"), [], "an unparseable bound claims nothing");
+	assert.deepEqual(changelogVersionsBetween(cl, "0.52.0", "0.54.0").length, 3, "a stale session sees every release it skipped");
 });
 
 test("what the forge already has: newestTaggedVersion and ls-remote parsing (#52)", () => {
