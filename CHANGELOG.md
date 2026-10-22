@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.55.1] - 2026-10-22
+
+### Fixed
+
+- **The guard no longer mistakes an unattributed command for a stage violation.** pi can register dev-flow twice in one process (the documented two-sources hazard — a project pointer beside the installed package), and *every* copy evaluates every guard hook: the copy that never served the flow call judges with an empty in-memory binding, and whenever a second unfinished feature exists — which kills the single-feature auto-bind that used to mask it — `git merge`/`push` to the default branch was refused with *'requires stage release'* while the bound feature sat at release the whole time (it blocked the v0.55.0 release's own chore git, live). The on-disk claim is now a binding: an unfinished feature whose `claim.json` carries this session's key attributes the call regardless of how many features are unfinished, so a second copy judges from disk instead of guessing. When attribution truly fails, the refusal says so — *not attributed to a bound feature (session key, which dev-flow, what to do)* — instead of lying about the stage. `flow version`, `status` and `start` also name every dev-flow copy registered in the process, and the README's two-sources warning says which copy to remove.
+- **`flow finish` fast-forwards a main checkout that trails origin.** Close-out used to probe only `origin/<default>` (tag there, HEAD an ancestor), so a local main left behind by the release — exactly what a guard misattribution produces — passed silently and rotted. Now, once the checkout is clean and proven pushed, `finish` fast-forwards local `<default>` to `origin/<default>` with its own git (never a merge: a diverged or not-checked-out main prints the operator's exact `git pull --ff-only` command instead of touching it).
+
 ## [0.55.0] - 2026-10-22
 
 ### Changed
