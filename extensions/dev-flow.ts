@@ -188,9 +188,17 @@ function atomicWrite(file: string, text: string): void {
 	renameSync(tmp, file);
 }
 
-/** Session bindings: one flow per pi session; persisted per session branch via appendEntry. */
+/** Session bindings: one flow per pi session; persisted per session branch via appendEntry.
+ *  Module-level means shared by every session in the process — pi runs many sessions inside one Node
+ *  process (pi-web's agent lives in the server) — so every key here is a session identity and every
+ *  entry is released when that session ends (see releaseSession). */
 const bindings = new Map<string, string | null>();
-const sessionKey = (ctx: { cwd: string; sessionManager?: { getSessionId(): string } }) => ctx.sessionManager?.getSessionId() ?? ctx.cwd;
+// Two identities are possible: pi's session id, or — when the host hands out none — the working
+// directory. Both are prefixed, because a claim written under the directory identity is not a session:
+// two pi sessions sharing one directory share that key, and `cwd:` in a claim file says so out loud
+// instead of reading like a session that went missing.
+const sessionKey = (ctx: { cwd: string; sessionManager?: { getSessionId(): string } }): string =>
+	ctx.sessionManager?.getSessionId() ? `sid:${ctx.sessionManager.getSessionId()}` : `cwd:${ctx.cwd}`;
 /** Sessions with a dev-flow-initiated compaction in flight (prevents stacked compactions). */
 const compacting = new Set<string>();
 
@@ -246,6 +254,20 @@ function readClaim(root: string, slug: string): SessionClaim | null {
 
 const writeClaim = (root: string, slug: string, key: string) =>
 	atomicWrite(claimFile(root, slug), `${JSON.stringify({ key, pid: process.pid, at: now() })}\n`);
+
+/** Let go of everything one session held. In a shared-process host the pid on a claim is the server's and
+ *  never dies, so a claim left behind by a finished session keeps refusing every later session with
+ *  "claimed by another live session" — the lock has to end with the session that wrote it. Idempotent:
+ *  shutdown, reload and process exit can converge on this path. */
+function releaseSession(root: string, key: string): void {
+	bindings.delete(key);
+	compacting.delete(key);
+	if (!existsSync(dfDir(root))) return;
+	for (const d of readdirSync(dfDir(root), { withFileTypes: true })) {
+		if (!d.isDirectory()) continue;
+		if (readClaim(root, d.name)?.key === key) rmSync(claimFile(root, d.name), { force: true });
+	}
+}
 
 /** The auto-bind this session was denied by another live session's claim — lets the unbound-context message name the feature. */
 function claimBlocker(root: string, key: string): { state: FlowState; claim: SessionClaim } | null {
@@ -639,6 +661,9 @@ ${mdDigest(draftRefresh)}`))
 				];
 			});
 			if (warn.length) lines.push(...warn);
+			// which identity this session's state is keyed by: a claim fight is undiagnosable when the key
+			// could be a session id or a shared directory and the output does not say which
+			lines.push(`session: ${sess.key}${sess.key.startsWith("cwd:") ? " — no session id from pi, so every pi session in this directory shares one dev-flow binding (pass flow use <slug> in each)" : ""}`);
 			const refl = readReflections(root);
 			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — run flow doctor (it reviews and routes them)`);
 			lines.push(...rmapLine);
@@ -1316,7 +1341,12 @@ export default function devFlow(pi: ExtensionAPI) {
 			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null } };
 			if (ce.type === "custom" && ce.customType === "dev-flow-bind") slug = ce.data?.slug ?? null;
 		}
-		bindings.set(sessionKey(ctx), slug);
+		const key = sessionKey(ctx);
+		bindings.set(key, slug);
+		// A reload ends the old session, which released its claim; the restored one must reclaim what its own
+		// branch says it holds, or the repo answers "claimed by another live session" to the session that
+		// holds it. A foreign live claim wins — restoring is not a takeover.
+		if (slug && readState(ctx.cwd, slug) && !claimBlocks(readClaim(ctx.cwd, slug), key)) writeClaim(ctx.cwd, slug, key);
 	};
 
 	pi.registerCommand("flow", {
@@ -1355,6 +1385,12 @@ export default function devFlow(pi: ExtensionAPI) {
 		refreshStatus(ctx);
 	});
 	pi.on("session_tree", async (_event, ctx) => rebuildSession(ctx));
+	// The session, not the process, owns the binding and the claim: pi-web keeps serving other sessions
+	// after one ends, and a stale claim there is a permanent lock (its pid is the server's, always alive).
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (!existsSync(dfDir(ctx.cwd))) return;
+		releaseSession(ctx.cwd, sessionKey(ctx));
+	});
 	pi.on("turn_end", async (_event, ctx) => {
 		refreshStatus(ctx);
 		// pi checks its compaction threshold between every turn; our safe points must be as frequent.
