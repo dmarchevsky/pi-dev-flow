@@ -413,6 +413,25 @@ test("docs mode runs no project command: approve skips setup, verify skips build
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "docflow", "worktree", "dev-up")), "and no dev deploy either");
 });
 
+test("flow check runs no tier-1 for a docs flow: an unbuilt checkout is not a failed deploy (#96)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n`;
+	// every tier-1 command fails here on purpose: a fresh checkout has nothing built, which is what made
+	// a CHANGELOG-only flow report `health: FAIL` and read like a broken deploy
+	await flow(["init", "--write", md("test = exit 1\nhealth = exit 1\n")]);
+	await flow(["start", "readmeonly", "--docs", "--confirmed"]);
+	await flow(["approve", "--confirmed"]);
+	const c = await flow(["check"]);
+	assert.match(c.content[0].text, /docs mode: project commands skipped/, "docs mode runs no tier-1 check");
+	assert.ok(!c.isError, "and says so without failing the flow");
+	commitWt(repo, "readmeonly");
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "verify needs no check record from a docs flow");
+	// that the same commands still run for a normal flow is covered by the check/verify tests above
+});
+
 test("a failed setup runs again on the next approve — re-approve is not a no-op (#49)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
