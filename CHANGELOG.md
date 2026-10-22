@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.52.2] - 2026-10-21
+
+### Fixed
+
+- **The `[dev-flow]` stage line printed twice per prompt.** One package reaches one runtime twice as fast as you install it — a project `git:` pin beside the global `npm:` package, or a dogfood checkout whose `.pi/extensions` pointer sits next to the installed copy — and pi dedupes extensions by **file path**, not by package, so both copies register and both answers were appended: two `[dev-flow]` lines in every prompt, in the logs and to the model. The stage-context handler now claims the run: pi builds **one ctx object per `before_agent_start`** and hands it to every registered handler, so the first pass stamps it and a rival copy answers nothing. The claim is per run rather than per process on purpose — pi-web hosts many sessions inside one Node process (dev-flow's own session map is keyed by session id for that reason), and a process-wide "only the first copy registers" rule would leave every later session without guards, without the `flow` tool and without stage context. Each copy still registers its guards, tool and command: their verdicts are identical, and pi exposes no runtime identity during load to dedupe them against.
+
 ## [0.52.1] - 2026-10-21
 
 ### Changed
