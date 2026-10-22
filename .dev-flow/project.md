@@ -37,9 +37,12 @@ versionTag = v{version}
 ## release
 
 ```flow
-artifact = npm view pi-dev-flow@{version} version
+artifact = npm view --prefer-online pi-dev-flow@{version} version
 merge = merge
 ```
+
+`--prefer-online` is load-bearing: plain `npm view` can serve a cached 404 for a minute after CI
+publishes, which makes `release-done` refuse a package that is really out (hit on the 0.54.0 release).
 
 This repo merge-commits its PRs (history: 17 merge commits), so the branch's own commits stay in the
 release's ancestry — that is what makes a post-merge tag point at reviewed SHAs. Merge with
