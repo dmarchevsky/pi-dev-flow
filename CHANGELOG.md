@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.52.3] - 2026-10-22
+
+### Fixed
+
+- **The `healthWait` smoke test stopped racing the clock.** It deploys a service that only becomes healthy 3 seconds later, then asserts the verify gate printed `3 attempts` — but the gate schedules probes on a 2s sleep, so *which* attempt goes green depends on how long this box takes to spawn a shell. Under load the first probe landed past the 3s mark and the gate reported 2 attempts (or 1, which prints no count at all): a red test describing correct behavior, and it failed 2 of 6 full runs while unrelated work landed. Readiness is now counted instead of timed — the deploy resets a counter and the probe goes green on its third call — so both halves of the test assert a fixed attempt count on any machine, and the budget is wide enough that the wait is exercised without being the thing under test. The budget-to-attempts arithmetic stays pinned by `healthRetry`'s unit test, which is where that rule actually lives.
+
 ## [0.52.2] - 2026-10-21
 
 ### Fixed
