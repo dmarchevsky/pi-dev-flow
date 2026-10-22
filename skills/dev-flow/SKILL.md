@@ -299,9 +299,14 @@ the worktree unless noted:
    `flow finish` closes the feature out. Skipping the forge release
    (`--no-release-create`, once, or `release.releases = false`, always) and
    the artifact check (`--no-artifact-check`, once) are operator calls only —
-   act when told, never on your own. If `flow version` says this session runs
-   an older build than the checkout, **stop and ask the operator to `/reload`
-   before publishing** — gates execute the code loaded at session start.
+   act when told, never on your own. If this session runs an older build than
+   the checkout, **the release gate asks instead of blocking**: it prints both
+   builds, lists what shipped between them (those proofs will not run), and
+   puts the choice to the operator — **update (`/reload` and re-run) or
+   proceed with the old release?** Publishing under an older gate is a
+   legitimate choice (hotfix, offline reload); the answer is recorded in the
+   release output and `release-done` repeats the acknowledgement as the
+   backstop for headless runs.
    Release-stage checklist items have no gate of their own: `release-done`
    lists the open ones and the Finish? answer closes them.
 

@@ -38,5 +38,8 @@ The contract a headless driver (a session with no UI) relies on:
 - **Edits invalidate checks.** Any worktree write clears recorded checks and the tier-2
   confirmation — re-run `flow check` before `verify` after the last edit.
 - **Version skew.** Gates execute the dev-flow build the session loaded at start; `flow version`
-  reports when the checkout has moved ahead of it (and `release-done` stamps a warning into
-  its output when the session shipped from behind) — reload the session before publishing.
+  reports when the checkout has moved ahead of it. `flow release` turns the skew into a question —
+  update (`/reload`, then re-run) or proceed with the old release — never a block: publishing under
+  an older gate is a legitimate choice. The operator's proceed is stamped into the release and
+  `release-done` repeats the acknowledgement (its after-the-fact warning stays for a release that
+  went out without the question being answered).
