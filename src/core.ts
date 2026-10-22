@@ -894,6 +894,9 @@ const READ_ONLY_GIT = new Set(["log", "show", "diff", "status", "blame", "cat-fi
 const GIT_INVOKED = /(^|[\s/;|&(])git\s+(\S+)/;
 
 // project.md is re-parsed on every tool call; compiled rules are cached by source.
+// Process-global on purpose, and safe only because compile() builds flag-less regexes: no /g and no /y
+// means no lastIndex, so a shared RegExp carries nothing mutable between sessions. Add a stateful flag
+// here and this cache becomes cross-session state — the one thing this package must never keep.
 const regexCache = new Map<string, RegExp | null>();
 function compile(source: string): RegExp | null {
 	if (!regexCache.has(source)) {

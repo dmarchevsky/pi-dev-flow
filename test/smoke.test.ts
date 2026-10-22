@@ -1173,7 +1173,7 @@ test("a live foreign claim refuses auto-bind; flow use takes over explicitly", a
 	await pi.cmds.flow.handler("init", a);
 	await pi.cmds.flow.handler("start claim-feature", a);
 	const claimOf = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json"), "utf8")) as { key: string };
-	assert.equal(claimOf().key, "sess-A", "start binds and claims the feature");
+	assert.equal(claimOf().key, "sid:sess-A", "start binds and claims the feature");
 
 	// a second live session on the same repo must not auto-bind onto it
 	const b = session("sess-B");
@@ -1188,10 +1188,35 @@ test("a live foreign claim refuses auto-bind; flow use takes over explicitly", a
 	// explicit use succeeds and says it took over from a live holder
 	await pi.cmds.flow.handler("use claim-feature", b);
 	assert.ok(b.notices.at(-1)?.includes("taken over from live session"), "takeover from the live holder is stated");
-	assert.equal(claimOf().key, "sess-B", "the claim moves to the taking-over session");
+	assert.equal(claimOf().key, "sid:sess-B", "the claim moves to the taking-over session");
 	// a fresh ctx object: pi builds one per run, and a run's first pass claims it (see the copy guard)
 	const injB2 = (await pi.handlers.before_agent_start[0]({}, session("sess-B"))) as { message?: { content: string } };
 	assert.match(injB2.message?.content ?? "", /bound to: claim-feature/, "after the takeover B is bound");
+});
+
+test("a session that ends releases its claim and binding — a shared-process host must not inherit a dead session's lock", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
+	const a = session("sess-C");
+	await pi.cmds.flow.handler("init", a);
+	await pi.cmds.flow.handler("start claim-feature", a);
+	const claimOf = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json"), "utf8")) as { key: string };
+	const b = session("sess-D");
+	assert.match(((await pi.handlers.before_agent_start[0]({}, b)) as { message: { content: string } }).message.content, /claimed by another live session/, "while A lives, B is refused");
+	// A's session ends inside a process that keeps running (pi-web). Its pid stays alive, so only the
+	// session's own release can give the feature back.
+	await pi.handlers.session_shutdown[0]({}, a);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json")), "shutdown released the claim with the session that wrote it");
+	const injB = (await pi.handlers.before_agent_start[0]({}, session("sess-D"))) as { message?: { content: string } };
+	assert.match(injB.message?.content ?? "", /bound to: claim-feature/, "B binds the feature A let go of");
+	assert.equal(claimOf().key, "sid:sess-D", "and holds the claim itself");
+	// identity is shown, so a claim fight says which identity it was fought under
+	const st = (await pi.tools.flow.execute("id", { args: ["status"] }, undefined, undefined, b)) as { content: [{ text: string }] };
+	assert.match(st.content[0].text, /session: sid:sess-D/, "status names the session identity");
+	const plain = makeCtx(repo); // a host that hands out no session id shares the directory identity
+	const st2 = (await pi.tools.flow.execute("id", { args: ["status"] }, undefined, undefined, plain)) as { content: [{ text: string }] };
+	assert.match(st2.content[0].text, /session: cwd:.*no session id from pi/, "and says so when it is the directory");
 });
 
 test("finish deletes merged feature branches on origin and keeps unverifiable ones", async () => {
