@@ -193,6 +193,13 @@ test("preReleaseGate: versioned release folds the Unreleased backlog (--no-versi
 	assert.ok(!unreleasedPending("## [Unreleased]\n\n## 1.0.0"));
 });
 
+test("bashFlowGuard: an unattributed refusal admits it never found the feature", () => {
+	const base = { branch: "main", stage: null as "plan" | null, defaultBranch: "main" };
+	assert.match(bashFlowGuard({ ...base, command: 'git merge --ff-only up', attribution: "not attributed to a bound feature (session sid:ghost)" }) ?? "", /requires stage "release" — not attributed to a bound feature \(session sid:ghost\)/, "the refusal carries why the stage was unknown");
+	assert.ok(!(bashFlowGuard({ ...base, stage: "plan", command: "git merge feat/x", attribution: "not attributed" }) ?? "").includes("not attributed"), "a real stage verdict never carries the attribution note");
+	assert.match(bashFlowGuard({ ...base, command: "git push origin main", attribution: "no binding" }) ?? "", /\(verified feature\) — no binding/);
+});
+
 test("bashFlowGuard: main protection and release-stage release", () => {
 	const base = { branch: "main", stage: null as "plan" | null, defaultBranch: "main" };
 	assert.ok(bashFlowGuard({ ...base, command: "git commit -m x" }));
