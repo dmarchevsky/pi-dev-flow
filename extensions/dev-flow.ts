@@ -163,16 +163,25 @@ async function mergeHistoryEvidence(root: string, defaultBranch: string): Promis
  *  because both erase the branch's ancestry. null = unaskable (self-hosted, no CLI, no merged PR found). */
 async function forgeMergeStyle(root: string, forge: string, branch: string): Promise<"squash" | "merge" | "rebase" | null> {
 	if (!branch) return null;
+	// sh() folds stderr into stdout, so a CLI error can arrive where the JSON was expected: parse defensively
+	const json = (out: string): unknown | null => {
+		try {
+			return JSON.parse(out);
+		} catch {
+			return null;
+		}
+	};
 	if (forge === "github") {
 		const pr = await sh(`gh pr list --state merged --head ${sq(branch)} --json number,squashCommit,rebaseCommit,mergeCommit --jq '.[0]'`, root);
 		if (!pr.ok || !pr.out.trim() || pr.out.trim() === "null") return null;
-		const parsed = JSON.parse(pr.out.trim()) as { squashCommit?: string | null; rebaseCommit?: string | null; mergeCommit?: string | null };
-		return parsed.squashCommit ? "squash" : parsed.rebaseCommit ? "rebase" : parsed.mergeCommit ? "merge" : null;
+		const parsed = json(pr.out.trim()) as { squashCommit?: string | null; rebaseCommit?: string | null; mergeCommit?: string | null } | null;
+		return parsed?.squashCommit ? "squash" : parsed?.rebaseCommit ? "rebase" : parsed?.mergeCommit ? "merge" : null;
 	}
 	if (forge === "gitlab") {
 		const mr = await sh(`glab api ${sq(`projects/:id/merge_requests?source_branch=${branch}&state=merged&per_page=1`)}`, root);
 		if (!mr.ok || !mr.out.trim() || mr.out.trim() === "[]") return null;
-		const parsed = (JSON.parse(mr.out.trim()) as { squash_commit_sha?: string | null; merge_commit_sha?: string | null }[])[0];
+		const list = json(mr.out.trim()) as { squash_commit_sha?: string | null; merge_commit_sha?: string | null }[] | null;
+		const parsed = Array.isArray(list) ? list[0] : null;
 		return parsed?.squash_commit_sha ? "squash" : parsed?.merge_commit_sha ? "merge" : null;
 	}
 	return null;
