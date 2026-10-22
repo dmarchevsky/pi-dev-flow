@@ -40,6 +40,12 @@ import {
 	pluginVersion,
 	preReleaseGate,
 	unreleasedPending,
+	unreleasedBody,
+	pendingEntryLines,
+	missingFoldedLines,
+	normalizeEntryLine,
+	normalizeReleaseBody,
+	pickReleaseNotes,
 	newState,
 	newestTaggedVersion,
 	parseLsRemoteTags,
@@ -147,7 +153,7 @@ test("releaseGate requires verify approval and release stage", () => {
 test("preReleaseGate: stage, re-greened checks, bumped version, changelog mention", () => {
 	const s = { ...newState("f", false), stage: "pre-release" as const };
 	const c2 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
-	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" }, changelogChanged: false };
+	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0\n- shipped\n" }, changelogChanged: true };
 	assert.ok(preReleaseGate(s, c2, prep).some((e) => e.includes("flow check")), "checks must be rerun after prep edits");
 	s.checks.test = { ok: true, at: "" };
 	assert.equal(preReleaseGate(s, c2, prep).length, 0);
@@ -155,7 +161,7 @@ test("preReleaseGate: stage, re-greened checks, bumped version, changelog mentio
 	assert.ok(preReleaseGate(s, c2, { ...prep, remoteTags: ["v1.2.0"] }).some((e) => e.includes("already tagged")), "version not bumped past the last tag");
 	assert.ok(preReleaseGate(s, c2, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")));
 	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: null }).some((e) => e.includes("does not exist")));
-	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: { file: "CHANGELOG.md", content: "## 1.1.0" } }).some((e) => e.includes("does not mention")));
+	assert.ok(preReleaseGate(s, c2, { ...prep, changelog: { file: "CHANGELOG.md", content: "## 1.1.0" } }).some((e) => e.includes("has no entry heading")));
 	// unversioned flow (--no-version granted): bump/tag rules off, but the changelog entry is owed
 	const uPrep = { manifestVersion: "9.9.9", remoteTags: ["v1.2.0"], changelog: { file: "CHANGELOG.md", content: "## [Unreleased]\n- entry" }, changelogChanged: false };
 	assert.ok(preReleaseGate({ ...s, noVersion: true }, c2, uPrep).some((e) => e.includes("unchanged on this branch")));
@@ -170,7 +176,7 @@ test("preReleaseGate: stage, re-greened checks, bumped version, changelog mentio
 test("preReleaseGate: versioned release folds the Unreleased backlog (--no-version entries)", () => {
 	const s = { ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } };
 	const c2 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" } });
-	const base = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelogChanged: false };
+	const base = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelogChanged: true };
 	const cl = (content: string) => ({ ...base, changelog: { file: "CHANGELOG.md", content } });
 	assert.ok(preReleaseGate(s, c2, cl("# Changelog\n\n## [Unreleased]\n\n- left by a --no-version flow\n\n## [1.1.0] - 2026\n")).some((e) => e.includes("fold them under the v1.2.0 heading")));
 	assert.equal(preReleaseGate(s, c2, cl("# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026\n- done\n")).length, 0, "empty Unreleased passes");
@@ -632,7 +638,7 @@ test("docs mode: no plan document, no tier-1 checks, release integrity intact", 
 	assert.ok(verifyGate({ ...newState("d", false), stage: "implement" as const }, cfg).length > 0, "non-docs still demands green checks");
 	const pre = { ...newState("d", false, false, true), stage: "pre-release" as const };
 	const c3 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
-	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0" }, changelogChanged: false };
+	const prep = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelog: { file: "CHANGELOG.md", content: "## 1.2.0\n- shipped\n" }, changelogChanged: false };
 	assert.ok(!preReleaseGate(pre, c3, prep).some((e) => e.includes("flow check")), "docs release gate skips re-greened checks");
 	assert.ok(preReleaseGate(pre, c3, { ...prep, manifestVersion: null }).some((e) => e.includes("no parsable version")), "docs still needs the version bump");
 });
@@ -829,6 +835,64 @@ test("what the forge already has: newestTaggedVersion and ls-remote parsing (#52
 	assert.equal(newestTaggedVersion("v{version}", ["release-1"]), null, "no matching tag");
 	assert.equal(newestTaggedVersion("rel-{version}", ["rel-1.0.1", "rel-1.0.2"]), "1.0.2", "a prefixed pattern too");
 	assert.deepEqual(parseLsRemoteTags("abc\trefs/tags/v1.0.0\ndef\trefs/tags/v1.0.0^{}\nghi\trefs/tags/v1.1.0\n"), ["v1.0.0", "v1.1.0"], "peeled refs collapse into their tag");
+});
+
+test("preReleaseGate (#97): the entry is this branch's own, and pending lines must survive the fold", () => {
+	const s = { ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } };
+	const c2 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" }, release: { changelog: "CHANGELOG.md" } });
+	const fold = "## [1.2.0] - 2026-10-22\n\n### Fixed\n\n- parked one\n- parked two\n";
+	const prep = (over: Record<string, unknown> = {}) => ({
+		manifestVersion: "1.2.0",
+		remoteTags: ["v1.1.0"],
+		changelog: { file: "CHANGELOG.md", content: fold },
+		changelogChanged: true,
+		changelogBase: { pending: ["parked one", "parked two"], source: "tag" as const },
+		...over,
+	});
+	assert.equal(preReleaseGate(s, c2, prep()).length, 0, "a verbatim fold of what was pending passes");
+	assert.ok(preReleaseGate(s, c2, prep({ changelogChanged: false })).some((e) => e.includes("unchanged on this branch")), "the branch must touch the changelog (#97)");
+	assert.equal(preReleaseGate(s, c2, prep({ changelogChanged: null, changelogBase: { pending: [], source: "none" as const } })).length, 0, "no base to compare: the git-dependent proofs skip, they do not refuse");
+	assert.ok(
+		preReleaseGate(s, c2, prep({ changelog: { file: "CHANGELOG.md", content: "## [1.1.0]\n- see 1.2.0 for context\n" } })).some((e) => e.includes("has no entry heading")),
+		"a version named in prose is not an entry (#97)",
+	);
+	assert.ok(
+		preReleaseGate(s, c2, prep({ changelog: { file: "CHANGELOG.md", content: fold.replace("1.2.0", "1.2.0-beta") } })).some((e) => e.includes("has no entry heading")),
+		"a 1.2.0-beta section cannot stand in for 1.2.0",
+	);
+	const dropped = preReleaseGate(s, c2, { ...prep(), changelog: { file: "CHANGELOG.md", content: "## [1.2.0]\n- parked one\n" } });
+	assert.ok(dropped.some((e) => e.includes("drops 1 Unreleased entry") && e.includes("parked two")), "folding means moving: the refusal quotes the line that vanished");
+	assert.equal(preReleaseGate(s, c2, { ...prep(), noFoldCheck: true, changelog: { file: "CHANGELOG.md", content: "## [1.2.0]\n- parked one\n" } }).length, 0, "--no-fold-check is the operator's escape");
+	assert.equal(
+		preReleaseGate(s, c2, { ...prep(), changelog: { file: "CHANGELOG.md", content: "## [1.2.0]\n   -   parked   one\n  - parked two\n" } }).length,
+		0,
+		"indentation and whitespace jitter are not a changed entry",
+	);
+	assert.equal(preReleaseGate(s, c2, prep({ changelogBase: { pending: [], source: "tag" as const } })).length, 0, "nothing was pending: nothing to fold");
+	const nv = (content: string, basePending: string[] = []) =>
+		preReleaseGate({ ...s, noVersion: true }, c2, { manifestVersion: null, remoteTags: [], changelog: { file: "CHANGELOG.md", content }, changelogChanged: true, changelogBase: { pending: basePending, source: "merge-base" as const } });
+	assert.equal(nv("## [Unreleased]\n- fresh line\n").length, 0, "a new line under Unreleased passes");
+	assert.ok(nv("## [1.1.0]\n- fixed an old entry\n").some((e) => e.includes("no entry under its Unreleased heading")), "editing an older section releases nothing (#97)");
+	assert.ok(nv("## [Unreleased]\n- parked one\n", ["parked one"]).some((e) => e.includes("gained nothing on this branch")), "leftover entries are not this flow's own entry");
+	assert.equal(nv("## [Unreleased]\n- parked one\n", []).length, 0, "nothing pending at the base: any entry is new");
+});
+
+test("the fold comparison normalizes markdown, not meaning (#97)", () => {
+	const md = "# Changelog\n\n## [Unreleased]\n\n### Added\n\n  * parked   one\n- [x] checked note\n\n## [1.0.0]\n- old\n";
+	assert.deepEqual(pendingEntryLines(md), ["parked one", "[x] checked note"], "bullets, indentation and whitespace runs are jitter; sub-headings are not entries");
+	assert.equal(normalizeEntryLine("  -   a   b  "), "a b");
+	assert.equal(pendingEntryLines("## [Unreleased]\n\n## [1.0.0]\n").length, 0, "an empty section holds nothing");
+	assert.equal(pendingEntryLines("## 1.0.0\n- nothing pending here\n").length, 0, "no Unreleased section is vacuously clean");
+});
+
+test("release body helpers (#97): the changelog entry is the forge body, and the forge must keep it", () => {
+	const md = "# Changelog\n\n## [1.2.0] - 2026\n\n### Fixed\n\n- thing\n\n## [1.1.0]\n- older\n";
+	assert.deepEqual(pickReleaseNotes({ changelog: md, version: "1.2.0", annotation: "the tag's own words" }), { notes: "### Fixed\n\n- thing", source: "changelog" }, "the entry beats the tag annotation");
+	assert.deepEqual(pickReleaseNotes({ changelog: md, version: "9.9.9", annotation: "annotated body" }), { notes: "annotated body", source: "annotation" }, "no entry for the version: the annotation stands in");
+	assert.equal(pickReleaseNotes({ changelog: null, version: "1.2.0", annotation: '/bin/sh: 1: Syntax error: "(" unexpected' }).source, "none", "a shell complaint is still never a body (#51)");
+	assert.equal(pickReleaseNotes({ changelog: md, version: "9.9.9", annotation: "" }).source, "none");
+	assert.equal(normalizeReleaseBody("  \r\n- thing  \r\n\n"), "- thing", "what the forge stores is not a different body");
+	assert.deepEqual(missingFoldedLines(["a", "b"], "- a\n- b"), [], "and the fold comparison is set membership on normalized lines");
 });
 
 test("tagNotesCommand is /bin/sh safe and changelogEntry finds the section (#51)", () => {

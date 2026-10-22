@@ -230,17 +230,93 @@ export interface ReleasePrep {
 	remoteTags: string[];
 	/** Changelog file + content when release.changelog names a file that exists, else null. */
 	changelog: { file: string; content: string } | null;
-	/** True when the branch changed the changelog vs its merge base with the default branch —
-	 *  the proof an unversioned release ships a changelog entry although it cuts no version. */
-	changelogChanged: boolean;
+	/** True when the branch changed the changelog vs its base — the proof a release prepared its own
+	 *  entry. null when no base resolves at all (a rebased or squash-merged branch): the proof is
+	 *  skipped with an advisory instead of refusing a legal release for a git-topology reason (#97). */
+	changelogChanged: boolean | null;
+	/** What the changelog held under Unreleased **before** this release, and where that came from: the
+	 *  newest tag (what actually shipped) or the branch's merge base; "none" = unprovable. */
+	changelogBase?: { pending: string[]; source: "tag" | "merge-base" | "none" };
+	/** Operator-granted escape from the line-level fold proofs (`flow release --no-fold-check`). */
+	noFoldCheck?: boolean;
+}
+
+/** One changelog line as the fold proofs compare it: indentation, bullet style and whitespace runs are
+ *  markdown jitter and do not count; a reworded or deleted line does (#97). */
+export function normalizeEntryLine(line: string): string {
+	return line.trim().replace(/^[-*+]\s+/, "").replace(/\s+/g, " ");
+}
+
+/** The lines under the changelog's Unreleased heading (verbatim). Matches `## Unreleased` and
+ *  `## [Unreleased]`; deeper `###` sub-headings stay inside the section; the next h1/h2 ends it. */
+export function unreleasedBody(content: string): string[] {
+	const out: string[] = [];
+	let inside = false;
+	for (const line of content.split("\n")) {
+		if (/^#{1,2}\s/.test(line)) {
+			if (inside) break; // section ended
+			inside = /^#{2,3}\s*\[?Unreleased\]?\s*$/.test(line);
+			continue;
+		}
+		if (inside) out.push(line);
+	}
+	return out;
+}
+
+function entryLines(text: string): string[] {
+	// a section's sub-headings (`### Fixed`) are structure, not entries
+	return text
+		.split("\n")
+		.filter((l) => l.trim() && !/^#{1,6}\s/.test(l))
+		.map(normalizeEntryLine)
+		.filter(Boolean);
+}
+
+/** The pending Unreleased entries, normalized: what a versioned release must carry into its own entry,
+ *  and what an unversioned one must have added (#97). */
+export function pendingEntryLines(content: string): string[] {
+	return entryLines(unreleasedBody(content).join("\n"));
+}
+
+/** Pending lines the new version's entry does not carry — folded means moved, not deleted (#97). */
+export function missingFoldedLines(basePending: string[], entryBody: string): string[] {
+	const have = new Set(entryLines(entryBody));
+	return basePending.filter((l) => !have.has(l));
+}
+
+/** A release body as the forge stores it: trailing whitespace and outer blank lines are markdown
+ *  normalization, not a different body (#97). */
+export function normalizeReleaseBody(text: string): string {
+	return text
+		.replace(/\r\n/g, "\n")
+		.split("\n")
+		.map((l) => l.replace(/\s+$/, ""))
+		.join("\n")
+		.trim();
+}
+
+/**
+ * The body of a versioned forge release: the changelog entry for that version is the source of truth,
+ * so the release page and the changelog cannot drift apart (#97). The tag annotation is only a
+ * stand-in when the changelog has no entry for the version — and a shell complaint never becomes a
+ * release body (#51).
+ */
+export function pickReleaseNotes(src: { changelog: string | null; version: string | null; annotation: string }): { notes: string; source: "changelog" | "annotation" | "none" } {
+	const entry = src.changelog !== null && src.version ? changelogEntry(src.changelog, src.version) : "";
+	if (entry) return { notes: entry, source: "changelog" };
+	const ann = src.annotation.trim();
+	if (ann && !looksLikeShellError(ann)) return { notes: ann, source: "annotation" };
+	return { notes: "", source: "none" };
 }
 
 /**
  * Gate: pre-release → release ("Release?"). Machine-proves the parts of release prep that can be
- * proven — checks re-greened after the prep edits, manifest bumped past the last tag, changelog
- * mentions the version and holds no pending Unreleased entries. An unversioned (--no-version)
- * flow skips the version rules but still owes a changelog line under Unreleased, proving the
- * branch changed the changelog. Review/docs quality stays tier-2 (operator confirms the checklist).
+ * proven — checks re-greened after the prep edits, manifest bumped past the last tag, and the
+ * changelog: a heading for the version being tagged, an entry this branch actually prepared, the
+ * entries that were pending before the release folded into it (not dropped), and nothing left under
+ * Unreleased. An unversioned (--no-version) flow skips the version rules but still owes a new entry
+ * under Unreleased. The git-dependent proofs (touched, folded) skip with an advisory when no base
+ * resolves; the content proofs always run (#97). Review/docs quality stays tier-2.
  */
 export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep): string[] {
 	const errs: string[] = [];
@@ -253,7 +329,17 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 		// but the merge still owes a changelog line under Unreleased, folded by the next versioned release
 		if (cfg.release.changelog) {
 			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — an unversioned release must record its entry there (under Unreleased)`);
-			else if (!prep.changelogChanged) errs.push(`${prep.changelog.file} is unchanged on this branch — an unversioned release must add its entry (under Unreleased)`);
+			else {
+				if (prep.changelogChanged === false) errs.push(`${prep.changelog.file} is unchanged on this branch — an unversioned release must add its entry (under Unreleased)`);
+				// the entry must land under Unreleased: editing some older section releases nothing (#97)
+				const pending = pendingEntryLines(prep.changelog.content);
+				if (!pending.length) errs.push(`${prep.changelog.file} has no entry under its Unreleased heading — an unversioned release rides there until the next versioned release folds it`);
+				else if (prep.changelogBase && prep.changelogBase.source !== "none" && !prep.noFoldCheck) {
+					const base = prep.changelogBase;
+					if (pending.every((l) => base.pending.includes(l)))
+						errs.push(`${prep.changelog.file}'s Unreleased section gained nothing on this branch (vs the ${base.source}) — add this release's own entry under the Unreleased heading, or skip the fold proofs with --no-fold-check`);
+				}
+			}
 		}
 	} else {
 		if (cfg.versioning.file) {
@@ -264,8 +350,19 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 		if (cfg.release.changelog) {
 			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog`);
 			else {
-				if (prep.manifestVersion && !prep.changelog.content.includes(prep.manifestVersion))
-					errs.push(`${prep.changelog.file} does not mention version ${prep.manifestVersion} — add its entry before releasing`);
+				const entry = prep.manifestVersion ? changelogEntry(prep.changelog.content, prep.manifestVersion) : "";
+				if (prep.manifestVersion && !entry)
+					errs.push(`${prep.changelog.file} has no entry heading for version ${prep.manifestVersion} — add the heading (a mention in prose or a link is not an entry)`);
+				// the touched and fold proofs are about the release's own entry: a project with no version to
+				// tag has no entry to prepare, so it keeps the old contract (nothing pending under Unreleased)
+				if (prep.manifestVersion && prep.changelogChanged === false)
+					errs.push(`${prep.changelog.file} is unchanged on this branch — a release must prepare its entry in this branch, not inherit one`);
+				const base = prep.changelogBase;
+				if (entry && base && base.source !== "none" && !prep.noFoldCheck) {
+					const dropped = missingFoldedLines(base.pending, entry);
+					if (dropped.length)
+						errs.push(`${prep.changelog.file} drops ${dropped.length} Unreleased entr${dropped.length === 1 ? "y" : "ies"} from the ${base.source} under the ${prep.manifestVersion ?? "new"} heading — folding means moving them in as they are (reword afterwards, or skip with --no-fold-check):\n  ${dropped.slice(0, 5).join("\n  ")}${dropped.length > 5 ? `\n  …(${dropped.length - 5} more)` : ""}`);
+				}
 				if (unreleasedPending(prep.changelog.content))
 					errs.push(`${prep.changelog.file} still has entries under Unreleased — fold them under the v${prep.manifestVersion ?? "new"} heading before releasing (they were left by --no-version flows)`);
 			}
@@ -279,16 +376,7 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
  *  `## Unreleased` / `## [Unreleased]`; deeper `###` sub-headings stay inside the section, the
  *  next h1/h2 ends it; no section = nothing pending (the convention is opt-in). */
 export function unreleasedPending(content: string): boolean {
-	let inside = false;
-	for (const line of content.split("\n")) {
-		if (/^#{1,2}\s/.test(line)) {
-			if (inside) return false; // section ended without entries
-			inside = /^#{2,3}\s*\[?Unreleased\]?\s*$/.test(line);
-			continue;
-		}
-		if (inside && line.trim()) return true;
-	}
-	return false;
+	return unreleasedBody(content).some((l) => l.trim());
 }
 
 export function checklistHash(items: ChecklistItem[]): string {
@@ -434,7 +522,11 @@ export function looksLikeShellError(text: string): boolean {
 export function changelogEntry(content: string, version: string): string {
 	const lines = content.split("\n");
 	const level = (l: string) => (l.match(/^#+/)?.[0].length ?? 99);
-	const i = lines.findIndex((l) => level(l) <= 3 && l.includes(version));
+	// the version must be what the heading names, not merely something it contains: `## [1.2.0]`,
+	// `## 1.2.0 - 2026-01-01` and `## [v1.2.0]` count, `## [1.2.0-beta]` and a sentence naming the
+	// version do not — the forge release body is taken from this section, so it must be the right one (#97)
+	const heading = new RegExp(`^#{1,3}\\s*\\[?v?${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w.\\-])`);
+	const i = lines.findIndex((l) => level(l) <= 3 && heading.test(l));
 	if (i === -1) return "";
 	const base = level(lines[i]);
 	const out: string[] = [];

@@ -32,6 +32,9 @@ import {
 	appendRoadmapItem,
 	bashFlowGuard,
 	changelogEntry,
+	normalizeReleaseBody,
+	pendingEntryLines,
+	pickReleaseNotes,
 	checklistHash,
 	checklistPending,
 	checkoutTarget,
@@ -159,7 +162,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned)";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -902,19 +905,31 @@ ${mdDigest(draftRefresh)}`))
 				cfg.release.changelog && existsSync(path.join(wtCwd, cfg.release.changelog))
 					? { file: cfg.release.changelog, content: readFileSync(path.join(wtCwd, cfg.release.changelog), "utf8") }
 					: null;
-			// an unversioned release earns its keep by changing the changelog: proof = the file differs
-			// from the branch's merge base with the default branch, or is brand new (untracked) — local
-			// refs only, so the check stays offline-safe
-			let changelogChanged = false;
+			// The changelog's baseline is what was pending before this release. The newest tag wins over the
+			// merge base: it is what actually shipped, and a rebase or squash merge can leave the merge base
+			// unreachable — a git-topology accident must not refuse a legal release (#97).
+			let changelogChanged: boolean | null = null;
+			const changelogBase: { pending: string[]; source: "tag" | "merge-base" | "none" } = { pending: [], source: "none" };
 			if (changelog) {
+				const p = sq(cfg.release.changelog!);
 				const mb = await sh(`git merge-base origin/${sq(cfg.defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(cfg.defaultBranch)} HEAD 2>/dev/null || true`, wtCwd);
-				if (mb.ok && mb.out.trim()) {
-					const p = sq(cfg.release.changelog!);
-					const changes = await sh(`git diff --name-only ${sq(mb.out.trim())} -- ${p} 2>/dev/null; git ls-files --others --exclude-standard -- ${p}`, wtCwd);
+				const mbRef = mb.ok ? mb.out.trim() : "";
+				// proof the branch touched the changelog: local refs only, so the check stays offline-safe
+				if (mbRef) {
+					const changes = await sh(`git diff --name-only ${sq(mbRef)} -- ${p} 2>/dev/null; git ls-files --others --exclude-standard -- ${p}`, wtCwd);
 					changelogChanged = changes.out.split("\n").some((l) => l.trim());
 				}
+				const newest = !state!.noVersion && cfg.versioning.file ? newestTaggedVersion(cfg.versioning.pattern, remoteTags) : null;
+				const baseRef = newest ? cfg.versioning.pattern.replace("{version}", newest) : mbRef;
+				if (baseRef) {
+					const base = await sh(`git show ${sq(baseRef)}:${p} 2>/dev/null || true`, wtCwd);
+					if (base.out.trim()) {
+						changelogBase.pending = pendingEntryLines(base.out);
+						changelogBase.source = newest ? "tag" : "merge-base";
+					}
+				}
 			}
-			const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged };
+			const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged, changelogBase, noFoldCheck: flag("no-fold-check") };
 			// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 			const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 			if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
@@ -927,11 +942,19 @@ ${mdDigest(draftRefresh)}`))
 			state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
 			state!.approvals["pre-release"] = now();
 			state!.stage = "release";
+			// a skipped proof is never silent: the gate says which one and why (#97)
+			const foldNote = !changelog
+				? ""
+				: flag("no-fold-check")
+					? " Warning: the changelog fold proofs were skipped (--no-fold-check) — check that the entry carries what was pending."
+					: changelogBase.source === "none"
+						? " Warning: no tag or merge base to compare against, so the changelog fold was not proven — check the entry by hand."
+					: "";
 			// the version of record is fixed here, from the manifest this gate validated: release-done must not
 			// re-read a checkout that may still be behind (#52)
 			if (!state!.noVersion && manifestVer) state!.releaseVersion = manifestVer;
 			writeState(root, state!);
-			return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}\n${nextHint(state!, cfg)}` };
+			return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}\n${nextHint(state!, cfg)}` };
 		}
 
 		case "release-done": {
@@ -986,6 +1009,8 @@ ${mdDigest(draftRefresh)}`))
 			// no checkpoint here — the operator's Release? answer covered the whole publication; everything left is objective checks
 			const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;
 			let ghNote = "";
+			let bodyOfRecord: string | null = null; // the changelog entry the forge body must match (#97)
+			let bodyNote = "";
 			const forgeName = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
 			if (manifestVer && flag("no-release-create")) ghNote = "Forge release skipped (--no-release-create).";
 			else if (manifestVer && !releasesWanted) ghNote = "no forge release created (release.releases = false — the playbook says publication is manual; a stale key is how a repo ends up with tags and an empty Releases page #85).";
@@ -996,22 +1021,25 @@ ${mdDigest(draftRefresh)}`))
 				const forge = forgeName;
 				if (forge === "self") ghNote = "Forge release skipped (forge=self — publication stays manual).";
 				else {
-					// notes: the tag's annotation, else the changelog entry for this version, else nothing —
-					// and never the output of a failed command, which is how a shell error became a release body (#51)
+					// the body is the changelog entry for this version (#97); the tag annotation only stands in
+					// when the changelog has no entry for it — and never the output of a failed command, which
+					// is how a shell error became a release body (#51)
 					const notesRes = await sh(tagNotesCommand(tag), root);
-					let notes = notesRes.ok ? notesRes.out.trim() : "";
-					let notesNote = "";
-					if (!notesRes.ok) notesNote = `no release notes (the tag command failed: ${tail(notesRes.out)}). `;
-					else if (looksLikeShellError(notes)) {
-						notesNote = "no release notes (the tag command returned a shell error, not a body). ";
-						notes = "";
-					}
-					if (!notes && !notesNote && cfg.release.changelog) {
+					const annotation = notesRes.ok ? notesRes.out.trim() : "";
+					let changelogText: string | null = null;
+					if (cfg.release.changelog) {
 						const cl = path.join(gateCwd(root, state!), cfg.release.changelog);
-						if (existsSync(cl)) notes = changelogEntry(readFileSync(cl, "utf8"), manifestVer!);
-						if (notes) notesNote = `notes from ${cfg.release.changelog}. `;
+						if (existsSync(cl)) changelogText = readFileSync(cl, "utf8");
 					}
-					if (!notes && !notesNote) notesNote = `no release notes (tag ${tag} carries no annotation${cfg.release.changelog ? ` and ${cfg.release.changelog} has no ${manifestVer} entry` : ""} — tag with git tag -a). `;
+					const picked = pickReleaseNotes({ changelog: changelogText, version: manifestVer, annotation });
+					const notes = picked.notes;
+					if (picked.source === "changelog") bodyOfRecord = notes;
+					let notesNote = "";
+					if (picked.source === "changelog") notesNote = `notes from ${cfg.release.changelog}. `;
+					else if (picked.source === "annotation") notesNote = `notes from the ${tag} tag annotation — ${cfg.release.changelog ?? "no changelog"} has no ${manifestVer} entry, so the release page does not read like the changelog. `;
+					else if (!notesRes.ok) notesNote = `no release notes (the tag command failed: ${tail(notesRes.out)}). `;
+					else if (annotation && looksLikeShellError(annotation)) notesNote = "no release notes (the tag command returned a shell error, not a body). ";
+					else notesNote = `no release notes (tag ${tag} carries no annotation${cfg.release.changelog ? ` and ${cfg.release.changelog} has no ${manifestVer} entry` : ""} — tag with git tag -a). `;
 					const cmd = forge === "gitlab"
 						? `glab release create ${sq(tag)} --name ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`
 						: `gh release create ${sq(tag)} --title ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`;
@@ -1036,6 +1064,22 @@ ${mdDigest(draftRefresh)}`))
 				}
 				delete state!.forgeReleaseSkipped; // the forge has it, whatever the create call reported
 				ghNote += `${ghNote ? " " : ""}Release ${expectedTag} verified on ${forgeName}.`;
+				// #97: the changelog entry is the release body — prove the forge kept it. gh normalizes the
+				// markdown it stored, so the comparison normalizes too; on another forge say it was skipped
+				// rather than guess at a JSON shape nobody pinned.
+				if (bodyOfRecord !== null) {
+					if (forgeName !== "github") bodyNote = `Release body proof skipped (forge=${forgeName}).`;
+					else {
+						const got = await sh(`gh release view ${sq(expectedTag)} --json body --jq .body`, root);
+						if (!got.ok || !got.out.trim()) bodyNote = `warning: could not read back the ${expectedTag} release body — compare it with ${cfg.release.changelog} by hand.`;
+						else if (normalizeReleaseBody(got.out) !== normalizeReleaseBody(bodyOfRecord))
+							return {
+								text: `release gate FAILED:\n- the ${expectedTag} release body is not the ${cfg.release.changelog} entry for ${manifestVer} — publish the entry as the body: gh release edit ${expectedTag} --title ${expectedTag} --notes-file <(the entry)\n  forge body starts: ${tail(normalizeReleaseBody(got.out), 4)}\n  changelog entry starts: ${tail(normalizeReleaseBody(bodyOfRecord), 4)}`,
+								isError: true,
+							};
+						else bodyNote = `Release ${expectedTag} body matches ${cfg.release.changelog}.`;
+					}
+				}
 			}
 			state!.approvals.release = now();
 			const tailNote = [
@@ -1043,6 +1087,7 @@ ${mdDigest(draftRefresh)}`))
 				behind ? `warning: this session runs dev-flow ${behind}, not the build in the checkout — /reload before trusting what it printed.` : "",
 				openNote,
 				ghNote,
+				bodyNote,
 				artNote,
 			].filter(Boolean).join(" ");
 			writeState(root, state!);
