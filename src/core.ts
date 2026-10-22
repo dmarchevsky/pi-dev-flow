@@ -1212,6 +1212,44 @@ export function openReflections(text: string): string[] {
 	return openChecklistItems(text);
 }
 
+/** Closed (checked-off) reflection items — what `flow reflect tidy` drops (roadmap shares the checkbox test). */
+export const closedReflectionCount = (text: string) => text.split("\n").filter(isDoneItem).length;
+
+/** Drop the closed (`- [x]`) reflection items: the preamble and the open lines stay verbatim
+ *  (a line filter — no re-bucketing like appendReflection's rewrite), and a `## section` heading
+ *  left with no open items under it goes with its items. */
+export function reflectionsTidy(text: string): string {
+	const headerRe = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\s*$`, "i");
+	const lines = text.split("\n");
+	// pass 1: open items per heading decides which sections survive; items above every heading are legacy flat lines with no heading to drop
+	let section: string | null = null;
+	const openUnder = new Map<string, number>();
+	for (const raw of lines) {
+		const l = raw.trim();
+		const h = headerRe.exec(l);
+		if (h) section = h[1].toLowerCase();
+		else if (section && isOpenItem(l)) openUnder.set(section, (openUnder.get(section) ?? 0) + 1);
+	}
+	// pass 2: closed items never survive; an emptied heading never survives
+	const out: string[] = [];
+	section = null;
+	for (const raw of lines) {
+		const l = raw.trim();
+		const h = headerRe.exec(l);
+		if (h) {
+			section = h[1].toLowerCase();
+			if ((openUnder.get(section) ?? 0) > 0) out.push(raw);
+			continue;
+		}
+		if (isDoneItem(raw)) continue;
+		out.push(raw);
+	}
+	return out.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+/** Shared wording for every surface that notices closed items piling up, so all hints read alike. */
+export const reflectionsTidyHint = (closed: number) => `↻ ${closed} closed reflection(s) — flow reflect tidy drops them`;
+
 /** The note text of an item, without the checkbox and without the trailing ` — <attribution>`: what
  *  two reflects are compared on, so the same note at another date is still the same note.
  *  shortcut: split on the last em dash — matches what the tool writes; a hand-written item ending in
@@ -1278,7 +1316,7 @@ export function investigationBrief(note: string, selfRepo: boolean): string[] {
 /** Bare `flow reflect`: the full session-reflection protocol for the agent (the plugin has no LLM —
  *  the agent reviews the session log, re-checks open items against shipped fixes, dedupes new
  *  findings and puts the fix decision to the operator). Writes nothing, runs no network calls. */
-export function reflectProtocol(items: string[], selfRepo: boolean, facts: { version: string | null; upstream: string }): string[] {
+export function reflectProtocol(items: string[], selfRepo: boolean, facts: { version: string | null; upstream: string; closed?: number }): string[] {
 	const ver = facts.version ? `dev-flow ${facts.version}` : "dev-flow version unknown";
 	const up = facts.upstream || "<upstream — ask the operator for the dev-flow repo>";
 	const url = facts.upstream ? `https://github.com/${facts.upstream}` : "<upstream-url>";
@@ -1293,6 +1331,7 @@ export function reflectProtocol(items: string[], selfRepo: boolean, facts: { ver
 		`   a. plugin items: search upstream first — gh issue list --repo ${up} --state all --search "<keywords>" — an author-addressed match → report the verdict back to the operator (fixed in v… / closed won't-fix + reason), do not re-file; no match → gh issue create --repo ${up} with a detailed description, session evidence and a suggested fix.`,
 		"   b. playbook items: run flow doctor — it reviews each open item and routes it to the docs flow that implements the fix.",
 	];
+	if (facts.closed) lines.push(`${reflectionsTidyHint(facts.closed)} — check an item off only when it is handled; tidy once the checked-off pile grows.`);
 	if (!items.length) lines.push("open items: none — steps 1 and 3 still apply.");
 	else {
 		lines.push(`open items (${items.length}):`);
