@@ -49,9 +49,9 @@ adopting dev-flow can delete its own guard extension:
 ````markdown
 ## global
 ```flow-guard
-deny    \bgit\b[^\n]*\bpush\b[^\n]*--force(?!\w) :: history stays linear — PRs squash-merge
+deny    \bgit\b[^\n]*\bpush\b[^\n]*--force(?!\w) :: history stays linear — the playbook sets the merge style
 deny    \bgit\b[^\n]*\bworktree\s+prune\b :: it prunes other sessions' worktrees
-confirm \bgit\b[^\n]*\bbranch\s+(?:-D\b|--delete\b) :: deletes a squash-merged branch git cannot see as merged
+confirm \bgit\b[^\n]*\bbranch\s+(?:-D\b|--delete\b) :: deletes a merged branch git cannot see as merged
 confirm \bdocker\b[^\n]*\bcompose\b[^\n]*\brestart\b :: drops a permanent upstream connection
 protect docker/.env*                 :: gitignored live secrets — and any backup copied beside them
 forbid  docker/secrets               :: gitignored secret storage
@@ -108,12 +108,41 @@ ran, verify re-runs the health probe (`commands.health` or a `flow-check` block 
 build" means stays the project's own assertion: the probe runs with the worktree as cwd, so it can
 wait for readiness and compare the served build stamp with `git rev-parse HEAD`. No probe → the
 gate prints `health: none configured` and `flow doctor` flags the combination. The pre-release and release stages take
-`versionFile`/`versionTag` (defaults `v{version}`; accepted under either section). `## global` also takes
+`versionFile`/`versionTag` (defaults `v{version}`; accepted under either section) and
+`merge = squash | merge | rebase | any` — how a merged PR lands on the default branch (see below). `## global` also takes
 `forge = github | gitlab | self` — the release machinery's target; when unset it is detected from the
 `origin` URL at the moment of use (GitHub gets `gh`, GitLab gets `glab`, self-hosted stays forge-neutral:
 no automatic release creation, merge proof by ancestry only), and `release.releases = false` skips
 automatic release creation entirely (the legacy `github` key still parses, with a rename warning).
 A leftover `project.json` is no longer read — the doctor tells you to fold it in and delete it.
+
+### The merge policy (`merge = squash | merge | rebase | any`)
+
+The one knob a repo can silently lack: a squash and a merge commit look identical right up until someone
+needs to know which one the release contains. Three things read the key:
+
+| policy | `main` gains | provable with git alone |
+|---|---|---|
+| `merge` | a merge commit plus the branch's own commits | **yes** — the branch is an ancestor of `origin/<default>` |
+| `squash` | one new commit | no — ask the forge (`gh`/`glab`) |
+| `rebase` | the branch's commits, replayed with new SHAs | no — same |
+
+- **`flow init` asks** with evidence from your own history (`merge history: 6 merge commit(s), 3 squash(es)
+  — the most recent PR landed as squash`), and **`flow start` refuses until it is set**: the agent asks you
+  in chat, re-runs with `--merge=<style> --confirmed`, and the answer is inserted as a single line under
+  `## release` (validated before the write, `.bak` kept, committed as a playbook chore when the playbook is
+  the only dirty path). `any` is the explicit opt-out: no policy, no asking.
+- **the guard enforces it where the decision is made** — `gh pr merge --squash` against `merge = merge` is
+  blocked outright, and a merge that carries no style flag (so the forge default decides) needs your
+  confirmation; a local `git merge --squash` only ever confirms, because merging main into a branch is
+  ordinary work.
+- **`release-done` proves what actually landed** matched the policy (branch ancestry plus what the forge
+  reports), and `flow finish` says whether commits missing from the default branch are expected (squash,
+  rebase) or a violation (merge — where `yolo` does not answer for you). A shape dev-flow cannot see —
+  `forge = self`, no CLI, an unfetched branch — prints an advisory instead of refusing a legal release.
+
+What it cannot do is bind a human clicking the merge button in the Web UI: only the forge's own
+require-a-merge-strategy setting does that, and setting it stays your step in the forge, not dev-flow's.
 
 `flow init` is the dialogue around this file: **fresh repo** → prints the setup brief (detection report
 plus one question per undetected knob — forge, version convention, releases, artifacts, checks, prose),

@@ -112,6 +112,15 @@ writing.
 `flow start <slug> [--ui]` — `--ui` whenever anything user-visible is touched;
 slug lowercase words-dashed; check `flow status` for an active feature first.
 
+`flow start` **preflights** before it creates anything: it warns when this session runs an older dev-flow
+build than the checkout (`/reload` before trusting gate output), prints the playbook gaps `flow doctor`
+would report, and **refuses while the playbook has no merge policy**. That refusal is a question: ask the
+operator how a merged PR should land on the default branch — `squash`, `merge` (a merge commit), `rebase`,
+or `any` (no policy) — with the suggestion the refusal read off their own history, then re-run
+`flow start <slug> --merge=<style> --confirmed`. The gate writes the answer into `## release` (single-line
+insert, validated, `.bak` kept) and never asks again. Never pick the style yourself and never write
+`project.md` by hand to get rid of the question.
+
 ## Stage: plan
 
 1. Research the code the plan needs (reads are always allowed).
@@ -259,7 +268,10 @@ here) — this stage publishes; the preparation happened in pre-release. Run in
 the worktree unless noted:
 
 1. Commit everything, push the feature branch, open the PR, wait for the merge
-   (`gh pr merge` or ask the user) — without `--delete-branch`: it fails when
+   (`gh pr merge` or ask the user) — with the **playbook's merge style spelled out**
+   (`gh pr merge --squash` under `merge = squash`): the guard blocks a style that contradicts the
+   playbook and asks the operator about a merge with no style flag, so let the playbook decide rather
+   than the forge default. Merge without `--delete-branch`: it fails when
    the default branch is checked out in the main worktree, and `flow finish`
    deletes the branch on merge proof anyway.
 2. `git fetch`, confirm the merge landed, create the **annotated** tag
@@ -316,9 +328,10 @@ unmerged. `flow finish [slug]`:
 - removes the worktree and branch, then deletes `.dev-flow/<slug>/` and
   unbinds the session. A feature branch still on `origin` is deleted **only on
   proof it was merged** — ancestor of `origin/<default>`, or a merged PR via gh
-  (squash merges); otherwise kept with a note. Uncommitted worktree edits block
-  finish; unmerged-looking commits called out at Finish? without an operator
-  answer → stop and show them.
+  or glab (what a squash leaves behind); otherwise kept with a note. Uncommitted worktree edits block
+  finish; commits that never reached the default branch are read against the playbook's `merge` policy —
+  expected under `squash`/`rebase`, a **violation** under `merge` (which `yolo` cannot answer for), and
+  called out at Finish? without an operator answer → stop and show them.
 
 Production deployment stays manual and out of scope: never ask the operator
 whether a prod deploy happened.
