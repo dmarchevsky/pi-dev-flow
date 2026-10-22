@@ -40,6 +40,7 @@ export interface FlowState {
 	setupAt?: string; // commands.setup exited 0 in this worktree — a reused worktree reruns it only when unset (#49)
 	releaseVersion?: string; // the manifest version the release gate approved — release-done publishes this, not whatever a checkout says later (#52)
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
+	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
@@ -458,6 +459,22 @@ export function pluginVersion(fromDir: string, pkgName = "pi-dev-flow"): { versi
  * runs behind the checkout, "" when it is current or either side is unknown. */
 export function sessionRunsOlderBuild(loaded: string | null, disk: string | null): string {
 	return loaded && disk && loaded !== disk ? loaded : "";
+}
+
+/** The changelog's version headings strictly between `from` (exclusive) and `to` (inclusive), newest
+ * first — what a session running `from` is missing against a checkout on `to`, i.e. the gate proofs
+ * that will not run. Only `## [0.54.0]` / `## 0.54.0` headings with a parseable numeric-dot version
+ * count; everything else (Unreleased, prose, `v` prefixes) is skipped, and so are unparseable bounds. */
+export function changelogVersionsBetween(changelog: string, from: string, to: string): string[] {
+	const versioned = (v: string) => /^\d+\.\d+\.\d+/.test(v);
+	if (!versioned(from) || !versioned(to)) return [];
+	const found: string[] = [];
+	for (const m of changelog.matchAll(/^##\s+\[?([^\]\s]+)\]?/gm)) {
+		const v = m[1];
+		if (!versioned(v) || found.includes(v)) continue;
+		if (cmpVersions(v, from) > 0 && cmpVersions(v, to) <= 0) found.push(v);
+	}
+	return found.sort((a, b) => cmpVersions(b, a));
 }
 
 /** Owner/slug from any GitHub repo reference — "owner/repo", "github.com/owner/repo", git+https or scp-style git@github.com:owner/repo.git; "" when it is not GitHub. */
