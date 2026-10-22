@@ -4,6 +4,21 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-10-22
+
+### Fixed
+
+- **The release gate now proves the changelog instead of asking for it.** The stage told the agent to keep manifest, changelog and tag in step, but the machine checked almost none of that, and the gap showed up in the wild: a project shipped `v0.14.0` with **no changelog entry at all** while `flow check`, verify, release and `release-done` (artifact probe and all) stayed green. Four holes closed at the gate (#97): a versioned release never had to **touch** the changelog — the proof existed and was wired only to `--no-version`, so a merge commit could inherit whatever `CHANGELOG.md` main already carried; "mentions the version" was a substring test, so prose, a link reference or an older entry naming the number all passed without an entry existing (and `## [1.2.0-beta]` could stand in for the `1.2.0` release); an unversioned release could satisfy its rule by editing some unrelated older section instead of putting its line under `Unreleased`; and "folded" only meant `Unreleased` was empty, so **deleting** the pending entries passed where moving them was required. Now the gate wants a heading that names the version, an entry this branch actually prepared, and every line that was pending before the release still present inside that entry — compared on normalized lines, so re-indenting a fold is free while rewording or dropping one is refused by quoting the line that vanished.
+- **The forge release page now says what the changelog says.** `release-done` published the **tag annotation** first and fell back to the changelog entry, which meant any `git tag -a` body shipped instead of the entry, and nothing ever checked what the release page ended up holding. The changelog entry for the version is now the body of record, the annotation stands in only when the changelog has no entry for that version, and the gate **reads the stored body back** and refuses a mismatch (normalized first — the forge reflows markdown — with the missing body's own text quoted so `gh release edit` is one copy-paste away).
+
+### Added
+
+- **`flow release --no-fold-check`** — the operator's escape from the line-level fold proofs, for the case where a pending entry is deliberately rewritten rather than moved. Same convention as `--no-release-create` and `--no-artifact-check`: one flow, granted in chat, and the gate output carries the note that the proofs were skipped. The entry-heading and touched proofs are not escapable.
+
+### Changed
+
+- **A baseline that cannot be resolved is an advisory, not a refusal.** The fold comparison needs to know what was pending before the release: it reads the changelog at the **newest tag** (what actually shipped), falling back to the branch's merge base. A rebased or squash-merged branch — or a clone that has not fetched the tag — used to be the shape where a git-topology accident would block a legal release, so when no baseline resolves the two git-dependent proofs are skipped **out loud** (`Warning: no tag or merge base to compare against…`) while the content proofs — the heading exists, its body is not empty — always run. Changelogs that never adopted the `Unreleased` convention stay vacuously clean, as before.
+
 ## [0.52.3] - 2026-10-22
 
 ### Fixed
