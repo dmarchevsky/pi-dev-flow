@@ -920,12 +920,17 @@ ${mdDigest(draftRefresh)}`))
 					changelogChanged = changes.out.split("\n").some((l) => l.trim());
 				}
 				const newest = !state!.noVersion && cfg.versioning.file ? newestTaggedVersion(cfg.versioning.pattern, remoteTags) : null;
-				const baseRef = newest ? cfg.versioning.pattern.replace("{version}", newest) : mbRef;
-				if (baseRef) {
-					const base = await sh(`git show ${sq(baseRef)}:${p} 2>/dev/null || true`, wtCwd);
+				// tag first, merge base as the understudy: `releaseTags` asks origin, so a clone that has not
+				// fetched the tag yet must still get a baseline instead of losing the fold proof
+				const bases: { ref: string; source: "tag" | "merge-base" }[] = [];
+				if (newest) bases.push({ ref: cfg.versioning.pattern.replace("{version}", newest), source: "tag" });
+				if (mbRef) bases.push({ ref: mbRef, source: "merge-base" });
+				for (const b of bases) {
+					const base = await sh(`git show ${sq(b.ref)}:${p} 2>/dev/null || true`, wtCwd);
 					if (base.out.trim()) {
 						changelogBase.pending = pendingEntryLines(base.out);
-						changelogBase.source = newest ? "tag" : "merge-base";
+						changelogBase.source = b.source;
+						break;
 					}
 				}
 			}
