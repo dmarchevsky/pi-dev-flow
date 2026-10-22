@@ -371,20 +371,22 @@ test("the health probe waits for a service that lags its deploy; healthWait 0 ke
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n`;
-	// the deploy stamps the second it ran; the probe only goes green 3s later — the boot-lag shape from #42
-	const bootLag = (wait: string) => `test = node --version\ndev = date +%s > flow-start\nhealth = test $(( $(date +%s) - $(cat flow-start) )) -ge 3\nhealthWait = ${wait}\n`;
+	// the service lags its deploy by two probes — counted, not timed. A wall-clock threshold here made the
+	// attempt count depend on how fast the box spawns a shell: a late first probe went green on attempt 2
+	// (or 1, which prints no count at all) while the gate had behaved correctly — the #42 shape, load-proof now
+	const bootLag = (wait: string) => `test = node --version\ndev = echo 0 > boot-count\nhealth = n=$(( $(cat boot-count) + 1 )); echo $n > boot-count; test $n -ge 3\nhealthWait = ${wait}\n`;
 	const toImplement = async (slug: string, body: string) => {
 		await flow(["init", "--write", md(body)]);
 		await flow(["start", slug]);
 		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
 		await flow(["approve", "--confirmed"]);
-		writeFileSync(path.join(repo, ".dev-flow", slug, "worktree", "flow-start"), "0"); // the app is up before the redeploy, so the pre-verify check passes
+		writeFileSync(path.join(repo, ".dev-flow", slug, "worktree", "boot-count"), "5"); // the app is up before the redeploy, so the pre-verify check passes
 		await flow(["check"]);
 		commitWt(repo, slug);
 	};
 	await flow(["init"]);
-	await toImplement("bootlag", bootLag("10"));
+	await toImplement("bootlag", bootLag("20")); // a wide budget: this case proves the wait is used, not that it expires
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /health: PASS \(.*, 3 attempts\)/, `the gate waited and says how it tried: ${ok.content[0].text}`);
 	await toImplement("single", bootLag("0"));
