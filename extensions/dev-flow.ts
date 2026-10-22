@@ -122,6 +122,40 @@ function loadedVersion(): string | null {
 	return process.env.DEV_FLOW_LOADED_VERSION?.trim() || pluginVersion(import.meta.dirname).version;
 }
 
+/** This build's own identity, read once (the guard hot path must not re-walk the fs per call). */
+const SELF_BUILD = pluginVersion(import.meta.dirname);
+
+/** Cross-copy registry: one process can register dev-flow more than once (the documented
+ * two-sources-at-once hazard: a project dogfood pointer plus an installed copy), and EVERY copy
+ * evaluates every guard hook. The flow-tool binding belongs to whichever copy served the call,
+ * so the other copy judges from a missing binding — claims on disk (see boundFeature) keep its
+ * verdict honest, and these entries let `flow version`, `status` and `start` name the duplicate
+ * instead of leaving a misattribution a mystery. Same-process only: it is a globalThis list. */
+interface CopyEntry {
+	dir: string;
+	version: string | null;
+	pid: number;
+	at: string;
+}
+const COPIES: CopyEntry[] = ((globalThis as { __piDevFlowCopies?: CopyEntry[] }).__piDevFlowCopies ??= []);
+function registerCopy(): void {
+	const mine = COPIES.find((r) => r.dir === SELF_BUILD.dir && r.pid === process.pid);
+	if (mine) Object.assign(mine, { version: loadedVersion(), at: new Date().toISOString() });
+	else COPIES.push({ dir: SELF_BUILD.dir, version: loadedVersion(), pid: process.pid, at: new Date().toISOString() });
+}
+function otherCopies(): CopyEntry[] {
+	return COPIES.filter((r) => r.pid === process.pid && r.dir !== SELF_BUILD.dir);
+}
+function copyWarning(): string | null {
+	const dup = otherCopies();
+	return dup.length
+		? `warning: ${dup.length} other dev-flow cop${dup.length === 1 ? "y" : "ies"} registered in this process: ${dup.map((d) => `${d.dir} (${d.version ?? "?"})`).join(", ")} — every copy evaluates the guard hooks, so keep only one source you intend (README: two sources at once)`
+		: null;
+}
+/** Test seam: the smoke suite cannot load a second copy of this module, so it plants registry
+ * entries and asserts the warnings the real duplicate would print. */
+export const testSeams = { copies: COPIES };
+
 interface Ui {
 	hasUI: boolean;
 	confirm: (title: string, message: string) => Promise<boolean>;
@@ -247,7 +281,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build, and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the loaded build (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build, and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the loaded build and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -321,6 +355,12 @@ function boundFeature(root: string, key: string): FlowState | null {
 		if (s && s.stage !== "done") return s;
 	}
 	const un = unfinishedStates(root);
+	// the claim is the persisted binding: bind() already stamps the session key into claim.json, so
+	// trust the disk after the in-memory map — a second registered dev-flow copy (both copies
+	// evaluate the guard hooks) or a re-instantiated module then attributes the session's own
+	// feature from disk instead of misjudging with stage null
+	const mine = un.find((s) => readClaim(root, s.slug)?.key === key);
+	if (mine) return mine;
 	if (un.length !== 1) return null;
 	const claim = readClaim(root, un[0].slug);
 	// shortcut: liveness is pid-only — pid reuse can read "live" and force an explicit flow use; friction only, never a wrong commit.
@@ -723,6 +763,8 @@ ${mdDigest(draftRefresh)}`))
 			const self = pluginVersion(import.meta.dirname);
 			const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
 			if (behind) notes.push(`warning: this session runs dev-flow ${behind}, the checkout has ${self.version} — /reload before trusting what a gate prints`);
+			const dupStart = copyWarning();
+			if (dupStart) notes.push(dupStart);
 			if (flag("check-upstream")) {
 				const pub = await sh("npm view pi-dev-flow version", root);
 				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
@@ -771,7 +813,7 @@ ${mdDigest(draftRefresh)}`))
 			const { md } = loadProject(df);
 			// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
 			const findings = md ? doctorFindings(root, cfg, md) : [];
-			const warn = findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : [];
+			const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
 			// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
 			const rmap = roadmapOpenCount(readRoadmap(root));
 			const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
@@ -877,13 +919,14 @@ ${mdDigest(draftRefresh)}`))
 			const self = pluginVersion(import.meta.dirname);
 			const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
 			const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
+			const dupNote = copyWarning();
 			// --check-upstream is the one that asks the registry; plain flow version stays offline and instant
 			if (flag("check-upstream")) {
 				const pub = await sh("npm view pi-dev-flow version", root);
 				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
 				return { text: newest ? `${head} — published: ${newest}${self.version && newest !== self.version ? " (update available)" : ""}` : `${head} — could not read the published version (offline?)` };
 			}
-			return { text: behind ? `${head} — but this session runs ${behind}; /reload to run ${self.version}` : head };
+			return { text: `${behind ? `${head} — but this session runs ${behind}; /reload to run ${self.version}` : head}${dupNote ? `\n${dupNote}` : ""}` };
 		}
 
 		case "approve": {
@@ -1324,6 +1367,22 @@ ${mdDigest(draftRefresh)}`))
 				const pushed = await sh(`git merge-base --is-ancestor HEAD ${sq(`origin/${cfg.defaultBranch}`)}`, root);
 				if (!pushed.ok) return { text: `HEAD is not on origin/${cfg.defaultBranch} — push the release (git push origin ${cfg.defaultBranch}) before finish`, isError: true };
 			}
+			// close-out also syncs the main checkout: a released flow must never leave local
+			// <default> trailing origin — the push check above proved nothing local-only remains, so a
+			// differing sha means local trails and the fast-forward is safe. never a merge: a diverged
+			// or not-checked-out main prints the operator's exact command instead of touching anything
+			let syncNote = "";
+			if (hasOriginF) {
+				const headSha = await sh("git rev-parse HEAD", root);
+				const originSha = await sh(`git rev-parse ${sq(`origin/${cfg.defaultBranch}`)}`, root);
+				if (headSha.ok && originSha.ok && headSha.out.trim() !== originSha.out.trim()) {
+					const onDefault = (await currentBranch(root)) === cfg.defaultBranch;
+					const ff = onDefault ? await sh(`git merge --ff-only ${sq(`origin/${cfg.defaultBranch}`)}`, root) : { ok: false, out: "" };
+					syncNote = ff.ok
+						? ` local ${cfg.defaultBranch} fast-forwarded to origin/${cfg.defaultBranch}.`
+						: ` local ${cfg.defaultBranch} trails origin/${cfg.defaultBranch} and did not fast-forward cleanly — sync by hand: git -C ${sq(root)} pull --ff-only`;
+				}
+			}
 			// the cleanup part of closing out: drop the worktree and branch the release consumed
 			const wt = worktreeAbs(root, state!);
 			let closeNote: string;
@@ -1413,7 +1472,7 @@ ${mdDigest(draftRefresh)}`))
 					roadmapNote = ` roadmap: ${r.count} item(s) marked done.`;
 				}
 			}
-			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}` };
+			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}${syncNote}` };
 		}
 
 		case "use": {
@@ -1502,6 +1561,7 @@ async function askOperator(ctx: ExtensionContext, what: string, why: string): Pr
 }
 
 export default function devFlow(pi: ExtensionAPI) {
+	registerCopy(); // which copy of dev-flow this is — see COPIES
 	/** Parse "flow <sub> [slug] [--flags]" args shared by command and tool. */
 	const parse = (input: unknown): string[] => {
 		if (Array.isArray(input)) return input.map(String);
@@ -1751,7 +1811,7 @@ export default function devFlow(pi: ExtensionAPI) {
 					const dirty = await sh(`git -C ${sq(gitDir)} status --porcelain`, ctx.cwd);
 					playbookChore = dirty.ok && playbookOnlyChange(dirty.out);
 				}
-				const reason = bashFlowGuard({ command: g.seg, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore, dir: gitDir });
+				const reason = bashFlowGuard({ command: g.seg, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore, dir: gitDir, attribution: bound ? undefined : `not attributed to a bound feature (session ${key}; dev-flow ${loadedVersion() ?? "?"} at ${SELF_BUILD.dir}) — run flow use <slug> here if a binding is missing` });
 				if (reason) return { block: true, reason };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
 				const target = checkoutTarget(g.seg);
