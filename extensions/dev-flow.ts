@@ -39,6 +39,7 @@ import {
 	checklistPending,
 	checkoutTarget,
 	claimBlocks,
+	classifyMergeHistory,
 	cmpVersions,
 	cleanupAssess,
 	compactionReflectionLine,
@@ -54,6 +55,9 @@ import {
 	guardPath,
 	healthProbe,
 	healthRetry,
+	mergeShapeProof,
+	mergeStyleInvocation,
+	parseMergeStyle,
 	investigationBrief,
 	parseLsRemoteTags,
 	parsePushRefs,
@@ -103,7 +107,7 @@ import {
 	type PushRef,
 	type SessionClaim,
 } from "../src/core.ts";
-import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd } from "../src/projectmd.ts";
+import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
 import { bashTimeout, requireTimeout } from "../src/timeouts.ts";
 import { detectProject } from "../src/detect.ts";
 
@@ -135,6 +139,81 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
 
+/** A `--merge=squash` style flag, or null when absent. Returned as the raw string: the caller validates it
+ *  with parseMergeStyle so a typo is reported instead of ignored. */
+function flagValue(rest: string[], name: string): string | null {
+	for (const a of rest) {
+		const m = a.match(new RegExp(`^--${name}=(.+)$`));
+		if (m) return m[1];
+	}
+	return null;
+}
+
+/** One cheap first-parent log tells the operator what their repo actually does when a PR merges: merge
+ *  commits or one squashed commit per PR. `flow init` and `flow start` ask with this evidence instead of
+ *  asking blind; null when there is no default-branch log to read. */
+async function mergeHistoryEvidence(root: string, defaultBranch: string): Promise<{ note: string; recent: "squash" | "merge" | "rebase" | null } | null> {
+	const log = await sh(`git log --first-parent -n 40 --format=%p|%s ${sq(`origin/${defaultBranch}`)} 2>/dev/null || git log --first-parent -n 40 --format=%p|%s ${sq(defaultBranch)} 2>/dev/null`, root);
+	if (!log.ok || !log.out.trim()) return null;
+	const c = classifyMergeHistory(log.out.split("\n"));
+	return { note: c.note, recent: c.recent };
+}
+
+/** How the forge says the PR landed, when it can be asked — the only way to tell a squash from a rebase,
+ *  because both erase the branch's ancestry. null = unaskable (self-hosted, no CLI, no merged PR found). */
+async function forgeMergeStyle(root: string, forge: string, branch: string): Promise<"squash" | "merge" | "rebase" | null> {
+	if (!branch) return null;
+	// sh() folds stderr into stdout, so a CLI error can arrive where the JSON was expected: parse defensively
+	const json = (out: string): unknown | null => {
+		try {
+			return JSON.parse(out);
+		} catch {
+			return null;
+		}
+	};
+	if (forge === "github") {
+		const pr = await sh(`gh pr list --state merged --head ${sq(branch)} --json number,squashCommit,rebaseCommit,mergeCommit --jq '.[0]'`, root);
+		if (!pr.ok || !pr.out.trim() || pr.out.trim() === "null") return null;
+		const parsed = json(pr.out.trim()) as { squashCommit?: string | null; rebaseCommit?: string | null; mergeCommit?: string | null } | null;
+		return parsed?.squashCommit ? "squash" : parsed?.rebaseCommit ? "rebase" : parsed?.mergeCommit ? "merge" : null;
+	}
+	if (forge === "gitlab") {
+		const mr = await sh(`glab api ${sq(`projects/:id/merge_requests?source_branch=${branch}&state=merged&per_page=1`)}`, root);
+		if (!mr.ok || !mr.out.trim() || mr.out.trim() === "[]") return null;
+		const list = json(mr.out.trim()) as { squash_commit_sha?: string | null; merge_commit_sha?: string | null }[] | null;
+		const parsed = Array.isArray(list) ? list[0] : null;
+		return parsed?.squash_commit_sha ? "squash" : parsed?.merge_commit_sha ? "merge" : null;
+	}
+	return null;
+}
+
+/**
+ * Write the merge policy into the playbook with a single-line insert — never a draft regeneration, which
+ * cannot reproduce hand-written prose and checklist items and would drop them. Validated before it is
+ * written and kept as `.bak`, exactly like `flow init --write`. The commit is the playbook chore the guard
+ * already blesses, and only when the playbook is the only dirty path: a gate never sweeps someone else's
+ * work into a chore commit.
+ */
+async function writePlaybookMergePolicy(root: string, style: string): Promise<{ note: string } | { err: string }> {
+	const mdFile = path.join(dfDir(root), "project.md");
+	if (!existsSync(mdFile)) return { err: "no .dev-flow/project.md to write the policy into — run flow init first" };
+	const ins = setPlaybookKey(readFileSync(mdFile, "utf8"), "release", "merge", style);
+	if ("error" in ins) return { err: ins.error };
+	const parsed = parseProjectMd(ins.text);
+	if (parsed.hard.length) return { err: `refusing to write project.md — the result would not parse:\n- ${parsed.hard.join("\n- ")}` };
+	copyFileSync(mdFile, `${mdFile}.bak`);
+	writeFileSync(mdFile, ins.text);
+	const dirty = await sh("git status --porcelain", root);
+	const onlyPlaybook = dirty.ok && dirty.out.trim().split("\n").every((l) => l.trim().endsWith(" .dev-flow/project.md"));
+	const tracked = (await sh("git ls-files --error-unmatch .dev-flow/project.md", root)).ok;
+	let note = `merge = ${style} written to .dev-flow/project.md (${ins.where}; previous copy kept as project.md.bak)`;
+	if (tracked && onlyPlaybook) {
+		const commit = await sh(`git add .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -q -m ${sq(`playbook: merge policy = ${style}`)}`, root);
+		note += commit.ok ? " — committed as a playbook chore" : ` — commit failed (${tail(commit.out)}); commit it yourself`;
+	} else note += `. ${GIT_TRACK_NOTE}`;
+	return { note };
+}
+
 /**
  * Run the health probe with the playbook's wait budget (#42). A service whose readiness lags its
  * container start can never pass a single shot, and hand-writing a poll loop into every playbook was
@@ -162,7 +241,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned)";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build, and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the loaded build (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -450,9 +529,11 @@ function isSelfRepo(root: string): boolean {
 }
 
 /** The questions `flow init` asks before writing a playbook — detection fills what it can, the operator answers the rest (the agent relays them). */
-function setupQuestions(det: { partial: { defaultBranch: string; versioning?: { file: string }; forge?: string }; missing: string[] }): string[] {
+function setupQuestions(det: { partial: { defaultBranch: string; versioning?: { file: string }; forge?: string; merge?: string }; missing: string[] }): string[] {
 	const q = [det.partial.forge ? `git forge: detected "${det.partial.forge}" from the origin URL — github, gitlab or self-hosted? (global key forge)` : "git forge: no origin remote to detect from — github, gitlab or self-hosted? (global key forge)"];
 	q.push(det.partial.versioning ? `version manifest: detected ${det.partial.versioning.file} — keep it? tag pattern v{version}?` : "versioning: no manifest found — which file holds the version (VERSION recommended), and the tag pattern?");
+	// the merge style is inferable from history and worth asking with that evidence: a repo almost always has one
+	q.push(`${det.partial.merge ? `${det.partial.merge} —` : "merge history: nothing to read a style from —"} how should a merged PR land on the default branch: squash, merge (a merge commit), rebase, or any (no policy)? it is written as merge = <style> under ## release and the gates enforce it.`);
 	q.push("releases: should release-done create the forge release automatically via gh/glab (releases = yes), or is publishing manual (no)?");
 	q.push("artifacts: do you publish anything to a registry (e.g. a container image to Docker Hub)? then release.artifact needs a verify command (e.g. docker buildx imagetools inspect <image>:{version}); the push itself belongs to ## release prose.");
 	q.push(`tier-1 checks: ${det.missing.length ? `not detected: ${det.missing.join(", ")} —` : "detected test/build/run —"} which commands run tests, the build? any lint/typecheck? each extra becomes a flow-check block under ## implement.`);
@@ -505,6 +586,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			const det = detectProject(root, branch);
 			const origin = await sh("git remote get-url origin", root);
 			det.partial.forge = origin.ok && origin.out.trim() ? detectForge(origin.out) : undefined; // confirmed or corrected by the operator during setup; absent = no origin to detect from
+			det.partial.merge = (await mergeHistoryEvidence(root, branch))?.note; // "what do you actually do when a PR merges", read off the log
 			const loaded = loadProject(dfDir(root));
 			const draftFresh = buildDraft(det);
 			const draftRefresh = buildDraft(det, loaded.cfg);
@@ -571,6 +653,11 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 				// doctor mode: cheap consistency probes only — never runs project commands
 				const findings = doctorFindings(root, loaded.cfg, loaded.md);
 				findings.push(...(await gitConsistency(root, loaded.cfg)));
+				// a repo that never said how a PR merges gets the evidence next to the finding, so the answer is a choice and not a guess
+				if (!loaded.cfg.release.merge) {
+					const ev = await mergeHistoryEvidence(root, loaded.cfg.defaultBranch);
+					if (ev?.recent) findings.push(`${ev.note} — write it into the playbook: merge = ${ev.recent} under ## release (or let the next flow start ask and write it)`);
+				}
 				for (const l of readReflections(root)) findings.push(`open reflection: ${l.slice(6)}`);
 				if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
 				else {
@@ -616,7 +703,7 @@ ${mdDigest(draftRefresh)}`))
 		}
 
 		case "start": {
-			if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] (slug: lowercase, dashes); --patch/--docs are operator-granted modes — ask the operator in chat, then add --confirmed", isError: true };
+			if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --patch/--docs are operator-granted modes — ask the operator in chat, then add --confirmed", isError: true };
 			if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
 			// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
 			if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
@@ -625,13 +712,52 @@ ${mdDigest(draftRefresh)}`))
 			// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
 			const curBr = await currentBranch(root);
 			if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
-			// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling
+			// --- preflight: is this session running the current build, and is the playbook complete? ---
+			const notes: string[] = [];
 			const self = pluginVersion(import.meta.dirname);
+			const behind = sessionRunsOlderBuild(LOADED_VERSION, self.version);
+			if (behind) notes.push(`warning: this session runs dev-flow ${behind}, the checkout has ${self.version} — /reload before trusting what a gate prints`);
+			if (flag("check-upstream")) {
+				const pub = await sh("npm view pi-dev-flow version", root);
+				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
+				notes.push(newest ? `published dev-flow: ${newest} (this build: ${self.version ?? "?"})${self.version && newest !== self.version ? " — an update is available" : ""}` : "could not read the published dev-flow version (offline?)");
+			}
+			// missing playbook parameters are printed at the moment they start to matter, not promised to a later doctor run
+			const gaps = doctorFindings(root, cfg, loadProject(dfDir(root)).md).filter((x) => !x.startsWith("no merge policy"));
+			if (gaps.length) notes.push(`playbook gaps (${gaps.length}) — advisory, flow doctor reviews and routes them:\n${gaps.slice(0, 5).map((g) => `  ${g}`).join("\n")}`);
+			// the merge policy is the one blocking gap: it decides the shape of the default branch and nobody can
+			// reconstruct it afterwards. Ask once in chat (a checkpoint word like any other), write the answer, continue.
+			const styleArg = flagValue(rest, "merge");
+			const style = styleArg === null ? null : parseMergeStyle(styleArg);
+			if (styleArg !== null && !style) return { text: `--merge=${styleArg} is not a policy — use squash, merge, rebase or any`, isError: true };
+			// with no playbook at all there is nothing to ask about: writing the playbook is `flow init`'s job, and
+			// a repo that never ran init must not be refused a feature by a merge-policy question
+			const hasPlaybook = existsSync(path.join(dfDir(root), "project.md"));
+			if (!hasPlaybook) notes.push("no .dev-flow/project.md yet — flow init writes the playbook (it now asks for the merge policy too)");
+			if (hasPlaybook && (!cfg.release.merge || (style && style !== cfg.release.merge))) {
+				if (!style) {
+					const ev = await mergeHistoryEvidence(root, cfg.defaultBranch);
+					return {
+						text: needsOperator(
+							`the playbook has no merge policy — ask the operator how a merged PR should land on ${cfg.defaultBranch}: squash, merge (a merge commit), rebase, or any (no policy).${ev ? ` ${ev.note}${ev.recent ? ` Detected suggestion: ${ev.recent}.` : ""}` : ""} Then re-run: flow start ${slugArg} --merge=<style> --confirmed (the answer is written into .dev-flow/project.md)`,
+							"Merge policy?",
+						),
+						isError: true,
+					};
+				}
+				if (!flag("confirmed")) return { text: `writing merge = ${style} changes the operator playbook — the operator must answer it in chat first, then re-run with --confirmed`, isError: true };
+				const written = await writePlaybookMergePolicy(root, style);
+				if ("err" in written) return { text: written.err, isError: true };
+				// the flow that just wrote the policy must see it: nextHint and the merge guard read this config
+				cfg.release.merge = style;
+				notes.push(written.note);
+			}
+			// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling
 			const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), self.version ?? undefined);
 			mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
 			writeState(root, state);
 			sess.bind(slugArg);
-			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${self.version ? `, dev-flow ${self.version}` : ""}).\n${nextHint(state, cfg)}` };
+			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${self.version ? `, dev-flow ${self.version}` : ""}).${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
 		}
 
 		case "status": {
@@ -745,6 +871,12 @@ ${mdDigest(draftRefresh)}`))
 			const self = pluginVersion(import.meta.dirname);
 			const behind = sessionRunsOlderBuild(LOADED_VERSION, self.version);
 			const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
+			// --check-upstream is the one that asks the registry; plain flow version stays offline and instant
+			if (flag("check-upstream")) {
+				const pub = await sh("npm view pi-dev-flow version", root);
+				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
+				return { text: newest ? `${head} — published: ${newest}${self.version && newest !== self.version ? " (update available)" : ""}` : `${head} — could not read the published version (offline?)` };
+			}
 			return { text: behind ? `${head} — but this session runs ${behind}; /reload to run ${self.version}` : head };
 		}
 
@@ -1041,10 +1173,25 @@ ${mdDigest(draftRefresh)}`))
 					else errs.push(`artifact not published — release.artifact check failed (${cmd}):\n${tail(art.out)}`);
 				}
 			}
+			// merge policy: did what actually landed agree with what the playbook says? A measured contradiction
+			// refuses the release record; what dev-flow cannot see stays an advisory — the split the changelog
+			// proofs learned (#97): an invisible topology never blocks a legal release.
+			let mergeNote = "";
+			if (cfg.release.merge && cfg.release.merge !== "any" && state!.branch) {
+				const br = state!.branch;
+				await sh(`git fetch -q origin ${sq(br)} 2>/dev/null; git fetch -q origin ${sq(cfg.defaultBranch)} 2>/dev/null`, root);
+				const refsOk = hasOrigin && (await sh(`git show-ref --quiet --verify ${sq(`refs/remotes/origin/${br}`)} ${sq(`refs/remotes/origin/${cfg.defaultBranch}`)}`, root)).ok;
+				// ancestry proves "not squashed, not rebased"; a squash and a rebase look identical here, so when it
+				// fails the forge itself is asked which one it was (gh/glab; self-hosted stays an advisory)
+				const ancestor = refsOk ? (await sh(`git merge-base --is-ancestor origin/${sq(br)} origin/${sq(cfg.defaultBranch)}`, root)).ok : null;
+				const forgeProof = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
+				const proof = mergeShapeProof(cfg.release.merge, { ancestor, forgeStyle: ancestor === false ? await forgeMergeStyle(gateCwd(root, state!), forgeProof, br) : null, branch: br, defaultBranch: cfg.defaultBranch });
+				if (proof.errors.length) errs.push(...proof.errors);
+				else mergeNote = proof.note;
+			}
 			if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 			// no checkpoint here — the operator's Release? answer covered the whole publication; everything left is objective checks
-			const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;
-			let ghNote = "";
+			const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;			let ghNote = "";
 			let bodyOfRecord: string | null = null; // the changelog entry the forge body must match (#97)
 			let bodyNote = "";
 			const forgeName = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
@@ -1121,6 +1268,7 @@ ${mdDigest(draftRefresh)}`))
 			const tailNote = [
 				// a session that shipped from behind: the code it runs is not the code the checkout just released
 				behind ? `warning: this session runs dev-flow ${behind}, not the build in the checkout — /reload before trusting what it printed.` : "",
+				mergeNote,
 				openNote,
 				ghNote,
 				bodyNote,
@@ -1138,7 +1286,8 @@ ${mdDigest(draftRefresh)}`))
 			// after this the flow state is gone: nothing may sit uncommitted or unpushed
 			const dirty = await sh("git status --porcelain", root);
 			if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
-			if ((await sh("git remote get-url origin", root)).ok) {
+			const hasOriginF = (await sh("git remote get-url origin", root)).ok;
+			if (hasOriginF) {
 				const pushed = await sh(`git merge-base --is-ancestor HEAD ${sq(`origin/${cfg.defaultBranch}`)}`, root);
 				if (!pushed.ok) return { text: `HEAD is not on origin/${cfg.defaultBranch} — push the release (git push origin ${cfg.defaultBranch}) before finish`, isError: true };
 			}
@@ -1151,7 +1300,22 @@ ${mdDigest(draftRefresh)}`))
 				const unmerged = await sh(`git -C ${sq(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${sq(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 				const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
 				if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
-				if (assess.unmerged.length) unmergedNote = ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?).`;
+				if (assess.unmerged.length) {
+					const policy = cfg.release.merge;
+					// "not on the default branch" is only a violation when the ancestry is measurable: with no origin,
+					// or a branch that was never pushed, the same count describes a local-only repo, not a squash
+					const measurable = hasOriginF && !!state!.branch && (await sh(`git show-ref --quiet --verify ${sq(`refs/remotes/origin/${state!.branch}`)} ${sq(`refs/remotes/origin/${cfg.defaultBranch}`)}`, root)).ok;
+					unmergedNote =
+						policy && policy !== "merge" && policy !== "any"
+							? ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} — expected, the playbook merges with ${policy}.`
+							: policy === "merge" && measurable
+								? ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} although the playbook says merge = merge — that PR did not land as a merge commit`
+								: ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?)`;
+					// under a merge-commit policy this is a violation, not a routine cleanup note: yolo does not
+					// answer it, only the operator does
+					if (policy === "merge" && measurable && !flag("confirmed"))
+						return { text: needsOperator(`the playbook says merge = merge, but ${assess.unmerged.length} commit(s) of ${state!.slug} are not on ${cfg.defaultBranch} — the PR landed as a squash or a rebase. Ask the operator how to proceed, then re-run with --confirmed`, "Merge policy violation?"), isError: true };
+				}
 			}
 			// a forge release that failed at release-done is still the operator's call — but they must see it before the state vanishes (#63)
 			const forgeSkipNote = state!.forgeReleaseSkipped ? ` WARNING: the forge release was not created (${state!.forgeReleaseSkipped}) — recreate it manually or re-run release-done before finishing.` : "";
@@ -1503,6 +1667,15 @@ export default function devFlow(pi: ExtensionAPI) {
 			// itself so a project never needs a blunt `--force` deny of its own (#82, #83)
 			if (forcePushInvocation(command)) {
 				const why = await askOperator(ctx, command, `a forced push rewrites a pushed branch — CI and other sessions lose these commits (with the operator's word, prefix the push with ${ALLOW_REWRITE})`);
+				if (why) return { block: true, reason: why };
+			}
+			// the playbook's merge style is enforced where the decision is actually made: gh/glab merging the PR.
+			// An explicit contradiction is a hard block, a merge with no style flag (the forge default decides)
+			// is a confirmation. No policy in the playbook → no new verdicts at all.
+			const mv = mergeStyleInvocation(command, cfg.release.merge);
+			if (mv.block) return { block: true, reason: mv.block };
+			if (mv.confirm) {
+				const why = await askOperator(ctx, command, mv.confirm);
 				if (why) return { block: true, reason: why };
 			}
 			const inv = gitInvocation(command);

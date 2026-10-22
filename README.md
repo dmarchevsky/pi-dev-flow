@@ -57,7 +57,8 @@ package — so keep the one you actually update from.
 Then, once per project repo, `/flow init`. It reads the repo (default branch and forge from git,
 package manager, test/build/run conventions, version manifest) and writes **`.dev-flow/project.md`
 — your playbook**: the commands that count as checks, the manual checklist, the version and tag
-convention, and any hard safety rules of your own. It asks about everything detection could not
+convention, how a merged PR lands (`merge = squash | merge | rebase`), and any hard safety rules of your
+own. It asks about everything detection could not
 decide (self-hosted forge? Docker artifacts? what "healthy" means?) and installs a `pre-commit` hook
 that blocks direct main commits. Run `/flow init` again later and it becomes a **doctor**: drift in
 your playbook, dead commands, config problems — it never rewrites your hand edits without asking.
