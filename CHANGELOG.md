@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.55.0] - 2026-10-22
+
+### Changed
+
+- **A stale session build is a question at `flow release`, not a stop.** Gates execute the dev-flow build the session loaded at start, and the checkout moves past it with every release — and shipping from behind had already cost releases: 0.53.0 and 0.53.1 were both published under 0.52.2 code (so #97's changelog proofs never fired and the release pages took tag annotations), and the 0.54.0 release itself ran under loaded 0.53.0, so its own new proofs (merge shape, artifact freshness) never fired in-session. The old answer was prose — *stop and ask the operator to `/reload` before publishing* — a refusal with no gate behind it, and a refusal is the wrong shape: publishing under an older gate is a legitimate operator choice (hotfix, offline reload), exactly the emergency the relaxed modes exist for. Now, when the loaded build is **behind** the checkout's, `flow release` prints both builds, lists the changelog versions that shipped between them (the proofs that will not run this release), and folds *update (`/reload`, then re-run) or proceed with the old release?* into the Release? question — still exactly one checkpoint. The decision is stamped into the release (`staleBuild`) and `release-done` repeats the acknowledgement in place of its bare after-the-fact warning, which stays as the backstop for headless runs; a session build **ahead** of the checkout's manifest is asked nothing, because no proof is missing there. `DEV_FLOW_LOADED_VERSION` lets the smoke suite stand in for an old session — the override can only ever make a gate more cautious, never lift a proof.
+
 ## [0.54.0] - 2026-10-22
 
 ### Added
