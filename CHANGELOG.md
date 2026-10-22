@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.53.1] - 2026-10-22
+
+### Fixed
+
+- **`flow check` no longer runs tier-1 checks for a `--docs` flow.** Every other gate already exempted docs flows — `pendingChecks`, verify and the release gate all skip the check requirement there, and verify says `docs mode: project commands skipped` — but `flow check` ran the project's commands anyway. In a fresh checkout that has never built anything, a CHANGELOG-only change therefore came back `health: FAIL` (`/bin/sh: kill: No such process` from a probe aimed at a binary that does not exist), which reads exactly like a broken deploy. It now answers in verify's words: `docs mode: project commands skipped`, and says plainly that CI on the tag and the artifact proof are what still stand behind the release. Nothing about the docs contract changed — this removed a command surface that contradicted it.
+
 ## [0.53.0] - 2026-10-22
 
 ### Fixed
