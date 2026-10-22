@@ -1071,7 +1071,7 @@ ${mdDigest(draftRefresh)}`))
 					if (forgeName !== "github") bodyNote = `Release body proof skipped (forge=${forgeName}).`;
 					else {
 						const got = await sh(`gh release view ${sq(expectedTag)} --json body --jq .body`, root);
-						if (!got.ok || !got.out.trim()) bodyNote = `warning: could not read back the ${expectedTag} release body — compare it with ${cfg.release.changelog} by hand.`;
+						if (!got.ok) bodyNote = `warning: could not read back the ${expectedTag} release body — compare it with ${cfg.release.changelog} by hand.`;
 						else if (normalizeReleaseBody(got.out) !== normalizeReleaseBody(bodyOfRecord))
 							return {
 								text: `release gate FAILED:\n- the ${expectedTag} release body is not the ${cfg.release.changelog} entry for ${manifestVer} — publish the entry as the body: gh release edit ${expectedTag} --title ${expectedTag} --notes-file <(the entry)\n  forge body starts: ${tail(normalizeReleaseBody(got.out), 4)}\n  changelog entry starts: ${tail(normalizeReleaseBody(bodyOfRecord), 4)}`,
