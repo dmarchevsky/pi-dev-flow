@@ -194,6 +194,9 @@ const compacting = new Set<string>();
 /** Seam for the takeover's summarize call (pi's own compact()); tests replace `.run` — mutable object stands in for ESM mocking. */
 export const compactionTakeover: { run: typeof compact } = { run: compact };
 
+/** Marks the before_agent_start pass that already wrote this run's [dev-flow] line — see the claim in that handler. */
+const CONTEXT_EMITTED = Symbol.for("pi-dev-flow.context-emitted");
+
 function unfinishedStates(root: string): FlowState[] {
 	if (!existsSync(dfDir(root))) return [];
 	return readdirSync(dfDir(root), { withFileTypes: true })
@@ -1464,6 +1467,14 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
+		// One [dev-flow] line per run, whatever number of copies of this package are installed.
+		// The same package reaches one runtime twice all the time (a project pin beside the npm install,
+		// or this checkout's .pi/extensions pointer beside it) and pi dedupes extensions by file path
+		// only, so both copies answer and the line lands twice in the prompt. pi hands every handler of
+		// a run the same ctx object, so the first pass claims the run and the rival stays silent.
+		const run = ctx as unknown as Record<symbol, boolean | undefined>;
+		if (run[CONTEXT_EMITTED]) return undefined;
+		run[CONTEXT_EMITTED] = true;
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
 		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 		const state = boundFeature(ctx.cwd, sessionKey(ctx));

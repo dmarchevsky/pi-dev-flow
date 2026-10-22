@@ -1131,7 +1131,8 @@ test("a live foreign claim refuses auto-bind; flow use takes over explicitly", a
 	await pi.cmds.flow.handler("use claim-feature", b);
 	assert.ok(b.notices.at(-1)?.includes("taken over from live session"), "takeover from the live holder is stated");
 	assert.equal(claimOf().key, "sess-B", "the claim moves to the taking-over session");
-	const injB2 = (await pi.handlers.before_agent_start[0]({}, b)) as { message?: { content: string } };
+	// a fresh ctx object: pi builds one per run, and a run's first pass claims it (see the copy guard)
+	const injB2 = (await pi.handlers.before_agent_start[0]({}, session("sess-B"))) as { message?: { content: string } };
 	assert.match(injB2.message?.content ?? "", /bound to: claim-feature/, "after the takeover B is bound");
 });
 
@@ -1489,4 +1490,20 @@ test("shell calls must state their timeout by default; bashTimeout = inject rest
 	const armed = { command: "git status" } as { command: string; timeout?: number };
 	await inj.pi.handlers.tool_call[0]({ toolName: "bash", input: armed }, inj.ctx);
 	assert.equal(armed.timeout, 30, "and the class default lands on the call input — that is what arms pi\u0027s kill timer");
+});
+
+test("a second copy of the package adds no second [dev-flow] line", async () => {
+	// pi dedupes extensions by file path, so one package installed twice (a project pin beside the npm
+	// install, or this checkout's .pi/extensions pointer beside it) registers this handler twice — and
+	// both messages landed in the prompt. pi gives every handler of a run the same ctx: the first pass
+	// claims the run, the rival answers nothing, and the next run gets its line again.
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	await pi.cmds.flow.handler("init", ctx);
+	const handler = pi.handlers.before_agent_start[0];
+	assert.match(((await handler({}, ctx)) as { message: { content: string } }).message.content, /no flow bound/);
+	assert.equal(await handler({}, ctx), undefined, "the second copy's pass over the same run adds nothing");
+	const next = makeCtx(repo); // pi builds a fresh ctx per run
+	assert.match(((await handler({}, next)) as { message: { content: string } }).message.content, /no flow bound/, "the next run is served again");
 });
