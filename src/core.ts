@@ -1310,7 +1310,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
 			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
 		case "pre-release":
-			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog}` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
+			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog} (a heading for the new version, carrying every pending Unreleased line over as it stands)` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":
 			return state.approvals.release
 				? "release recorded — commit and push the release chores in the main checkout (prefix the commit with DEV_FLOW_ALLOW_MAIN=1 — the installed pre-commit hook otherwise blocks main commits), ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"

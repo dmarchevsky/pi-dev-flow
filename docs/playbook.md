@@ -90,7 +90,9 @@ your `deny` rules do not have a back door through the read-only list.
 `## pre-release` prose is where rules like “follow semver: minor for user-facing features, patch
 otherwise; confirm the number before tagging” live — the agent sees them at stage entry, and
 `flow release` / `flow release-done` hard-check the manifest side (bumped past the last tag, then
-manifest↔tag agreement). `## global` holds
+manifest↔tag agreement) and the changelog side (a heading for the version, an entry this branch
+prepared, and every entry that was pending before the release folded into it — see
+[gates.md](gates.md)). `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = require`
 (default: every shell call must state its own timeout) `| inject`, `release.review`,
 `release.changelog` (default `CHANGELOG.md`; set it empty to opt out), `release.releases` and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
