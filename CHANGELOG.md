@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.53.2] - 2026-10-22
+
+### Fixed
+
+- **A claim now dies with its session, not with the process.** Dev-flow's session state is module-level, and pi runs many sessions inside one long-lived Node process (pi-web's agent lives in the server) — so bindings and the compaction flag outlived the session that wrote them, and claim liveness asked only `pidAlive(claim.pid)`, a pid that never goes away in a shared host. The result was a lock nobody could see the owner of: one pi-web session starts a feature, that session ends, and every later session in the repo is refused the auto-bind and told the feature `is claimed by another live session` — forever, because the claim's pid is the server itself. `session_shutdown` now releases the dead session's binding, its compaction flag and every claim it held; a restored session (reload, resume, fork) reclaims what its own branch history says it holds, and a foreign live claim still wins, because restoring is not a takeover.
+- **Claim keys say what kind of identity they are.** A key was either pi's session id or, when the host hands out none, the working directory — indistinguishable in `claim.json`, which made a shared-directory collision read exactly like a session that had gone missing. Keys are now `sid:<session id>` and `cwd:<directory>`, and `flow status` prints the session's own key (saying plainly when it is the directory one, because then every pi session in that directory shares a single dev-flow binding and must pass `flow use <slug>`). One migration seam, expected and harmless: a claim written by an older build carries the old bare key, so the first rival session after this upgrade needs one explicit `flow use` — the same path a takeover already takes.
+
 ## [0.53.1] - 2026-10-22
 
 ### Fixed
