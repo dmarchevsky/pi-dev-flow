@@ -4,6 +4,19 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.54.0] - 2026-10-22
+
+### Added
+
+- **The playbook says how a merged PR lands, and the gates hold it to that.** Every repo has a merge style; almost none has ever written it down, so the answer was whatever the last click chose — and dev-flow could only react afterwards, asking at `flow finish` whether commits missing from the default branch were a squash merge. `merge = squash | merge | rebase` (or `any` for "no policy, stop asking") now lives under `## release`, and four places read it. **`flow init` suggests it from your own history** — a first-parent log counts merge commits against `(#NN)` squash commits and asks with that evidence (`merge history: 17 merge commit(s), 6 squash(es) — the most recent PR landed as merge`) instead of asking blind. **`flow start` asks once and writes the answer**: while the key is unset the gate refuses with the question, the suggestion and the exact re-run, and `flow start <slug> --merge=<style> --confirmed` inserts one line into `## release` — a surgical insert, not a draft regeneration, so hand-written prose and checklist items cannot be dropped, validated before the write with `.bak` kept, committed as the playbook chore only when the playbook is the only dirty path. **The guard enforces the style where the decision is made**: `gh pr merge --squash` against `merge = merge` is a hard block, a merge carrying no style flag (the forge default decides) needs the operator, and a local `git merge --squash` only ever confirms, because folding main into a branch is ordinary work. **`release-done` proves what actually shipped** matched it — branch ancestry for `merge`, plus what the forge itself reports (`gh pr list --json squashCommit,rebaseCommit,mergeCommit`, GitLab through `glab api`) for the two styles that erase ancestry — so a squash under a merge policy refuses to record the release, while a shape dev-flow cannot see (`forge = self`, no CLI, unfetched branch) prints an advisory instead: an invisible topology never blocks a legal release. Only a human clicking the button in the Web UI stays beyond its reach — that needs the forge's own require-a-merge-strategy setting, and docs say so plainly.
+- **`flow start` preflights before it creates anything.** It warns when this session runs an older dev-flow build than the checkout (the gates execute the loaded code, so `/reload` first), prints the playbook gaps `flow doctor` would report instead of promising them later, and stamps the build as before. `flow start --check-upstream` and `flow version --check-upstream` add the published npm version, opt-in so both stay instant and offline by default.
+
+### Changed
+
+- **`flow finish` reads unmerged-looking commits against the policy**: commits that never reached the default branch are *expected* under `squash`/`rebase` instead of a shrug, and a **violation** under `merge` — one `yolo` cannot answer for, only the operator can. The verdict needs measurable ancestry, so a local-only repo is never accused of squashing.
+- **`flow doctor` gains two findings**: a playbook with no merge policy (the one knob a repo can silently lack), and a `squash`/`rebase` policy on `forge = self`, which is unprovable by construction.
+- The release hint and the skill now spell the playbook's style at the stage where the PR is merged (`gh pr merge --squash`), and the guard-rule examples in the docs no longer claim "PRs squash-merge" — this repo merge-commits, and an example that contradicts the playbook it documents teaches the wrong lesson.
+
 ## [0.53.2] - 2026-10-22
 
 ### Fixed
