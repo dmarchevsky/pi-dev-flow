@@ -13,6 +13,10 @@ import {
 	checklistHash,
 	checkoutTarget,
 	claimBlocks,
+	classifyMergeHistory,
+	mergeShapeProof,
+	mergeStyleInvocation,
+	parseMergeStyle,
 	changelogEntry,
 	cleanupAssess,
 	cmpVersions,
@@ -35,6 +39,7 @@ import {
 	looksLikeShellError,
 	maskQuoted,
 	needsOperator,
+	nextHint,
 	parsePushRefs,
 	playbookTamper,
 	pluginVersion,
@@ -942,4 +947,78 @@ test("gateHelpJson splits the real GATE_HELP without losing a gate", () => {
 	assert.ok(j.notes.includes("reflect <note> queues"));
 	assert.deepEqual(j.protocol.checkpointQuestions, ["Approve?", "Verified?", "Release?", "Finish?"]);
 	assert.equal(j.protocol.refusalMarker, "NEEDS-OPERATOR");
+});
+
+/* ------------------------------------------------------------- merge policy */
+
+test("parseMergeStyle: the four answers, and nothing else", () => {
+	assert.equal(parseMergeStyle("squash"), "squash");
+	assert.equal(parseMergeStyle(" Merge "), "merge");
+	assert.equal(parseMergeStyle("ANY"), "any");
+	assert.equal(parseMergeStyle("fast-forward"), null, "a typo is not a policy — it must not silently mean no policy");
+	assert.equal(parseMergeStyle(undefined), null);
+});
+
+test("classifyMergeHistory: reads the style a repo actually uses, newest first", () => {
+	// dev-flow's own shape: merge commits with the feature commits underneath
+	const merges = ["a b|Merge pull request #99 from x/feat/y", "a|release prep", "b c|Merge pull request #98 from x/feat/z"];
+	assert.deepEqual(classifyMergeHistory(merges), { merges: 2, squashes: 0, recent: "merge", note: "merge history: 2 merge commit(s), 0 squash(es) — the most recent PR landed as merge" });
+	// ollamaMQ's shape after it switched at PR #21: squash leaves one commit naming the PR
+	const squashes = ["a|web: honest scrollbars (#26)", "b|docs: changelog entry (#25)", "c d|Merge pull request #20 from x/feat/y"];
+	const c = classifyMergeHistory(squashes);
+	assert.equal(c.recent, "squash", "the newest PR wins — that is what the repo does now");
+	assert.equal(c.merges, 1);
+	assert.equal(c.squashes, 2);
+	// direct pushes and chores are not PR merges and say nothing
+	assert.equal(classifyMergeHistory(["a|chore: keep raw inputs out of git", "b|release prep: 0.8.1"]).recent, null);
+	assert.match(classifyMergeHistory(["x|anything"]).note, /no PR merges/);
+});
+
+test("mergeShapeProof: a measured contradiction refuses, an invisible topology advises", () => {
+	// merge policy: ancestry is the proof, and it is the only style provable with git alone
+	assert.deepEqual(mergeShapeProof("merge", { ancestor: true, branch: "feat/x", defaultBranch: "main" }).errors, []);
+	assert.match(mergeShapeProof("merge", { ancestor: true, branch: "feat/x", defaultBranch: "main" }).note, /matches the playbook/);
+	assert.match(mergeShapeProof("merge", { ancestor: false, forgeStyle: "squash", branch: "feat/x", defaultBranch: "main" }).errors[0], /says merge = merge.*squash-merged/s);
+	assert.equal(mergeShapeProof("merge", { ancestor: null }).errors.length, 0, "unmeasurable ancestry never blocks a release");
+	assert.match(mergeShapeProof("merge", { ancestor: null }).note, /could not be checked/);
+	// squash policy: ancestry true means it was NOT squashed
+	assert.match(mergeShapeProof("squash", { ancestor: true, branch: "feat/x", defaultBranch: "main" }).errors[0], /merge commit or fast-forward/);
+	assert.equal(mergeShapeProof("squash", { ancestor: false }).errors.length, 0);
+	// squash and rebase erase ancestry the same way — only the forge tells them apart
+	assert.match(mergeShapeProof("squash", { ancestor: false, forgeStyle: "rebase" }).errors[0], /forge reports a rebase merge/);
+	assert.match(mergeShapeProof("rebase", { ancestor: false, forgeStyle: "squash" }).errors[0], /forge reports a squash merge/);
+	assert.equal(mergeShapeProof("rebase", { ancestor: false, forgeStyle: "rebase" }).errors.length, 0);
+	// no policy (or an explicit opt-out) says nothing at all
+	assert.deepEqual(mergeShapeProof(undefined, { ancestor: false }), { errors: [], note: "" });
+	assert.deepEqual(mergeShapeProof("any", { ancestor: true }), { errors: [], note: "" });
+});
+
+test("mergeStyleInvocation: the merge command is where the policy is enforced", () => {
+	// explicit contradiction on the forge CLI is a hard block, naming the playbook key
+	assert.match(mergeStyleInvocation("gh pr merge 42 --squash", "merge").block ?? "", /playbook says merge = merge.*forces a squash/s);
+	assert.match(mergeStyleInvocation("gh pr merge --rebase", "merge").block ?? "", /forces a rebase merge/);
+	assert.match(mergeStyleInvocation("glab mr merge 7 --no-squash", "squash").block ?? "", /playbook says merge = squash.*forces a merge/s);
+	// matching style passes clean
+	assert.deepEqual(mergeStyleInvocation("gh pr merge 42 --merge", "merge"), { block: null, confirm: null });
+	assert.deepEqual(mergeStyleInvocation("gh pr merge 42 --squash", "squash"), { block: null, confirm: null });
+	assert.deepEqual(mergeStyleInvocation("glab mr merge 7 --squash", "squash"), { block: null, confirm: null });
+	// no style flag: the forge default decides, so it is a confirmation and not a refusal
+	assert.match(mergeStyleInvocation("gh pr merge 42", "squash").confirm ?? "", /no style flag.*pass --squash/s);
+	assert.match(mergeStyleInvocation("glab mr merge 7", "squash").confirm ?? "", /pass --squash/, "glab spells the wanted flag its own way");
+	// prose about a merge is not a merge (quoted text is an argument's text), a wrapper that execs is judged on its payload
+	assert.deepEqual(mergeStyleInvocation('grep "gh pr merge --squash" docs/', "merge"), { block: null, confirm: null });
+	assert.match(mergeStyleInvocation('sh -c "gh pr merge --squash"', "merge").block ?? "", /forces a squash/);
+	// a local git merge --squash is a confirmation: merging main into a branch is ordinary work
+	assert.match(mergeStyleInvocation("git merge --squash feat/x", "merge").confirm ?? "", /git merge --squash/);
+	assert.deepEqual(mergeStyleInvocation("git merge --no-ff feat/x", "merge"), { block: null, confirm: null }, "--no-ff into a branch is not a merge policy");
+	// no policy in the playbook means no new verdicts at all
+	assert.deepEqual(mergeStyleInvocation("gh pr merge --squash", undefined), { block: null, confirm: null });
+	assert.deepEqual(mergeStyleInvocation("gh pr merge --squash", "any"), { block: null, confirm: null });
+});
+
+test("nextHint names the playbook merge style at the release stage", () => {
+	const st = { ...newState("x", false), stage: "release" as const };
+	const cfg = { ...DEFAULTS, release: { ...DEFAULTS.release, merge: "squash" as const } };
+	assert.match(nextHint(st, cfg), /merge = squash — gh pr merge --squash/);
+	assert.doesNotMatch(nextHint(st, DEFAULTS), /gh pr merge/, "no policy, no advice");
 });

@@ -3,8 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { buildConfig } from "../src/core.ts";
-import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, mdToConfig, parseProjectMd } from "../src/projectmd.ts";
+import { buildConfig, DEFAULTS } from "../src/core.ts";
+import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, mdToConfig, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
 
 const MD = `# dev-flow
 
@@ -326,4 +326,58 @@ test("bashTimeout knob: inject opts out, junk keeps the blocking default", () =>
 	assert.ok(junk.warn.some((w) => w.includes('bashTimeout = "maybe"')), "a junk mode is reported, not silently obeyed");
 	assert.equal(mdToConfig(junk).bashTimeout, "require", "and the safe default stands");
 	assert.match(mdDigest("## global\n```flow\nbashTimeout = inject\n```\n"), /shell-call timeout mode/, "the init digest names the knob");
+});
+
+/* ------------------------------------------------------------- merge policy */
+
+test("merge policy parses under release and pre-release, and through the global alias", () => {
+	assert.equal(mdToConfig(parseProjectMd("# d\n\n## release\n\n```flow\nmerge = squash\n```\n")).release.merge, "squash");
+	assert.equal(mdToConfig(parseProjectMd("# d\n\n## pre-release\n\n```flow\nmerge = rebase\n```\n")).release.merge, "rebase", "the release keys are accepted under both sections");
+	assert.equal(mdToConfig(parseProjectMd("# d\n\n## global\n\n```flow\nrelease.merge = any\n```\n")).release.merge, "any");
+});
+
+test("a junk merge value warns instead of silently meaning no policy", () => {
+	const p = parseProjectMd("# d\n\n## release\n\n```flow\nmerge = fast-forward\n```\n");
+	assert.equal(p.hard.length, 0);
+	assert.match(p.warn.join(" "), /merge = "fast-forward" — expected squash, merge, rebase or any/);
+	assert.equal(mdToConfig(p).release.merge, undefined, "nothing is stored, so the doctor and flow start keep asking");
+});
+
+test("mdDigest renders the merge policy, buildDraft keeps it and asks when unset", () => {
+	assert.match(mdDigest("# d\n\n## release\n\n```flow\nmerge = squash\n```\n"), /merge policy: squash/);
+	const det = { report: [], missing: [], partial: { defaultBranch: "main", commands: {}, versioning: { file: "package.json" } } };
+	const kept = buildDraft(det as never, { ...structuredClone(DEFAULTS), release: { ...DEFAULTS.release, merge: "merge" } });
+	assert.match(kept, /## release\n\n```flow\nmerge = merge\n```/);
+	const fresh = buildDraft(det as never);
+	assert.match(fresh, /<!-- merge = squash \| merge \| rebase/);
+	assert.doesNotMatch(fresh, /```flow\nmerge = /, "detection never invents a policy");
+});
+
+test("doctor flags a missing merge policy and one that cannot be proven", () => {
+	const md = parseProjectMd("# d\n\n## release\n\n```flow\nmerge = squash\n```\n");
+	assert.ok(doctorFindings(process.cwd(), { ...structuredClone(DEFAULTS) }, null).some((f) => f.startsWith("no merge policy")), "a repo that never answered is a finding");
+	const self = { ...structuredClone(DEFAULTS), forge: "self", release: { ...DEFAULTS.release, merge: "squash" as const } };
+	assert.match(doctorFindings(process.cwd(), self, md).join("\n"), /merge = squash is not provable on forge = self/);
+	const gh = { ...structuredClone(DEFAULTS), forge: "github", release: { ...DEFAULTS.release, merge: "squash" as const } };
+	assert.ok(!doctorFindings(process.cwd(), gh, md).some((f) => /provable/.test(f)), "with a forge to ask, the policy is provable");
+});
+
+test("setPlaybookKey inserts, replaces and opens a block — and never touches anything else", () => {
+	const withBlock = "# d\n\n## release\n\n```flow\nversionFile = package.json\n```\n\n- [ ] some item\n";
+	const ins = setPlaybookKey(withBlock, "release", "merge", "squash");
+	assert.equal("error" in ins, false);
+	assert.match((ins as { text: string }).text, /```flow\nmerge = squash\nversionFile = package.json/);
+	assert.match((ins as { text: string }).text, /- \[ \] some item/, "hand-written checklist items survive the write");
+	// idempotent: an update replaces, it never stacks a second key
+	const again = setPlaybookKey((ins as { text: string }).text, "release", "merge", "merge");
+	assert.match((again as { text: string }).text, /merge = merge\nversionFile/);
+	assert.equal((again as { text: string }).text.split("merge = ").length - 1, 1, "exactly one merge line");
+	assert.match((again as { where: string }).where, /replaced the value/);
+	// no flow block yet: one is opened under the heading
+	const noBlock = "# d\n\n## release\n\nProse only.\n";
+	assert.match((setPlaybookKey(noBlock, "release", "merge", "any") as { text: string }).text, /## release\n\n```flow\nmerge = any\n```\n\nProse only\./);
+	// no ## release section at all: one is appended, and everything above it stays untouched
+	const created = setPlaybookKey("# d\n\n## implement\n\nprose\n", "release", "merge", "squash") as { text: string; where: string };
+	assert.match(created.text, /prose\n\n## release\n\n```flow\nmerge = squash\n```\n$/);
+	assert.match(created.where, /section was created/);
 });
