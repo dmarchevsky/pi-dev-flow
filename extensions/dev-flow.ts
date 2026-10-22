@@ -861,6 +861,12 @@ ${mdDigest(draftRefresh)}`))
 		case "check": {
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
+			// a docs flow runs no project command anywhere else — pendingChecks, verifyGate and releaseGate all skip
+			// it — so running tier-1 here only produced a FAIL that read like a broken deploy in a checkout that
+			// never built the binary (#96)
+			// shortcut: --docs is the operator's word, nothing checks the changeset is docs-only, so a mislabelled
+			// flow now gets no test run at all; the mechanical fix is a diff-scope guard at verify if it ever bites
+			if (state!.docs) return { text: "docs mode: project commands skipped — a docs flow runs no tier-1 checks (CI on the tag and the artifact proof still do)" };
 			if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
 			const ran = await runChecks(root, state!, cfg, cfg.checkList);
 			return { text: `tier-1 checks:\n${ran.lines.join("\n")}`, isError: ran.failed };
