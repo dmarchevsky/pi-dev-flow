@@ -331,13 +331,18 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — an unversioned release must record its entry there (under Unreleased)`);
 			else {
 				if (prep.changelogChanged === false) errs.push(`${prep.changelog.file} is unchanged on this branch — an unversioned release must add its entry (under Unreleased)`);
-				// the entry must land under Unreleased: editing some older section releases nothing (#97)
-				const pending = pendingEntryLines(prep.changelog.content);
-				if (!pending.length) errs.push(`${prep.changelog.file} has no entry under its Unreleased heading — an unversioned release rides there until the next versioned release folds it`);
-				else if (prep.changelogBase && prep.changelogBase.source !== "none" && !prep.noFoldCheck) {
-					const base = prep.changelogBase;
-					if (pending.every((l) => base.pending.includes(l)))
-						errs.push(`${prep.changelog.file}'s Unreleased section gained nothing on this branch (vs the ${base.source}) — add this release's own entry under the Unreleased heading, or skip the fold proofs with --no-fold-check`);
+				// an unversioned release must leave a trail someone can find later: the section is where it lives,
+				// and a project with no changelog convention at all opts out with release.changelog = ""
+				if (!/^#{2,3}\s*\[?Unreleased\]?\s*$/m.test(prep.changelog.content)) {
+					errs.push(`${prep.changelog.file} has no Unreleased heading — an unversioned release records its entry there (add the heading, or set release.changelog = "" if this project keeps no changelog)`);
+				} else {
+					const pending = pendingEntryLines(prep.changelog.content);
+					if (!pending.length) errs.push(`${prep.changelog.file} has no entry under its Unreleased heading — an unversioned release rides there until the next versioned release folds it`);
+					else if (prep.changelogBase && prep.changelogBase.source !== "none" && !prep.noFoldCheck) {
+						const base = prep.changelogBase;
+						if (pending.every((l) => base.pending.includes(l)))
+							errs.push(`${prep.changelog.file}'s Unreleased section gained nothing on this branch (vs the ${base.source}) — add this release's own entry under the Unreleased heading, or skip the fold proofs with --no-fold-check`);
+					}
 				}
 			}
 		}

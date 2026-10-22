@@ -872,7 +872,8 @@ test("preReleaseGate (#97): the entry is this branch's own, and pending lines mu
 	const nv = (content: string, basePending: string[] = []) =>
 		preReleaseGate({ ...s, noVersion: true }, c2, { manifestVersion: null, remoteTags: [], changelog: { file: "CHANGELOG.md", content }, changelogChanged: true, changelogBase: { pending: basePending, source: "merge-base" as const } });
 	assert.equal(nv("## [Unreleased]\n- fresh line\n").length, 0, "a new line under Unreleased passes");
-	assert.ok(nv("## [1.1.0]\n- fixed an old entry\n").some((e) => e.includes("no entry under its Unreleased heading")), "editing an older section releases nothing (#97)");
+	assert.ok(nv("## [1.1.0]\n- fixed an old entry\n").some((e) => e.includes("has no Unreleased heading")), "an unversioned release needs somewhere findable to record itself");
+	assert.ok(nv("## [Unreleased]\n\n## [1.1.0]\n- fixed an old entry\n").some((e) => e.includes("no entry under its Unreleased heading")), "editing an older section releases nothing (#97)");
 	assert.ok(nv("## [Unreleased]\n- parked one\n", ["parked one"]).some((e) => e.includes("gained nothing on this branch")), "leftover entries are not this flow's own entry");
 	assert.equal(nv("## [Unreleased]\n- parked one\n", []).length, 0, "nothing pending at the base: any entry is new");
 });
