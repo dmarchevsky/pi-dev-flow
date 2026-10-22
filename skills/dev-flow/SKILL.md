@@ -361,6 +361,10 @@ a note about both goes to both. The open count shows in status and stage
 context; the operator decides:
 
 - Reflect real friction only, one line each, never the same issue twice.
+- **`flow reflect tidy` drops the closed (`- [x]`) items** — the `— fixed:` note has
+  already recorded the outcome, so the check-off is history and the file stays
+  scannable. Queueing a note, bare `reflect` and `doctor` all print the closed
+  count with this verb when the pile grows; offer the tidy to the operator then.
 - **Bare `flow reflect` is the end-of-session reflection** — it runs as part
   of every finish (before the slug folder is deleted — see Stage: finish) and
   whenever the operator asks. It prints the
