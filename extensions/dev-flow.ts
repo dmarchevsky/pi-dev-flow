@@ -1113,9 +1113,12 @@ ${mdDigest(draftRefresh)}`))
 			// update-or-proceed question into the Release? checkpoint — the operator's word, recorded in state.
 			const selfBuild = pluginVersion(import.meta.dirname);
 			const behind = sessionRunsOlderBuild(loadedVersion(), selfBuild.version);
+			// truly behind, not merely different: a session whose loaded build is NEWER than the checkout's manifest
+			// has every proof the checkout would run, and asking about it would be noise.
+			const stale = !!behind && !!selfBuild.version && cmpVersions(behind, selfBuild.version) < 0;
 			let staleAsk = "";
 			let staleNote = "";
-			if (behind) {
+			if (stale) {
 				const clPath = path.join(selfBuild.dir, "CHANGELOG.md");
 				const missing = existsSync(clPath) && selfBuild.version ? changelogVersionsBetween(readFileSync(clPath, "utf8"), behind, selfBuild.version) : [];
 				staleAsk =
@@ -1128,7 +1131,7 @@ ${mdDigest(draftRefresh)}`))
 			}
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 			if (!flag("confirmed") && !state!.yolo) {
-				if (!ui.hasUI) return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${behind ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}`, "Release?"), isError: true };
+				if (!ui.hasUI) return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}`, "Release?"), isError: true };
 				const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${state!.noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${state!.noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
 				if (!ok) return { text: "release declined — keep preparing in pre-release" };
 			}
@@ -1146,7 +1149,7 @@ ${mdDigest(draftRefresh)}`))
 			// the version of record is fixed here, from the manifest this gate validated: release-done must not
 			// re-read a checkout that may still be behind (#52)
 			if (!state!.noVersion && manifestVer) state!.releaseVersion = manifestVer;
-			if (behind) state!.staleBuild = `${behind} (checkout ${selfBuild.version ?? "?"})`;
+			if (stale) state!.staleBuild = `${behind} (checkout ${selfBuild.version ?? "?"})`;
 			writeState(root, state!);
 			return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${nextHint(state!, cfg)}` };
 		}

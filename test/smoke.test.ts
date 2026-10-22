@@ -684,8 +684,13 @@ test("release with a stale session build: warn and ask, never block; the operato
 	commitWt(repo, "stale");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
 	// pretend this session loaded a long-ago build: the release gate must ask, not refuse outright
-	process.env.DEV_FLOW_LOADED_VERSION = "0.0.1";
 	try {
+		// a session NEWER than the checkout's manifest has every proof it would run — no question
+		process.env.DEV_FLOW_LOADED_VERSION = "99.0.0";
+		const ahead = await flow(["release"]);
+		assert.ok(ahead.isError, "Release? still needs the operator's word even for a fresh build");
+		assert.ok(!/will NOT run/.test(ahead.content[0].text), "a head build gets no stale-build question — nothing is missing");
+		process.env.DEV_FLOW_LOADED_VERSION = "0.0.1";
 		const head = await flow(["version"]);
 		assert.match(head.content[0].text, /this session runs 0\.0\.1/, "flow version names the stale build");
 		const refused = await flow(["release"]);
