@@ -691,6 +691,7 @@ export interface GuardCtx {
 	pushRefs?: PushRef[]; // caller-resolved push targets (bare names disambiguated tag vs branch); omit = guard parses raw command
 	playbookChore?: boolean; // the only change in this checkout is the playbook — tracking it is setup, not feature work (#53)
 	dir?: string; // absolute directory this segment runs in; named in the refusal so a wrong verdict is diagnosable
+	attribution?: string; // why the call could not be attributed to a bound feature; appended to the stage refusals when stage is null, so a misattribution names itself instead of lying about the stage
 }
 
 const unquote = (s: string): string => s.replace(/^(['"])(.*)\1$/, "$2");
@@ -929,15 +930,19 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 	// a cd earlier in the command picks the directory this verdict is about — name it, or a misjudged segment
 	// reads as "the rule is broken" instead of "the guard looked in the wrong place".
 	const judgedIn = o.dir ? ` — judged in ${o.dir}; a cd or git -C earlier in the command picks the directory` : "";
-	if (git("commit") && onMain && o.stage !== "release" && !playbookCommit) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree (tracking the playbook is legal: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit)${judgedIn}`;
+	// an unattributed refusal must admit it is guessing: "requires stage release" reads as a verdict on
+	// the feature when the real finding is "I never found your feature" (a second registered dev-flow
+	// copy judging with no bindings of its own — see boundFeature's claim path)
+	const attr = o.stage === null && o.attribution ? ` — ${o.attribution}` : "";
+	if (git("commit") && onMain && o.stage !== "release" && !playbookCommit) return `direct commits to ${o.defaultBranch} are forbidden — work in the feature worktree (tracking the playbook is legal: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit)${judgedIn}${attr}`;
 	if (git("push")) {
 		// ref-aware: only pushes that WRITE the default branch need stage release — tags and other branches pass.
 		// unresolved bare names arrive pre-resolved by the caller (tag vs branch); no parse info → conservative onMain.
 		const refs = o.pushRefs ?? parsePushRefs(gitInvocation(c).pushes);
 		const writesDefault = refs.some((r) => (r.kind === "branch" && (r.name === o.defaultBranch || r.name === "*")) || (r.kind === "current" && onMain));
-		if (writesDefault && o.stage !== "release") return `pushing to ${o.defaultBranch} requires stage "release" (verified feature)`;
+		if (writesDefault && o.stage !== "release") return `pushing to ${o.defaultBranch} requires stage "release" (verified feature)${attr}`;
 	}
-	if (git("merge") && onMain && o.stage !== "release") return `merging into ${o.defaultBranch} requires stage "release"`;
+	if (git("merge") && onMain && o.stage !== "release") return `merging into ${o.defaultBranch} requires stage "release"${attr}`;
 	return null;
 }
 

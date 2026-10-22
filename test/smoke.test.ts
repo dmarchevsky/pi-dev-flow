@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileS
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import devFlow, { compactionTakeover } from "../extensions/dev-flow.ts";
+import devFlow, { compactionTakeover, testSeams } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -731,6 +731,103 @@ test("release tail: finish refuses to remove a dirty worktree", async () => {
 	const fin = await flow(["finish", "--confirmed"]);
 	assert.ok(fin.isError && fin.content[0].text.includes("uncommitted"), "finish reports why it refuses");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "dirt", "state.json")), "feature stays until the operator sorts it out");
+});
+
+test("guard attribution: the claim on disk binds a session the in-memory map never saw; refusals say so", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // key: cwd:<repo> — what the gates bind under
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "ga"]);
+	mkdirSync(path.join(repo, ".dev-flow", "ga", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "ga", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "ga");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]); // ga is at stage release, bound in memory under key cwd:<repo>
+	// a second unfinished feature kills the one-feature auto-bind fallback…
+	await flow(["start", "gb"]);
+	// …and the ghost ctx is what a second registered dev-flow copy looks like: same repo,
+	// different module state, so its bindings map never saw the flow use
+	const ghost = { ...makeCtx(repo), sessionManager: { getSessionId: () => "ghost-copy" } };
+	const guard = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ghost) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	execFileSync("git", ["-C", repo, "branch", "up", "main"]);
+	const blocked = await guard("git merge --ff-only up");
+	assert.ok(blocked?.block, "unattributed and two features — the merge is refused");
+	assert.match(blocked!.reason ?? "", /not attributed to a bound feature/, "the refusal admits it never found the feature instead of lying about the stage");
+	assert.match(blocked!.reason ?? "", /session sid:ghost-copy/, "the refusal names the key it tried");
+	// the claim is the persisted binding: stamp ga's claim with the ghost key (what flow use writes
+	// to disk for its session) and the same guard call attributes ga at stage release
+	writeFileSync(path.join(repo, ".dev-flow", "ga", "claim.json"), JSON.stringify({ key: "sid:ghost-copy", pid: process.pid, at: new Date().toISOString() }));
+	assert.equal(await guard("git merge --ff-only up"), undefined, "the claim on disk attributes the call — stage release, merge allowed");
+});
+
+test("flow version names a second dev-flow copy registered in this process", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const copies = testSeams.copies;
+	// the smoke suite cannot import a second copy of the module, so it plants what a real
+	// duplicate registration would have left in the shared process registry
+	copies.push({ dir: "/other/source/pi-dev-flow", version: "0.9.9", pid: process.pid, at: new Date().toISOString() });
+	try {
+		const v = await flow(["version"]);
+		assert.match(v.content[0].text, /other dev-flow cop\w registered in this process: \/other\/source\/pi-dev-flow \(0\.9\.9\)/, "version prints the duplicate copy");
+	} finally {
+		for (let i = copies.length - 1; i >= 0; i--) if (copies[i].dir === "/other/source/pi-dev-flow") copies.splice(i, 1);
+	}
+});
+
+test("flow finish fast-forwards a main checkout that trails origin", async () => {
+	const pi = makePi();
+	const parent = mkdtempSync(path.join(tmpdir(), "df-ff-"));
+	const origin = path.join(parent, "origin.git");
+	execFileSync("git", ["-c", "init.defaultBranch=main", "init", "-q", "--bare", origin]);
+	const repo = path.join(parent, "work");
+	execFileSync("git", ["clone", "-q", origin, repo]);
+	execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+	execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+	writeFileSync(path.join(repo, "f"), "a\n");
+	writeFileSync(path.join(repo, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
+	execFileSync("git", ["-C", repo, "add", "-A"]);
+	execFileSync("git", ["-C", repo, "commit", "-qm", "seed"]);
+	execFileSync("git", ["-C", repo, "push", "-q", "origin", "main"]);
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	execFileSync("git", ["-C", repo, "push", "-q", "origin", "main"]); // HEAD must stay on origin for finish
+	await flow(["start", "ff"]);
+	mkdirSync(path.join(repo, ".dev-flow", "ff", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "ff", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "ff");
+	await flow(["verify", "--confirmed"]);
+	const rel = await flow(["release", "--confirmed"]);
+	assert.match(rel.content[0].text, /release approved/, rel.content[0].text);
+	const rd = await flow(["release-done"]);
+	assert.match(rd.content[0].text, /release recorded/, rd.content[0].text);
+	// someone else lands a commit on origin/main while the flow closes out — the shipped history
+	// moves past the local main checkout, and finish must bring the checkout along
+	const other = path.join(parent, "other");
+	execFileSync("git", ["clone", "-q", origin, other]);
+	execFileSync("git", ["-C", other, "config", "user.email", "o@o"]);
+	execFileSync("git", ["-C", other, "config", "user.name", "o"]);
+	writeFileSync(path.join(other, "g"), "b\n");
+	execFileSync("git", ["-C", other, "add", "-A"]);
+	execFileSync("git", ["-C", other, "commit", "-qm", "landed after the release"]);
+	execFileSync("git", ["-C", other, "push", "-q", "origin", "main"]);
+	execFileSync("git", ["-C", repo, "fetch", "-q", "origin"]);
+	const fin = await flow(["finish", "--confirmed"]);
+	assert.match(fin.content[0].text, /local main fast-forwarded to origin\/main/, "close-out syncs the checkout it just released into");
+	const sha = (dir: string, ref: string) => execFileSync("git", ["-C", dir, "rev-parse", ref]).toString().trim();
+	assert.equal(sha(repo, "main"), sha(repo, "origin/main"), "local main caught up");
+	assert.equal(sha(repo, "main"), sha(other, "main"), "and it holds the commit that landed late");
 });
 
 test("roadmap: add → list → pick → done → tidy route through the backlog file", async () => {
