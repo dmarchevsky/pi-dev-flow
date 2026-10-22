@@ -50,7 +50,9 @@ pi install ./pi-dev-flow                          # or a local checkout
 ```
 
 Later releases arrive with `pi update --extensions` (an npm install reconciles to the newest version);
-then `/reload` — a running session keeps the code it loaded at startup.
+then `/reload` — a running session keeps the code it loaded at startup. Two sources at once (a project
+`git:` pin beside the global `npm:` package) load two copies — pi dedupes extensions by path, not by
+package — so keep the one you actually update from.
 
 Then, once per project repo, `/flow init`. It reads the repo (default branch and forge from git,
 package manager, test/build/run conventions, version manifest) and writes **`.dev-flow/project.md`
