@@ -7,7 +7,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseVersion, toSeconds, type GuardRules, type StageCheck } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseMergeStyle, parseVersion, toSeconds, type GuardRules, type MergeStyle, type StageCheck } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "pre-release", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
@@ -40,6 +40,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		"release.github": "release.releases",
 		"release.releases": "release.releases",
 		"release.artifact": "release.artifact",
+		"release.merge": "release.merge",
 	},
 	plan: {},
 	implement: {
@@ -60,6 +61,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		github: "release.releases", // legacy alias for `releases` — parse warns about the rename
 		releases: "release.releases",
 		artifact: "release.artifact",
+		merge: "release.merge", // how a merged branch lands: squash | merge | rebase | any
 	},
 };
 // pre-release owns release preparation; the release keys are accepted under both sections so
@@ -161,6 +163,11 @@ export function parseProjectMd(text: string): ParsedMd {
 							p.warn.push(`${where}: bashTimeout = "${m[2]}" — expected require or inject, keeping require`);
 							return;
 						}
+						// merge is the other enum: a typo here must not quietly mean "no policy" and drop the teeth
+						if (mapped === "release.merge" && !parseMergeStyle(m[2])) {
+							p.warn.push(`${where}: merge = "${m[2]}" — expected squash, merge, rebase or any — ignored`);
+							return;
+						}
 						p.flow[stage as MdStage][mapped] = m[2];
 					}
 				}
@@ -245,6 +252,42 @@ function mergeInto(c: Config, r: Record<string, unknown>): void {
 	if (wait !== undefined) c.healthWait = wait;
 }
 
+/**
+ * Insert — or replace in place — one `key = value` line in a stage's flow block. This is the surgical
+ * playbook write `flow start --merge=` uses: a full `buildDraft` regeneration is not an option there,
+ * because a draft cannot reproduce hand-written prose and checklist items and would drop them. Replacing an
+ * existing line keeps an update idempotent (no stacked duplicates), and the caller validates the result with
+ * `parseProjectMd` before writing anything.
+ */
+export function setPlaybookKey(text: string, stage: MdStage, key: string, value: string): { text: string; where: string } | { error: string } {
+	const lines = text.split("\n");
+	const headOf = (l: string) => l.match(/^##\s+(\S+)\s*$/)?.[1]?.toLowerCase();
+	const head = lines.findIndex((l) => headOf(l) === stage);
+	if (head === -1) {
+		// no section yet: the heading and its flow block go at the end of the file — appending leaves every
+		// hand-written line above it exactly where it was
+		const tail = `\n## ${stage}\n\n` + "```flow\n" + key + " = " + value + "\n```\n";
+		return { text: (text.endsWith("\n") ? text : text + "\n") + tail, where: `## ${stage} — the section was created for it` };
+	}
+	let end = lines.length;
+	for (let i = head + 1; i < lines.length; i++) if (/^##\s/.test(lines[i])) { end = i; break; }
+	const kv = new RegExp(`^\\s*${key}\\s*=`);
+	for (let i = head + 1; i < end; i++) {
+		if (!/^```\s*flow\s*$/.test(lines[i])) continue;
+		let close = end;
+		for (let j = i + 1; j < end; j++) if (lines[j].trim() === "```") { close = j; break; }
+		const existing = lines.findIndex((l, j) => j > i && j < close && kv.test(l));
+		if (existing !== -1) {
+			lines[existing] = `${key} = ${value}`;
+			return { text: lines.join("\n"), where: `## ${stage} flow block (replaced the value it held)` };
+		}
+		lines.splice(i + 1, 0, `${key} = ${value}`);
+		return { text: lines.join("\n"), where: `## ${stage} flow block` };
+	}
+	lines.splice(head + 1, 0, "", "```flow", `${key} = ${value}`, "```");
+	return { text: lines.join("\n"), where: `## ${stage} — opened a flow block for it` };
+}
+
 /** Load the project config: project.md alone — the legacy project.json is no longer read. */
 export function loadProject(dfDir: string): { cfg: Config; md: ParsedMd | null } {
 	const mdFile = path.join(dfDir, "project.md");
@@ -289,6 +332,10 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): 
 	const gi = path.join(root, ".dev-flow", ".gitignore");
 	if (existsSync(gi) && !readFileSync(gi, "utf8").includes("!project.md")) f.push(".dev-flow/.gitignore still hides project.md from git — re-run flow init to heal it");
 	if (cfg.forge && !["github", "gitlab", "self"].includes(cfg.forge)) f.push(`forge "${cfg.forge}" is invalid — use github, gitlab or self`);
+	// the merge policy is the one playbook knob a repo can silently lack: without it nobody can say how a
+	// merged branch was supposed to land, and `flow finish` can only ask about what it sees
+	if (!cfg.release.merge) f.push("no merge policy — `flow start` asks once and writes it: merge = squash | merge | rebase under ## release (or any = no policy, stop asking)");
+	else if (cfg.release.merge !== "any" && cfg.forge === "self") f.push(`merge = ${cfg.release.merge} is not provable on forge = self (no gh/glab to ask how the PR landed) — release-done prints an advisory instead of a proof`);
 	if (cfg.versioning.file) {
 		const mf = path.join(root, cfg.versioning.file);
 		if (!existsSync(mf)) f.push(`versioning.file "${cfg.versioning.file}" does not exist`);
@@ -327,7 +374,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): 
 /** Compact per-stage digest of project.md content for dialog display (raw md walls are unreadable). */
 const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", "pre-release": "Pre-release", release: "Release" };
 const DIGEST_CMDS: Record<string, string> = { setup: "setup", test: "test", build: "build", run: "run app", seedData: "seed data", dev: "dev deploy" };
-const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files", forge: "forge", bashTimeout: "shell-call timeout mode" };
+const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files", forge: "forge", bashTimeout: "shell-call timeout mode", merge: "merge policy" };
 
 /** Human summary of a playbook for the init confirm: one line per stage, real values and full item/guidance text, nothing truncated. */
 export function mdDigest(text: string): string {
@@ -389,6 +436,11 @@ export function buildDraft(det: { report: string[]; partial: { defaultBranch: st
 	}
 	L.push("- [ ] app runs locally with real data; visual pass: no overflows or stray scrollbars", "", "<!-- tier-3: standing guidance for this stage -->", "");
 	L.push("## pre-release", "", "<!-- e.g. review policy, docs expectations, who picks the version -->", "", "```flow", `versionFile = ${verFile}`, "versionTag = v{version}", "```", "");
-	L.push("## release", "", "<!-- e.g. PR/merge/tag policy, who publishes artifacts -->", "");
+	// the merge policy is never invented by detection: a refresh carries the operator's answer over, a fresh
+	// draft asks. It is the one knob that decides the shape of the default branch, so it gets its own block.
+	L.push("## release", "");
+	if (c.release.merge) L.push("```flow", `merge = ${c.release.merge}`, "```", "");
+	else L.push("<!-- merge = squash | merge | rebase — how a merged PR lands on the default branch (`any` = no policy). flow start also asks and writes it. -->", "");
+	L.push("<!-- e.g. tag policy, who publishes artifacts -->", "");
 	return L.join("\n") + "\n";
 }

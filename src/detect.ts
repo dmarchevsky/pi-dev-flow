@@ -10,7 +10,8 @@ import path from "node:path";
 import { parseVersion } from "./core.ts";
 
 export interface Detection {
-	partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string }; forge?: string };
+	/** `merge` is not detected here (detection is fs-only): the caller fills it from the first-parent history. */
+	partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string }; forge?: string; merge?: string };
 	report: string[]; // human lines: what was detected
 	missing: string[]; // command keys left empty (excluding setup)
 }

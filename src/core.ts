@@ -60,6 +60,17 @@ export interface Commands {
 	dev?: string;
 }
 
+/** How a merged feature branch lands on the default branch (playbook key `merge`).
+ *  `any` is an explicit opt-out: "no policy, stop asking" — absent means unset and nagged about. */
+export type MergeStyle = "squash" | "merge" | "rebase";
+export const MERGE_STYLES = ["squash", "merge", "rebase", "any"] as const;
+
+/** A playbook `merge` value, or null when it is not a policy at all (a typo must not silently mean "no policy"). */
+export function parseMergeStyle(raw: unknown): MergeStyle | "any" | null {
+	const v = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+	return (MERGE_STYLES as readonly string[]).includes(v) ? (v as MergeStyle | "any") : null;
+}
+
 export interface Versioning {
 	/** Repo-relative manifest holding the version: VERSION | package.json | Cargo.toml | pyproject.toml. */
 	file?: string;
@@ -82,7 +93,7 @@ export interface Config {
 	versioning: Versioning;
 	/** Seconds the post-deploy health probe may keep retrying before the gate gives up (0 = single shot). */
 	healthWait: number;
-	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string };
+	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string; merge?: MergeStyle | "any" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `require` (default): a shell call must carry its own visible timeout — the injected class
 	 *  default is armed silently and never shows in the transcript. `inject`: arm it silently. */
@@ -550,6 +561,109 @@ export function cleanupAssess(porcelain: string, unmerged: string[]): { errors: 
 	const errors: string[] = [];
 	if (porcelain.trim()) errors.push("worktree has uncommitted changes — commit or discard them first");
 	return { errors, unmerged: unmerged.filter(Boolean) };
+}
+
+/* -------------------------------------------------------------- merge policy */
+
+/** Past tense of a style, for the wording of a refusal. */
+const MERGE_PAST: Record<MergeStyle, string> = { squash: "squash-merged", merge: "merge-committed", rebase: "rebase-merged" };
+
+/**
+ * What the repo's own history says about its merge style, for `flow init` and `flow start` to suggest
+ * instead of asking blind. Input is one line per first-parent commit as `%p|%s`: two parents is a merge
+ * commit, a single commit whose subject ends in `(#123)` is what a squash leaves behind. Direct pushes and
+ * release chores are neither — the answer must come from PR merges only. `recent` is the style of the newest
+ * classified merge, which is what the repo actually does now (dev-flow: merge commits; ollamaMQ switched to
+ * squash at PR #21 and nothing wrote it down).
+ */
+export function classifyMergeHistory(lines: string[]): { merges: number; squashes: number; recent: MergeStyle | null; note: string } {
+	let merges = 0;
+	let squashes = 0;
+	let recent: MergeStyle | null = null;
+	for (const line of lines) {
+		const sep = line.indexOf("|");
+		if (sep === -1) continue;
+		const parents = line.slice(0, sep).trim().split(/\s+/).filter(Boolean).length;
+		const subject = line.slice(sep + 1).trim();
+		const isMerge = parents > 1;
+		const isSquash = !isMerge && /\(#[0-9]+\)$/.test(subject);
+		if (!isMerge && !isSquash) continue;
+		if (isMerge) merges++;
+		else squashes++;
+		if (!recent) recent = isMerge ? "merge" : "squash";
+	}
+	const note = recent
+		? `merge history: ${merges} merge commit(s), ${squashes} squash(es) — the most recent PR landed as ${recent}`
+		: "merge history: no PR merges on the first parent to read a style from";
+	return { merges, squashes, recent, note };
+}
+
+export interface MergeShapeFacts {
+	/** Is the merged branch an ancestor of the default branch? null = not measurable (no origin, unfetched branch). */
+	ancestor: boolean | null;
+	/** What the forge says landed the PR, when `gh`/`glab` could answer — the only way to tell a squash from a rebase. */
+	forgeStyle?: MergeStyle | null;
+	/** Wording only. */
+	branch?: string;
+	defaultBranch?: string;
+}
+
+/**
+ * Did what actually landed agree with the playbook's `merge` policy? A measured contradiction is an error;
+ * what cannot be measured is a note — the split the changelog proofs learned (#97): a topology dev-flow
+ * cannot see must never refuse a legal release. Note that ancestry alone proves *not squashed/rebased*:
+ * a fast-forward looks exactly like a merge commit here.
+ */
+export function mergeShapeProof(policy: MergeStyle | "any" | undefined, facts: MergeShapeFacts): { errors: string[]; note: string } {
+	const errors: string[] = [];
+	if (!policy || policy === "any") return { errors, note: "" };
+	const br = facts.branch ? `origin/${facts.branch}` : "the branch";
+	const def = facts.defaultBranch ?? "the default branch";
+	if (facts.ancestor === null) return { errors, note: `merge = ${policy} could not be checked from here (no origin or ${br} is not fetched) — confirm the merge style by hand` };
+	const landed = facts.forgeStyle ?? null;
+	if (policy === "merge") {
+		if (!facts.ancestor) errors.push(`the playbook says merge = merge, but ${br} is not an ancestor of ${def} — the PR was ${landed ? MERGE_PAST[landed] : "squash- or rebase-merged"}, which rewrites the branch's commits out of the release's ancestry`);
+		else if (landed && landed !== "merge") errors.push(`the forge reports a ${landed} merge, but the playbook says merge = merge`);
+		else return { errors, note: `merge shape matches the playbook: ${br} is an ancestor of ${def} (merge = merge)` };
+	} else {
+		if (facts.ancestor) errors.push(`the playbook says merge = ${policy}, but ${br} is an ancestor of ${def} — the branch was merged as a merge commit or fast-forward, not ${MERGE_PAST[policy]}`);
+		else if (landed && landed !== policy) errors.push(`the forge reports a ${landed} merge, but the playbook says merge = ${policy}`);
+		else return { errors, note: `merge shape matches the playbook: ${br} is not on ${def} as its own commits (${policy === "squash" ? "one squashed commit" : "replayed commits"})` };
+	}
+	return { errors, note: "" };
+}
+
+export interface MergeStyleVerdict {
+	block: string | null;
+	confirm: string | null;
+}
+
+/**
+ * Does this command pick a merge style the playbook forbids? The forge CLI is the one place the shape of the
+ * default branch is decided, so an explicit contradiction is a hard block; a merge with no style flag lets the
+ * forge default decide, which deserves a confirmation, not a refusal. A local `git merge --squash` is only ever
+ * a confirmation: merging main into a feature branch is normal work and `--no-ff` there is not a merge policy at all.
+ * Quoted text is prose (`grep "gh pr merge --squash" docs/` searches), except inside a head that execs its argument.
+ */
+export function mergeStyleInvocation(command: string, policy: MergeStyle | "any" | undefined): MergeStyleVerdict {
+	const none: MergeStyleVerdict = { block: null, confirm: null };
+	if (!policy || policy === "any") return none;
+	for (const seg of bashSegments(command)) {
+		if (READ_ONLY_HEADS.has(segHead(seg))) continue; // `grep "gh pr merge --squash" docs/` searches, it does not merge
+		const head = segHead(seg);
+		const hay = REEXEC_HEADS.has(head) ? `${seg} ${maskQuoted(seg)}` : maskQuoted(seg);
+		const forge: "gh" | "glab" | null = /\bgh\s+pr\s+merge\b/.test(hay) ? "gh" : /\bglab\s+mr\s+merge\b/.test(hay) ? "glab" : null;
+		if (forge) {
+			const style: MergeStyle | null = /--no-squash\b/.test(hay) ? "merge" : /--squash\b/.test(hay) ? "squash" : /--rebase\b/.test(hay) ? "rebase" : /--merge\b/.test(hay) ? "merge" : null;
+			const wanted = forge === "glab" ? (policy === "squash" ? "--squash" : "--no-squash") : `--${policy}`;
+			if (!style) return { block: null, confirm: `this merge carries no style flag, so the forge default decides the shape of the default branch — the playbook says merge = ${policy}; pass ${wanted} explicitly` };
+			if (style !== policy) return { block: `the playbook says merge = ${policy} (.dev-flow/project.md) — this command forces a ${style} merge; drop the flag or pass ${wanted}`, confirm: null };
+			return none;
+		}
+		if (/\bgit\b[^\n]*\bmerge\b[^\n]*--squash\b/.test(hay) && policy !== "squash")
+			return { block: null, confirm: `git merge --squash folds a branch into a single commit, but the playbook says merge = ${policy} — if this is the PR merge itself, merge it on the forge instead` };
+	}
+	return none;
 }
 
 export interface GuardCtx {
@@ -1308,6 +1422,12 @@ export function compactionReflectionLine(slug: string, stage: Stage, reason: str
 }
 
 /** What the agent/user should do next, per stage. */
+/** The playbook's merge style spelled for a hint: "" when the project has no policy. */
+function mergeHintFor(cfg: Config): string {
+	const m = cfg.release.merge;
+	return m && m !== "any" ? ` (the playbook says merge = ${m} — gh pr merge --${m === "merge" ? "merge" : m})` : "";
+}
+
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
@@ -1323,8 +1443,8 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return state.approvals.release
 				? "release recorded — commit and push the release chores in the main checkout (prefix the commit with DEV_FLOW_ALLOW_MAIN=1 — the installed pre-commit hook otherwise blocks main commits), ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
 				: state.noVersion
-					? "publish: commit and push the branch, open and merge the PR — unversioned release: no manifest bump, no tag, your changelog entry rides under Unreleased; then run flow release-done (no further question)"
-					: "publish: commit and push the branch, open and merge the PR, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)";
+					? `publish: commit and push the branch, open and merge the PR${mergeHintFor(cfg)} — unversioned release: no manifest bump, no tag, your changelog entry rides under Unreleased; then run flow release-done (no further question)`
+					: `publish: commit and push the branch, open and merge the PR${mergeHintFor(cfg)}, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)`;
 		default:
 			return "feature finished";
 	}
