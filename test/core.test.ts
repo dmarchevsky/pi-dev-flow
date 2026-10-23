@@ -478,6 +478,14 @@ test("writeGuard: a throwaway outside the repo is stage-free, a repo that lives 
 	const link = path.join(parent, "link");
 	symlinkSync(repo, link);
 	assert.match(bound(path.join(link, "src", "app.ts")) ?? "", /edit its worktree/, "a symlink into the repo is judged as the repo path it writes");
+	// owner attribution beats the scratch allow: a worktreeDir parked in the temp dir is still owned
+	const wtTmp = path.join(parent, "wt-plan");
+	const planFeat = [{ state: { ...newState("c", false), stage: "plan" as const, worktree: "wt-plan" }, worktreeAbs: wtTmp }];
+	assert.match(
+		writeGuard({ abs: path.join(wtTmp, "x.ts"), dfDir: df, features: planFeat, boundSlug: "b", repoRoot: repo }) ?? "",
+		/is in plan/,
+		"a worktree in the temp dir is owned space, never free scratch",
+	);
 });
 
 test("openReflections: unchecked items only", () => {

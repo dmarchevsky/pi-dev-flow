@@ -1206,9 +1206,6 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
 	if (o.abs === path.join(o.dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
-	// scratch outside the checkout is not a repo write: every stage (and an unbound session) may use it.
-	// after the dev-flow-owned refusals above, so no path shape reaches them through the temp dir.
-	if (inScratchDir(o.abs, o.repoRoot)) return null;
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
 	const owner = o.features.find((f) => within(o.abs, f.worktreeAbs));
@@ -1220,6 +1217,10 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
 		return null; // implement/pre-release/release: own worktree is the working area
 	}
+	// Scratch outside the checkout is not a repo write: every stage (and an unbound session) may use it. It
+	// sits after the dev-flow-owned refusals and after owner attribution, so no path shape — a symlink, or a
+	// worktreeDir an operator parked in the temp dir — reaches those rules through the temp dir.
+	if (inScratchDir(o.abs, o.repoRoot)) return null;
 	const bound = o.boundSlug ? o.features.find((f) => f.state.slug === o.boundSlug) : undefined;
 	// A plan-stage session may only write its own feature directory: otherwise one session edits another
 	// feature's plan and that feature's approval gate then rubber-stamps text it never wrote.

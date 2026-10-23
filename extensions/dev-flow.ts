@@ -987,6 +987,8 @@ ${mdDigest(draftRefresh)}`))
 			const self = checkoutBuild(root);
 			const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
 			const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
+			// in the dev-flow repo head names the checkout, so name where the stale code actually lives
+			const from = SELF_BUILD.dir !== self.dir ? ` (from ${SELF_BUILD.dir})` : "";
 			const dupNote = copyWarning();
 			// --check-upstream is the one that asks the registry; plain flow version stays offline and instant
 			if (flag("check-upstream")) {
@@ -994,7 +996,7 @@ ${mdDigest(draftRefresh)}`))
 				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
 				return { text: newest ? `${head} — published: ${newest}${self.version && newest !== self.version ? " (update available)" : ""}` : `${head} — could not read the published version (offline?)` };
 			}
-			return { text: `${behind ? `${head} — but this session runs ${behind}; /reload to run ${self.version}` : head}${dupNote ? `\n${dupNote}` : ""}` };
+			return { text: `${behind ? `${head} — but this session runs ${behind}${from}; /reload to run ${self.version}` : head}${dupNote ? `\n${dupNote}` : ""}` };
 		}
 
 		case "approve": {
