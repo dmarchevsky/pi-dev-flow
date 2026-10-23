@@ -133,6 +133,17 @@ function loadedVersion(): string | null {
 /** This build's own identity, read once (the guard hot path must not re-walk the fs per call). */
 const SELF_BUILD = pluginVersion(import.meta.dirname);
 
+/** The dev-flow build this session *should* be running, as the disk describes it, and how to call it.
+ * In the dev-flow repo that is the checkout's own manifest: main moves ahead of the installed copy at
+ * every release, while `loadedVersion()` and the plugin's own package.json are the same file — so a
+ * session running 0.54.0 in a checkout already at 0.58.1 compared equal and nothing anywhere said so.
+ * In a normal project the only manifest is the installed package's, which a mid-session update moves. */
+function checkoutBuild(root: string): { version: string | null; dir: string; repo: string; label: string } {
+	return isSelfRepo(root)
+		? { ...pluginVersion(root), label: "this checkout" }
+		: { ...SELF_BUILD, label: "the dev-flow install" };
+}
+
 /** Cross-copy registry: one process can register dev-flow more than once (the documented
  * two-sources-at-once hazard: a project dogfood pointer plus an installed copy), and EVERY copy
  * evaluates every guard hook. The flow-tool binding belongs to whichever copy served the call,
@@ -289,7 +300,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|tidy] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build, and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the loaded build and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); reflect tidy drops the closed (`- [x]`) items from reflections.md — every surface that queues or reviews reflections nudges when the checked-off pile grows; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|tidy] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build than the disk ships (in the dev-flow repo, an older build than this checkout's own manifest), and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the build the disk says to run (this checkout's own manifest in the dev-flow repo, the installed package's elsewhere) and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); reflect tidy drops the closed (`- [x]`) items from reflections.md — every surface that queues or reviews reflections nudges when the checked-off pile grows; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -809,15 +820,15 @@ ${mdDigest(draftRefresh)}`))
 			if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
 			// --- preflight: is this session running the current build, and is the playbook complete? ---
 			const notes: string[] = [];
-			const self = pluginVersion(import.meta.dirname);
-			const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
-			if (behind) notes.push(`warning: this session runs dev-flow ${behind}, the checkout has ${self.version} — /reload before trusting what a gate prints`);
+			const disk = checkoutBuild(root);
+			const behind = sessionRunsOlderBuild(loadedVersion(), disk.version);
+			if (behind) notes.push(`warning: this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version} — /reload before trusting what a gate prints`);
 			const dupStart = copyWarning();
 			if (dupStart) notes.push(dupStart);
 			if (flag("check-upstream")) {
 				const pub = await sh("npm view pi-dev-flow version", root);
 				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
-				notes.push(newest ? `published dev-flow: ${newest} (this build: ${self.version ?? "?"})${self.version && newest !== self.version ? " — an update is available" : ""}` : "could not read the published dev-flow version (offline?)");
+				notes.push(newest ? `published dev-flow: ${newest} (this build: ${loadedVersion() ?? "?"})${loadedVersion() && newest !== loadedVersion() ? " — an update is available" : ""}` : "could not read the published dev-flow version (offline?)");
 			}
 			// missing playbook parameters are printed at the moment they start to matter, not promised to a later doctor run
 			const gaps = doctorFindings(root, cfg, loadProject(dfDir(root)).md).filter((x) => !x.startsWith("no merge policy"));
@@ -849,12 +860,13 @@ ${mdDigest(draftRefresh)}`))
 				cfg.release.merge = style;
 				notes.push(written.note);
 			}
-			// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling
-			const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), self.version ?? undefined);
+			// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling.
+			// the stamp is what ran, not what the disk claims (that mismatch is the warning above).
+			const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), loadedVersion() ?? undefined);
 			mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
 			writeState(root, state);
 			sess.bind(slugArg);
-			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${self.version ? `, dev-flow ${self.version}` : ""}).${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
+			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}).${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
 		}
 
 		case "status": {
@@ -862,7 +874,11 @@ ${mdDigest(draftRefresh)}`))
 			const { md } = loadProject(df);
 			// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
 			const findings = md ? doctorFindings(root, cfg, md) : [];
-			const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
+			// a session running an older build than the disk ships is the one thing a glance must say: every
+			// gate proof printed since the drift began belongs to the older code.
+			const disk = checkoutBuild(root);
+			const staleBuild = sessionRunsOlderBuild(loadedVersion(), disk.version);
+			const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(staleBuild ? [`⚠ this session runs dev-flow ${staleBuild}, ${disk.label} ships ${disk.version} — /reload`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
 			// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
 			const rmap = roadmapOpenCount(readRoadmap(root));
 			const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
@@ -968,7 +984,7 @@ ${mdDigest(draftRefresh)}`))
 
 		case "version": {
 			// the plugin's own version — separate from the project's versioning.file version the release gates use
-			const self = pluginVersion(import.meta.dirname);
+			const self = checkoutBuild(root);
 			const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
 			const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
 			const dupNote = copyWarning();
@@ -1206,7 +1222,7 @@ ${mdDigest(draftRefresh)}`))
 			// legitimate choice (hotfix, offline reload), and refusing would close exactly the emergency the relaxed
 			// modes exist for. The gate names both builds, lists what the running code is missing, and folds the
 			// update-or-proceed question into the Release? checkpoint — the operator's word, recorded in state.
-			const selfBuild = pluginVersion(import.meta.dirname);
+			const selfBuild = checkoutBuild(root);
 			const behind = sessionRunsOlderBuild(loadedVersion(), selfBuild.version);
 			// truly behind, not merely different: a session whose loaded build is NEWER than the checkout's manifest
 			// has every proof the checkout would run, and asking about it would be noise.
@@ -1217,12 +1233,12 @@ ${mdDigest(draftRefresh)}`))
 				const clPath = path.join(selfBuild.dir, "CHANGELOG.md");
 				const missing = existsSync(clPath) && selfBuild.version ? changelogVersionsBetween(readFileSync(clPath, "utf8"), behind, selfBuild.version) : [];
 				staleAsk =
-					` This session runs dev-flow ${behind}, the checkout ships ${selfBuild.version ?? "?"} — gate proofs shipped between the two will NOT run. ` +
+					` This session runs dev-flow ${behind}, ${selfBuild.label} ships ${selfBuild.version ?? "?"} — gate proofs shipped between the two will NOT run. ` +
 					(missing.length
 						? `Shipped since ${behind}: ${missing.slice(0, 8).join(", ")}${missing.length > 8 ? ` …(${missing.length} total)` : ""} — see ${clPath}. `
 						: `What shipped between them is not readable from the checkout's CHANGELOG.md — read it before deciding. `) +
 					`Update (/reload, then re-run flow release on the current build) or proceed with the old release?`;
-				staleNote = `released under dev-flow ${behind} (checkout ${selfBuild.version ?? "?"}) by operator choice — proofs newer than ${behind} did not run`;
+				staleNote = `released under dev-flow ${behind} (${selfBuild.label} ${selfBuild.version ?? "?"}) by operator choice — proofs newer than ${behind} did not run`;
 			}
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 			if (!flag("confirmed") && !state!.yolo) {
@@ -1244,7 +1260,7 @@ ${mdDigest(draftRefresh)}`))
 			// the version of record is fixed here, from the manifest this gate validated: release-done must not
 			// re-read a checkout that may still be behind (#52)
 			if (!state!.noVersion && manifestVer) state!.releaseVersion = manifestVer;
-			if (stale) state!.staleBuild = `${behind} (checkout ${selfBuild.version ?? "?"})`;
+			if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
 			writeState(root, state!);
 			return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${nextHint(state!, cfg)}` };
 		}
@@ -1357,7 +1373,7 @@ ${mdDigest(draftRefresh)}`))
 					ghNote = gr.ok ? `${forge} release ${tag} created. ${notesNote}`.trim() : `${forge} release skipped: ${tail(gr.out)}`;
 				}
 			}
-			const behind = sessionRunsOlderBuild(loadedVersion(), pluginVersion(import.meta.dirname).version);
+			const behind = sessionRunsOlderBuild(loadedVersion(), checkoutBuild(root).version);
 			const openRelease = checklistPending(cfg, state!, "release");
 			// release-stage items have no gate of their own: the operator's Finish? answer is what closes them, so
 			// name them at the last objective gate — on the way out too, or the refusal hides half the story
@@ -1394,7 +1410,7 @@ ${mdDigest(draftRefresh)}`))
 				state!.staleBuild
 					? `stale build acknowledged at release gate: this session ran dev-flow ${state!.staleBuild} — proofs newer than it did not run.`
 					: behind
-						? `warning: this session runs dev-flow ${behind}, not the build in the checkout — /reload before trusting what it printed.`
+						? `warning: this session runs dev-flow ${behind}, not the build the disk ships — /reload before trusting what it printed.`
 					: "",
 				mergeNote,
 				openNote,
@@ -1813,7 +1829,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				const why = await askOperator(ctx, `Editing ${path.relative(ctx.cwd, abs) || abs}`, pv.confirm);
 				if (why) return { block: true, reason: why };
 			}
-			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null });
+			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd });
 			if (reason) return { block: true, reason };
 			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));

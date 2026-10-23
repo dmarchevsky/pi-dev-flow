@@ -6,6 +6,7 @@
  */
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 
 export type Stage = "plan" | "implement" | "pre-release" | "release" | "done";
@@ -1177,6 +1178,23 @@ export interface FeatureRef {
 const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs.startsWith(dir + path.sep));
 
 /**
+ * A throwaway outside the repository, which is not a repo write at all: a mechanical multi-file rewrite
+ * needs somewhere to keep a scratch script, and refusing `/tmp/split_skill.py` only taught agents to park
+ * junk inside the checkout. Both sides are realpath'd, so a symlink in the temp dir cannot reach back into
+ * the guarded checkout, and `repoRoot` keeps a repository that merely lives under the temp dir (every
+ * smoke-test repo) under the normal stage rules.
+ */
+export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
+	const real = realAbs(abs);
+	if (repoRoot) {
+		const root = realAbs(path.resolve(repoRoot));
+		if (real === root || real.startsWith(root + path.sep)) return false;
+	}
+	const tmp = realAbs(path.resolve(os.tmpdir()));
+	return real === tmp || real.startsWith(tmp + path.sep);
+}
+
+/**
  * Write guard with per-path attribution: writes inside a worktree are judged by that
  * worktree's own feature; main-checkout writes are judged by the session's bound feature
  * (release+ may touch it; plan/implement may not); with no binding and unfinished features
@@ -1184,10 +1202,13 @@ const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs
  * touch the checkout at all — a bound feature is the only way in.
  * Returns a reason or null (allowed).
  */
-export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null }): string | null {
+export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null }): string | null {
 	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
 	if (o.abs === path.join(o.dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
+	// scratch outside the checkout is not a repo write: every stage (and an unbound session) may use it.
+	// after the dev-flow-owned refusals above, so no path shape reaches them through the temp dir.
+	if (inScratchDir(o.abs, o.repoRoot)) return null;
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
 	const owner = o.features.find((f) => within(o.abs, f.worktreeAbs));
@@ -1207,7 +1228,7 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (within(o.abs, o.dfDir)) return null;
 	if (bound) {
 		if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
-			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout`;
+			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout; a throwaway script goes outside the repo (under $TMPDIR)`;
 		return null; // release: release chores may touch the main checkout
 	}
 	if (!o.features.length) return "no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature";
