@@ -1644,16 +1644,25 @@ export default function devFlow(pi: ExtensionAPI) {
 	const rebuildSession = (ctx: ExtensionContext) => {
 		let slug: string | null = null;
 		let sawCore = false;
+		let coreStaleHere = false;
 		for (const e of ctx.sessionManager?.getBranch() ?? []) {
 			// SAFETY: narrow structural view of the SessionEntry union; we only read entries whose type/customType match our own appendEntry writes.
-			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null } };
+			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null; stale?: boolean } };
 			if (ce.type === "custom" && ce.customType === "dev-flow-bind") slug = ce.data?.slug ?? null;
-			if (ce.type === "custom" && ce.customType === "dev-flow-skill") sawCore = true;
+			if (ce.type === "custom" && ce.customType === "dev-flow-skill") {
+				sawCore = true;
+				coreStaleHere = ce.data?.stale === true; // the newest skill entry decides: a stale one follows a compaction
+			}
 		}
 		const key = sessionKey(ctx);
 		bindings.set(key, slug);
-		// The branch already carries the playbook core, so a restored session must not pay it twice.
+		// The branch is the truth about what the restored context holds: a marker means the core is in it
+		// (do not pay twice), no marker means the branch was rewound or forked past the injection (give it
+		// back), and a stale marker means a compaction summarized it away before the reload (give it back).
 		if (sawCore) coreInjected.add(key);
+		else coreInjected.delete(key);
+		if (coreStaleHere) coreStale.add(key);
+		else coreStale.delete(key);
 		// A reload ends the old session, which released its claim; the restored one must reclaim what its own
 		// branch says it holds, or the repo answers "claimed by another live session" to the session that
 		// holds it. A foreign live claim wins — restoring is not a takeover.
@@ -1661,17 +1670,16 @@ export default function devFlow(pi: ExtensionAPI) {
 	};
 
 	/** The run's playbook preamble: the skill's always-on core, once per session. Later runs come back
-	 *  empty because the transcript already holds it — the one exception is a compaction that summarized
-	 *  it away (see session_compact), which re-arms exactly one re-injection. */
+	 *  empty because the transcript already holds it. The one exception is a compaction that summarized
+	 *  it away (see session_compact), which pays it once more — and every real injection records itself,
+	 *  so the newest skill entry on the branch is always the truth a reload restores from. */
 	const corePreamble = (key: string): string => {
 		if (coreInjected.has(key) && !coreStale.has(key)) return "";
 		const core = skillCore();
 		if (!core) return "";
 		coreStale.delete(key);
-		if (!coreInjected.has(key)) {
-			coreInjected.add(key);
-			pi.appendEntry("dev-flow-skill", { core: true });
-		}
+		coreInjected.add(key);
+		pi.appendEntry("dev-flow-skill", { core: true });
 		return `${core}\n\n`;
 	};
 
@@ -1759,6 +1767,9 @@ export default function devFlow(pi: ExtensionAPI) {
 		// gone from context, so the next run pays it once more (manual compactions included: our own
 		// safe-point compaction is the common one).
 		coreStale.add(sessionKey(ctx));
+		// Durable too: a compaction the session survives a reload outlives the in-memory flag, and a
+		// branch whose newest skill entry is stale tells the restored run to pay the core again.
+		pi.appendEntry("dev-flow-skill", { core: true, stale: true });
 		if (event.reason === "manual") return;
 		const st = boundFeature(ctx.cwd, sessionKey(ctx));
 		if (!st) return;
@@ -1912,11 +1923,11 @@ export default function devFlow(pi: ExtensionAPI) {
 		// The playbook core rides along on the message this run writes anyway — once per session.
 		const core = corePreamble(key);
 		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
-		const state = boundFeature(ctx.cwd, sessionKey(ctx));
+		const state = boundFeature(ctx.cwd, key);
 		if (!state || state.stage === "done") {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
 			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
-			const cb = claimBlocker(ctx.cwd, sessionKey(ctx));
+			const cb = claimBlocker(ctx.cwd, key);
 			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (pid ${cb.claim.pid}) — flow use ${cb.state.slug} takes it over explicitly.`;
 			const curBr = await currentBranch(ctx.cwd);
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;

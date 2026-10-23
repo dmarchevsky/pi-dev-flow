@@ -161,22 +161,17 @@ export function extractSkillCore(md: string): string | null {
 	return core || null;
 }
 
-/** The playbook file carrying one stage's detail, relative to the skill directory. `null` for
- *  `done` (nothing left to read). The state machine has no finish stage — closing out happens
- *  inside `release`, and release.md hands over to finish.md there. The pre-flow brief is start. */
+/** The playbook file carrying one stage's detail, relative to the skill directory. `done` has
+ *  none (nothing left to read). The state machine has no finish stage — closing out happens inside
+ *  `release`, and release.md hands over to finish.md there. The pre-flow brief is `start`. */
+const STAGE_REFERENCE: Partial<Record<Stage, string>> = {
+	plan: "references/plan.md",
+	implement: "references/implement.md",
+	"pre-release": "references/pre-release.md",
+	release: "references/release.md",
+};
 export function stageReference(stage: Stage): string | null {
-	switch (stage) {
-		case "plan":
-			return "references/plan.md";
-		case "implement":
-			return "references/implement.md";
-		case "pre-release":
-			return "references/pre-release.md";
-		case "release":
-			return "references/release.md";
-		case "done":
-			return null;
-	}
+	return STAGE_REFERENCE[stage] ?? null;
 }
 
 /** Build a Config from DEFAULTS + a partial overrides object (tests, drafts — the persisted

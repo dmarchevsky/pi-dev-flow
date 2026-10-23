@@ -1901,9 +1901,19 @@ test("the skill core lands once per session, and a compaction re-arms it", async
 	assert.match(await content("core-A"), CORE_MARK, "the first run after a compaction pays the core again");
 	assert.doesNotMatch(await content("core-A"), CORE_MARK, "and only once more");
 
-	// a reload/resume replays the branch, which already carries the injection
+	// a reload replays the branch, whose newest skill entry says the core is already in the transcript
 	await pi.handlers.session_start[0]({}, session("core-A-reloaded", () => pi.entries as never[]));
 	assert.doesNotMatch(await content("core-A-reloaded"), CORE_MARK, "a restored session does not pay the core twice");
+
+	// a compaction the session then survived as a reload: the stale entry is on the branch, so the
+	// restored run gets the playbook back instead of quietly running without it
+	const compactThenReload = [...pi.entries, { type: "custom", customType: "dev-flow-skill", data: { core: true, stale: true } }];
+	await pi.handlers.session_start[0]({}, session("core-A-compacted", () => compactThenReload as never[]));
+	assert.match(await content("core-A-compacted"), CORE_MARK, "staleness survives a reload — it is recorded, not just remembered");
+
+	// a branch rewound or forked past the injection carries no marker: the core returns
+	await pi.handlers.session_start[0]({}, session("core-A", () => [] as never[]));
+	assert.match(await content("core-A"), CORE_MARK, "a branch without the marker gets the playbook back");
 
 	// a copy shipped without its skills/ directory leaves every message exactly as it was
 	testSeams.skillCore.value = null;
