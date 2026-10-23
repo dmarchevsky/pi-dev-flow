@@ -162,7 +162,8 @@ anything (findings are also printed whenever `flow init` runs without a UI, e.g.
 rewrites from fresh detection. Improvement
 ideas the agent notices along the way queue up in `.dev-flow/reflections.md` under `## playbook`
 (what to change in *your* playbook) and `## plugin` (what to change in dev-flow itself) —
-`flow reflect "<note>"` appends them, plain `flow doctor` reviews the open ones and routes
+`flow reflect "<note>"` appends them, `flow reflect tidy` drops the closed (`- [x]`) ones,
+plain `flow doctor` reviews the open ones and routes
 each fix to the flow that implements it (docs flow for playbook items — those edits only pass a
 docs/patch flow's worktree), bare `flow reflect` hands the agent the full end-of-session
 reflection protocol (review the session log, re-check open items against fixes that already

@@ -43,6 +43,7 @@ import {
 	classifyMergeHistory,
 	cmpVersions,
 	cleanupAssess,
+	closedReflectionCount,
 	compactionReflectionLine,
 	detectForge,
 	featureBranchPrefix,
@@ -70,6 +71,8 @@ import {
 	reflectSections,
 	reflectionLine,
 	reflectionRoutes,
+	reflectionsTidy,
+	reflectionsTidyHint,
 	sessionRunsOlderBuild,
 
 	listFiles,
@@ -281,7 +284,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build, and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the loaded build and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|tidy] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build, and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the loaded build and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there); reflect tidy drops the closed (`- [x]`) items from reflections.md — every surface that queues or reviews reflections nudges when the checked-off pile grows; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -339,6 +342,12 @@ function unfinishedStates(root: string): FlowState[] {
 const readReflections = (root: string): string[] => {
 	const f = path.join(dfDir(root), "reflections.md");
 	return existsSync(f) ? openReflections(readFileSync(f, "utf8")) : [];
+};
+
+/** Raw reflections.md content — the closed-item count needs the checked lines the open-only reader drops. */
+const readReflectionsText = (root: string): string => {
+	const f = path.join(dfDir(root), "reflections.md");
+	return existsSync(f) ? readFileSync(f, "utf8") : "";
 };
 
 const roadmapFile = (root: string) => path.join(dfDir(root), "roadmap.md");
@@ -600,7 +609,21 @@ function reflectNote(root: string, sess: Session, note: string[]): RunResult {
 	const next = appendReflection(text, sections, line);
 	if (next === text) return { text: `already reflected (duplicate): ${line}` };
 	writeFileSync(file, next);
-	return { text: `reflected (${sections.join(" + ")}): ${line}` };
+	// queueing is exactly when the operator hears about the checked-off pile — nudge instead of letting it grow
+	const closed = closedReflectionCount(next);
+	return { text: `reflected (${sections.join(" + ")}): ${line}` + (closed ? `\n${reflectionsTidyHint(closed)}` : "") };
+}
+
+/** `flow reflect tidy` — drop the closed (`- [x]`) items; the `— fixed:` note already recorded the outcome. */
+function reflectTidy(root: string): RunResult {
+	const file = path.join(dfDir(root), "reflections.md");
+	if (!existsSync(file)) return { text: "reflections: nothing to tidy (no queue yet)" };
+	const text = readFileSync(file, "utf8");
+	const closed = closedReflectionCount(text);
+	const open = openReflections(text).length;
+	if (!closed) return { text: `reflections: nothing to tidy (${open} open, 0 closed)` };
+	writeFileSync(file, reflectionsTidy(text));
+	return { text: `reflections: dropped ${closed} closed item(s) — ${open} open` };
 }
 
 /** Single runner for both the /flow command and the flow tool. */
@@ -848,11 +871,13 @@ ${mdDigest(draftRefresh)}`))
 			// gate flags belong to the state verbs — pasted into the note they read as part of the operator's
 			// own sentence in reflections.md (#43)
 			const words = rest.filter((a) => !a.startsWith("--"));
+			// the single word `tidy` is a verb (roadmap-style); a note merely starting with it stays a note
+			if (words.length === 1 && words[0] === "tidy") return reflectTidy(root);
 			if (words.length) return reflectNote(root, sess, words);
 			// upstream for the update probe: the manifest's repository field; the dev-flow checkout itself falls back to its origin
 			const self = pluginVersion(import.meta.dirname);
 			const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
-			return { text: reflectProtocol(readReflections(root), isSelfRepo(root), { version: self.version, upstream }).join("\n") };
+			return { text: reflectProtocol(readReflections(root), isSelfRepo(root), { version: self.version, upstream, closed: closedReflectionCount(readReflectionsText(root)) }).join("\n") };
 		}
 
 		case "roadmap": {
@@ -909,6 +934,8 @@ ${mdDigest(draftRefresh)}`))
 				findings.push(`reflection review — ${refl.length} open item(s); doctor never implements: investigate each, present the fix, the operator confirms, then the routed flow implements it:`);
 				for (const r of reflectionRoutes(refl, isSelfRepo(root))) findings.push(`  [${r.sections.join("+")}] ${r.text}\n      → ${r.route}`);
 			}
+			const closedRefl = closedReflectionCount(readReflectionsText(root));
+			if (closedRefl) findings.push(reflectionsTidyHint(closedRefl));
 			if (!rest.length) return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
 			// flow doctor <note>: a fresh observation gets an investigation brief and a fix route
 			return { text: investigationBrief(rest.filter((a) => !a.startsWith("--")).join(" "), isSelfRepo(root)).join("\n") };
