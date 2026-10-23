@@ -175,38 +175,6 @@ export function stageReference(stage: Stage): string | null {
 	return STAGE_REFERENCE[stage] ?? null;
 }
 
-/** Build a Config from DEFAULTS + a partial overrides object (tests, drafts — the persisted
- *  source is project.md alone; the legacy project.json loader is gone). */
-export function buildConfig(raw: unknown): Config {
-	const c: Config = structuredClone(DEFAULTS);
-	if (!raw || typeof raw !== "object") return c;
-	const r = raw as Record<string, unknown>;
-	for (const key of ["defaultBranch", "branchPattern", "worktreeDir", "mainHook", "forge"] as const) {
-		if (typeof r[key] === "string" || typeof r[key] === "boolean") (c[key] as never) = r[key] as never;
-	}
-	if (Array.isArray(r.mockupGlobs)) c.mockupGlobs = r.mockupGlobs.map(String);
-	if (r.commands && typeof r.commands === "object")
-		for (const [k, v] of Object.entries(r.commands as Record<string, unknown>)) if (typeof v === "string") (c.commands as Record<string, string>)[k] = v;
-	if (r.release && typeof r.release === "object") Object.assign(c.release, r.release);
-	if (r.healthWait !== undefined) c.healthWait = toSeconds(r.healthWait) ?? c.healthWait;
-	if (r.versioning && typeof r.versioning === "object") {
-		const v = r.versioning as Record<string, unknown>;
-		if (typeof v.file === "string") c.versioning.file = v.file;
-		if (typeof v.pattern === "string") c.versioning.pattern = v.pattern;
-	}
-	if (r.guard && typeof r.guard === "object") {
-		const g = r.guard as Record<string, unknown>;
-		for (const verb of ["deny", "confirm", "protect", "forbid"] as const)
-			if (Array.isArray(g[verb])) c.guard[verb] = normalizeGuardRules(g[verb]);
-	}
-	// tier-1 checks from plain commands so legacy project.json keeps the same teeth as project.md
-	c.checkList = [
-		...(c.commands.test ? [{ name: "test", cmd: c.commands.test }] : []),
-		...(c.commands.health ? [{ name: "health", cmd: c.commands.health }] : []),
-	];
-	return c;
-}
-
 /** The project's own "running and healthy" probe — `commands.health` or a flow-check block named
  *  health. The plugin runs it, the project says what healthy means (readiness, served build stamp). */
 export function healthProbe(c: Config): string | undefined {
@@ -762,11 +730,12 @@ export function expandHome(p: string): string {
 
 /** git usage in a bash command, parsed per shell segment (split on ; | & newline):
  *  the git subcommands invoked — empty when git is not a command, so paths like
- *  .git/hooks or words like pre-commit never trigger the guard — and the directory
- *  git runs in (last preceding `cd` target or `git -C` target; null = session cwd).
+ *  .git/hooks or words like pre-commit never trigger the guard — and the per-segment
+ *  entries the guard judges, each carrying the directory that segment runs in
+ *  (last preceding `cd` target or `git -C` target; null = session cwd).
  *  shortcut: naive segment split, subshells/backticks not tracked; the pre-commit
  *  hook still covers what slips past this advisory guard. */
-export function gitInvocation(command: string): { subs: string[]; dir: string | null; pushes: string[][]; gitSegs: { seg: string; dir: string | null }[] } {
+export function gitInvocation(command: string): { subs: string[]; pushes: string[][]; gitSegs: { seg: string; dir: string | null }[] } {
 	const subs: string[] = [];
 	const pushes: string[][] = [];
 	const gitSegs: { seg: string; dir: string | null }[] = [];
@@ -811,7 +780,7 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 		}
 		gitSegs.push({ seg: seg.trim(), dir }); // after -C parsing so the entry carries its own effective dir
 	}
-	return { subs, dir, pushes, gitSegs };
+	return { subs, pushes, gitSegs };
 }
 
 export type PushRef = { kind: "tag" | "branch" | "current"; name: string };
@@ -1013,19 +982,6 @@ export interface GuardRules {
 	confirm: GuardRule[];
 	protect: GuardRule[];
 	forbid: GuardRule[];
-}
-
-/** project.json may spell a rule as a bare pattern string. */
-function normalizeGuardRules(raw: unknown[]): GuardRule[] {
-	const out: GuardRule[] = [];
-	for (const e of raw) {
-		if (typeof e === "string" && e.trim()) out.push({ pattern: e, why: "" });
-		else if (e && typeof e === "object") {
-			const o = e as Record<string, unknown>;
-			if (typeof o.pattern === "string" && o.pattern.trim()) out.push({ pattern: o.pattern, why: typeof o.why === "string" ? o.why : "" });
-		}
-	}
-	return out;
 }
 
 /** Heads that execute their argument: inside these, quoted text is code, not prose. */
@@ -1654,15 +1610,6 @@ export function gateHelpJson(gateHelp: string, version: string | null): string {
 		null,
 		"\t",
 	);
-}
-
-export function getPath(obj: Record<string, unknown>, key: string): unknown {
-	let cur: unknown = obj;
-	for (const seg of key.split(".")) {
-		if (typeof cur !== "object" || cur === null) return undefined;
-		cur = (cur as Record<string, unknown>)[seg];
-	}
-	return cur;
 }
 
 /** Write (or delete, on null) a dot-path value in a partial project.json object. */

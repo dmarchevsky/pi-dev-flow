@@ -3,13 +3,13 @@ import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { buildConfig } from "./util/config.ts";
 import {
 	applyAnswer,
 	appendReflection,
 	approveGate,
 	bashSegments,
 	bashFlowGuard,
-	buildConfig,
 	checklistHash,
 	checkoutTarget,
 	claimBlocks,
@@ -28,7 +28,6 @@ import {
 	flowShellInvocation,
 	forcePushInvocation,
 	gateHelpJson,
-	getPath,
 	gitInvocation,
 	githubSlug,
 	guardBash,
@@ -279,19 +278,19 @@ test("bashFlowGuard: only real git invocations are judged", () => {
 });
 
 test("gitInvocation: subcommands and effective directory", () => {
-	assert.deepEqual(gitInvocation("cat .git/hooks/pre-commit"), { subs: [], dir: null, pushes: [], gitSegs: [] });
-	assert.deepEqual(gitInvocation("git commit -m x"), { subs: ["commit"], dir: null, pushes: [], gitSegs: [{ seg: "git commit -m x", dir: null }] });
-	assert.deepEqual(gitInvocation("cd .dev-flow/f/worktree && git commit -m x"), { subs: ["commit"], dir: ".dev-flow/f/worktree", pushes: [], gitSegs: [{ seg: "git commit -m x", dir: ".dev-flow/f/worktree" }] });
-	assert.deepEqual(gitInvocation("git -C /tmp/wt push origin feat/x"), { subs: ["push"], dir: "/tmp/wt", pushes: [["origin", "feat/x"]], gitSegs: [{ seg: "git -C /tmp/wt push origin feat/x", dir: "/tmp/wt" }] });
-	assert.deepEqual(gitInvocation("git -C=/tmp/wt commit"), { subs: ["commit"], dir: "/tmp/wt", pushes: [], gitSegs: [{ seg: "git -C=/tmp/wt commit", dir: "/tmp/wt" }] });
-	assert.deepEqual(gitInvocation("/usr/bin/git branch --show-current"), { subs: ["branch"], dir: null, pushes: [], gitSegs: [{ seg: "/usr/bin/git branch --show-current", dir: null }] });
-	assert.deepEqual(gitInvocation("cd wt; git status; git push"), { subs: ["status", "push"], dir: "wt", pushes: [[]], gitSegs: [{ seg: "git status", dir: "wt" }, { seg: "git push", dir: "wt" }] });
-	assert.deepEqual(gitInvocation("sudo git commit -m x"), { subs: ["commit"], dir: null, pushes: [], gitSegs: [{ seg: "sudo git commit -m x", dir: null }] });
+	assert.deepEqual(gitInvocation("cat .git/hooks/pre-commit"), { subs: [], pushes: [], gitSegs: [] });
+	assert.deepEqual(gitInvocation("git commit -m x"), { subs: ["commit"], pushes: [], gitSegs: [{ seg: "git commit -m x", dir: null }] });
+	assert.deepEqual(gitInvocation("cd .dev-flow/f/worktree && git commit -m x"), { subs: ["commit"], pushes: [], gitSegs: [{ seg: "git commit -m x", dir: ".dev-flow/f/worktree" }] });
+	assert.deepEqual(gitInvocation("git -C /tmp/wt push origin feat/x"), { subs: ["push"], pushes: [["origin", "feat/x"]], gitSegs: [{ seg: "git -C /tmp/wt push origin feat/x", dir: "/tmp/wt" }] });
+	assert.deepEqual(gitInvocation("git -C=/tmp/wt commit"), { subs: ["commit"], pushes: [], gitSegs: [{ seg: "git -C=/tmp/wt commit", dir: "/tmp/wt" }] });
+	assert.deepEqual(gitInvocation("/usr/bin/git branch --show-current"), { subs: ["branch"], pushes: [], gitSegs: [{ seg: "/usr/bin/git branch --show-current", dir: null }] });
+	assert.deepEqual(gitInvocation("cd wt; git status; git push"), { subs: ["status", "push"], pushes: [[]], gitSegs: [{ seg: "git status", dir: "wt" }, { seg: "git push", dir: "wt" }] });
+	assert.deepEqual(gitInvocation("sudo git commit -m x"), { subs: ["commit"], pushes: [], gitSegs: [{ seg: "sudo git commit -m x", dir: null }] });
 	assert.deepEqual(gitInvocation("cd wt && git commit -m x && cd main && git pull").gitSegs.map((g) => [g.seg.split(" ")[1], g.dir]), [["commit", "wt"], ["pull", "main"]], "per-segment dirs: last-cd must not leak into earlier segments");
 	const home = process.env.HOME || "/home/me";
-	assert.equal(gitInvocation("cd ~/wt && git commit -m x").dir, `${home}/wt`, "the shell expands ~ before git runs; an unexpanded one resolved against the session cwd and main got the blame");
-	assert.equal(gitInvocation("git -C $HOME/wt commit").dir, `${home}/wt`, "$HOME is expanded the same way");
-	assert.equal(gitInvocation("cd $WT/wt && git commit -m x").dir, "$WT/wt", "any other var stays literal — a guess is worse than a literal");
+	assert.equal(gitInvocation("cd ~/wt && git commit -m x").gitSegs[0].dir, `${home}/wt`, "the shell expands ~ before git runs; an unexpanded one resolved against the session cwd and main got the blame");
+	assert.equal(gitInvocation("git -C $HOME/wt commit").gitSegs[0].dir, `${home}/wt`, "$HOME is expanded the same way");
+	assert.equal(gitInvocation("cd $WT/wt && git commit -m x").gitSegs[0].dir, "$WT/wt", "any other var stays literal — a guess is worse than a literal");
 });
 
 test("forcePushInvocation: the verb carries the flag, not any git command (#82)", () => {
@@ -649,7 +648,7 @@ test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
 	applyAnswer(p, "commands.test", "(none)");
 	assert.deepEqual(p, {}, "removing the last command prunes commands away");
 	applyAnswer(p, "mainHook", false);
-	assert.equal(getPath(p, "mainHook"), false);
+	assert.deepEqual(p, { mainHook: false }, "false is a value, not a deletion");
 });
 
 test("verifyGate: tier-1 checks green + tier-2 checklist confirmed (ui-aware)", () => {
