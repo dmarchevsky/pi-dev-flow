@@ -819,16 +819,18 @@ export function parsePushRefs(pushes: string[][]): PushRef[] {
 	return out;
 }
 
-/** Flow state by full path, or a bare `state.json` when the command also touches `.dev-flow`
- *  (that is how `cd .dev-flow/<slug> && mv state.json …` reaches it). */
-const STATE_PATH = /(^|[\s'"\/])state\.json$/;
-const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*state\.json$/;
+/** Flow control files by full path — state.json and claim.json — or a bare name when the command
+ *  also touches `.dev-flow` (that is how `cd .dev-flow/<slug> && mv state.json …` reaches it).
+ *  The claim is the live-session lock: deleting it is as much theft as forging a stage. */
+const STATE_PATH = /(^|[\s'"\/])(?:state|claim)\.json$/;
+const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:state|claim)\.json$/;
 const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
 const DF_ANYWHERE = /\.dev-flow\b/;
 /** The `.dev-flow/` folder itself or one feature directory under it — deleting either destroys the flow
  *  state and its plan for good. The advisory files the agent owns, and anything deeper (a worktree, a
- *  plan/mockups path), are not "the folder". */
-const DF_FOLDER = /(?:^|[\s'"])\.dev-flow(?:\/(?!project\.md$|roadmap\.md$|reflections\.md$|\.gitignore$)[\w.-]+)?(?=$|[\s'"])/;
+ *  plan/mockups path), are not "the folder". The leading boundary takes `/` too: an absolute path names
+ *  the same folder, and absolute paths are the shape the harness hands the agent. */
+const DF_FOLDER = /(?:^|[\s'"/])\.dev-flow(?:\/(?!project\.md$|roadmap\.md$|reflections\.md$|\.gitignore$)[\w.-]+)?(?=$|[\s'"])/;
 // write tools that can overwrite a file. A bare `>` is deliberately absent: the redirect target is
 // checked on its own, and testing for any `>` here refused every segment that merely mentioned an
 // owned path while redirecting elsewhere (`gh pr create … 2>&1`).
@@ -1162,6 +1164,7 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
 	if (o.abs === path.join(o.dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
+	if (o.abs.endsWith("claim.json") && o.abs.includes(o.dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
 	const owner = o.features.find((f) => within(o.abs, f.worktreeAbs));

@@ -444,6 +444,7 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: [], boundSlug: null }) ?? "", /no active flow/, "flow-by-default: clean repo still requires a flow");
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/reflections.md", dfDir: df, features: [], boundSlug: null }), null, "reflections.md is the agent's queue — editable even with no flow bound");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
+	assert.match(writeGuard({ abs: "/repo/.dev-flow/a/claim.json", dfDir: df, features: [], boundSlug: null }) ?? "", /claim\.json is dev-flow-owned/, "the claim is the concurrency lock — dev-flow owns it, flow use takes over");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/project.md", dfDir: df, features: [], boundSlug: null }) ?? "", /operator playbook/, "the main-checkout playbook is never an agent edit target");
 	const docsF = { state: { ...newState("d", false, false, true), stage: "implement" as const, worktree: ".wt/d" }, worktreeAbs: "/repo/.wt/d" };
@@ -835,6 +836,13 @@ test("playbookTamper: prose about a write is not a write; a wrapper's payload is
 test("stateTamper: the folder is state — deleting it is tampering, reads are not", () => {
 	// the old guard matched one path shape: it blocked a read through a bare `-e` and let the folder go
 	assert.ok(stateTamper("rm -rf .dev-flow/my-feature"), "deleting the feature dir deletes its state and its plan");
+	assert.ok(stateTamper("rm -rf /home/x/repo/.dev-flow/my-feature"), "absolute paths are the shape the harness hands the agent — /repo/.dev-flow/foo is the same folder");
+	assert.ok(stateTamper("rm -rf /home/x/repo/.dev-flow"), "the whole folder by absolute path deletes every feature");
+	assert.equal(stateTamper("rm -rf /home/x/repo/.dev-flow/my-feature/worktree/node_modules"), false, "the absolute twin keeps the worktree parity: inside a worktree is the feature's own working area");
+	assert.equal(stateTamper('git commit -m "removed /home/x/repo/.dev-flow/foo by accident"'), false, "prose naming the absolute path is not a delete");
+	assert.ok(stateTamper("rm .dev-flow/f/claim.json"), "the claim is the live-session lock — deleting it steals the flow");
+	assert.ok(stateTamper("rm /home/x/repo/.dev-flow/f/claim.json"), "also at an absolute path");
+	assert.equal(stateTamper("cat .dev-flow/f/claim.json"), false, "reading the claim is fine");
 	assert.ok(stateTamper("rm -rf .dev-flow"), "deleting the folder deletes every feature");
 	assert.ok(stateTamper("cd .dev-flow/my-feature && mv state.json /tmp/bak"), "a cd-relative move of state.json still destroys it");
 	assert.ok(stateTamper("sh -c 'rm -rf .dev-flow/my-feature'"), "a wrapper's payload is the same command");
