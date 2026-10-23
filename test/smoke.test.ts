@@ -296,7 +296,7 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	const early = await flow(["verify"]);
 	assert.ok(early.isError, "no UI and no --confirmed: verification still needs the operator");
 	assert.match(early.content[0].text, /dev ran \(touch dev-up\)/);
-	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); dev ran \(touch dev-up\)/);
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); .*dev ran \(touch dev-up\)/, "a commit after the check made the record stale — the gate reruns it and says so");
 	await toImplement("nodev", "test = node --version\n");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /dev: none configured/);
 });
@@ -327,6 +327,33 @@ test("verify runs the checks it gates on instead of asking for them (#84)", asyn
 	assert.ok(bad.isError && /a check run at the gate failed/.test(bad.content[0].text), "a failing check still refuses the gate");
 	assert.match(bad.content[0].text, /test: FAIL \(exit 3\)/, "with the run output instead of a pointer");
 	assert.ok(!/has not passed/.test(bad.content[0].text), "no run-flow-check-and-come-back round trip left");
+});
+
+test("a worktree change after flow check makes the green stale — the gate reruns instead of trusting it", async () => {
+	// the audit finding: only the edit/write tools cleared checks, so a change made through bash
+	// (sed -i, a formatter, a codegen script — all outside the edit-tool hook) let a green that
+	// never saw the new code carry verify. The fingerprint makes the tree move itself the proof.
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = grep -q ok flag.txt\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "moved"]);
+	mkdirSync(path.join(repo, ".dev-flow", "moved", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "moved", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "moved", "worktree");
+	writeFileSync(path.join(wt, "flag.txt"), "ok\n");
+	commitWt(repo, "moved");
+	assert.ok(!(await flow(["check"])).isError, "test green: flag.txt says ok");
+	// a bash-shaped write — the harness writes directly, exactly as sed -i would: no edit-tool hook fires
+	writeFileSync(path.join(wt, "flag.txt"), "gone\n");
+	const v = await flow(["verify", "--confirmed"]);
+	assert.ok(v.isError && /a check run at the gate failed/.test(v.content[0].text), "a stale green cannot carry the gate: the check reruns and catches the change");
+	writeFileSync(path.join(wt, "flag.txt"), "ok\n");
+	const v2 = await flow(["verify", "--confirmed"]);
+	assert.match(v2.content[0].text, /entering pre-release stage/, "back in agreement the gate passes");
+	assert.match(v2.content[0].text, /stale record\(s\) rerun after a worktree change: test/, "and says what it reran and why");
 });
 
 test("verify refuses a branch with nothing committed, and names what a passing verify asks you to approve", async () => {
@@ -732,6 +759,8 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	execFileSync("git", ["-C", cwt, "add", "-A"]);
 	execFileSync("git", ["-C", cwt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "dev artifact"]);
 	execFileSync("git", ["-C", repo, "merge", "-q", "--ff", "feat/ck"]); // simulate the merge landing on main
+	// the artifact commit moved the tree state the earlier green was taken against — the honest pre-release order is: commit, then check, then the gate
+	assert.ok(!(await flow(["check"])).isError);
 	assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
 	const rd = await flow(["release-done", "--confirmed"]); // flag still accepted, as a no-op — release-done asks nothing
 	assert.match(rd.content[0].text, /release recorded as complete/);

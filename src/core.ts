@@ -16,6 +16,11 @@ export interface Check {
 	ok: boolean;
 	at: string;
 	note?: string;
+	/** The worktree state this check actually ran against (see checkFingerprint). A record whose
+	 *  fingerprint differs from the current tree at gate time was measured against code that no
+	 *  longer exists — green is not enough when the tree moved under it. Absent = recorded by an
+	 *  older build, or git could not be asked: never proven stale, never dropped. */
+	wt?: string;
 }
 
 export interface StageCheck {
@@ -423,6 +428,36 @@ export function checklistHash(items: ChecklistItem[]): string {
 		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.text}`).join("\n"))
 		.digest("hex")
 		.slice(0, 12);
+}
+
+/** Fingerprint of the worktree state a tier-1 check ran against: the caller composes the working
+ *  tree's `git status --porcelain`, the hash of its uncommitted `git diff HEAD` (path presence and
+ *  tracked content move it), and `git rev-parse HEAD`. Deterministic and cheap; the sha is only
+ *  ever compared against itself, never decoded.
+ *  shortcut: a content-only change to an UNTRACKED file stays invisible — git does not look at
+ *  those contents, and untracked worktree content is normally build output, not code under test. */
+export function checkFingerprint(treeState: string, head: string): string {
+	return createHash("sha1").update(`${treeState}\n${head}`).digest("hex").slice(0, 12);
+}
+
+/**
+ * Drop every check record that carries a fingerprint differing from the tree as it is now — those
+ * greens describe code that no longer exists, and a gate must not advance on them. The caller
+ * re-runs what is missing (verify re-runs at the gate; the release gate asks for `flow check`).
+ * `fp === null` means git could not be asked: a gate must not refuse on its own measurement
+ * failure — same rule as BranchState.commitsAhead. Records without a fingerprint (older builds)
+ * are never proven stale.
+ */
+export function freshenChecks(state: FlowState, fp: string | null, keep: (name: string) => boolean = () => false): string[] {
+	if (!fp) return [];
+	const stale: string[] = [];
+	for (const [name, rec] of Object.entries(state.checks)) {
+		if (rec.wt && rec.wt !== fp && !keep(name)) {
+			delete state.checks[name];
+			stale.push(name);
+		}
+	}
+	return stale;
 }
 
 /** Items that apply to this feature — "(ui)" items only when the UI flag is set. */

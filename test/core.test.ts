@@ -27,6 +27,8 @@ import {
 	FLOW_SHELL_HINT,
 	flowShellInvocation,
 	forcePushInvocation,
+	freshenChecks,
+	checkFingerprint,
 	gateHelpJson,
 	gitInvocation,
 	githubSlug,
@@ -670,6 +672,22 @@ test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
 	assert.deepEqual(p, {}, "removing the last command prunes commands away");
 	applyAnswer(p, "mainHook", false);
 	assert.deepEqual(p, { mainHook: false }, "false is a value, not a deletion");
+});
+
+test("freshenChecks: a green recorded against a different tree is no green", () => {
+	const s = newState("f", false);
+	s.checks.test = { ok: true, at: "", wt: "aaa" };
+	s.checks.build = { ok: true, at: "" }; // pre-fingerprint record from an older build
+	assert.deepEqual(freshenChecks(s, null), [], "git unmeasurable drops nothing — a gate must not refuse on its own probe");
+	assert.deepEqual(freshenChecks(s, checkFingerprint(" M src/x.ts", "abc")), ["test"], "the record from a moved tree is stale");
+	assert.equal(s.checks.test, undefined, "the stale record is gone — the gate reruns it");
+	assert.ok(s.checks.build, "a record without a fingerprint is never proven stale");
+	assert.deepEqual(freshenChecks(s, checkFingerprint(" M src/x.ts", "abc")), [], "the same tree fingerprints equal");
+	const s2 = newState("g", false);
+	s2.checks.health = { ok: true, at: "", wt: "aaa" };
+	assert.deepEqual(freshenChecks(s2, "zzz", (n) => n === "health"), [], "a keep predicate spares a name the gate re-probes itself");
+	assert.ok(s2.checks.health, "the kept record stands for the deploy probe to overwrite");
+	assert.deepEqual(freshenChecks(s2, "zzz"), ["health"], "without the predicate it is stale like any other");
 });
 
 test("verifyGate: tier-1 checks green + tier-2 checklist confirmed (ui-aware)", () => {

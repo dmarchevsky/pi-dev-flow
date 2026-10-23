@@ -33,6 +33,7 @@ import {
 	appendReflection,
 	appendRoadmapItem,
 	bashFlowGuard,
+	checkFingerprint,
 	changelogEntry,
 	changelogVersionsBetween,
 	normalizeReleaseBody,
@@ -53,6 +54,7 @@ import {
 	FLOW_SHELL_HINT,
 	flowShellInvocation,
 	forcePushInvocation,
+	freshenChecks,
 	gateHelpJson,
 	gitInvocation,
 	githubSlug,
@@ -554,13 +556,14 @@ function gateCwd(root: string, state: FlowState): string {
  * `health` is left to the post-deploy probe when there is a deploy to prove: probing twice only waits twice. */
 function pendingChecks(state: FlowState, cfg: Config): StageCheck[] {
 	if (state.docs) return [];
-	return cfg.checkList.filter((c) => !state.checks[c.name]?.ok && !(c.name === "health" && cfg.commands.dev && healthProbe(cfg)));
+	return cfg.checkList.filter((c) => !state.checks[c.name]?.ok && !(c.name === "health" && healthRerunsAfterDeploy(cfg)));
 }
 
 /** Run tier-1 checks in the feature cwd and record each result (health seeds first, as `flow health` does). */
 async function runChecks(root: string, state: FlowState, cfg: Config, checks: StageCheck[]): Promise<{ lines: string[]; failed: boolean }> {
 	const lines: string[] = [];
 	let failed = false;
+	const ran: string[] = [];
 	for (const c of checks) {
 		if (c.name === "health" && cfg.commands.seedData) {
 			const seed = await sh(cfg.commands.seedData, gateCwd(root, state));
@@ -572,11 +575,37 @@ async function runChecks(root: string, state: FlowState, cfg: Config, checks: St
 		}
 		const res = await sh(c.cmd, gateCwd(root, state));
 		state.checks[c.name] = { ok: res.ok, at: now() };
+		ran.push(c.name);
 		lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd})${res.ok ? "" : `\n${tail(res.out)}`}`);
 		if (!res.ok) failed = true;
 	}
+	await stampChecks(root, state, ran);
 	writeState(root, state);
 	return { lines, failed };
+}
+
+/** Which health record a verify may leave stale on purpose: the post-deploy probe re-runs it, so
+ *  the pre-deploy record must survive the gate that schedules the deploy. */
+const healthRerunsAfterDeploy = (cfg: Config) => !!cfg.commands.dev && !!healthProbe(cfg);
+
+/** Fingerprint of the working-tree state the checks ran against: paths (`status --porcelain`),
+ *  tracked content (a hash of the uncommitted diff) and HEAD. Null when git cannot answer — a
+ *  measurement failure must never mark a green record stale (see freshenChecks). */
+async function worktreeFingerprint(cwd: string): Promise<string | null> {
+	const st = await sh("git status --porcelain", cwd);
+	if (!st.ok) return null;
+	const diff = await sh("git diff HEAD --no-color | git hash-object --stdin", cwd);
+	const head = await sh("git rev-parse HEAD", cwd);
+	if (!diff.ok || !head.ok) return null;
+	return checkFingerprint(`${st.out}\n${diff.out}`, head.out);
+}
+
+/** Stamp freshly recorded checks with the tree they ran against — taken AFTER the run, so a check
+ *  that rewrites tracked files (a formatter, codegen) does not mark itself stale the moment it passes. */
+async function stampChecks(root: string, state: FlowState, names: string[]): Promise<void> {
+	const fp = await worktreeFingerprint(gateCwd(root, state));
+	if (!fp) return;
+	for (const n of names) if (state.checks[n]) state.checks[n].wt = fp;
 }
 
 /** Commits the feature branch holds over its merge base with the default branch, plus how many
@@ -1054,6 +1083,7 @@ ${mdDigest(draftRefresh)}`))
 			if (!cfg.commands.test) return { text: "no commands.test configured — add `test = <command>` under ## implement in .dev-flow/project.md", isError: true };
 			const res = await sh(cfg.commands.test, gateCwd(root, state!));
 			state!.checks.test = { ok: res.ok, at: now() };
+			await stampChecks(root, state!, ["test"]);
 			writeState(root, state!);
 			return { text: `test: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.test})\n${tail(res.out)}` };
 		}
@@ -1064,8 +1094,11 @@ ${mdDigest(draftRefresh)}`))
 			const items = applicableItems(cfg, state!, "implement");
 			const branch = await branchState(gateCwd(root, state!), cfg.defaultBranch);
 			const branchLine = describeBranchState(branch, cfg.defaultBranch);
-			// a check with no record is run here, not asked for: entering the stage — and every edit since —
-			// cleared it, and telling the agent to run flow check cost three round trips (#84)
+			// A green record belongs to the tree it ran against. A worktree change made through bash (sed,
+			// a formatter, codegen) fires no edit-tool invalidation — the fingerprint is what notices the
+			// tree moved, and the dropped records become pending so the gate itself reruns them (#84 path).
+			const staleAtGate = freshenChecks(state!, await worktreeFingerprint(gateCwd(root, state!)), (n) => n === "health" && healthRerunsAfterDeploy(cfg));
+			if (staleAtGate.length) writeState(root, state!);
 			const pending = pendingChecks(state!, cfg);
 			const gateRun = pending.length ? await runChecks(root, state!, cfg, pending) : null;
 			if (gateRun?.failed) return { text: `verify gate FAILED — a check run at the gate failed:\n${gateRun.lines.join("\n")}\n${branchLine}`, isError: true };
@@ -1076,6 +1109,7 @@ ${mdDigest(draftRefresh)}`))
 			// agent tell the operator the dev deploy had never run, right after it recreated a container.
 			const did: string[] = [];
 			if (gateRun) did.push(`checks ran at the gate (${pending.map((c) => c.name).join(", ")})`);
+			if (staleAtGate.length) did.push(`stale record(s) rerun after a worktree change: ${staleAtGate.join(", ")}`);
 			if (state!.docs) {
 				// docs mode's contract: no tier-1 work happens, so a docs flow neither builds, deploys nor probes (#43 #49)
 				did.push("docs mode: project commands skipped (build/dev/health)");
@@ -1109,6 +1143,7 @@ ${mdDigest(draftRefresh)}`))
 						}
 						const probed = await runHealthProbe(probe, gateCwd(root, state!), cfg.healthWait);
 						state!.checks.health = { ok: probed.ok, at: now() };
+						await stampChecks(root, state!, ["health"]);
 						writeState(root, state!);
 						// a probe that needed the wait budget says so — "it passed on the 9th try" is the operator's business (#42)
 						const tried = probed.attempts > 1 ? `, ${probed.attempts} attempts` : "";
@@ -1165,6 +1200,7 @@ ${mdDigest(draftRefresh)}`))
 			}
 			const res = await runHealthProbe(cfg.commands.health, gateCwd(root, state!), cfg.healthWait);
 			state!.checks.health = { ok: res.ok, at: now() };
+			await stampChecks(root, state!, ["health"]);
 			writeState(root, state!);
 			const tried = res.attempts > 1 ? `, ${res.attempts} attempts` : "";
 			return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health}${tried})\n${tail(res.out)}` };
@@ -1222,6 +1258,8 @@ ${mdDigest(draftRefresh)}`))
 				}
 			}
 			const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged, changelogBase, noFoldCheck: flag("no-fold-check") };
+			// same freshness rule as verify: a green predating a worktree write may not stand for the tree this gate blesses
+			if (freshenChecks(state!, await worktreeFingerprint(wtCwd)).length) writeState(root, state!);
 			// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 			const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 			if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
