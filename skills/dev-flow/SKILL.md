@@ -27,11 +27,12 @@ Ground rules:
   `/reload` when `flow version` says this session runs an older build).
 
 - **One session = exactly one feature** (flow + branch + worktree); parallel
-  sessions, one feature each, are the model. The bind is automatic when one
-  unfinished feature exists and no live session already claims it
-  (`flow use <slug>` = explicit takeover); `flow start <slug>` sets the bind
-  (main checkout must be on the default branch). Unbound with several
-  unfinished features: gates demand an explicit slug and main-checkout writes
+  sessions, one feature each, are the model. A session binds **explicitly and
+  only**: `flow start <slug>` sets the bind (main checkout must be on the
+  default branch); `flow use <slug>` takes over an open or foreign-held
+  feature. Nothing auto-binds — a new session with unfinished features stays
+  unbound until someone says `flow use`. Unbound: the footer shows only the
+  open-feature count, gates demand an explicit slug and main-checkout writes
   stay blocked. There is no bypass — an unbound session cannot edit source.
 - **Project `flow-guard` rules** (`deny`/`confirm`/`protect`/`forbid` in
   project.md `## global`) apply at **every** stage and are judged ahead of

@@ -1189,7 +1189,7 @@ export function pidAlive(pid: number): boolean {
 	}
 }
 
-/** True only when another live session holds the claim — that blocks silently auto-binding onto its feature. */
+/** True only when another live session holds the claim — its feature can only be taken by an explicit `flow use`, never quietly. */
 export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (pid: number) => boolean = pidAlive): boolean {
 	return !!claim && claim.key !== myKey && alive(claim.pid);
 }
@@ -1200,6 +1200,18 @@ export const STAGE_EMOJI: Record<Stage, string> = { plan: "📝", implement: "�
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
 	const failed = Object.values(state.checks).some((c) => !c.ok);
 	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}`, failed };
+}
+
+/** Footer decision for any session: a bound feature renders as statusCompact, its ⚠️ from its own failing
+ *  checks only; an unbound session shows the count of unfinished features — never a slug, so a fresh
+ *  session is never shown (or made to feel bound to) a feature it did not take with flow use. null clears. */
+export function statusFor(bound: FlowState | null, openCount: number): { text: string } | null {
+	if (bound && bound.stage !== "done") {
+		const { text, failed } = statusCompact(bound);
+		return { text: failed ? `${text} ⚠️` : text };
+	}
+	if (openCount < 1) return null;
+	return { text: `⧖ ${openCount} flow${openCount === 1 ? "" : "s"} open` };
 }
 
 /** `- [ ]` checklist items of a markdown document (reflections.md and roadmap.md share the format). */

@@ -68,6 +68,7 @@ import {
 	shouldTakeOverCompaction,
 	stateTamper,
 	statusCompact,
+	statusFor,
 	statusJson,
 	sq,
 	tagNotesCommand,
@@ -558,6 +559,19 @@ test("statusCompact: stage glyph + slug, failing-check flag", () => {
 	assert.equal(statusCompact(s).failed, false);
 });
 
+test("statusFor: bound flow renders as before; unbound shows only the count", () => {
+	const s = newState("f", false);
+	assert.deepEqual(statusFor(s, 3), { text: "📝 f" }, "a bound feature renders exactly like statusCompact");
+	s.checks.test = { ok: false, at: "2026-01-01T10:00:00Z" };
+	assert.deepEqual(statusFor(s, 3), { text: "📝 f ⚠️" }, "⚠️ rides on the bound flow's own failing checks");
+	assert.deepEqual(statusFor(null, 1), { text: "⧖ 1 flow open" }, "unbound names nobody — count only");
+	assert.deepEqual(statusFor(null, 2), { text: "⧖ 2 flows open" });
+	assert.equal(statusFor(null, 0), null, "unbound with nothing unfinished clears the footer");
+	const done = newState("f", false);
+	done.stage = "done";
+	assert.equal(statusFor(done, 0), null, "a done bound feature clears the footer");
+});
+
 test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
 	const p: Record<string, unknown> = {};
 	applyAnswer(p, "commands.test", "npm test");
@@ -842,11 +856,11 @@ test("buildConfig reads guard rules (bare patterns and objects)", () => {
 	assert.deepEqual(buildConfig(null).guard, { deny: [], confirm: [], protect: [], forbid: [] });
 });
 
-test("claimBlocks blocks auto-bind only for a foreign live claim", () => {
+test("claimBlocks refuses a silent take-over only for a foreign live claim", () => {
 	const claim = { key: "A", pid: 123, at: "now" };
-	assert.equal(claimBlocks(null, "B"), false, "no claim — auto-bind proceeds");
-	assert.equal(claimBlocks(claim, "A"), false, "our own claim — auto-bind proceeds");
-	assert.equal(claimBlocks(claim, "B", () => true), true, "foreign claim from a live pid — auto-bind blocked");
+	assert.equal(claimBlocks(null, "B"), false, "no claim — nothing to refuse");
+	assert.equal(claimBlocks(claim, "A"), false, "our own claim — nothing to take over");
+	assert.equal(claimBlocks(claim, "B", () => true), true, "foreign claim from a live pid — take-over refused");
 	assert.equal(claimBlocks(claim, "B", () => false), false, "foreign claim from a dead pid — claim is void");
 });
 
