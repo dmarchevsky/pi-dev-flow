@@ -16,6 +16,11 @@ export interface Check {
 	ok: boolean;
 	at: string;
 	note?: string;
+	/** The worktree state this check actually ran against (see checkFingerprint). A record whose
+	 *  fingerprint differs from the current tree at gate time was measured against code that no
+	 *  longer exists — green is not enough when the tree moved under it. Absent = recorded by an
+	 *  older build, or git could not be asked: never proven stale, never dropped. */
+	wt?: string;
 }
 
 export interface StageCheck {
@@ -173,38 +178,6 @@ const STAGE_REFERENCE: Partial<Record<Stage, string>> = {
 };
 export function stageReference(stage: Stage): string | null {
 	return STAGE_REFERENCE[stage] ?? null;
-}
-
-/** Build a Config from DEFAULTS + a partial overrides object (tests, drafts — the persisted
- *  source is project.md alone; the legacy project.json loader is gone). */
-export function buildConfig(raw: unknown): Config {
-	const c: Config = structuredClone(DEFAULTS);
-	if (!raw || typeof raw !== "object") return c;
-	const r = raw as Record<string, unknown>;
-	for (const key of ["defaultBranch", "branchPattern", "worktreeDir", "mainHook", "forge"] as const) {
-		if (typeof r[key] === "string" || typeof r[key] === "boolean") (c[key] as never) = r[key] as never;
-	}
-	if (Array.isArray(r.mockupGlobs)) c.mockupGlobs = r.mockupGlobs.map(String);
-	if (r.commands && typeof r.commands === "object")
-		for (const [k, v] of Object.entries(r.commands as Record<string, unknown>)) if (typeof v === "string") (c.commands as Record<string, string>)[k] = v;
-	if (r.release && typeof r.release === "object") Object.assign(c.release, r.release);
-	if (r.healthWait !== undefined) c.healthWait = toSeconds(r.healthWait) ?? c.healthWait;
-	if (r.versioning && typeof r.versioning === "object") {
-		const v = r.versioning as Record<string, unknown>;
-		if (typeof v.file === "string") c.versioning.file = v.file;
-		if (typeof v.pattern === "string") c.versioning.pattern = v.pattern;
-	}
-	if (r.guard && typeof r.guard === "object") {
-		const g = r.guard as Record<string, unknown>;
-		for (const verb of ["deny", "confirm", "protect", "forbid"] as const)
-			if (Array.isArray(g[verb])) c.guard[verb] = normalizeGuardRules(g[verb]);
-	}
-	// tier-1 checks from plain commands so legacy project.json keeps the same teeth as project.md
-	c.checkList = [
-		...(c.commands.test ? [{ name: "test", cmd: c.commands.test }] : []),
-		...(c.commands.health ? [{ name: "health", cmd: c.commands.health }] : []),
-	];
-	return c;
 }
 
 /** The project's own "running and healthy" probe — `commands.health` or a flow-check block named
@@ -455,6 +428,36 @@ export function checklistHash(items: ChecklistItem[]): string {
 		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.text}`).join("\n"))
 		.digest("hex")
 		.slice(0, 12);
+}
+
+/** Fingerprint of the worktree state a tier-1 check ran against: the caller composes the working
+ *  tree's `git status --porcelain`, the hash of its uncommitted `git diff HEAD` (path presence and
+ *  tracked content move it), and `git rev-parse HEAD`. Deterministic and cheap; the sha is only
+ *  ever compared against itself, never decoded.
+ *  shortcut: a content-only change to an UNTRACKED file stays invisible — git does not look at
+ *  those contents, and untracked worktree content is normally build output, not code under test. */
+export function checkFingerprint(treeState: string, head: string): string {
+	return createHash("sha1").update(`${treeState}\n${head}`).digest("hex").slice(0, 12);
+}
+
+/**
+ * Drop every check record that carries a fingerprint differing from the tree as it is now — those
+ * greens describe code that no longer exists, and a gate must not advance on them. The caller
+ * re-runs what is missing (verify re-runs at the gate; the release gate asks for `flow check`).
+ * `fp === null` means git could not be asked: a gate must not refuse on its own measurement
+ * failure — same rule as BranchState.commitsAhead. Records without a fingerprint (older builds)
+ * are never proven stale.
+ */
+export function freshenChecks(state: FlowState, fp: string | null, keep: (name: string) => boolean = () => false): string[] {
+	if (!fp) return [];
+	const stale: string[] = [];
+	for (const [name, rec] of Object.entries(state.checks)) {
+		if (rec.wt && rec.wt !== fp && !keep(name)) {
+			delete state.checks[name];
+			stale.push(name);
+		}
+	}
+	return stale;
 }
 
 /** Items that apply to this feature — "(ui)" items only when the UI flag is set. */
@@ -762,11 +765,12 @@ export function expandHome(p: string): string {
 
 /** git usage in a bash command, parsed per shell segment (split on ; | & newline):
  *  the git subcommands invoked — empty when git is not a command, so paths like
- *  .git/hooks or words like pre-commit never trigger the guard — and the directory
- *  git runs in (last preceding `cd` target or `git -C` target; null = session cwd).
+ *  .git/hooks or words like pre-commit never trigger the guard — and the per-segment
+ *  entries the guard judges, each carrying the directory that segment runs in
+ *  (last preceding `cd` target or `git -C` target; null = session cwd).
  *  shortcut: naive segment split, subshells/backticks not tracked; the pre-commit
  *  hook still covers what slips past this advisory guard. */
-export function gitInvocation(command: string): { subs: string[]; dir: string | null; pushes: string[][]; gitSegs: { seg: string; dir: string | null }[] } {
+export function gitInvocation(command: string): { subs: string[]; pushes: string[][]; gitSegs: { seg: string; dir: string | null }[] } {
 	const subs: string[] = [];
 	const pushes: string[][] = [];
 	const gitSegs: { seg: string; dir: string | null }[] = [];
@@ -811,7 +815,7 @@ export function gitInvocation(command: string): { subs: string[]; dir: string | 
 		}
 		gitSegs.push({ seg: seg.trim(), dir }); // after -C parsing so the entry carries its own effective dir
 	}
-	return { subs, dir, pushes, gitSegs };
+	return { subs, pushes, gitSegs };
 }
 
 export type PushRef = { kind: "tag" | "branch" | "current"; name: string };
@@ -850,16 +854,18 @@ export function parsePushRefs(pushes: string[][]): PushRef[] {
 	return out;
 }
 
-/** Flow state by full path, or a bare `state.json` when the command also touches `.dev-flow`
- *  (that is how `cd .dev-flow/<slug> && mv state.json …` reaches it). */
-const STATE_PATH = /(^|[\s'"\/])state\.json$/;
-const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*state\.json$/;
+/** Flow control files by full path — state.json and claim.json — or a bare name when the command
+ *  also touches `.dev-flow` (that is how `cd .dev-flow/<slug> && mv state.json …` reaches it).
+ *  The claim is the live-session lock: deleting it is as much theft as forging a stage. */
+const STATE_PATH = /(^|[\s'"\/])(?:state|claim)\.json$/;
+const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:state|claim)\.json$/;
 const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
 const DF_ANYWHERE = /\.dev-flow\b/;
 /** The `.dev-flow/` folder itself or one feature directory under it — deleting either destroys the flow
  *  state and its plan for good. The advisory files the agent owns, and anything deeper (a worktree, a
- *  plan/mockups path), are not "the folder". */
-const DF_FOLDER = /(?:^|[\s'"])\.dev-flow(?:\/(?!project\.md$|roadmap\.md$|reflections\.md$|\.gitignore$)[\w.-]+)?(?=$|[\s'"])/;
+ *  plan/mockups path), are not "the folder". The leading boundary takes `/` too: an absolute path names
+ *  the same folder, and absolute paths are the shape the harness hands the agent. */
+const DF_FOLDER = /(?:^|[\s'"/])\.dev-flow(?:\/(?!project\.md$|roadmap\.md$|reflections\.md$|\.gitignore$)[\w.-]+)?(?=$|[\s'"])/;
 // write tools that can overwrite a file. A bare `>` is deliberately absent: the redirect target is
 // checked on its own, and testing for any `>` here refused every segment that merely mentioned an
 // owned path while redirecting elsewhere (`gh pr create … 2>&1`).
@@ -1013,19 +1019,6 @@ export interface GuardRules {
 	confirm: GuardRule[];
 	protect: GuardRule[];
 	forbid: GuardRule[];
-}
-
-/** project.json may spell a rule as a bare pattern string. */
-function normalizeGuardRules(raw: unknown[]): GuardRule[] {
-	const out: GuardRule[] = [];
-	for (const e of raw) {
-		if (typeof e === "string" && e.trim()) out.push({ pattern: e, why: "" });
-		else if (e && typeof e === "object") {
-			const o = e as Record<string, unknown>;
-			if (typeof o.pattern === "string" && o.pattern.trim()) out.push({ pattern: o.pattern, why: typeof o.why === "string" ? o.why : "" });
-		}
-	}
-	return out;
 }
 
 /** Heads that execute their argument: inside these, quoted text is code, not prose. */
@@ -1203,30 +1196,36 @@ export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
  * Returns a reason or null (allowed).
  */
 export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null }): string | null {
-	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
-	if (o.abs === path.join(o.dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
-	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
+	// Judge where the bytes land, not where the path pretends: a symlink inside the worktree pointing
+	// out of it is the same write as the target path (realAbs walks the deepest existing ancestor, so
+	// a brand-new file under a real directory resolves right, and a never-existing one is stable).
+	const abs = realAbs(o.abs);
+	const dfDir = realAbs(o.dfDir);
+	if (abs === path.join(dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
+	if (abs === path.join(dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
+	if (abs.endsWith("state.json") && abs.includes(dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
+	if (abs.endsWith("claim.json") && abs.includes(dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
-	const owner = o.features.find((f) => within(o.abs, f.worktreeAbs));
+	const owner = o.features.find((f) => within(abs, f.worktreeAbs ? realAbs(f.worktreeAbs) : null));
 	if (owner) {
 		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
 		if (owner.state.stage === "done") return `feature ${owner.state.slug} is done`;
 		// the playbook copy inside a worktree: only operator-granted lightweight modes may change it
-		if (path.basename(o.abs) === "project.md" && o.abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
+		if (path.basename(abs) === "project.md" && abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
 			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
 		return null; // implement/pre-release/release: own worktree is the working area
 	}
 	// Scratch outside the checkout is not a repo write: every stage (and an unbound session) may use it. It
 	// sits after the dev-flow-owned refusals and after owner attribution, so no path shape — a symlink, or a
 	// worktreeDir an operator parked in the temp dir — reaches those rules through the temp dir.
-	if (inScratchDir(o.abs, o.repoRoot)) return null;
+	if (inScratchDir(abs, o.repoRoot)) return null;
 	const bound = o.boundSlug ? o.features.find((f) => f.state.slug === o.boundSlug) : undefined;
 	// A plan-stage session may only write its own feature directory: otherwise one session edits another
 	// feature's plan and that feature's approval gate then rubber-stamps text it never wrote.
-	if (bound?.state.stage === "plan" && !within(o.abs, path.join(o.dfDir, bound.state.slug)))
+	if (bound?.state.stage === "plan" && !within(abs, path.join(dfDir, bound.state.slug)))
 		return `bound feature ${bound.state.slug} is in plan — write only inside its own .dev-flow/${bound.state.slug}/`;
-	if (within(o.abs, o.dfDir)) return null;
+	if (within(abs, dfDir)) return null;
 	if (bound) {
 		if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
 			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout; a throwaway script goes outside the repo (under $TMPDIR)`;
@@ -1582,7 +1581,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "plan":
 			if (state.patch) return `patch: describe the change to the operator in one line, then ask them Approve? in chat and run flow approve --confirmed when they answer — no plan file needed (all gates still apply)`;
 			if (state.docs) return `docs: describe the change to the operator in one line, then ask them Approve? in chat and run flow approve --confirmed when they answer — no plan file and no tier-1 checks (worktree and release stay intact)`;
-			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/${state.ui ? ` — render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium and embed them in plan.md` : ""}, then ask the operator Approve? in chat and run flow approve --confirmed when they answer`;
+			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask the operator Approve? in chat and run flow approve --confirmed when they answer`;
 		case "implement":
 			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
 			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
@@ -1654,15 +1653,6 @@ export function gateHelpJson(gateHelp: string, version: string | null): string {
 		null,
 		"\t",
 	);
-}
-
-export function getPath(obj: Record<string, unknown>, key: string): unknown {
-	let cur: unknown = obj;
-	for (const seg of key.split(".")) {
-		if (typeof cur !== "object" || cur === null) return undefined;
-		cur = (cur as Record<string, unknown>)[seg];
-	}
-	return cur;
 }
 
 /** Write (or delete, on null) a dot-path value in a partial project.json object. */

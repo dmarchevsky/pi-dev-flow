@@ -4,6 +4,20 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.61.0] - 2026-10-23
+
+### Fixed
+
+- **A green now belongs to the tree it ran against.** Every recorded check carries a fingerprint of its worktree — `status --porcelain`, a hash of the uncommitted diff, and HEAD — and `verify`/`release` drop records the tree has outgrown before deciding what is pending, then rerun them at the gate and say so (`stale record(s) rerun after a worktree change: …`). Edits through the edit tools already cleared records at once, but a write through bash — `sed -i`, a formatter, codegen — fires no hook, and the whole #84 sequence (check green, a bash-side fix, `verify`) rode a PASS measured against code that no longer existed. A commit after the check now re-proves at the gate too, so a green standing at a gate means the committed state. A record with no fingerprint (older build, or git could not answer) is never proven stale — the same measurement-failure stance as `commitsAhead`.
+- **The delete guard reads absolute paths.** `rm -rf /abs/repo/.dev-flow/<slug>` deleted a feature — plan included — while the relative form was refused: `DF_FOLDER` demanded whitespace or a quote before `.dev-flow`, and absolute paths are the shape harnesses hand the agent. The boundary now accepts `/` too; quoted prose stays prose (the masked-payload exemption, #53, survives).
+- **`flow abort` honors a live claim, and `claim.json` is now guarded.** Every gate refused another session's in-flight feature — except the one verb that deletes the whole feature: an unbound or other-session abort could erase a plan-stage directory while its owner was still writing it. The claim now locks `abort` exactly as it locks the gates (`flow use` remains the only takeover), and `claim.json` joins `state.json` as flow-owned in both guards — a lock is not unlocked by whoever it locks out.
+- **`writeGuard` judges where the bytes land, not where the path points.** A symlink inside the worktree laundered a write anywhere: the stage rules compared lexical strings, so a worktree symlink into the main checkout passed a main-checkout write as confined — while `guardPath` had resolved the same symlink through realpath all along. The target, the feature worktrees and `.dev-flow` are now compared as realpaths (`realAbs`), and a symlinked escape gets the refusal its real target deserves.
+
+### Changed
+
+- **The UI plan hint names its file instead of eating it.** With `--ui`, the hint's mockup clause replaced the sentence's tail, leaving "write the plan into .dev-flow/<slug>/plan/" pointing at a directory; it now reads `plan/plan.md` and appends the mockup clause. Approval always demanded a real file — the hint just stopped saying so.
+- **`buildConfig` leaves production code.** Nothing at runtime has built a `Config` from a raw object since `project.md` became the only config source — the tests keep the shorthand as a test helper. `getPath` (dead once the `project.json` loader was gone) and `gitInvocation`'s unused top-level last-cd-wins `dir` (the guard judges each segment's own dir) were deleted with it.
+
 ## [0.60.0] - 2026-10-23
 
 ### Changed

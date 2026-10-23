@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { buildConfig, DEFAULTS } from "../src/core.ts";
+import { DEFAULTS } from "../src/core.ts";
+import { buildConfig } from "./util/config.ts";
 import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, mdToConfig, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
 
 const MD = `# dev-flow
