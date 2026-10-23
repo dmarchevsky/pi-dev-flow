@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.58.1] - 2026-10-23
+
+### Fixed
+
+- `flow finish` now closes with a prompt to **re-read `flow status` before reporting open flows** — a sibling feature finished while a session was running, and the agent reported the session-start status, naming the shipped flow as open while the footer count was already correct. A stale after-finish report can no longer mislead the operator about what is still in flight.
+
 ## [0.58.0] - 2026-10-23
 
 ### Added
