@@ -93,6 +93,7 @@ import {
 	roadmapTidy,
 	shouldSelfCompact,
 	shouldTakeOverCompaction,
+	stageGuidance,
 	stateTamper,
 	statusFor,
 	statusJson,
@@ -1868,7 +1869,8 @@ export default function devFlow(pi: ExtensionAPI) {
 		}
 		const guidance: string[] = [];
 		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every gate question from here on (Verified?/Release?/Finish?) — run the remaining gates (verify → release → release-done → finish) back to back without stopping to ask; guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
-		if (cfg.prose[state.stage]) guidance.push(`Stage guidance (project.md): ${cfg.prose[state.stage]}`);
+		const prose = stageGuidance(cfg, state.stage);
+		if (prose) guidance.push(`Stage guidance (${prose.source}): ${prose.text}`);
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
 		const refl = readReflections(ctx.cwd);

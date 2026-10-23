@@ -4,6 +4,17 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-10-23
+
+### Added
+
+- **Bundled review skills — dev-flow now ships its own code review, no companion plugin needed.** `/flow-review` reviews a change (default: the bound flow's branch diff against the default branch, plus uncommitted work) as a read-only senior-engineer report — correct, safe, holds under load, tested, fast, lean — judged also against the feature's `plan/plan.md`; every finding must carry a concrete triggering case (refute-before-report), grouped Must fix / Should fix / Nice to have, with a verdict and a `Not checked:` line. `/flow-audit` audits the whole repo in the same style: map first, expected-load assessment, at most 20 ranked findings, changes nothing.
+- **Built-in implement-stage senior discipline**: when the playbook sets no `prose.implement`, the stage guidance injected each turn now carries a compact writing-discipline block (smallest complete change, no speculative abstraction, finish what your change breaks, failing-first test for risky logic, `shortcut:` markers for deliberate deferrals); operator prose still replaces it wholesale. The injected line names its source (`project.md` vs `dev-flow default`).
+
+### Changed
+
+- The pre-release review step defaults to `/flow-review` (was `/ponytail-review` — dev-flow no longer assumes the ponytail plugin; `release.review` remains operator-settable). The review rules adapt ponytail, obra/superpowers and jwilger/pi-development-system (all MIT), credited in the skill files.
+
 ## [0.57.1] - 2026-10-23
 
 ### Removed

@@ -179,7 +179,9 @@ worktrees are theirs (attribution guards judge every path by its owning
 feature).
 
 1. Implement per the approved plan with project conventions and the **stage
-   guidance injected at stage start** (tier-3 prose). Commit in the worktree
+   guidance injected at stage start** (tier-3 prose — your playbook's
+   `prose.implement`, or dev-flow's built-in senior-discipline guidance when
+   the playbook sets none). Commit in the worktree
    **as you go** — small reviewable commits; a twelve-file monolith saved for
    the end faces review blind and is not crash-safe. The gate enforces the
    habit: `flow verify` refuses while the branch holds **no commit** (checks
@@ -240,7 +242,7 @@ and tags are `versioning.pattern` rendered from it — one number everywhere. If
 `versioning.file` is unset, stop and clarify the scheme with the user; never
 invent one mid-release. Sequence:
 
-1. `/ponytail-review` the change; fix every **must-have** and **should-have**
+1. `/flow-review` the change; fix every **Must fix** and **Should fix**
    finding; `flow test` again if code changed.
 2. Update documentation to reflect the change.
 3. Update the changelog and bump the manifest to the exact version you will

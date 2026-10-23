@@ -86,6 +86,8 @@ import {
 	verifyGate,
 	versionTagGate,
 	writeGuard,
+	stageGuidance,
+	DEFAULT_STAGE_GUIDANCE,
 } from "../src/core.ts";
 
 const cfg = structuredClone(DEFAULTS);
@@ -96,8 +98,20 @@ test("buildConfig fills defaults and merges partial overrides", () => {
 	assert.equal(c.commands.test, "bun test");
 	assert.equal(c.commands.build, undefined);
 	assert.equal(c.release.changelog, "CHANGELOG.md");
-	assert.equal(c.release.review, "/ponytail-review"); // kept from defaults
+	assert.equal(c.release.review, "/flow-review"); // kept from defaults
 	assert.equal(buildConfig(null).defaultBranch, "main");
+});
+
+test("stageGuidance: the built-in implement discipline, operator prose replaces it", () => {
+	assert.ok(stageGuidance(cfg, "implement"), "implement ships a built-in default");
+	assert.equal(stageGuidance(cfg, "implement")!.source, "dev-flow default");
+	assert.ok(DEFAULT_STAGE_GUIDANCE.implement!.includes("shortcut:"), "the default carries the shortcut marker convention flow-review honors");
+	for (const stage of ["plan", "pre-release", "release"] as const)
+		assert.equal(stageGuidance(cfg, stage), undefined, `${stage} has no built-in discipline`);
+	const owned = structuredClone(DEFAULTS);
+	owned.prose = { implement: "mind the vendored code" };
+	assert.equal(stageGuidance(owned, "implement")!.text, "mind the vendored code", "operator prose replaces the default");
+	assert.equal(stageGuidance(owned, "implement")!.source, "project.md");
 });
 
 test("healthRetry: the wait budget becomes attempts at the probe interval (#42)", () => {
