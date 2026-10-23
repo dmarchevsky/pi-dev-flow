@@ -35,8 +35,12 @@ The contract a headless driver (a session with no UI) relies on:
   `dev` deploy (runs are killed past 15 min) and re-probes health with `healthWait` retries.
   A remote timeout must be minutes, not seconds — the gate prints progress lines while it
   runs.
-- **Edits invalidate checks.** Any worktree write clears recorded checks and the tier-2
-  confirmation — re-run `flow check` before `verify` after the last edit.
+- **Edits invalidate checks.** An edit-tool write clears recorded checks and the tier-2
+  confirmation at once; any other worktree write (bash: `sed -i`, a formatter, codegen) is caught
+  at the gate — every check carries a fingerprint of the tree it ran against, and verify/release
+  rerun records the tree has outgrown (`stale record(s) rerun after a worktree change: …`).
+  Re-running `flow check` before `verify` after the last edit is still the tidy order; the gate no
+  longer trusts a stale PASS if you skip it.
 - **Version skew.** Gates execute the dev-flow build the session loaded at start; `flow version`
   reports when the checkout has moved ahead of it. `flow release` turns the skew into a question —
   update (`/reload`, then re-run) or proceed with the old release — never a block: publishing under

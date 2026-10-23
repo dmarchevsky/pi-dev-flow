@@ -8,7 +8,9 @@ case. The binding lives with the session (persisted via session entries, restore
 resume/fork), so nothing is repo-global. A session binds **explicitly, never automatically**:
 `flow start` binds its own feature, `flow use <slug>` takes one over — even the lone unfinished
 feature waits to be claimed. Every bind leaves a claim (`claim.json`, session + pid),
-and the gates honor the claim too:
+and the gates honor the claim too — `flow abort` included, so the verb that erases a feature cannot
+erase one a live session is working. The claim file is as guarded as `state.json`: neither the write
+tools nor bash may change or delete it — a lock is not unlocked by whoever it locks out.
 passing another session's slug to `flow approve`/`verify`/`finish` is refused until you take over,
 or two sessions quietly overwrite one state file. `flow use <slug>` switches, and ambiguous sessions must
 bind or pass explicit slugs. With nothing unfinished and no binding, the session must start a

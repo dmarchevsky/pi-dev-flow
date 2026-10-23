@@ -1186,6 +1186,12 @@ test("mergeStyleInvocation: the merge command is where the policy is enforced", 
 	assert.deepEqual(mergeStyleInvocation("gh pr merge --squash", "any"), { block: null, confirm: null });
 });
 
+test("nextHint: the UI clause appends to the plan path instead of replacing it", () => {
+	const ui = newState("u", true);
+	assert.match(nextHint(ui, DEFAULTS), /plan\/plan\.md and render mockups to plan\/mockups\/ \(\*\.png\) with headless chromium/);
+	assert.match(nextHint({ ...ui, ui: false }, DEFAULTS), /plan\/plan\.md, then ask the operator Approve\?/);
+});
+
 test("nextHint names the playbook merge style at the release stage", () => {
 	const st = { ...newState("x", false), stage: "release" as const };
 	const cfg = { ...DEFAULTS, release: { ...DEFAULTS.release, merge: "squash" as const } };
