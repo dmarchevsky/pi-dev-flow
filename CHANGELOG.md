@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-23
+
+### Changed
+
+- **The footer now tells the truth about bindings: a slug only when bound, a count when not — and nothing binds itself anymore.** The status bar rendered only for a session's bound feature, so an unbound session saw a blank footer however much work was in flight — and `boundFeature` made that blank worse than it looked: with exactly one unfinished feature it silently auto-bound *and claimed* it, so merely opening a new session steered the lone feature nobody handed it. Sessions now bind **explicitly and only** — `flow start` binds its own feature, `flow use <slug>` takes one over; `boundFeature` lost its lone-feature fallback and its claim-writing side effect, and slugless gates answer `nothing bound — flow use <slug> or pass an explicit slug (unfinished: …)` instead of quietly picking the one left. The unbound footer reads `⧖ N flow(s) open` — the count of unfinished features, never a slug, no `⚠️` (the failing-check marker stays the bound flow's own signal); with nothing unfinished the footer stays clear, and rendering stays a pure read that can never claim anything. `flow status --json`'s `current` follows the same rule — only a bound session has a current feature — and the guardrails, concurrency and headless docs plus the skill teach the explicit-bind model (`flow use <slug>` is now the *only* way onto a feature, not the takeover of an auto-bind).
+
 ## [0.56.0] - 2026-10-22
 
 ### Added
