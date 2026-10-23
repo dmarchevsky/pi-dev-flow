@@ -8,14 +8,18 @@ pi -e . run /flow status   # try it against any repo
 ```
 
 Sessions in this checkout load the **single global dev-flow install** (`pi update --extensions`
-reconciles it after a release, `/reload` brings it into a running session) — there is deliberately no
+reconciles it after a release; loaded code swaps only when the process re-imports — `/reload` in a
+per-session host, a host restart in a shared-process host like pi-web) — there is deliberately no
 `.pi/extensions/` pointer here: a committed shim beside the global package loads two copies of the
 extension in one process (pi dedupes by path, not by package — see the README's two-sources
-warning), which is what the shim used to cause. To dogfood the working tree instead of the
-installed copy, point pi at it explicitly for that run: `pi -e .`.
+warning), which is what the shim used to cause. The package's own `pi.extensions` manifest remains a
+second source for any session opened in this checkout — deliberate dogfooding, made safe by the guard
+election: the newest registered copy judges, older loaded copies answer nothing. To dogfood the
+working tree instead of the installed copy, point pi at it explicitly for that run: `pi -e .`.
 
 A release cannot update a session that is already running — pi keeps the code it loaded at startup.
-After merging and tagging, `/reload` in every session that must carry the new behavior.
+After merging and tagging, `/reload` in every session that must carry the new behavior; shared-process
+hosts (pi-web) keep stale code until restarted, so reload there re-binds state but does not swap code.
 
 ## The skill: an injected core, plus references a stage reads
 

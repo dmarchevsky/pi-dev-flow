@@ -167,11 +167,24 @@ function registerCopy(): void {
 function otherCopies(): CopyEntry[] {
 	return COPIES.filter((r) => r.pid === process.pid && r.dir !== SELF_BUILD.dir);
 }
+/** Election: when one process runs several dev-flow copies (the documented two-sources hazard, or a
+ *  copy whose loaded code predates an update), only the highest-version copy may judge — stale code
+ *  must not veto tool calls with a build nobody reviewed. Node cannot unload a loaded module and pi
+ *  cannot unregister its hooks, so silence is the most removal can be from inside the package; only
+ *  a host restart truly drops stale code. Equal versions both judge (same code, same verdicts); a
+ *  copy whose version cannot be read is never outranked. Gate tool/command handlers stay live on
+ *  every copy: the host dispatches a session's flow calls to whichever copy loaded that session,
+ *  and staleness there is what the /reload warnings address. */
+function guardsAreMine(): boolean {
+	const mine = SELF_BUILD.version;
+	if (!mine) return true; // an unreadable version is never outranked
+	return !otherCopies().some((r) => r.version && cmpVersions(r.version, mine) > 0);
+}
 function copyWarning(): string | null {
 	const dup = otherCopies();
-	return dup.length
-		? `warning: ${dup.length} other dev-flow cop${dup.length === 1 ? "y" : "ies"} registered in this process: ${dup.map((d) => `${d.dir} (${d.version ?? "?"})`).join(", ")} — every copy evaluates the guard hooks, so keep only one source you intend (README: two sources at once)`
-		: null;
+	if (!dup.length) return null;
+	const verdict = guardsAreMine() ? "this copy is the newest and judges the guards" : "this copy is older and stays silent \u2014 the newest copy judges";
+	return `warning: ${dup.length} other dev-flow cop${dup.length === 1 ? "y" : "ies"} registered in this process: ${dup.map((d) => `${d.dir} (${d.version ?? "?"})`).join(", ")} \u2014 this call served by ${SELF_BUILD.dir} (${SELF_BUILD.version ?? "?"}); ${verdict}. Keep only one source you intend; a host restart drops stale code (README: two sources at once)`;
 }
 /** Test seam: the smoke suite cannot load a second copy of this module, so it plants registry
  * entries and asserts the warnings the real duplicate would print. */
@@ -856,7 +869,7 @@ ${mdDigest(draftRefresh)}`))
 			const notes: string[] = [];
 			const disk = checkoutBuild(root);
 			const behind = sessionRunsOlderBuild(loadedVersion(), disk.version);
-			if (behind) notes.push(`warning: this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version} — /reload before trusting what a gate prints`);
+			if (behind) notes.push(`warning: this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version} — /reload rebinds session state; only restarting the host swaps the code it runs`);
 			const dupStart = copyWarning();
 			if (dupStart) notes.push(dupStart);
 			if (flag("check-upstream")) {
@@ -912,7 +925,7 @@ ${mdDigest(draftRefresh)}`))
 			// gate proof printed since the drift began belongs to the older code.
 			const disk = checkoutBuild(root);
 			const staleBuild = sessionRunsOlderBuild(loadedVersion(), disk.version);
-			const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(staleBuild ? [`⚠ this session runs dev-flow ${staleBuild}, ${disk.label} ships ${disk.version} — /reload`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
+			const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(staleBuild ? [`⚠ this session runs dev-flow ${staleBuild}, ${disk.label} ships ${disk.version} — /reload rebinds; restart swaps code`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
 			// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
 			const rmap = roadmapOpenCount(readRoadmap(root));
 			const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
@@ -1030,7 +1043,7 @@ ${mdDigest(draftRefresh)}`))
 				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
 				return { text: newest ? `${head} — published: ${newest}${self.version && newest !== self.version ? " (update available)" : ""}` : `${head} — could not read the published version (offline?)` };
 			}
-			return { text: `${behind ? `${head} — but this session runs ${behind}${from}; /reload to run ${self.version}` : head}${dupNote ? `\n${dupNote}` : ""}` };
+			return { text: `${behind ? `${head} — but this session runs ${behind}${from}; /reload to run ${self.version} \u2014 in a shared-process host (pi-web) reload cannot swap loaded code: only a host restart does` : head}${dupNote ? `\n${dupNote}` : ""}` };
 		}
 
 		case "approve": {
@@ -1784,23 +1797,32 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	// Agent-run gates refresh at turn_end (tool ctx lacks setStatus; turn_end catches them).
 	pi.on("session_start", async (_event, ctx) => {
+		if (!guardsAreMine()) return;
 		rebuildSession(ctx);
 		refreshStatus(ctx);
 	});
-	pi.on("session_tree", async (_event, ctx) => rebuildSession(ctx));
+	pi.on("session_tree", async (_event, ctx) => {
+		if (!guardsAreMine()) return;
+		rebuildSession(ctx);
+	});
 	// The session, not the process, owns the binding and the claim: pi-web keeps serving other sessions
 	// after one ends, and a stale claim there is a permanent lock (its pid is the server's, always alive).
 	pi.on("session_shutdown", async (_event, ctx) => {
+		if (!guardsAreMine()) return;
 		if (!existsSync(dfDir(ctx.cwd))) return;
 		releaseSession(ctx.cwd, sessionKey(ctx));
 	});
 	pi.on("turn_end", async (_event, ctx) => {
+		if (!guardsAreMine()) return;
 		refreshStatus(ctx);
 		// pi checks its compaction threshold between every turn; our safe points must be as frequent.
 		maybeCompactNow(ctx);
 	});
 	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
-	pi.on("agent_settled", async (_event, ctx) => maybeCompactNow(ctx));
+	pi.on("agent_settled", async (_event, ctx) => {
+		if (!guardsAreMine()) return;
+		maybeCompactNow(ctx);
+	});
 	// pi forcing a threshold compaction while a flow is bound means our safe-point pacing missed — rebuild the
 	// summary here with flow-aware instructions and hand it back through the event's custom-compaction channel.
 	// Never ctx.compact() from this hook: AgentSession.compact() opens with abort() + waitForIdle(), and the run
@@ -1808,6 +1830,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	// reaches the provider). If our summary fails we return undefined and pi's own compaction proceeds.
 	// overflow is never taken over (cancelling it would drop pi's compact-and-retry); manual is the operator's or ours.
 	pi.on("session_before_compact", async (event, ctx) => {
+		if (!guardsAreMine()) return undefined;
 		if (!initiated(ctx.cwd)) return undefined;
 		const key = sessionKey(ctx);
 		const st = boundFeature(ctx.cwd, key);
@@ -1831,6 +1854,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
 	pi.on("session_compact", async (event, ctx) => {
+		if (!guardsAreMine()) return;
 		if (!initiated(ctx.cwd)) return;
 		// Whatever the reason, the summary replaced the transcript — the core the first run injected is
 		// gone from context, so the next run pays it once more (manual compactions included: our own
@@ -1849,6 +1873,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		if (!guardsAreMine()) return undefined; // election: only the newest loaded copy judges
 		// pi kills a shell call only when a timeout was passed, and the model omits it in ~75% of
 		// calls (observed hangs: hours). Deterministic class defaults, clamped ceilings — runs for
 		// every session that loads this package, flow-bound or not.
@@ -1977,6 +2002,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", async (_event, ctx) => {
+		if (!guardsAreMine()) return undefined;
 		// One [dev-flow] line per run, whatever number of copies of this package are installed.
 		// The same package reaches one runtime twice all the time (a project pin beside the npm install,
 		// or this checkout's .pi/extensions pointer beside it) and pi dedupes extensions by file path
