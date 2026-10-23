@@ -856,11 +856,11 @@ test("buildConfig reads guard rules (bare patterns and objects)", () => {
 	assert.deepEqual(buildConfig(null).guard, { deny: [], confirm: [], protect: [], forbid: [] });
 });
 
-test("claimBlocks blocks auto-bind only for a foreign live claim", () => {
+test("claimBlocks refuses a silent take-over only for a foreign live claim", () => {
 	const claim = { key: "A", pid: 123, at: "now" };
-	assert.equal(claimBlocks(null, "B"), false, "no claim — auto-bind proceeds");
-	assert.equal(claimBlocks(claim, "A"), false, "our own claim — auto-bind proceeds");
-	assert.equal(claimBlocks(claim, "B", () => true), true, "foreign claim from a live pid — auto-bind blocked");
+	assert.equal(claimBlocks(null, "B"), false, "no claim — nothing to refuse");
+	assert.equal(claimBlocks(claim, "A"), false, "our own claim — nothing to take over");
+	assert.equal(claimBlocks(claim, "B", () => true), true, "foreign claim from a live pid — take-over refused");
 	assert.equal(claimBlocks(claim, "B", () => false), false, "foreign claim from a dead pid — claim is void");
 });
 

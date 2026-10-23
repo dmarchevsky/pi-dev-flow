@@ -312,7 +312,7 @@ const safeJson = (s: string): unknown => {
 
 /** `.dev-flow/<slug>/` directories holding a plan/ with no state.json — a closed or aborted feature
  *  whose directory outlived its flow state (a hand-close from before auto-close, an interrupted
- *  start). Nothing reads them: `flow status`, the guards and auto-bind all key off state.json.
+ *  start). Nothing reads them: `flow status`, the guards and the footer all key off state.json.
  *  Root-relative paths, for the doctor report and the operator-confirmed remover. */
 export function ghostFeatureDirs(root: string): string[] {
 	const df = path.join(root, ".dev-flow");

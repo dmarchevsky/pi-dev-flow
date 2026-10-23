@@ -528,7 +528,10 @@ test("session binding: use/abort/ambiguity", async () => {
 	await pi.cmds.flow.handler("abort b-two", ctx);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "b-two")), "plan-stage abort drops the feature entirely");
 	await pi.cmds.flow.handler("approve", ctx);
-	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "lone remaining feature auto-binds and hits its gate");
+	assert.ok(ctx.notices.at(-1)?.includes("nothing bound"), "the lone remaining feature does not bind itself");
+	await pi.cmds.flow.handler("use a-one", ctx);
+	await pi.cmds.flow.handler("approve", ctx);
+	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "after the explicit take-over the gate runs on a-one");
 });
 
 test("status bar: compact refresh follows the gates", async () => {
@@ -540,6 +543,11 @@ test("status bar: compact refresh follows the gates", async () => {
 	// the interactive init draft has no merge policy yet, so the first start answers it (--merge writes it into the playbook)
 	await pi.cmds.flow.handler("start demo-feature --merge=merge --confirmed", ctx);
 	assert.equal(statuses.at(-1), "📝 demo-feature");
+	// a second session that never bound sees only the open-flow count — never the slug
+	const seenB: (string | undefined)[] = [];
+	const b = { ...ctx, sessionManager: { getSessionId: () => "sess-foot-B", getBranch: () => [] as never[] }, ui: { ...ctx.ui, setStatus: (_k: string, t?: string) => seenB.push(t) } };
+	await pi.cmds.flow.handler("status", b);
+	assert.equal(seenB.at(-1), "⧖ 1 flow open", "unbound footer shows the count, not the slug");
 });
 
 test("flow version: the plugin's own version, and no .dev-flow/ needed", async () => {
@@ -774,9 +782,9 @@ test("guard attribution: the claim on disk binds a session the in-memory map nev
 	commitWt(repo, "ga");
 	await flow(["verify", "--confirmed"]);
 	await flow(["release", "--confirmed"]); // ga is at stage release, bound in memory under key cwd:<repo>
-	// a second unfinished feature kills the one-feature auto-bind fallback…
+	// a second unfinished feature so the repo stays ambiguous for anyone unbound…
 	await flow(["start", "gb"]);
-	// …and the ghost ctx is what a second registered dev-flow copy looks like: same repo,
+	// the ghost ctx is what a second registered dev-flow copy looks like: same repo,
 	// different module state, so its bindings map never saw the flow use
 	const ghost = { ...makeCtx(repo), sessionManager: { getSessionId: () => "ghost-copy" } };
 	const guard = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ghost) as Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -1056,7 +1064,7 @@ test("abort at plan stage drops the feature; approved features keep recoverable 
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	await flow(["start", "ghost"]);
 	assert.match((await flow(["abort", "ghost"])).content[0].text, /feature removed/);
-	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ghost")), "plan-stage abort leaves no ghost for auto-bind");
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ghost")), "plan-stage abort leaves no ghost behind");
 	await flow(["start", "keeper"]);
 	mkdirSync(path.join(repo, ".dev-flow", "keeper", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "keeper", "plan", "plan.md"), "# plan\n");
@@ -1333,7 +1341,7 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "rel")), "feature directory removed on finish");
 });
 
-test("a live foreign claim refuses auto-bind; flow use takes over explicitly", async () => {
+test("a live foreign claim cannot be taken silently; flow use takes over explicitly", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
@@ -1343,10 +1351,10 @@ test("a live foreign claim refuses auto-bind; flow use takes over explicitly", a
 	const claimOf = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json"), "utf8")) as { key: string };
 	assert.equal(claimOf().key, "sid:sess-A", "start binds and claims the feature");
 
-	// a second live session on the same repo must not auto-bind onto it
+	// a second live session on the same repo must not land on the feature by itself
 	const b = session("sess-B");
 	const injB = (await pi.handlers.before_agent_start[0]({}, b)) as { message?: { content: string } };
-	assert.match(injB.message?.content ?? "", /no flow bound/, "a foreign live claim refuses the auto-bind");
+	assert.match(injB.message?.content ?? "", /no flow bound/, "a foreign live claim keeps its feature out of an unbound session");
 	assert.match(injB.message?.content ?? "", /claim-feature is claimed by another live session/, "the unbound context names the blocked feature");
 
 	// a foreign session passing the slug is not a takeover of the gates

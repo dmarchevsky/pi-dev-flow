@@ -29,8 +29,8 @@ The contract a headless driver (a session with no UI) relies on:
   `.dev-flow/`: `status`, `help`, `version`, `doctor`, `roadmap` (list).
 - **One session = one feature.** Bindings are per-session and survive resume/fork; a
   reconnecting driver either rejoins the same session or rebinds with `flow use <slug>`.
-  Auto-bind fires only for a single unclaimed unfinished feature — with several, always pass
-  the slug explicitly. Parallel features = parallel sessions.
+  Nothing auto-binds — always bind explicitly or pass the slug explicitly.
+  Parallel features = parallel sessions.
 - **Budget for long gates.** `approve` runs `commands.setup`; `verify` runs build and the
   `dev` deploy (runs are killed past 15 min) and re-probes health with `healthWait` retries.
   A remote timeout must be minutes, not seconds — the gate prints progress lines while it

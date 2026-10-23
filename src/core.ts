@@ -1189,7 +1189,7 @@ export function pidAlive(pid: number): boolean {
 	}
 }
 
-/** True only when another live session holds the claim — that blocks silently auto-binding onto its feature. */
+/** True only when another live session holds the claim — its feature can only be taken by an explicit `flow use`, never quietly. */
 export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (pid: number) => boolean = pidAlive): boolean {
 	return !!claim && claim.key !== myKey && alive(claim.pid);
 }

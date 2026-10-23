@@ -834,8 +834,7 @@ ${mdDigest(draftRefresh)}`))
 			const rmap = roadmapOpenCount(readRoadmap(root));
 			const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
 			const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
-			const un0 = unfinishedStates(root);
-			const cur = sess.slug ?? (un0.length === 1 ? un0[0].slug : null);
+			const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
 			if (flag("json")) {
 				const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
 				return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
@@ -1512,8 +1511,8 @@ ${mdDigest(draftRefresh)}`))
 			const st = readState(root, target);
 			if (sess.slug === target) sess.bind(null);
 			if (st && !st.worktree) {
-				// plan-stage abort = drop: no worktree/branch exists, so the state dir is a ghost that
-				// the one-unfinished-feature auto-bind would resurrect into every unbound session
+				// plan-stage abort = drop: no worktree/branch exists, so the state dir would linger
+				// as a ghost the doctor flags (a plan/ whose state.json is gone)
 				rmSync(featDir(root, target), { recursive: true, force: true });
 				return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
 			}
@@ -1531,12 +1530,13 @@ async function currentBranch(root: string): Promise<string> {
 }
 
 function needState(root: string, sess: Session, slugArg?: string): { state: FlowState | null; err?: RunResult } {
-	let slug = slugArg ?? sess.slug;
+	// no implicit feature: gates run on this session's binding or an explicit slug — never on "the one
+	// feature left", which is how an unbound session would end up steering a flow it never took
+	const slug = slugArg ?? sess.slug;
 	if (!slug) {
 		const un = unfinishedStates(root);
-		if (un.length === 1) slug = un[0].slug;
-		else if (!un.length) return { state: null, err: { text: "no unfinished features — flow start <slug> [--ui]", isError: true } };
-		else return { state: null, err: { text: `multiple unfinished features (${un.map((s) => s.slug).join(", ")}) — flow use <slug> or pass an explicit slug`, isError: true } };
+		if (!un.length) return { state: null, err: { text: "no unfinished features — flow start <slug> [--ui]", isError: true } };
+		return { state: null, err: { text: `nothing bound — flow use <slug> or pass an explicit slug (unfinished: ${un.map((s) => s.slug).join(", ")})`, isError: true } };
 	}
 	const state = readState(root, slug);
 	if (!state) return { state: null, err: { text: `no state for feature ${slug}`, isError: true } };
