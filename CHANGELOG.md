@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.61.1] - 2026-10-23
+
+### Changed
+
+- **The newest dev-flow copy judges the guards alone.** When one process runs several copies (the documented two-sources situation — a checkout's own `pi.extensions` manifest beside the npm install is the common one), every copy's event hooks now run an election first: a copy with a lower registered version answers nothing — no guard vetoes, no context injection, no footer, no compaction takeover. Stale code judging alongside fresh was the real hazard the two-sources warning hinted at: on a 22-hour-old pi-web server a 0.57.0-era copy blocked tool calls beside the current one, and nobody could say which copy answered. Node cannot unload a loaded module and pi cannot unregister its hooks, so silence is the most in-package removal can be — only a host restart drops the stale code, and the warnings now say so. Equal versions both judge; a copy whose version cannot be read is never outranked; gate tool handlers stay live on every copy (the host dispatches those per session, and the stale-build warnings already cover them).
+
+### Fixed
+
+- **The duplicate-copy warning names its speaker** — `this call served by <dir> (v); this copy is the newest and judges the guards` (or admits it is the older one and stays silent) — and the stale-build notes across `start`, `status` and `version` tell the truth about what fixes skew: `/reload` re-binds session state, but in a shared-process host (pi-web) only restarting the host swaps loaded code; docs/development.md and the README's two-sources section now say the same. Proven on the live server: a working-tree stamp frozen at 0.57.0 survived a day of reloads while the checkout shipped two versions.
+
 ## [0.61.0] - 2026-10-23
 
 ### Fixed
