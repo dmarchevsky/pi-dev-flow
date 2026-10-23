@@ -56,6 +56,10 @@ package — so keep the one you actually update from: `flow version` lists every
 registered in the process, and the on-disk session claim keeps the guard of a copy that never served
 a flow call attributing your commands correctly.
 
+Until `flow init` writes the playbook (`.dev-flow/project.md`), dev-flow says nothing in a repo — no
+injections, no guards, no footer: the playbook is the opt-in. A stray `.dev-flow/` without it keeps
+the folder dormant.
+
 Then, once per project repo, `/flow init`. It reads the repo (default branch and forge from git,
 package manager, test/build/run conventions, version manifest) and writes **`.dev-flow/project.md`
 — your playbook**: the commands that count as checks, the manual checklist, the version and tag
