@@ -88,6 +88,10 @@ import {
 	writeGuard,
 	stageGuidance,
 	DEFAULT_STAGE_GUIDANCE,
+	extractSkillCore,
+	stageReference,
+	SKILL_CORE_START,
+	SKILL_CORE_END,
 } from "../src/core.ts";
 
 const cfg = structuredClone(DEFAULTS);
@@ -112,6 +116,22 @@ test("stageGuidance: the built-in implement discipline, operator prose replaces 
 	owned.prose = { implement: "mind the vendored code" };
 	assert.equal(stageGuidance(owned, "implement")!.text, "mind the vendored code", "operator prose replaces the default");
 	assert.equal(stageGuidance(owned, "implement")!.source, "project.md");
+});
+
+test("extractSkillCore: the block between the markers, nothing else", () => {
+	const md = `---\nname: dev-flow\n---\n\n${SKILL_CORE_START}\n\n# rules\n\nflow is a tool\n\n${SKILL_CORE_END}\n\n## map\n\nnot injected\n`;
+	assert.equal(extractSkillCore(md), "# rules\n\nflow is a tool", "front matter and the stage map stay out of the injection");
+	assert.equal(extractSkillCore("# a skill with no markers"), null, "no markers means inject nothing");
+	assert.equal(extractSkillCore(`${SKILL_CORE_END}\nupside down\n${SKILL_CORE_START}`), null, "reversed markers are not a core");
+	assert.equal(extractSkillCore(`${SKILL_CORE_START}\n   \n${SKILL_CORE_END}`), null, "an empty core injects nothing");
+});
+
+test("stageReference: every stage names its own playbook file", () => {
+	assert.equal(stageReference("plan"), "references/plan.md");
+	assert.equal(stageReference("implement"), "references/implement.md");
+	assert.equal(stageReference("pre-release"), "references/pre-release.md");
+	assert.equal(stageReference("release"), "references/release.md", "the release stage reads release.md, which hands over to finish.md");
+	assert.equal(stageReference("done"), null, "a finished feature has nothing left to read");
 });
 
 test("healthRetry: the wait budget becomes attempts at the probe interval (#42)", () => {

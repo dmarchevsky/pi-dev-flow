@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -40,4 +40,29 @@ test("the published manifest is self-describing", () => {
 		assert.ok(existsSync(path.join(root, img)), `pi.image points at ${img}, which must exist`);
 		assert.ok(files.includes(img), `pi.image points at ${img}, which npm would drop from the tarball`);
 	}
+});
+
+// Pi advertises a skill (name, description, path) and never loads it unasked, so whatever the
+// extension injects must stay small, and whatever it does not inject must be findable from the file.
+const SKILL_DIR = path.join(root, "skills", "dev-flow");
+const SKILL_STAGES = ["start", "plan", "implement", "pre-release", "release", "finish", "reflect"];
+
+test("the dev-flow skill keeps its always-on core inside the budget", () => {
+	const md = readFileSync(path.join(SKILL_DIR, "SKILL.md"), "utf8");
+	const open = md.indexOf("<!-- dev-flow:core:start -->");
+	const close = md.indexOf("<!-- dev-flow:core:end -->");
+	assert.ok(open >= 0 && close > open, "the core must sit between its markers — that span is what every session gets injected");
+	const core = md.slice(open + "<!-- dev-flow:core:start -->".length, close).trim();
+	assert.ok(core.length <= 4000, `the core costs every session ~${Math.round(core.length / 4)} tokens; stage detail belongs in references/ (now ${core.length} chars)`);
+	for (const rule of ["flow tool is the only invocation", "Approve?", "flow abort"])
+		assert.ok(core.includes(rule), `the core has to carry "${rule}" — it is what a session gets wrong without it`);
+});
+
+test("every stage has a playbook file and the map names it", () => {
+	const md = readFileSync(path.join(SKILL_DIR, "SKILL.md"), "utf8");
+	const onDisk = readdirSync(path.join(SKILL_DIR, "references")).sort();
+	assert.deepEqual(onDisk, [...SKILL_STAGES].sort().map((s) => `${s}.md`), "references/ holds exactly one file per stage — no orphans, nothing missing");
+	for (const s of SKILL_STAGES) assert.match(md, new RegExp(`references/${s}\\.md`), `the stage map in SKILL.md never points at ${s}.md`);
+	// the state machine has no finish stage, so nothing would ever name finish.md if release.md did not
+	assert.match(readFileSync(path.join(SKILL_DIR, "references", "release.md"), "utf8"), /finish\.md/, "release must hand over to finish");
 });

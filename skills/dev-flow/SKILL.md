@@ -82,6 +82,6 @@ session's stage injection names the file to read now, and this is the map.
 | `references/plan.md` | plan stage — research, clarify, plan file, mockups, Approve? |
 | `references/implement.md` | implement stage — worktree, commits, checks, tier-2 list, Verified? |
 | `references/pre-release.md` | pre-release — `/flow-review`, docs, changelog + bump, Release? |
-| `references/release.md` | release — PR and merge style, tag, forge release, release-done |
-| `references/finish.md` | finish — reflect first, Finish?, worktree and branch cleanup |
+| `references/release.md` | release — PR and merge style, tag, forge release, release-done; hands over to finish |
+| `references/finish.md` | the close-out after `release-done` — reflect first, Finish?, worktree and branch cleanup |
 | `references/reflect.md` | reflections (the suggestion queue) and the roadmap backlog |

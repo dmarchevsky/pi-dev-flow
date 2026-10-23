@@ -17,10 +17,12 @@ interface Stub {
 	cmds: Record<string, { handler: (args: string, ctx: unknown) => Promise<void> }>;
 	tools: Record<string, { execute: (...a: unknown[]) => Promise<{ content: [{ text: string }] }> }>;
 	handlers: Record<string, Handler[]>;
+	/** What the extension recorded with appendEntry — a restored session replays it as its branch. */
+	entries: { type: string; customType?: string; data?: unknown }[];
 }
 
 function makePi(): Stub & ((...a: never[]) => void) {
-	const stub = { cmds: {}, tools: {}, handlers: {} } as Stub;
+	const stub = { cmds: {}, tools: {}, handlers: {}, entries: [] } as Stub;
 	let cmdCtx: { notices?: string[]; sent?: { triggerTurn?: boolean }[] } | undefined; // last command's ctx — sendMessage output lands in its notices
 	const api = {
 		registerCommand: (n: string, o: unknown) => {
@@ -40,7 +42,9 @@ function makePi(): Stub & ((...a: never[]) => void) {
 			return () => {};
 		},
 		registerShortcut: () => {},
-		appendEntry: () => {},
+		appendEntry: (customType: string, data?: unknown) => {
+			stub.entries.push({ type: "custom", customType, data });
+		},
 		sendMessage: (m: { content: string }, opts?: { triggerTurn?: boolean }) => {
 			if (cmdCtx) {
 				(cmdCtx.notices ??= []).push(m.content);
@@ -1874,4 +1878,51 @@ test("release-done refuses to record a release whose merge shape contradicts the
 	const bad = await flow(["release-done", "--confirmed"]);
 	assert.match(bad.content[0].text, /playbook says merge = squash.*merge commit or fast-forward/s, "a merge-commit release under a squash policy is refused");
 	void wt;
+});
+
+const CORE_MARK = /flow tool is the only invocation/;
+
+test("the skill core lands once per session, and a compaction re-arms it", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	mkdirSync(path.join(repo, ".dev-flow"));
+	// pi builds a fresh ctx per run (the first pass of a run claims it), so each run gets its own object
+	const session = (id: string, branch: () => never[] = () => [] as never[]) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: branch } });
+	const content = async (id: string, branch?: () => never[]) => ((await pi.handlers.before_agent_start[0]({}, session(id, branch))) as { message: { content: string } }).message.content;
+
+	await pi.handlers.session_start[0]({}, session("core-A"));
+	assert.match(await content("core-A"), CORE_MARK, "pi only advertises a skill — the rules it never loads are injected on the first run");
+	assert.equal(pi.entries.filter((e) => e.customType === "dev-flow-skill").length, 1, "the injection is recorded so a reload does not pay it again");
+	assert.doesNotMatch(await content("core-A"), CORE_MARK, "later runs do not repeat it — the transcript already holds it");
+	assert.match(await content("core-A"), /playbook map is .*SKILL\.md/, "an unbound session is still pointed at the stage map");
+
+	// a compaction summarizes the transcript away: the core it dropped comes back exactly once
+	await pi.handlers.session_compact[0]({ reason: "threshold" } as never, session("core-A"));
+	assert.match(await content("core-A"), CORE_MARK, "the first run after a compaction pays the core again");
+	assert.doesNotMatch(await content("core-A"), CORE_MARK, "and only once more");
+
+	// a reload/resume replays the branch, which already carries the injection
+	await pi.handlers.session_start[0]({}, session("core-A-reloaded", () => pi.entries as never[]));
+	assert.doesNotMatch(await content("core-A-reloaded"), CORE_MARK, "a restored session does not pay the core twice");
+
+	// a copy shipped without its skills/ directory leaves every message exactly as it was
+	testSeams.skillCore.value = null;
+	try {
+		const bare = await content("core-bare");
+		assert.ok(bare.startsWith("[dev-flow] no flow bound"), "no core to inject: the state line is untouched, nothing thrown");
+	} finally {
+		testSeams.skillCore.value = undefined;
+	}
+});
+
+test("the stage injection names the one playbook file the stage needs", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
+	const ctx = session("sess-ref");
+	await pi.cmds.flow.handler("init", ctx);
+	await pi.cmds.flow.handler("start ref-feature", ctx);
+	const inj = (await pi.handlers.before_agent_start[0]({}, session("sess-ref"))) as { message: { content: string } };
+	assert.match(inj.message.content, /Stage playbook: read .*references\/plan\.md before gate work/, "the plan stage names plan.md outright, absolute");
+	assert.ok(existsSync(inj.message.content.match(/Stage playbook: read (\S+) before gate work/)![1]), "the named file is a real path, not a wish");
 });

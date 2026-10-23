@@ -51,3 +51,6 @@ the worktree unless noted:
    Release-stage checklist items have no gate of their own: `release-done`
    lists the open ones and the Finish? answer closes them.
 
+
+Once `flow release-done` has recorded the release, the playbook continues in
+[finish.md](finish.md) — reflect first, then **Finish?**, then cleanup.
