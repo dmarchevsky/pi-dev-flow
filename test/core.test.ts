@@ -72,6 +72,9 @@ import {
 	sq,
 	tagNotesCommand,
 	openReflections,
+	closedReflectionCount,
+	reflectionsTidy,
+	reflectionsTidyHint,
 	appendRoadmapItem,
 	roadmapDone,
 	roadmapDoneCount,
@@ -467,6 +470,24 @@ test("roadmap: tidy drops done items and keeps preamble and open items", () => {
 	assert.ok(!out.includes("[x]"));
 });
 
+test("reflections: closed count; tidy drops closed items and headings left empty", () => {
+	assert.equal(closedReflectionCount("# h\n## playbook\n\n- [ ] open\n- [x] done — fixed: v1\n## plugin\n\n- [X] gone\n"), 2);
+	assert.equal(closedReflectionCount(""), 0);
+	const src = "# dev-flow reflections\n\n<!-- note -->\n\n## playbook\n\n- [ ] keep me — a 2025-01-01\n- [x] done — fixed: v1\n\n## plugin\n\n- [x] all gone — fixed: v2\n";
+	const out = reflectionsTidy(src);
+	assert.ok(out.includes("- [ ] keep me — a 2025-01-01\n"), "open item stays verbatim");
+	assert.ok(out.includes("<!-- note -->"), "preamble verbatim");
+	assert.ok(out.includes("## playbook"), "a section with an open item stays");
+	assert.ok(!out.includes("## plugin"), "a section emptied by the tidy loses its heading");
+	assert.ok(!out.includes("[x]"), "closed items are gone");
+	assert.equal(reflectionsTidy(out), out, "tidy is idempotent");
+	// legacy flat file: items above every heading, no heading to drop
+	const flat = "# dev-flow reflections\n\n<!-- n -->\n- [x] closed\n- [ ] open\n";
+	assert.deepEqual(reflectionsTidy(flat).split("\n").filter((l) => l.startsWith("- [")), ["- [ ] open"]);
+	// the hint every surface shares
+	assert.match(reflectionsTidyHint(3), /↻ 3 closed reflection\(s\) — flow reflect tidy drops them/);
+});
+
 test("reflectSections: plugin wording → plugin, playbook wording → playbook", () => {
 	assert.deepEqual(reflectSections("the gate prompt asks twice, that is wrong"), ["plugin"]);
 	assert.deepEqual(reflectSections("the checklist item about seeded data is stale"), ["playbook"]);
@@ -619,6 +640,13 @@ test("reflectProtocol: session-review steps, npm-based update probe, routed open
 	assert.match(empty, /dev-flow version unknown/);
 	assert.match(empty, /<upstream-url>/);
 	assert.match(empty, /open items: none/);
+	assert.ok(!/closed reflection\(s\)/.test(empty), "no closed items passed, no tidy hint");
+});
+
+test("reflectProtocol: closed items add the tidy hint next to the queue line", () => {
+	const out = reflectProtocol(["- [ ] an open note"], true, { version: "1.2.3", upstream: "dmarchevsky/dev-flow", closed: 2 }).join("\n");
+	assert.match(out, /↻ 2 closed reflection\(s\) — flow reflect tidy drops them/);
+	assert.ok(out.indexOf("closed reflection(s)") < out.indexOf("open items ("), "the hint precedes the routed list the agent acts on");
 });
 
 test("versionTagGate: manifest and tag must agree", () => {

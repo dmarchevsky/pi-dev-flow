@@ -609,6 +609,32 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	assert.match(st.content[0].text, /↻ 2 reflection\(s\) open/);
 });
 
+test("reflect tidy: drops closed items; every reflection surface nudges while the pile is there", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
+	const none = await flow(["reflect", "tidy"]);
+	assert.match(none.content[0].text, /nothing to tidy/, "no queue, nothing to do");
+	await flow(["reflect", "gate prompt asks twice"]);
+	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + "- [x] handled one — fixed: v0.1\n");
+	const queued = await flow(["reflect", "the", "status", "bar", "lies", "in", "the", "plugin"]);
+	assert.match(queued.content[0].text, /reflected \(plugin\): - \[ \] the status bar lies in the plugin/);
+	assert.match(queued.content[0].text, /↻ 1 closed reflection\(s\) — flow reflect tidy drops them/, "queueing a note points at the tidy");
+	assert.match((await flow(["reflect"])).content[0].text, /↻ 1 closed reflection\(s\)/, "the protocol carries the hint too");
+	assert.match((await flow(["doctor"])).content[0].text, /↻ 1 closed reflection\(s\)/, "doctor carries it too");
+	// a note merely starting with the verb word stays a note
+	assert.match((await flow(["reflect", "tidy", "up", "the", "readme"])).content[0].text, /reflected \(playbook\): - \[ \] tidy up the readme/);
+	const t = await flow(["reflect", "tidy"]);
+	assert.match(t.content[0].text, /dropped 1 closed item\(s\) — 3 open/);
+	assert.ok(!readFileSync(reflFile, "utf8").includes("- [x]"), "closed lines are gone from the file");
+	const again = await flow(["reflect", "tidy"]);
+	assert.match(again.content[0].text, /nothing to tidy \(3 open, 0 closed\)/);
+	assert.ok(!/closed reflection\(s\)/.test((await flow(["reflect", "final plugin finding"])).content[0].text), "no hint once the pile is gone");
+});
+
 test("bare reflect prints the protocol in a foreign repo: plugin items route upstream", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
