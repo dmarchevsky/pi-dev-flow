@@ -4,7 +4,11 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
-## [0.55.1] - 2026-10-22
+## [0.56.0] - 2026-10-22
+
+### Added
+
+- **`flow reflect tidy` drops the closed reflections.** Checking items off was the end of their story — the `- [x]` lines just piled up in `reflections.md` while every surface counts only open ones, so the checked-off history was invisible weight the agent kept walking past. Now the verb mirrors `roadmap tidy`: it deletes every `- [x]` item (the `— fixed:` note has already recorded the outcome), leaves the preamble and the open lines verbatim, and drops a `## playbook`/`## plugin` heading left empty. And the pile no longer waits to be noticed: queueing a note, the bare `reflect` protocol and `flow doctor` all print `↻ N closed reflection(s) — flow reflect tidy drops them` while any closed items exist — exactly the surfaces where items get checked off, quiet once the file is clean.
 
 ### Fixed
 
