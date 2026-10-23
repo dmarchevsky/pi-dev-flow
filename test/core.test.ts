@@ -68,6 +68,7 @@ import {
 	shouldTakeOverCompaction,
 	stateTamper,
 	statusCompact,
+	statusFor,
 	statusJson,
 	sq,
 	tagNotesCommand,
@@ -556,6 +557,19 @@ test("statusCompact: stage glyph + slug, failing-check flag", () => {
 	assert.equal(statusCompact(s).failed, true);
 	s.checks.test = { ok: true, at: "2026-01-01T10:00:00Z" };
 	assert.equal(statusCompact(s).failed, false);
+});
+
+test("statusFor: bound flow renders as before; unbound shows only the count", () => {
+	const s = newState("f", false);
+	assert.deepEqual(statusFor(s, 3), { text: "📝 f" }, "a bound feature renders exactly like statusCompact");
+	s.checks.test = { ok: false, at: "2026-01-01T10:00:00Z" };
+	assert.deepEqual(statusFor(s, 3), { text: "📝 f ⚠️" }, "⚠️ rides on the bound flow's own failing checks");
+	assert.deepEqual(statusFor(null, 1), { text: "⧖ 1 flow open" }, "unbound names nobody — count only");
+	assert.deepEqual(statusFor(null, 2), { text: "⧖ 2 flows open" });
+	assert.equal(statusFor(null, 0), null, "unbound with nothing unfinished clears the footer");
+	const done = newState("f", false);
+	done.stage = "done";
+	assert.equal(statusFor(done, 0), null, "a done bound feature clears the footer");
 });
 
 test("applyAnswer: dot paths, deletion, empty-object pruning", () => {

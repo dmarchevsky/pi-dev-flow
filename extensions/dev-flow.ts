@@ -94,7 +94,7 @@ import {
 	shouldSelfCompact,
 	shouldTakeOverCompaction,
 	stateTamper,
-	statusCompact,
+	statusFor,
 	statusJson,
 	subst,
 	sq,
@@ -356,26 +356,19 @@ const readRoadmap = (root: string): string => {
 	return existsSync(f) ? readFileSync(f, "utf8") : "";
 };
 
-/** The session's feature: explicit binding, else the single unfinished feature — auto-bind unless another live session claims it. */
+/** The session's feature — explicit bindings only: flow start/flow use bind, resume restores from session
+ *  history. Never binds on its own: an unbound session stays unbound however few features are unfinished,
+ *  and reading it must never claim anything. The claim on disk IS the persisted binding — bind() stamps the
+ *  session key into claim.json — so trust the disk after the in-memory map: a second registered dev-flow
+ *  copy (both copies evaluate the guard hooks) or a re-instantiated module then attributes the session's
+ *  own feature from disk instead of misjudging with stage null. */
 function boundFeature(root: string, key: string): FlowState | null {
 	const bound = bindings.get(key);
 	if (bound) {
 		const s = readState(root, bound);
 		if (s && s.stage !== "done") return s;
 	}
-	const un = unfinishedStates(root);
-	// the claim is the persisted binding: bind() already stamps the session key into claim.json, so
-	// trust the disk after the in-memory map — a second registered dev-flow copy (both copies
-	// evaluate the guard hooks) or a re-instantiated module then attributes the session's own
-	// feature from disk instead of misjudging with stage null
-	const mine = un.find((s) => readClaim(root, s.slug)?.key === key);
-	if (mine) return mine;
-	if (un.length !== 1) return null;
-	const claim = readClaim(root, un[0].slug);
-	// shortcut: liveness is pid-only — pid reuse can read "live" and force an explicit flow use; friction only, never a wrong commit.
-	if (claimBlocks(claim, key)) return null;
-	if (claim?.key !== key) writeClaim(root, un[0].slug, key);
-	return un[0];
+	return unfinishedStates(root).find((s) => readClaim(root, s.slug)?.key === key) ?? null;
 }
 
 function readClaim(root: string, slug: string): SessionClaim | null {
@@ -403,7 +396,7 @@ function releaseSession(root: string, key: string): void {
 	}
 }
 
-/** The auto-bind this session was denied by another live session's claim — lets the unbound-context message name the feature. */
+/** A lone unfinished feature another live session holds — lets the unbound-context message name it and offer the explicit takeover. */
 function claimBlocker(root: string, key: string): { state: FlowState; claim: SessionClaim } | null {
 	const un = unfinishedStates(root);
 	if (un.length !== 1) return null;
@@ -1567,16 +1560,13 @@ function tail(out: string, n = 15): string {
 
 // ------------------------------------------------------------------ extension
 
-/** Compact footer status: stage glyph, slug, mode markers, ⚠️ on failing checks; cleared when no active feature. */
+/** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
+ *  count of unfinished flows only (statusFor). Pure read — rendering never binds or claims anything. */
 function refreshStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
-	const st = existsSync(dfDir(ctx.cwd)) ? boundFeature(ctx.cwd, sessionKey(ctx)) : null;
-	if (!st || st.stage === "done") {
-		ctx.ui.setStatus("dev-flow", undefined);
-		return;
-	}
-	const { text, failed } = statusCompact(st);
-	ctx.ui.setStatus("dev-flow", failed ? `${text} ⚠️` : text);
+	const open = existsSync(dfDir(ctx.cwd)) ? unfinishedStates(ctx.cwd).length : 0;
+	const s = statusFor(boundFeature(ctx.cwd, sessionKey(ctx)), open);
+	ctx.ui.setStatus("dev-flow", s ? s.text : undefined);
 }
 
 

@@ -1377,7 +1377,10 @@ test("a session that ends releases its claim and binding — a shared-process ho
 	await pi.handlers.session_shutdown[0]({}, a);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json")), "shutdown released the claim with the session that wrote it");
 	const injB = (await pi.handlers.before_agent_start[0]({}, session("sess-D"))) as { message?: { content: string } };
-	assert.match(injB.message?.content ?? "", /bound to: claim-feature/, "B binds the feature A let go of");
+	assert.match(injB.message?.content ?? "", /no flow bound/, "A's release does not auto-bind B — a session never lands on a feature by itself");
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json")), "staying unbound writes no claim either");
+	await pi.cmds.flow.handler("use claim-feature", b);
+	assert.match(((await pi.handlers.before_agent_start[0]({}, session("sess-D"))) as { message: { content: string } }).message.content, /bound to: claim-feature/, "B takes the feature explicitly");
 	assert.equal(claimOf().key, "sid:sess-D", "and holds the claim itself");
 	// identity is shown, so a claim fight says which identity it was fought under
 	const st = (await pi.tools.flow.execute("id", { args: ["status"] }, undefined, undefined, b)) as { content: [{ text: string }] };

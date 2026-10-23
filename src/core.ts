@@ -1202,6 +1202,18 @@ export function statusCompact(state: FlowState): { text: string; failed: boolean
 	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}`, failed };
 }
 
+/** Footer decision for any session: a bound feature renders as statusCompact, its ⚠️ from its own failing
+ *  checks only; an unbound session shows the count of unfinished features — never a slug, so a fresh
+ *  session is never shown (or made to feel bound to) a feature it did not take with flow use. null clears. */
+export function statusFor(bound: FlowState | null, openCount: number): { text: string } | null {
+	if (bound && bound.stage !== "done") {
+		const { text, failed } = statusCompact(bound);
+		return { text: failed ? `${text} ⚠️` : text };
+	}
+	if (openCount < 1) return null;
+	return { text: `⧖ ${openCount} flow${openCount === 1 ? "" : "s"} open` };
+}
+
 /** `- [ ]` checklist items of a markdown document (reflections.md and roadmap.md share the format). */
 export function openChecklistItems(text: string): string[] {
 	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));
