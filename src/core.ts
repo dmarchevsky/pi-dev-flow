@@ -1161,31 +1161,36 @@ export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
  * Returns a reason or null (allowed).
  */
 export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null }): string | null {
-	if (o.abs === path.join(o.dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
-	if (o.abs === path.join(o.dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
-	if (o.abs.endsWith("state.json") && o.abs.includes(o.dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
-	if (o.abs.endsWith("claim.json") && o.abs.includes(o.dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
+	// Judge where the bytes land, not where the path pretends: a symlink inside the worktree pointing
+	// out of it is the same write as the target path (realAbs walks the deepest existing ancestor, so
+	// a brand-new file under a real directory resolves right, and a never-existing one is stable).
+	const abs = realAbs(o.abs);
+	const dfDir = realAbs(o.dfDir);
+	if (abs === path.join(dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
+	if (abs === path.join(dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
+	if (abs.endsWith("state.json") && abs.includes(dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
+	if (abs.endsWith("claim.json") && abs.includes(dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
-	const owner = o.features.find((f) => within(o.abs, f.worktreeAbs));
+	const owner = o.features.find((f) => within(abs, f.worktreeAbs ? realAbs(f.worktreeAbs) : null));
 	if (owner) {
 		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
 		if (owner.state.stage === "done") return `feature ${owner.state.slug} is done`;
 		// the playbook copy inside a worktree: only operator-granted lightweight modes may change it
-		if (path.basename(o.abs) === "project.md" && o.abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
+		if (path.basename(abs) === "project.md" && abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
 			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
 		return null; // implement/pre-release/release: own worktree is the working area
 	}
 	// Scratch outside the checkout is not a repo write: every stage (and an unbound session) may use it. It
 	// sits after the dev-flow-owned refusals and after owner attribution, so no path shape — a symlink, or a
 	// worktreeDir an operator parked in the temp dir — reaches those rules through the temp dir.
-	if (inScratchDir(o.abs, o.repoRoot)) return null;
+	if (inScratchDir(abs, o.repoRoot)) return null;
 	const bound = o.boundSlug ? o.features.find((f) => f.state.slug === o.boundSlug) : undefined;
 	// A plan-stage session may only write its own feature directory: otherwise one session edits another
 	// feature's plan and that feature's approval gate then rubber-stamps text it never wrote.
-	if (bound?.state.stage === "plan" && !within(o.abs, path.join(o.dfDir, bound.state.slug)))
+	if (bound?.state.stage === "plan" && !within(abs, path.join(dfDir, bound.state.slug)))
 		return `bound feature ${bound.state.slug} is in plan — write only inside its own .dev-flow/${bound.state.slug}/`;
-	if (within(o.abs, o.dfDir)) return null;
+	if (within(abs, dfDir)) return null;
 	if (bound) {
 		if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
 			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout; a throwaway script goes outside the repo (under $TMPDIR)`;

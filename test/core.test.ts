@@ -488,6 +488,26 @@ test("writeGuard: a throwaway outside the repo is stage-free, a repo that lives 
 	);
 });
 
+test("writeGuard: a symlink in the worktree is judged where the bytes land", () => {
+	// the audit finding: writeGuard compared paths lexically, so a symlink out of the worktree
+	// laundered a main-checkout write past the stage rule (guardPath already realpaths — this is parity)
+	const repo = path.join(mkdtempSync(path.join(tmpdir(), "df-esc-")), "repo");
+	const df = path.join(repo, ".dev-flow");
+	const wt = path.join(repo, "wt");
+	mkdirSync(path.join(repo, "src"), { recursive: true });
+	mkdirSync(df, { recursive: true });
+	mkdirSync(wt, { recursive: true });
+	symlinkSync(path.join(repo, "src"), path.join(wt, "linked"));
+	const impl = { ...newState("e", false), stage: "implement" as const, worktree: "wt", branch: "feat/e" };
+	const feats = [{ state: impl, worktreeAbs: wt }];
+	const g = (abs: string) => writeGuard({ abs, dfDir: df, features: feats, boundSlug: "e", repoRoot: repo });
+	assert.match(g(path.join(wt, "linked", "app.ts")) ?? "", /edit its worktree/, "bytes written through the link land in the main checkout — the link's path must not launder them");
+	assert.equal(g(path.join(wt, "app.ts")), null, "a plain worktree path stays the working area");
+	// and the main-checkout dev-flow files stay owned through a link too
+	symlinkSync(df, path.join(wt, "dflink"));
+	assert.match(g(path.join(wt, "dflink", "e", "state.json")) ?? "", /dev-flow-owned/, "state.json reached through a symlink is still state.json");
+});
+
 test("openReflections: unchecked items only", () => {
 	assert.deepEqual(openReflections("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
 	assert.deepEqual(openReflections(""), []);
