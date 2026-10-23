@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.60.0] - 2026-10-23
+
+### Changed
+
+- **dev-flow is fully dormant until the playbook exists — and fully present after.** *Initiated* now means exactly one thing: `.dev-flow/project.md` (written by `flow init`) exists. Until then a folder hears nothing at all: no context injection, no footer, and no guards — the stage discipline, main-branch git rules and the bash-timeout refusal and its silent arming included (`flow init` is the opt-in; a stray `.dev-flow/` without the playbook keeps the folder asleep), and every gate verb but `flow init`/`flow version` says so plainly instead of half-running. Once initiated, the footer never goes silent: bound sessions see the stage glyph + slug as before, unbound ones the `⧖ N flow(s) open` count, and a repo with nothing in flight now shows `⧖ no flows` instead of nothing — you can see dev-flow is watching. The footer also repaints at the **start** of every agent run, not just at session start and turn end: `setStatus` is a fire-and-forget push in pi-web, and run start is the earliest moment a late-attaching web client is certainly listening (a push the browser missed before attaching could leave the bar blank until the next gate).
+
 ## [0.59.1] - 2026-10-23
 
 ### Fixed
