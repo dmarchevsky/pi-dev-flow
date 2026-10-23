@@ -1492,7 +1492,7 @@ ${mdDigest(draftRefresh)}`))
 					roadmapNote = ` roadmap: ${r.count} item(s) marked done.`;
 				}
 			}
-			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}${syncNote}` };
+			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}${syncNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 		}
 
 		case "use": {

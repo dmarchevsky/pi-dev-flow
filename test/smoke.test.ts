@@ -699,7 +699,7 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	assert.match(rd.content[0].text, /release recorded as complete/);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "ck", "state.json")), "release-done records the release; closing out is finish's job");
 	const fin = await flow(["finish", "--confirmed"]);
-	assert.match(fin.content[0].text, /feature ck done — worktree and branch feat\/ck removed/);
+	assert.match(fin.content[0].text, /feature ck done — worktree and branch feat\/ck removed.*Re-read flow status before reporting open flows/, "finish sends the agent to a fresh status — siblings may have finished mid-session");
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ck")), "feature dir gone after finish");
 	assert.equal(dialogs, 0, "still zero dialogs at the end");
 });
