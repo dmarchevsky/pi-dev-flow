@@ -4,6 +4,8 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-10-23
+
 ### Added
 
 - **Bundled review skills — dev-flow now ships its own code review, no companion plugin needed.** `/flow-review` reviews a change (default: the bound flow's branch diff against the default branch, plus uncommitted work) as a read-only senior-engineer report — correct, safe, holds under load, tested, fast, lean — judged also against the feature's `plan/plan.md`; every finding must carry a concrete triggering case (refute-before-report), grouped Must fix / Should fix / Nice to have, with a verdict and a `Not checked:` line. `/flow-audit` audits the whole repo in the same style: map first, expected-load assessment, at most 20 ranked findings, changes nothing.

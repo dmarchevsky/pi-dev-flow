@@ -242,7 +242,7 @@ and tags are `versioning.pattern` rendered from it — one number everywhere. If
 `versioning.file` is unset, stop and clarify the scheme with the user; never
 invent one mid-release. Sequence:
 
-1. `/flow-review` the change; fix every **must-have** and **should-have**
+1. `/flow-review` the change; fix every **Must fix** and **Should fix**
    finding; `flow test` again if code changed.
 2. Update documentation to reflect the change.
 3. Update the changelog and bump the manifest to the exact version you will
