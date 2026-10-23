@@ -59,6 +59,7 @@ import {
 	playbookOnlyChange,
 	sessionRunsOlderBuild,
 	changelogVersionsBetween,
+	inScratchDir,
 	reflectProtocol,
 	reflectSections,
 	reflectionLine,
@@ -455,6 +456,36 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.equal(checkoutTarget("git checkout -- src/app.ts"), "--");
 	assert.equal(checkoutTarget("git commit -m x"), null);
 	assert.equal(featureBranchPrefix({ ...DEFAULTS, branchPattern: "feat/{slug}" }), "feat/");
+});
+
+test("writeGuard: a throwaway outside the repo is stage-free, a repo that lives in the temp dir is not", () => {
+	// the reflection: a mechanical multi-file rewrite had nowhere to keep /tmp/split_skill.py
+	const parent = mkdtempSync(path.join(tmpdir(), "df-scratch-"));
+	const repo = path.join(parent, "repo");
+	mkdirSync(path.join(repo, "src"), { recursive: true });
+	const df = path.join(repo, ".dev-flow");
+	const impl = { ...newState("b", false), stage: "implement" as const, worktree: ".wt/b" };
+	const feats = [{ state: impl, worktreeAbs: path.join(repo, ".wt", "b") }];
+	const bound = (abs: string, slug: string | null = "b") => writeGuard({ abs, dfDir: df, features: feats, boundSlug: slug, repoRoot: repo });
+	assert.equal(bound(path.join(parent, "split_skill.py")), null, "scratch beside the repo is not a repo write");
+	assert.equal(bound(path.join(tmpdir(), "loose-throwaway.py"), null), null, "and it is stage-free even with no flow bound");
+	assert.match(bound(path.join(repo, "src", "app.ts")) ?? "", /edit its worktree/, "the checkout itself stays confined to its worktree");
+	assert.match(bound(path.join(df, "b", "state.json")) ?? "", /dev-flow-owned/, "state.json is never scratch");
+	// every smoke-test repo lives under the temp dir: the exclusion is what keeps those rules alive
+	assert.ok(inScratchDir(path.join(repo, "src", "app.ts"), repo) === false, "inside the repo root is never scratch");
+	assert.ok(inScratchDir(path.join(parent, "x.py"), repo), "outside it, inside the temp dir, is");
+	// a symlink out of the temp dir must not smuggle a write back into the guarded checkout
+	const link = path.join(parent, "link");
+	symlinkSync(repo, link);
+	assert.match(bound(path.join(link, "src", "app.ts")) ?? "", /edit its worktree/, "a symlink into the repo is judged as the repo path it writes");
+	// owner attribution beats the scratch allow: a worktreeDir parked in the temp dir is still owned
+	const wtTmp = path.join(parent, "wt-plan");
+	const planFeat = [{ state: { ...newState("c", false), stage: "plan" as const, worktree: "wt-plan" }, worktreeAbs: wtTmp }];
+	assert.match(
+		writeGuard({ abs: path.join(wtTmp, "x.ts"), dfDir: df, features: planFeat, boundSlug: "b", repoRoot: repo }) ?? "",
+		/is in plan/,
+		"a worktree in the temp dir is owned space, never free scratch",
+	);
 });
 
 test("openReflections: unchecked items only", () => {
