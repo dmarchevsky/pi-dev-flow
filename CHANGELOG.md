@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.59.1] - 2026-10-23
+
+### Fixed
+
+- **A session running an older dev-flow build than the checkout now says so — including in the dev-flow repo, where it never could.** `flow start` carried a behind-the-checkout warning and `flow release` carried the update-or-proceed question, but both compared the loaded build against `pluginVersion(import.meta.dirname)` — the `package.json` sitting beside the running code, which is the same file `loadedVersion()` reads — so the comparison was X against X and only the `DEV_FLOW_LOADED_VERSION` test seam ever made it unequal. A session that loaded 0.54.0 while this checkout already shipped 0.58.1 started, released and finished looking current, and the gate proofs shipped in between silently did not run. `checkoutBuild(root)` now answers what the disk says to run: this checkout's own manifest in the dev-flow repo, the installed package's everywhere else. `start`, `status`, `version`, `release` and `release-done` read it, the stamp in `state.json` records the build that actually ran rather than the one the disk claims, and `flow version` names the directory the stale code lives in. The stale release question stays a question — an operator who ships from behind is a choice, never a block.
+- **Scratch outside the checkout is stage-free.** With a flow bound at `implement` or `pre-release`, the write guard refused every path that was not the worktree or `.dev-flow/` — `/tmp/split_skill.py` included — so an agent doing a mechanical multi-file rewrite had nowhere to keep a throwaway script and learned to park junk inside the checkout instead. A path whose realpath is under the OS temp dir is now allowed at every stage and with no flow bound, checked after the dev-flow-owned refusals and after per-path owner attribution, so neither a symlink out of the temp dir nor a `worktreeDir` an operator parked there reaches those rules; a repository that merely lives under the temp dir (every smoke-test repo) keeps the stage rules untouched. The refusal that remains names the temp dir as its own way out.
+
 ## [0.59.0] - 2026-10-23
 
 ### Added
