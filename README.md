@@ -163,6 +163,17 @@ your playbook's `prose.implement` replaces it wholesale whenever you write your 
 rules adapt ponytail, obra/superpowers and pi-development-system — all MIT, credited in the
 skill files.)
 
+## The playbook the agent always has
+
+Pi lists a skill's name and description and loads the file only if the model chooses to read it —
+and a session that never read the playbook is the one that guesses at a gate, then argues with the
+guard. So dev-flow injects what must never be missing: the ground rules of `skills/dev-flow/SKILL.md`
+(the flow tool is the only invocation, checkpoints are words in chat, binds are explicit, the
+playbook and state files are read-only) land in the session once, roughly a thousand tokens, and a
+compaction that summarizes them away brings them back exactly once. The per-stage detail — mockup harness,
+release sequence, reflection protocol — stays on disk, and each stage's turn names the one file to
+read. Nothing to configure; reloads, resumed and forked sessions do not pay for it twice.
+
 ## What is enforced
 
 While a feature is active, every tool call passes a guard:

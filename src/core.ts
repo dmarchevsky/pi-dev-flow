@@ -141,6 +141,39 @@ export function stageGuidance(cfg: Config, stage: Stage): { text: string; source
 	return text ? { text, source: "dev-flow default" } : undefined;
 }
 
+/** Markers around the always-on core of `skills/dev-flow/SKILL.md`. Pi advertises a skill
+ *  (name, description, path) and loads the body only when the model chooses to read it, so
+ *  nothing in the file is guaranteed in front of the model. The extension injects what sits
+ *  between these markers once per session; everything outside them (the stage map, and
+ *  `references/` per stage) is read on demand. */
+export const SKILL_CORE_START = "<!-- dev-flow:core:start -->";
+export const SKILL_CORE_END = "<!-- dev-flow:core:end -->";
+
+/** The always-on core of the dev-flow skill: the text between the markers, or null when the
+ *  markers are missing, reversed or hold nothing. Null is a fallback, not an error — a checkout
+ *  without `skills/`, or a botched edit, must leave the injection exactly as it was and must
+ *  never throw inside a guard hook. */
+export function extractSkillCore(md: string): string | null {
+	const a = md.indexOf(SKILL_CORE_START);
+	const b = md.indexOf(SKILL_CORE_END);
+	if (a < 0 || b < 0 || b < a) return null;
+	const core = md.slice(a + SKILL_CORE_START.length, b).trim();
+	return core || null;
+}
+
+/** The playbook file carrying one stage's detail, relative to the skill directory. `done` has
+ *  none (nothing left to read). The state machine has no finish stage — closing out happens inside
+ *  `release`, and release.md hands over to finish.md there. The pre-flow brief is `start`. */
+const STAGE_REFERENCE: Partial<Record<Stage, string>> = {
+	plan: "references/plan.md",
+	implement: "references/implement.md",
+	"pre-release": "references/pre-release.md",
+	release: "references/release.md",
+};
+export function stageReference(stage: Stage): string | null {
+	return STAGE_REFERENCE[stage] ?? null;
+}
+
 /** Build a Config from DEFAULTS + a partial overrides object (tests, drafts — the persisted
  *  source is project.md alone; the legacy project.json loader is gone). */
 export function buildConfig(raw: unknown): Config {

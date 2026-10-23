@@ -12,7 +12,9 @@
  *     release stage; edits confined to the plan dir or the worktree; state.json
  *     is untouchable and the project.md playbook is operator-owned.
  *  3. before_agent_start injects the active stage so the model always knows
- *     where it is and which gate comes next.
+ *     where it is and which gate comes next, plus the skill's always-on core once
+ *     per session (pi only advertises a skill; it never loads it unasked) and the
+ *     one playbook reference file the current stage needs.
  *
  * The stage logic lives in src/core.ts (unit-tested); this file is pi wiring.
  * Inactive (fully pass-through) in repos without a .dev-flow/ directory.
@@ -46,6 +48,7 @@ import {
 	closedReflectionCount,
 	compactionReflectionLine,
 	detectForge,
+	extractSkillCore,
 	featureBranchPrefix,
 	FLOW_SHELL_HINT,
 	flowShellInvocation,
@@ -73,6 +76,7 @@ import {
 	reflectionRoutes,
 	reflectionsTidy,
 	reflectionsTidyHint,
+	stageReference,
 	sessionRunsOlderBuild,
 
 	listFiles,
@@ -158,7 +162,7 @@ function copyWarning(): string | null {
 }
 /** Test seam: the smoke suite cannot load a second copy of this module, so it plants registry
  * entries and asserts the warnings the real duplicate would print. */
-export const testSeams = { copies: COPIES };
+export const testSeams = { copies: COPIES, skillCore: { value: undefined as string | null | undefined } };
 
 interface Ui {
 	hasUI: boolean;
@@ -324,6 +328,32 @@ const sessionKey = (ctx: { cwd: string; sessionManager?: { getSessionId(): strin
 	ctx.sessionManager?.getSessionId() ? `sid:${ctx.sessionManager.getSessionId()}` : `cwd:${ctx.cwd}`;
 /** Sessions with a dev-flow-initiated compaction in flight (prevents stacked compactions). */
 const compacting = new Set<string>();
+/** Sessions that already received the skill's always-on core this session. The `dev-flow-skill`
+ *  entry records the injection in the session branch, so /reload, resume and fork restore the fact
+ *  instead of paying ~1k tokens a second time. */
+const coreInjected = new Set<string>();
+/** Sessions whose last compaction dropped the core out of context — the next run pays it once more. */
+const coreStale = new Set<string>();
+/** The skill dir of THIS loaded copy. Since 0.57.1 dropped the `.pi/extensions` dogfood shim, the
+ *  copy a session runs and a development checkout are different installs, so playbook paths
+ *  resolve from the code actually loaded — never from cwd. */
+const SKILL_DIR = path.join(import.meta.dirname, "..", "skills", "dev-flow");
+let skillCoreCache: string | null | undefined;
+/** The core block between SKILL.md's markers, read once per process (/reload reloads the module
+ *  and picks up edits). Null — no file, no markers, empty core — leaves every message exactly as it
+ *  was: a copy shipped without its skill must not take the guards, or the run, down. */
+function skillCore(): string | null {
+	// Seam first: a test cannot ship a copy of the package with its skills/ directory deleted.
+	if (testSeams.skillCore.value !== undefined) return testSeams.skillCore.value;
+	if (skillCoreCache === undefined) {
+		try {
+			skillCoreCache = extractSkillCore(readFileSync(path.join(SKILL_DIR, "SKILL.md"), "utf8"));
+		} catch {
+			skillCoreCache = null;
+		}
+	}
+	return skillCoreCache;
+}
 
 /** Seam for the takeover's summarize call (pi's own compact()); tests replace `.run` — mutable object stands in for ESM mocking. */
 export const compactionTakeover: { run: typeof compact } = { run: compact };
@@ -390,6 +420,8 @@ const writeClaim = (root: string, slug: string, key: string) =>
 function releaseSession(root: string, key: string): void {
 	bindings.delete(key);
 	compacting.delete(key);
+	coreInjected.delete(key);
+	coreStale.delete(key);
 	if (!existsSync(dfDir(root))) return;
 	for (const d of readdirSync(dfDir(root), { withFileTypes: true })) {
 		if (!d.isDirectory()) continue;
@@ -1611,17 +1643,44 @@ export default function devFlow(pi: ExtensionAPI) {
 	/** Restore this session's binding from its branch history (survives resume/fork). */
 	const rebuildSession = (ctx: ExtensionContext) => {
 		let slug: string | null = null;
+		let sawCore = false;
+		let coreStaleHere = false;
 		for (const e of ctx.sessionManager?.getBranch() ?? []) {
 			// SAFETY: narrow structural view of the SessionEntry union; we only read entries whose type/customType match our own appendEntry writes.
-			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null } };
+			const ce = e as unknown as { type: string; customType?: string; data?: { slug?: string | null; stale?: boolean } };
 			if (ce.type === "custom" && ce.customType === "dev-flow-bind") slug = ce.data?.slug ?? null;
+			if (ce.type === "custom" && ce.customType === "dev-flow-skill") {
+				sawCore = true;
+				coreStaleHere = ce.data?.stale === true; // the newest skill entry decides: a stale one follows a compaction
+			}
 		}
 		const key = sessionKey(ctx);
 		bindings.set(key, slug);
+		// The branch is the truth about what the restored context holds: a marker means the core is in it
+		// (do not pay twice), no marker means the branch was rewound or forked past the injection (give it
+		// back), and a stale marker means a compaction summarized it away before the reload (give it back).
+		if (sawCore) coreInjected.add(key);
+		else coreInjected.delete(key);
+		if (coreStaleHere) coreStale.add(key);
+		else coreStale.delete(key);
 		// A reload ends the old session, which released its claim; the restored one must reclaim what its own
 		// branch says it holds, or the repo answers "claimed by another live session" to the session that
 		// holds it. A foreign live claim wins — restoring is not a takeover.
 		if (slug && readState(ctx.cwd, slug) && !claimBlocks(readClaim(ctx.cwd, slug), key)) writeClaim(ctx.cwd, slug, key);
+	};
+
+	/** The run's playbook preamble: the skill's always-on core, once per session. Later runs come back
+	 *  empty because the transcript already holds it. The one exception is a compaction that summarized
+	 *  it away (see session_compact), which pays it once more — and every real injection records itself,
+	 *  so the newest skill entry on the branch is always the truth a reload restores from. */
+	const corePreamble = (key: string): string => {
+		if (coreInjected.has(key) && !coreStale.has(key)) return "";
+		const core = skillCore();
+		if (!core) return "";
+		coreStale.delete(key);
+		coreInjected.add(key);
+		pi.appendEntry("dev-flow-skill", { core: true });
+		return `${core}\n\n`;
 	};
 
 	pi.registerCommand("flow", {
@@ -1703,7 +1762,15 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
 	pi.on("session_compact", async (event, ctx) => {
-		if (!existsSync(dfDir(ctx.cwd)) || event.reason === "manual") return;
+		if (!existsSync(dfDir(ctx.cwd))) return;
+		// Whatever the reason, the summary replaced the transcript — the core the first run injected is
+		// gone from context, so the next run pays it once more (manual compactions included: our own
+		// safe-point compaction is the common one).
+		coreStale.add(sessionKey(ctx));
+		// Durable too: a compaction the session survives a reload outlives the in-memory flag, and a
+		// branch whose newest skill entry is stale tells the restored run to pay the core again.
+		pi.appendEntry("dev-flow-skill", { core: true, stale: true });
+		if (event.reason === "manual") return;
 		const st = boundFeature(ctx.cwd, sessionKey(ctx));
 		if (!st) return;
 		const f = path.join(dfDir(ctx.cwd), "reflections.md");
@@ -1852,12 +1919,15 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (run[CONTEXT_EMITTED]) return undefined;
 		run[CONTEXT_EMITTED] = true;
 		if (!existsSync(dfDir(ctx.cwd))) return undefined;
+		const key = sessionKey(ctx);
+		// The playbook core rides along on the message this run writes anyway — once per session.
+		const core = corePreamble(key);
 		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
-		const state = boundFeature(ctx.cwd, sessionKey(ctx));
+		const state = boundFeature(ctx.cwd, key);
 		if (!state || state.stage === "done") {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
 			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
-			const cb = claimBlocker(ctx.cwd, sessionKey(ctx));
+			const cb = claimBlocker(ctx.cwd, key);
 			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (pid ${cb.claim.pid}) — flow use ${cb.state.slug} takes it over explicitly.`;
 			const curBr = await currentBranch(ctx.cwd);
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
@@ -1865,10 +1935,15 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open — run flow doctor.`;
 			const rmap0 = roadmapOpenCount(readRoadmap(ctx.cwd));
 			if (rmap0) content += ` Also: ${rmap0} roadmap item(s) open — flow roadmap lists them, flow roadmap pick <n> <slug> hands one to flow start.`;
-			return { message: { customType: "dev-flow-context", display: false, content } };
+			content += ` Also: the playbook map is ${path.join(SKILL_DIR, "SKILL.md")} — per-stage detail sits in references/ beside it (start: flow init, modes, ownership).`;
+			return { message: { customType: "dev-flow-context", display: false, content: `${core}${content}` } };
 		}
 		const guidance: string[] = [];
 		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every gate question from here on (Verified?/Release?/Finish?) — run the remaining gates (verify → release → release-done → finish) back to back without stopping to ask; guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
+		// The one playbook file this stage needs, named outright: the model reads it instead of
+		// guessing what a stage asks of it, and it pays for itself the first time a gate is refused.
+		const ref = stageReference(state.stage);
+		if (ref) guidance.push(`Stage playbook: read ${path.join(SKILL_DIR, ref)} before gate work in this stage.`);
 		const prose = stageGuidance(cfg, state.stage);
 		if (prose) guidance.push(`Stage guidance (${prose.source}): ${prose.text}`);
 		const pend = checklistPending(cfg, state, state.stage);
@@ -1881,7 +1956,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			message: {
 				customType: "dev-flow-context",
 				display: false,
-				content: `[dev-flow] this session is bound to: ${state.slug}${state.patch ? " (patch)" : state.docs ? " (docs)" : ""} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
+				content: `${core}[dev-flow] this session is bound to: ${state.slug}${state.patch ? " (patch)" : state.docs ? " (docs)" : ""} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
 Next: ${nextHint(state, cfg)}.
 ${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: follow the dev-flow skill playbook; gates run through the flow tool only — \`flow\` is not a shell command, and the operator answers words in chat, never commands: you run the gate. \`/flow\` is the operator's manual override, not yours. Stage guards block out-of-stage edits and main-branch git ops — do not work around them.`,
 			},
