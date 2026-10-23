@@ -115,11 +115,31 @@ export const DEFAULTS: Config = {
 	prose: {},
 	versioning: { pattern: "v{version}" },
 	healthWait: 30,
-	release: { review: "/ponytail-review", changelog: "CHANGELOG.md", releases: true },
+	release: { review: "/flow-review", changelog: "CHANGELOG.md", releases: true },
 	mainHook: true,
 	bashTimeout: "require",
 	guard: { deny: [], confirm: [], protect: [], forbid: [] },
 };
+
+/**
+ * Built-in tier-3 guidance for stages with no `prose.<stage>` in project.md.
+ * Operator prose replaces it (never appends) — a project that wants its own
+ * implement guidance just sets prose.implement. Implement-only: this is the
+ * writing discipline for where flows write code; it stays out of plan/release
+ * turns. Senior-engineer discipline adapted from ponytail (MIT, DietrichGebert).
+ */
+export const DEFAULT_STAGE_GUIDANCE: Partial<Record<Stage, string>> = {
+	implement:
+		"Smallest complete change wins: skip what nobody asked for (name it in one line); reuse this repo's helpers before writing new ones; stdlib and installed deps before new code; one readable line over fifty. No speculative abstraction, wrapper, option or config — deletion beats addition, keep the structure the codebase has. Finish everything your change touches: the callers, tests and fixtures it breaks. A bug fix goes to the root cause in the shared code, after grepping every caller. New non-trivial logic (a branch, a loop, a parser, money, security) leaves one small failing-first test. A deliberate shortcut gets a `shortcut: <limit>, <upgrade>` comment. Never cut: validation at trust boundaries, error handling that prevents data loss, security, anything the operator asked for.",
+};
+
+/** Tier-3 stage guidance with provenance: operator prose (project.md) wins,
+ *  else the built-in default (dev-flow). Undefined when neither exists. */
+export function stageGuidance(cfg: Config, stage: Stage): { text: string; source: "project.md" | "dev-flow default" } | undefined {
+	if (cfg.prose[stage]) return { text: cfg.prose[stage], source: "project.md" };
+	const text = DEFAULT_STAGE_GUIDANCE[stage];
+	return text ? { text, source: "dev-flow default" } : undefined;
+}
 
 /** Build a Config from DEFAULTS + a partial overrides object (tests, drafts — the persisted
  *  source is project.md alone; the legacy project.json loader is gone). */
