@@ -362,12 +362,6 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): 
 	if (cfg.commands.dev && !healthProbe(cfg)) f.push("dev deploy configured but no health check — flow verify cannot prove the deploy came back serving this build: add commands.health or a flow-check health block");
 	if (!cfg.checkList.length) f.push("implement tier-1 gates nothing — no test, no health, no flow-check block: 'flow check' would pass vacuously");
 	for (const g of ghostFeatureDirs(root)) f.push(`${g} has a plan/ but no state.json — ghost of a closed or aborted feature (flow init offers to remove it)`);
-	// dev-flow must load its own working code in its own checkout: the committed .pi shim is the only thing that guarantees it
-	if (pkgRaw && (pkgRaw as { name?: unknown }).name === "pi-dev-flow") {
-		const shim = path.join(root, ".pi", "extensions", "dev-flow.ts");
-		if (!existsSync(shim) || !readFileSync(shim, "utf8").includes("../../extensions/dev-flow.ts"))
-			f.push("dogfood shim .pi/extensions/dev-flow.ts is missing or does not re-export ../../extensions/dev-flow.ts — sessions in this checkout will not load the current code");
-	}
 	return f;
 }
 

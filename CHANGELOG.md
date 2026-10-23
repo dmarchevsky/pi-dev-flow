@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.57.1] - 2026-10-23
+
+### Removed
+
+- **The dogfood shim is gone — one global dev-flow copy is the only source.** `.pi/extensions/dev-flow.ts`, the committed one-line re-export that made every session in this checkout load the working tree, was itself a second registered extension beside the global npm install — the exact two-sources hazard the README warns about (pi dedupes extensions by path, not by package), and the copy `flow version` had started naming in this very repo. Sessions here now load the single global install (`pi update --extensions` reconciles it after a release, `/reload` carries it into a running session); `pi -e .` stays the explicit way to dogfood the working tree. The `flow doctor` probe that demanded the shim, its test, and the `development.md` dogfood paragraph were removed with it.
+
 ## [0.57.0] - 2026-10-23
 
 ### Changed

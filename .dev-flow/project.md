@@ -48,7 +48,7 @@ This repo merge-commits its PRs (history: 17 merge commits), so the branch's own
 release's ancestry — that is what makes a post-merge tag point at reviewed SHAs. Merge with
 `gh pr merge --merge`; a squash here rewrites them out of the release.
 
-- [ ] dogfood: `flow doctor` here reports no shim finding, and the operator was told that already-running sessions keep the old code until `/reload`
+- [ ] dogfood: `flow doctor` here reports no findings, and the operator was told that already-running sessions keep the old code until `/reload`
 - [ ] CI published pi-dev-flow from the tag (Actions `release` run green — a failed publish is re-run on the same tag, never re-tagged; if the artifact check raced the publish, wait for the job and run release-done again)
 
 <!-- e.g. who publishes artifacts -->

@@ -110,22 +110,6 @@ test("doctorFindings: a dev deploy with no health probe cannot be proven by veri
 	assert.equal(probed.some((f) => f.includes("dev deploy configured but no health check")), false, "a configured probe satisfies it");
 });
 
-test("doctorFindings: the dogfood shim is probed only in a dev-flow checkout", () => {
-	const cfg = buildConfig({ commands: { test: "npm test" } });
-	const has = (root: string) => doctorFindings(root, cfg, null).some((x) => x.includes("dogfood shim"));
-	const repo = fixtureRoot({ "package.json": '{"name":"pi-dev-flow","version":"1.0.0"}' });
-	assert.ok(has(repo), "a dev-flow checkout whose extension is not wired loads nothing");
-	const shim = path.join(repo, ".pi", "extensions", "dev-flow.ts");
-	mkdirSync(path.dirname(shim), { recursive: true });
-	writeFileSync(shim, 'export { default } from "../../extensions/dev-flow.ts";\n');
-	assert.ok(!has(repo), "the committed one-liner is what satisfies it");
-	writeFileSync(shim, 'export { default } from "../elsewhere.ts";\n');
-	assert.ok(has(repo), "a shim pointing somewhere else is stale wiring");
-	// a project that merely carries dev-flow's skill, or is named similarly, is not our checkout
-	const other = fixtureRoot({ "package.json": '{"name":"my-app","version":"1.0.0"}', "skills/dev-flow/SKILL.md": "# dev-flow\n" });
-	assert.ok(!has(other), "an ordinary project never hears about our dogfood setup");
-});
-
 test("loadProject: project.md is the only config source; a legacy project.json is ignored", () => {
 	const root = fixtureRoot({ ".dev-flow/project.json": '{"defaultBranch":"jsonbranch","commands":{"build":"make"}}', ".dev-flow/project.md": MD });
 	const { cfg } = loadProject(path.join(root, ".dev-flow"));
