@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.59.0] - 2026-10-23
+
+### Added
+
+- **The playbook's ground rules are now handed to the session, not left waiting to be read.** Pi lists a skill's name, description and path and loads the file only if the model chooses to — so a session could open in a dev-flow repo having never seen the rules the guards enforce, guess at a checkpoint, and then argue with the refusal that followed. `skills/dev-flow/SKILL.md` now carries a marker-delimited **core**: flow-is-a-tool-not-a-shell-command, you-run-the-gates with the checkpoint verbs and yolo, binds are explicit, `state.json` and `project.md` are read-only, project `flow-guard` rules outrank flow, the bash `timeout` rule, `flow abort` for abandonment. The extension extracts that block and appends it to the hidden `[dev-flow]` line it already writes — **once per session**: a `dev-flow-skill` entry records the injection so a reload, resume or fork does not pay the ~1k tokens twice; a compaction that summarizes it away re-arms exactly one re-injection, recorded on the branch as well as in memory, so a session that survives a compaction as a reload gets the rules back instead of quietly running without them; a branch rewound or forked past the injection gets them back too. A copy shipped without its `skills/` directory, or a skill whose markers were damaged, leaves every message exactly as it was — the extractor returns nothing rather than throwing inside a guard hook — and `package.test.ts` refuses a core over 4,000 characters, because that budget is what every session in a dev-flow repo pays.
+
+### Changed
+
+- **The rest of the skill is one file per stage, and each stage names its own.** The stage detail moved verbatim into `skills/dev-flow/references/{start,plan,implement,pre-release,release,finish,reflect}.md` (SKILL.md: 25,817 → 5,085 chars), and a bound session's stage turn now ends with the absolute path of the one file its stage needs (`…/references/plan.md` at plan), so the model reads a 3k-char stage brief instead of either guessing what a gate wants or hauling the whole playbook into context. pi never advertises the reference files — only `SKILL.md` registers as a skill, and a directory holding one is not scanned deeper — and the tests keep both halves honest: every stage has a file, the map in `SKILL.md` names every file, and `release.md` hands over to `finish.md`, because the state machine has no finish stage that could name it.
+
 ## [0.58.1] - 2026-10-23
 
 ### Fixed
