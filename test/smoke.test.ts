@@ -1181,6 +1181,22 @@ test("abort at plan stage drops the feature; approved features keep recoverable 
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "keeper", "state.json")), "real work stays recoverable");
 });
 
+test("flow abort honors another live session's claim — the lock covers the verb that deletes", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
+	const a = session("sess-A");
+	await pi.cmds.flow.handler("init", a);
+	initPlaybook(repo);
+	await pi.cmds.flow.handler("start stolen", a);
+	const b = session("sess-B");
+	const steal = (await pi.tools.flow.execute("id", { args: ["abort", "stolen"] }, undefined, undefined, b)) as { content: [{ text: string }]; isError?: boolean };
+	assert.ok(steal.isError && /claimed by another live session/.test(steal.content[0].text), "abort cannot delete a feature a live session is working — gates honor the claim, so must the one verb that erases it");
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "stolen", "plan")), "the claimed feature's dir is untouched");
+	await pi.cmds.flow.handler("abort stolen", a);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "stolen")), "the owning session can still drop its own plan-stage feature");
+});
+
 test("patch feature: no plan file, same gates end to end", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

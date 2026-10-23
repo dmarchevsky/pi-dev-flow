@@ -1603,6 +1603,10 @@ ${mdDigest(draftRefresh)}`))
 			const target = slugArg ?? sess.slug;
 			if (!target) return { text: "nothing bound — pass a slug", isError: true };
 			const st = readState(root, target);
+			// a live claim locks the whole feature, not only its gates: aborting it out from under the session
+			// that works it erases the plan that session is still writing (same rule needState applies)
+			const claim = readClaim(root, target);
+			if (claimBlocks(claim, sess.key)) return { text: `${target} is claimed by another live session (pid ${claim!.pid}) — flow use ${target} takes it over explicitly`, isError: true };
 			if (sess.slug === target) sess.bind(null);
 			if (st && !st.worktree) {
 				// plan-stage abort = drop: no worktree/branch exists, so the state dir would linger
