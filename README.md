@@ -52,8 +52,12 @@ pi install ./pi-dev-flow                          # or a local checkout
 Later releases arrive with `pi update --extensions` (an npm install reconciles to the newest version);
 then `/reload` — a running session keeps the code it loaded at startup. Two sources at once (a project
 `git:` pin beside the global `npm:` package) load two copies — pi dedupes extensions by path, not by
-package — so keep the one you actually update from: `flow version` lists every dev-flow copy
-registered in the process, and the on-disk session claim keeps the guard of a copy that never served
+package — so keep the one you actually update from. **The newest copy judges alone:** every copy's
+guard hooks check which registered version is highest, and a stale duplicate answers nothing — the
+most in-package removal can be, because Node cannot unload a loaded module and pi cannot unregister
+its hooks. Only a host restart drops stale code; `/reload` re-binds session state, it never swaps
+code. `flow version` lists every dev-flow copy registered in the process and names the copy serving
+the call, and the on-disk session claim keeps the guard of a copy that never served
 a flow call attributing your commands correctly.
 
 Until `flow init` writes the playbook (`.dev-flow/project.md`), dev-flow says nothing in a repo — no

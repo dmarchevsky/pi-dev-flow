@@ -922,6 +922,31 @@ test("flow version names a second dev-flow copy registered in this process", asy
 	}
 });
 
+test("the newest dev-flow copy judges the guards alone — a stale duplicate goes silent", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "election"]);
+	mkdirSync(path.join(repo, ".dev-flow", "election", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "election", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const guard = () => pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git commit -m x", timeout: 60 } }, ctx) as Promise<{ block?: boolean } | undefined>;
+	assert.ok(await guard(), "as the newest copy, this one blocks a main-checkout commit");
+	testSeams.copies.push({ dir: "/newer/source/pi-dev-flow", version: "999.0.0", pid: process.pid, at: new Date().toISOString() });
+	try {
+		assert.equal(await guard(), undefined, "a newer copy registered in this process silences this one — stale code judges nothing");
+		const v = await flow(["version"]);
+		assert.match(v.content[0].text, /this call served by \S+ \(.+\); this copy is older and stays silent/, "version names the speaker and its silence");
+	} finally {
+		for (let i = testSeams.copies.length - 1; i >= 0; i--) if (testSeams.copies[i].dir === "/newer/source/pi-dev-flow") testSeams.copies.splice(i, 1);
+	}
+	assert.ok(await guard(), "remove the newer copy and this one judges again");
+	const s = await flow(["version"]);
+	assert.ok(!/this call served by/.test(s.content[0].text), "no duplicate — no speaker stamp");
+});
+
 test("flow finish fast-forwards a main checkout that trails origin", async () => {
 	const pi = makePi();
 	const parent = mkdtempSync(path.join(tmpdir(), "df-ff-"));
