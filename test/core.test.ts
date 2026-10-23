@@ -631,10 +631,10 @@ test("statusFor: bound flow renders as before; unbound shows only the count", ()
 	assert.deepEqual(statusFor(s, 3), { text: "📝 f ⚠️" }, "⚠️ rides on the bound flow's own failing checks");
 	assert.deepEqual(statusFor(null, 1), { text: "⧖ 1 flow open" }, "unbound names nobody — count only");
 	assert.deepEqual(statusFor(null, 2), { text: "⧖ 2 flows open" });
-	assert.equal(statusFor(null, 0), null, "unbound with nothing unfinished clears the footer");
+	assert.deepEqual(statusFor(null, 0), { text: "⧖ no flows" }, "an initiated repo always carries the footer");
 	const done = newState("f", false);
 	done.stage = "done";
-	assert.equal(statusFor(done, 0), null, "a done bound feature clears the footer");
+	assert.deepEqual(statusFor(done, 0), { text: "⧖ no flows" }, "a done bound feature falls back to the idle line");
 });
 
 test("applyAnswer: dot paths, deletion, empty-object pruning", () => {

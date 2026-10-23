@@ -71,6 +71,13 @@ function makeRepo(): string {
 	return dir;
 }
 
+/** A minimal initiated playbook: injections, guards and the footer only run where .dev-flow/project.md exists.
+ *  merge = any keeps flow start free of the merge-policy question for fixture repos. */
+function initPlaybook(repo: string): void {
+	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n\n## release\n\n```flow\nmerge = any\n```\n");
+}
+
 function makeCtx(cwd: string, hasUI = false) {
 	const notices: string[] = [];
 	return { cwd, hasUI, notices, sent: [] as { triggerTurn?: boolean }[], ui: { notify: (m: string) => notices.push(m), confirm: async () => true } };
@@ -79,7 +86,7 @@ function makeCtx(cwd: string, hasUI = false) {
 test("bare reflect from the command bar wakes the model; other commands stay display-only", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	mkdirSync(path.join(repo, ".dev-flow")); // bare reflect needs an initialized repo to print the protocol
+	initPlaybook(repo); // bare reflect needs an initiated repo to print the protocol
 	const ctx = makeCtx(repo);
 	await pi.cmds.flow.handler("reflect", ctx);
 	assert.match(ctx.notices.at(-1) ?? "", /work instruction/, "the reflect protocol rendered");
@@ -211,6 +218,7 @@ test("a forced push is confirmed with the operator; the prefix the refusal print
 	let answer = false;
 	const ctx = { cwd: repo, hasUI: true, ui: { notify: () => {}, confirm: async () => answer, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
 	const guard = pi.handlers.tool_call[0];
 	assert.equal(await guard({ toolName: "bash", input: { command: "git push origin feat/x", timeout: 60 } }, ctx), undefined, "an ordinary push asks nobody");
 	assert.ok(await guard({ toolName: "bash", input: { command: "git push --force origin feat/x", timeout: 60 } }, ctx), "a forced push needs the operator (#83)");
@@ -488,7 +496,7 @@ test("first init in a TUI reviews the draft with the operator and writes only on
 test("flow-by-default: unbound writes blocked; start needs default branch; feature checkouts stay in worktrees", async () => {
 	const pi = makePi();
 	const repo = makeRepo(); // on main, no features
-	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	initPlaybook(repo);
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	const edit = () => pi.handlers.tool_call[0]({ toolName: "edit", input: { path: "src/app.ts" } }, ctx);
@@ -520,6 +528,7 @@ test("session binding: use/abort/ambiguity", async () => {
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
 	await pi.cmds.flow.handler("start a-one", ctx);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", ".current")), "no legacy .current file");
 	await pi.cmds.flow.handler("start b-two", ctx); // start binds b-two
@@ -554,6 +563,30 @@ test("status bar: compact refresh follows the gates", async () => {
 	assert.equal(seenB.at(-1), "⧖ 1 flow open", "unbound footer shows the count, not the slug");
 });
 
+test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {
+	const pi = makePi();
+	const statusCtx = (repo: string, seen: (string | undefined)[]) => ({
+		cwd: repo,
+		hasUI: true,
+		notices: [] as string[],
+		ui: { notify: () => {}, confirm: async () => true, select: async (_t: string, o: string[]) => o[0], input: async () => "", setStatus: (_k: string, t?: string) => seen.push(t), theme: { fg: (_c: string, s: string) => s } },
+	});
+	// uninitiated: no injection at all, and any stale footer push is cleared
+	const bare = makeRepo();
+	const bareSeen: (string | undefined)[] = [];
+	assert.equal(await pi.handlers.before_agent_start[0]({}, statusCtx(bare, bareSeen)), undefined, "an uninitiated folder gets no dev-flow message");
+	assert.deepEqual(bareSeen, [undefined], "the footer stays cleared");
+	// initiated, nothing in flight: the idle line is always there, repainted when a run starts
+	const repo = makeRepo();
+	initPlaybook(repo);
+	const seen: (string | undefined)[] = [];
+	await pi.cmds.flow.handler("status", statusCtx(repo, seen));
+	assert.equal(seen.at(-1), "⧖ no flows", "an initiated repo always carries the footer");
+	const inj = await pi.handlers.before_agent_start[0]({}, statusCtx(repo, seen));
+	assert.ok(inj, "the injection runs in an initiated repo");
+	assert.equal(seen.at(-1), "⧖ no flows", "run start repaints the footer — the earliest point a web client is certainly listening");
+});
+
 test("flow version: the plugin's own version, and no .dev-flow/ needed", async () => {
 	const pi = makePi();
 	const ctx = makeCtx(mkdtempSync(path.join(tmpdir(), "noflow-")));
@@ -575,7 +608,7 @@ test("extension is pass-through without .dev-flow", async () => {
 test("ref-aware push guard end-to-end: tags pass from main, default branch refused", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	initPlaybook(repo);
 	const ctx = makeCtx(repo);
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "tag", "v9.9.9"]);
 	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ctx);
@@ -587,7 +620,7 @@ test("ref-aware push guard end-to-end: tags pass from main, default branch refus
 test("guard reads commands, not prose: a quoted body is data, a shell wrapper's payload is not", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	mkdirSync(path.join(repo, ".dev-flow"), { recursive: true });
+	initPlaybook(repo);
 	const ctx = makeCtx(repo);
 	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ctx);
 	// the v0.37.0 incident: a PR body whose text discussed a commit and the playbook path
@@ -603,6 +636,7 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init"]);
+	initPlaybook(repo);
 	await flow(["start", "rfeat"]);
 	await flow(["reflect", "test", "cmd", "is", "stale"]);
 	const r2 = await flow(["reflect", "ui", "panels", "are", "ugly", "in", "the", "plugin"]);
@@ -1390,6 +1424,7 @@ test("a live foreign claim cannot be taken silently; flow use takes over explici
 	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
 	const a = session("sess-A");
 	await pi.cmds.flow.handler("init", a);
+	initPlaybook(repo);
 	await pi.cmds.flow.handler("start claim-feature", a);
 	const claimOf = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json"), "utf8")) as { key: string };
 	assert.equal(claimOf().key, "sid:sess-A", "start binds and claims the feature");
@@ -1419,6 +1454,7 @@ test("a session that ends releases its claim and binding — a shared-process ho
 	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
 	const a = session("sess-C");
 	await pi.cmds.flow.handler("init", a);
+	initPlaybook(repo);
 	await pi.cmds.flow.handler("start claim-feature", a);
 	const claimOf = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "claim-feature", "claim.json"), "utf8")) as { key: string };
 	const b = session("sess-D");
@@ -1504,6 +1540,7 @@ test("flow start prints the plugin version and stamps it into the feature state"
 	const ctx = makeCtx(repo);
 	const own = (JSON.parse(readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8")) as { version: string }).version;
 	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
 	await pi.cmds.flow.handler("start stamped", ctx);
 	assert.match(ctx.notices.at(-1) ?? "", new RegExp(`dev-flow ${own.split(".").join("\\.")}`), "start names the dev-flow build");
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "stamped", "state.json"), "utf8"));
@@ -1768,7 +1805,7 @@ test("turn_end compaction check survives a broken compaction setting", async () 
 	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, c); // must not reject
 });
 
-test("shell calls must state their timeout by default; bashTimeout = inject restores the silent arming", async () => {
+test("shell calls must state their timeout only in initiated repos; bashTimeout = inject restores the silent arming", async () => {
 	// one bash tool_call against a repo: the verdict plus the input the handler may have armed
 	const run = async (cwd: string, command: string, timeout?: number) => {
 		const pi = makePi();
@@ -1781,10 +1818,14 @@ test("shell calls must state their timeout by default; bashTimeout = inject rest
 		const ctx = makeCtx(repo);
 		return { pi, ctx, seed: pi.tools.flow.execute("id", { args: ["init", "--write", md] }, undefined, undefined, ctx) };
 	};
-	// 1. no .dev-flow at all: no playbook to opt out with, so the hard default rules
+	// 1. uninitiated: dev-flow is silent there — no verdict, not even the bash-timeout default (flow init is the opt-in)
 	const bare = makeRepo();
-	assert.match(((await run(bare, "git status")).verdict as { reason: string }).reason, /class default here is 30s/, "a bare call is refused with the number it should have said");
-	assert.equal((await run(bare, "git status", 45)).verdict, undefined, "an explicit timeout passes untouched");
+	const untouched = await run(bare, "git status");
+	assert.equal(untouched.verdict, undefined, "a folder dev-flow was never initiated in gets no verdicts at all");
+	assert.equal(untouched.input.timeout, undefined, "and not even the silent timeout arming touches it");
+	const noMd = makeRepo();
+	mkdirSync(path.join(noMd, ".dev-flow"), { recursive: true });
+	assert.equal((await run(noMd, "git status")).verdict, undefined, "a stray .dev-flow/ without project.md keeps the folder dormant");
 	// 2. a playbook with no bashTimeout key: require is the default
 	const plain = init(makeRepo(), TEST_MD);
 	await plain.seed;
@@ -1807,6 +1848,7 @@ test("a second copy of the package adds no second [dev-flow] line", async () => 
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
 	const handler = pi.handlers.before_agent_start[0];
 	assert.match(((await handler({}, ctx)) as { message: { content: string } }).message.content, /no flow bound/);
 	assert.equal(await handler({}, ctx), undefined, "the second copy's pass over the same run adds nothing");
@@ -1924,7 +1966,7 @@ const CORE_MARK = /flow tool is the only invocation/;
 test("the skill core lands once per session, and a compaction re-arms it", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	mkdirSync(path.join(repo, ".dev-flow"));
+	initPlaybook(repo);
 	// pi builds a fresh ctx per run (the first pass of a run claims it), so each run gets its own object
 	const session = (id: string, branch: () => never[] = () => [] as never[]) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: branch } });
 	const content = async (id: string, branch?: () => never[]) => ((await pi.handlers.before_agent_start[0]({}, session(id, branch))) as { message: { content: string } }).message.content;
@@ -1970,6 +2012,7 @@ test("the stage injection names the one playbook file the stage needs", async ()
 	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
 	const ctx = session("sess-ref");
 	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
 	await pi.cmds.flow.handler("start ref-feature", ctx);
 	const inj = (await pi.handlers.before_agent_start[0]({}, session("sess-ref"))) as { message: { content: string } };
 	assert.match(inj.message.content, /Stage playbook: read .*references\/plan\.md before gate work/, "the plan stage names plan.md outright, absolute");

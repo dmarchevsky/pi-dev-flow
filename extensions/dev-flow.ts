@@ -197,6 +197,10 @@ async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: str
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
+/** dev-flow is initiated once the operator playbook exists: before flow init writes project.md the
+ *  extension is silent in that folder — no injections, no guards (not even the no-playbook bash-timeout
+ *  default), no footer. The flow tool itself stays registered so flow init remains callable. */
+const initiated = (root: string): boolean => existsSync(path.join(dfDir(root), "project.md"));
 
 /** A `--merge=squash` style flag, or null when absent. Returned as the raw string: the caller validates it
  *  with parseMergeStyle so a typo is reported instead of ignored. */
@@ -459,7 +463,7 @@ const flowCompactInstructions = (st: FlowState) =>
  * never while chat-only state is pending (open dialog, undigested plan) — see shouldSelfCompact.
  */
 function maybeCompactNow(ctx: ExtensionContext): void {
-	if (!existsSync(dfDir(ctx.cwd))) return;
+	if (!initiated(ctx.cwd)) return;
 	const u = ctx.getContextUsage?.(); // minimal/fake contexts may lack usage info — treat as unknown
 	if (!u || u.tokens === null) return;
 	const key = sessionKey(ctx);
@@ -668,7 +672,8 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 	const [sub = "status", ...rest] = args;
 	// help and version are questions about the plugin, not the repo: answerable with no .dev-flow/ at all
 	if (sub === "help" || sub === "--help" || sub === "-h") return { text: rest.includes("--json") ? gateHelpJson(GATE_HELP, loadedVersion()) : `usage: flow <sub> — ${GATE_HELP}` };
-	if (!existsSync(dfDir(root)) && sub !== "init" && sub !== "version") return { text: "no .dev-flow/ in this repo — run flow init first", isError: true };
+	// an uninitiated folder is dormant: every gate verb but init and version needs the operator playbook (project.md)
+	if (!initiated(root) && sub !== "init" && sub !== "version") return { text: "dev-flow is not initiated here — no .dev-flow/project.md — run flow init first", isError: true };
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
 	const slugArg = rest.find((a) => !a.startsWith("--"));
@@ -1612,12 +1617,16 @@ function tail(out: string, n = 15): string {
 // ------------------------------------------------------------------ extension
 
 /** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
- *  count of unfinished flows only (statusFor). Pure read — rendering never binds or claims anything. */
+ *  unfinished-flow count, or `⧖ no flows` — an initiated repo always carries the footer. An uninitiated
+ *  folder gets nothing: the status is cleared. Pure read — rendering never binds or claims anything. */
 function refreshStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
-	const open = existsSync(dfDir(ctx.cwd)) ? unfinishedStates(ctx.cwd).length : 0;
-	const s = statusFor(boundFeature(ctx.cwd, sessionKey(ctx)), open);
-	ctx.ui.setStatus("dev-flow", s ? s.text : undefined);
+	if (!initiated(ctx.cwd)) {
+		ctx.ui.setStatus("dev-flow", undefined);
+		return;
+	}
+	const s = statusFor(boundFeature(ctx.cwd, sessionKey(ctx)), unfinishedStates(ctx.cwd).length);
+	ctx.ui.setStatus("dev-flow", s.text);
 }
 
 
@@ -1757,7 +1766,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	// reaches the provider). If our summary fails we return undefined and pi's own compaction proceeds.
 	// overflow is never taken over (cancelling it would drop pi's compact-and-retry); manual is the operator's or ours.
 	pi.on("session_before_compact", async (event, ctx) => {
-		if (!existsSync(dfDir(ctx.cwd))) return undefined;
+		if (!initiated(ctx.cwd)) return undefined;
 		const key = sessionKey(ctx);
 		const st = boundFeature(ctx.cwd, key);
 		if (!shouldTakeOverCompaction({ reason: event.reason, bound: !!st, inFlight: compacting.has(key) })) return undefined;
@@ -1780,7 +1789,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
 	pi.on("session_compact", async (event, ctx) => {
-		if (!existsSync(dfDir(ctx.cwd))) return;
+		if (!initiated(ctx.cwd)) return;
 		// Whatever the reason, the summary replaced the transcript — the core the first run injected is
 		// gone from context, so the next run pays it once more (manual compactions included: our own
 		// safe-point compaction is the common one).
@@ -1804,14 +1813,12 @@ export default function devFlow(pi: ExtensionAPI) {
 		const shellInput = isToolCallEventType("bash", event) || isToolCallEventType("powershell", event) ? (event.input as { command?: unknown; timeout?: unknown }) : undefined;
 		const shellCmd = shellInput ? String(shellInput.command ?? "") : "";
 		const explicitTimeout = typeof shellInput?.timeout === "number" ? shellInput.timeout : undefined;
-		// the silent default stays armed either way: it is the safety net for an `inject` project and the number the refusal quotes
-		if (shellCmd && shellInput) shellInput.timeout = bashTimeout(shellCmd, explicitTimeout);
-		const noDf = !existsSync(dfDir(ctx.cwd));
-		// with no playbook to opt out, the hard default rules: the model must say its own timeout
-		if (shellCmd && noDf) {
-			const why = requireTimeout(shellCmd, explicitTimeout);
-			if (why) return { block: true, reason: why };
-		}
+		const noDf = !initiated(ctx.cwd);
+		// in an initiated repo the silent default stays armed either way: it is the safety net for an
+		// `inject` project and the number the refusal quotes; an uninitiated folder is not touched at all
+		if (shellCmd && shellInput && !noDf) shellInput.timeout = bashTimeout(shellCmd, explicitTimeout);
+		// an uninitiated folder hears nothing from dev-flow at all — flow init is the opt-in that arms
+		// the guards, the no-playbook bash-timeout default included
 		if (noDf) return undefined;
 		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 		const mustStateTimeout = shellCmd !== "" && explicitTimeout === undefined && cfg.bashTimeout === "require";
@@ -1936,7 +1943,10 @@ export default function devFlow(pi: ExtensionAPI) {
 		const run = ctx as unknown as Record<symbol, boolean | undefined>;
 		if (run[CONTEXT_EMITTED]) return undefined;
 		run[CONTEXT_EMITTED] = true;
-		if (!existsSync(dfDir(ctx.cwd))) return undefined;
+		// repaint the footer at the start of every run: the session_start push can land before a web
+		// client attaches, and this is the earliest point the client is certainly listening
+		refreshStatus(ctx);
+		if (!initiated(ctx.cwd)) return undefined;
 		const key = sessionKey(ctx);
 		// The playbook core rides along on the message this run writes anyway — once per session.
 		const core = corePreamble(key);

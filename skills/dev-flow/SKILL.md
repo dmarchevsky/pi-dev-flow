@@ -3,7 +3,7 @@ name: dev-flow
 description: >
   The repo's enforced feature workflow: plan → implement → pre-release →
   release → done, one feature at a time, driven through the flow tool. Read before
-  starting ANY feature work in a repo that has a .dev-flow/ directory — the
+  starting ANY feature work in a repo whose .dev-flow/project.md playbook exists — the
   stage guards block out-of-stage edits and main-branch git ops, so working
   outside this flow fails at the guard.
 ---

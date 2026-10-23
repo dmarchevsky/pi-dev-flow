@@ -1277,15 +1277,16 @@ export function statusCompact(state: FlowState): { text: string; failed: boolean
 	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}`, failed };
 }
 
-/** Footer decision for any session: a bound feature renders as statusCompact, its ⚠️ from its own failing
- *  checks only; an unbound session shows the count of unfinished features — never a slug, so a fresh
- *  session is never shown (or made to feel bound to) a feature it did not take with flow use. null clears. */
-export function statusFor(bound: FlowState | null, openCount: number): { text: string } | null {
+/** Footer decision for any session in an initiated repo: a bound feature renders as statusCompact, its ⚠️
+ *  from its own failing checks only; an unbound session shows the count of unfinished features — never a
+ *  slug, so a fresh session is never shown (or made to feel bound to) a feature it did not take with flow
+ *  use — and `⧖ no flows` when nothing is in flight: dev-flow initiated means a footer always present. */
+export function statusFor(bound: FlowState | null, openCount: number): { text: string } {
 	if (bound && bound.stage !== "done") {
 		const { text, failed } = statusCompact(bound);
 		return { text: failed ? `${text} ⚠️` : text };
 	}
-	if (openCount < 1) return null;
+	if (openCount < 1) return { text: "⧖ no flows" };
 	return { text: `⧖ ${openCount} flow${openCount === 1 ? "" : "s"} open` };
 }
 
