@@ -672,7 +672,8 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 	const [sub = "status", ...rest] = args;
 	// help and version are questions about the plugin, not the repo: answerable with no .dev-flow/ at all
 	if (sub === "help" || sub === "--help" || sub === "-h") return { text: rest.includes("--json") ? gateHelpJson(GATE_HELP, loadedVersion()) : `usage: flow <sub> — ${GATE_HELP}` };
-	if (!existsSync(dfDir(root)) && sub !== "init" && sub !== "version") return { text: "no .dev-flow/ in this repo — run flow init first", isError: true };
+	// an uninitiated folder is dormant: every gate verb but init and version needs the operator playbook (project.md)
+	if (!initiated(root) && sub !== "init" && sub !== "version") return { text: "dev-flow is not initiated here — no .dev-flow/project.md — run flow init first", isError: true };
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
 	const slugArg = rest.find((a) => !a.startsWith("--"));
@@ -1812,9 +1813,10 @@ export default function devFlow(pi: ExtensionAPI) {
 		const shellInput = isToolCallEventType("bash", event) || isToolCallEventType("powershell", event) ? (event.input as { command?: unknown; timeout?: unknown }) : undefined;
 		const shellCmd = shellInput ? String(shellInput.command ?? "") : "";
 		const explicitTimeout = typeof shellInput?.timeout === "number" ? shellInput.timeout : undefined;
-		// the silent default stays armed either way: it is the safety net for an `inject` project and the number the refusal quotes
-		if (shellCmd && shellInput) shellInput.timeout = bashTimeout(shellCmd, explicitTimeout);
 		const noDf = !initiated(ctx.cwd);
+		// in an initiated repo the silent default stays armed either way: it is the safety net for an
+		// `inject` project and the number the refusal quotes; an uninitiated folder is not touched at all
+		if (shellCmd && shellInput && !noDf) shellInput.timeout = bashTimeout(shellCmd, explicitTimeout);
 		// an uninitiated folder hears nothing from dev-flow at all — flow init is the opt-in that arms
 		// the guards, the no-playbook bash-timeout default included
 		if (noDf) return undefined;

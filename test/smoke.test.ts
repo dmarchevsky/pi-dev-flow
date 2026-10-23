@@ -86,7 +86,7 @@ function makeCtx(cwd: string, hasUI = false) {
 test("bare reflect from the command bar wakes the model; other commands stay display-only", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	mkdirSync(path.join(repo, ".dev-flow")); // bare reflect needs an initialized repo to print the protocol
+	initPlaybook(repo); // bare reflect needs an initiated repo to print the protocol
 	const ctx = makeCtx(repo);
 	await pi.cmds.flow.handler("reflect", ctx);
 	assert.match(ctx.notices.at(-1) ?? "", /work instruction/, "the reflect protocol rendered");
@@ -528,6 +528,7 @@ test("session binding: use/abort/ambiguity", async () => {
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
 	await pi.cmds.flow.handler("start a-one", ctx);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", ".current")), "no legacy .current file");
 	await pi.cmds.flow.handler("start b-two", ctx); // start binds b-two
@@ -635,6 +636,7 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init"]);
+	initPlaybook(repo);
 	await flow(["start", "rfeat"]);
 	await flow(["reflect", "test", "cmd", "is", "stale"]);
 	const r2 = await flow(["reflect", "ui", "panels", "are", "ugly", "in", "the", "plugin"]);
@@ -1538,6 +1540,7 @@ test("flow start prints the plugin version and stamps it into the feature state"
 	const ctx = makeCtx(repo);
 	const own = (JSON.parse(readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8")) as { version: string }).version;
 	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
 	await pi.cmds.flow.handler("start stamped", ctx);
 	assert.match(ctx.notices.at(-1) ?? "", new RegExp(`dev-flow ${own.split(".").join("\\.")}`), "start names the dev-flow build");
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "stamped", "state.json"), "utf8"));
@@ -1817,7 +1820,9 @@ test("shell calls must state their timeout only in initiated repos; bashTimeout 
 	};
 	// 1. uninitiated: dev-flow is silent there — no verdict, not even the bash-timeout default (flow init is the opt-in)
 	const bare = makeRepo();
-	assert.equal((await run(bare, "git status")).verdict, undefined, "a folder dev-flow was never initiated in gets no verdicts at all");
+	const untouched = await run(bare, "git status");
+	assert.equal(untouched.verdict, undefined, "a folder dev-flow was never initiated in gets no verdicts at all");
+	assert.equal(untouched.input.timeout, undefined, "and not even the silent timeout arming touches it");
 	const noMd = makeRepo();
 	mkdirSync(path.join(noMd, ".dev-flow"), { recursive: true });
 	assert.equal((await run(noMd, "git status")).verdict, undefined, "a stray .dev-flow/ without project.md keeps the folder dormant");
