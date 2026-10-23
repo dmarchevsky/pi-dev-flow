@@ -473,12 +473,12 @@ test("roadmap: tidy drops done items and keeps preamble and open items", () => {
 test("reflections: closed count; tidy drops closed items and headings left empty", () => {
 	assert.equal(closedReflectionCount("# h\n## playbook\n\n- [ ] open\n- [x] done — fixed: v1\n## plugin\n\n- [X] gone\n"), 2);
 	assert.equal(closedReflectionCount(""), 0);
-	const src = "# dev-flow reflections\n\n<!-- note -->\n\n## playbook\n\n- [ ] keep me — a 2025-01-01\n- [x] done — fixed: v1\n\n## plugin\n\n- [x] all gone — fixed: v2\n";
+	const src = "# dev-flow reflections\n\n<!-- note -->\n\n## playbook\n\n- [ ] keep me — a 2025-01-01\n- [x] done — fixed: v1\n\n## plugin \n\n- [x] all gone — fixed: v2\n";
 	const out = reflectionsTidy(src);
 	assert.ok(out.includes("- [ ] keep me — a 2025-01-01\n"), "open item stays verbatim");
 	assert.ok(out.includes("<!-- note -->"), "preamble verbatim");
 	assert.ok(out.includes("## playbook"), "a section with an open item stays");
-	assert.ok(!out.includes("## plugin"), "a section emptied by the tidy loses its heading");
+	assert.ok(!out.includes("## plugin"), "a section emptied by the tidy loses its heading (heading whitespace tolerated)");
 	assert.ok(!out.includes("[x]"), "closed items are gone");
 	assert.equal(reflectionsTidy(out), out, "tidy is idempotent");
 	// legacy flat file: items above every heading, no heading to drop

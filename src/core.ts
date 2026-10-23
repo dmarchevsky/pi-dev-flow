@@ -1219,7 +1219,7 @@ export const closedReflectionCount = (text: string) => text.split("\n").filter(i
  *  (a line filter — no re-bucketing like appendReflection's rewrite), and a `## section` heading
  *  left with no open items under it goes with its items. */
 export function reflectionsTidy(text: string): string {
-	const headerRe = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\s*$`, "i");
+	const headerRe = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
 	const lines = text.split("\n");
 	// pass 1: open items per heading decides which sections survive; items above every heading are legacy flat lines with no heading to drop
 	let section: string | null = null;
