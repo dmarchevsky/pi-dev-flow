@@ -147,6 +147,22 @@ review over the whole exchange before `Finish?`, so friction it noticed but neve
 Fold, fix or drop them — but leaving them is the one option that lets the same friction come back next
 feature.
 
+### Reviews and senior discipline, built in
+
+No companion plugin to install: dev-flow ships its own review skills. **`/flow-review`**
+reviews a change — by default the bound flow's branch diff against the default branch, plus
+uncommitted work — read against its `plan/plan.md` and its callers, not just the diff: every
+finding needs a concrete triggering case (refuted findings are dropped), grouped Must fix /
+Should fix / Nice to have, ending in a verdict and an honest `Not checked:` line. It is the
+pre-release review step (`release.review` in `project.md` stays yours to set). **`/flow-audit`**
+audits the whole repo in the same style: map first, judge against the load the project actually
+expects, at most 20 ranked findings, changes nothing. And while a flow writes code, the
+implement stage injects a compact senior-discipline guidance — smallest complete change, no
+speculative abstraction, finish what your change breaks, a failing-first test for risky logic —
+your playbook's `prose.implement` replaces it wholesale whenever you write your own. (The review
+rules adapt ponytail, obra/superpowers and pi-development-system — all MIT, credited in the
+skill files.)
+
 ## What is enforced
 
 While a feature is active, every tool call passes a guard:
