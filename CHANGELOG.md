@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-10-24
+
+### Added
+
+- **`/flow-simplify` — the review skill that actually cuts.** `/flow-review` and `/flow-audit` only report; the new third sibling edits: dead code, no-op placeholder subsystems, misplaced dev scaffolding, genuine duplication (reuse the existing helper before inventing one) and speculative abstractions, removed in a risk-ascending order with the safe levers first. The rails are the feature: a green baseline before any cut (red → stop), behavior-preserving only — a test touched to pass is a reverted cut, Chesterton's fence for anything you cannot explain, semantic dead-code tooling with grep demoted to confirmation, one cut → checks → commit so every regression names its cut, and a structural-vs-cheap self-audit that forces the skill to admit when it shrank the number instead of the system (reformatting, comment-trimming-as-strategy and counted-path moves are named as gaming). Deleting a feature is always escalated, never done. Default target: what you name, else the bound flow's branch diff — whole-repo stays `/flow-audit`'s job. Adapts maxim-saplin/goal-sloc (MIT), addyosmani/agent-skills code-simplification (MIT) and Anthropic's code-simplifier plugin (Apache-2.0).
+
 ## [0.62.2] - 2026-10-24
 
 ### Added

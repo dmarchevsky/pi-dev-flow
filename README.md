@@ -167,12 +167,17 @@ finding needs a concrete triggering case (refuted findings are dropped), grouped
 Should fix / Nice to have, ending in a verdict and an honest `Not checked:` line. It is the
 pre-release review step (`release.review` in `project.md` stays yours to set). **`/flow-audit`**
 audits the whole repo in the same style: map first, judge against the load the project actually
-expects, at most 20 ranked findings, changes nothing. And while a flow writes code, the
+expects, at most 20 ranked findings, changes nothing. The operative sibling **`/flow-simplify`**
+makes the cuts audit and review only name: dead code, no-op subsystems, duplication,
+speculative layers — removed in a risk-ascending order, one verified commit per cut, green
+tests as contract, and a structural-vs-cheap self-audit so the diff shrank because the system
+got smaller, not because comments got deleted. And while a flow writes code, the
 implement stage injects a compact senior-discipline guidance — smallest complete change, no
 speculative abstraction, finish what your change breaks, a failing-first test for risky logic —
 your playbook's `prose.implement` replaces it wholesale whenever you write your own. (The review
 rules adapt ponytail, obra/superpowers and pi-development-system — all MIT, credited in the
-skill files.)
+skill files; `/flow-simplify` adapts goal-sloc (MIT), addyosmani/agent-skills (MIT) and
+Anthropic's code-simplifier plugin (Apache-2.0).)
 
 ## The playbook the agent always has
 
