@@ -147,7 +147,10 @@ claiming a gate result it never produced. → [Gate reference](docs/gates.md)
 When something costs the agent a step — a playbook command that stopped existing, a guard that
 refused the wrong thing, a gate that forced a detour, a rough edge in dev-flow itself — it does not
 just work around it. It parks a one-line note in `.dev-flow/reflections.md`, under **playbook**
-(something about your project) or **plugin** (something about dev-flow); the open count surfaces in
+(something about your project) or **plugin** (something about dev-flow) — the agent says which with
+`flow reflect --playbook|--plugin "<note>"`, and a note queued without a flag lands on a keyword
+guess the printed line explains (`flow reflect list` numbers the queue, `flow reflect move <n>
+--plugin` re-files one). The open count surfaces in
 `flow status` and in the agent's stage context (`↻ 2 reflection(s) open`).
 
 They never gate anything, and the fix is never the agent's call alone. You ask it to go through them

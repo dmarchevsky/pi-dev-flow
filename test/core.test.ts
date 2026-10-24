@@ -61,8 +61,12 @@ import {
 	sessionRunsOlderBuild,
 	changelogVersionsBetween,
 	inScratchDir,
+	guessReflectSections,
+	reflectItems,
+	reflectMove,
 	reflectProtocol,
 	reflectSections,
+	reflectUnfiledCount,
 	reflectionLine,
 	reflectionRoutes,
 	releaseGate,
@@ -410,18 +414,26 @@ test("detectForge: the origin URL decides", () => {
 	assert.equal(detectForge(""), "self");
 });
 
-test("reflectionRoutes and investigationBrief route fixes to the right flow", () => {
-	const [p] = reflectionRoutes(["- [ ] the checklist item about seeded data is stale"], false);
+/** One open reflections.md item as the section-aware reader returns it — the heading is the filing. */
+const rItem = (note: string, section: "playbook" | "plugin" = "playbook") => reflectItems("## " + section + "\n\n- [ ] " + note + "\n")[0];
+
+test("reflectionRoutes route from the section an item is filed under, not from its wording", () => {	const [p] = reflectionRoutes([rItem("the checklist item about seeded data is stale")], false);
 	assert.equal(p.mode, "docs");
 	assert.match(p.route, /docs flow/);
-	const [x] = reflectionRoutes(["- [ ] the gate prompt asks twice"], false);
+	const [x] = reflectionRoutes([rItem("the gate prompt asks twice", "plugin")], false);
 	assert.equal(x.mode, "upstream", "plugin feedback in someone else's repo goes upstream");
 	assert.match(x.route, /pi-dev-flow/);
-	const [s] = reflectionRoutes(["- [ ] the gate prompt asks twice"], true);
+	const [s] = reflectionRoutes([rItem("the gate prompt asks twice", "plugin")], true);
 	assert.equal(s.mode, "code", "in the dev-flow repo a plugin item is a flow of its own");
+	const [home] = reflectionRoutes([rItem("the gate prompt asks twice", "playbook")], false);
+	assert.equal(home.mode, "docs", "the heading is the record — re-guessing from the wording re-routed items out of the section they live in");
+	// a --both note sits under both headings, so it yields one routed item per section
+	const both = reflectItems("## playbook\n\n- [ ] gate prompts twice\n\n## plugin\n\n- [ ] gate prompts twice\n");
+	assert.deepEqual(reflectionRoutes(both, false).map((r) => r.mode), ["docs", "upstream"]);
 	const brief = investigationBrief("the gate prompt asks twice", true);
 	assert.match(brief.join(" "), /gate prompt asks twice/);
 	assert.match(brief.join(" "), /patch flow/);
+	assert.match(brief.join(" "), /## plugin \("gate" names dev-flow itself\)/, "a fresh note is told where it would land, with the reason");
 });
 
 test("writeGuard: path attribution + session binding rules", () => {
@@ -576,12 +588,61 @@ test("reflections: closed count; tidy drops closed items and headings left empty
 	assert.match(reflectionsTidyHint(3), /↻ 3 closed reflection\(s\) — flow reflect tidy drops them/);
 });
 
-test("reflectSections: plugin wording → plugin, playbook wording → playbook", () => {
+test("reflectSections: one primary home, named signals, the attribution tail never classified", () => {
 	assert.deepEqual(reflectSections("the gate prompt asks twice, that is wrong"), ["plugin"]);
 	assert.deepEqual(reflectSections("the checklist item about seeded data is stale"), ["playbook"]);
-	assert.deepEqual(reflectSections("the verify gate should read the health command from project.md"), ["playbook", "plugin"]);
+	// a note that names dev-flow's own surface is a plugin issue even when it also mentions project.md:
+	// filing it in both sections made the operator check one issue off twice and routed only the plugin half
+	assert.deepEqual(reflectSections("the verify gate should read the health command from project.md"), ["plugin"]);
+	assert.deepEqual(guessReflectSections("the verify gate should read the health command from project.md").why, '"gate" names dev-flow itself');
 	assert.deepEqual(reflectSections("typo in the readme"), ["playbook"], "unclear notes land where the operator reads them");
+	assert.match(guessReflectSections("the banner tagline is wrong").why, /flow reflect move <n> --plugin/, "a filing that was only a guess says so");
 	assert.deepEqual(reflectSections("the test command drifted, npm test no longer works"), ["playbook"], "a drifted project command is a playbook issue, not a plugin one");
+	// dev-flow's own surface, phrased without any of the old trigger words
+	for (const note of ["doctor prints the same finding twice", "flow doctor lists a finding twice", "flow release tags the wrong commit", "state.json loses the yolo flag"])
+		assert.deepEqual(reflectSections(note), ["plugin"], note);
+	// a project's own hook/gate/tooling is not the plugin's
+	assert.deepEqual(reflectSections("our repo's commit hook rejects rebases"), ["playbook"], "a project git hook is the playbook's business");
+	assert.deepEqual(reflectSections("the deploy gate in CI is flaky"), ["playbook"], "a CI gate is the project's own gate");
+	// the invariant: a verdict never depends on the ` — <slug> <date>` tail, whose words are trigger words
+	for (const note of ["notes drifted, the plan doc is stale", "the gate prompt asks twice", "release notes should list contributors"]) {
+		const lined = reflectionLine(note, "fix-versioning-guard", "2026-10-24");
+		assert.deepEqual(guessReflectSections(lined).sections, reflectSections(note), `${note}: the slug tail moved the verdict`);
+	}
+});
+
+test("reflectItems: every open item carries the heading that owns it", () => {
+	const text = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] drift — s 2026-10-01\n- [x] handled — fixed: v1\n\n## plugin\n\n- [ ] doctor double-prints — s 2026-10-02\n";
+	const items = reflectItems(text);
+	assert.deepEqual(items.map((i) => [i.section, i.body]), [
+		["playbook", "drift"],
+		["plugin", "doctor double-prints"],
+	]);
+	assert.equal(reflectUnfiledCount(text), 0);
+	// legacy flat file and an unknown heading are "unfiled" — they used to inherit the previous bucket silently
+	const legacy = "# dev-flow reflections\n\n- [ ] flat legacy note — s 2026-10-01\n\n## plugin\n\n- [ ] placed\n\n## Plugin notes\n\n- [ ] orphan\n";
+	assert.deepEqual(reflectItems(legacy).map((i) => i.section), ["unfiled", "plugin", "unfiled"]);
+	assert.equal(reflectUnfiledCount(legacy), 2);
+	assert.equal(reflectUnfiledCount(""), 0);
+	assert.deepEqual(reflectItems("##plugin\n\n- [ ] a heading without the space still owns its item\n").map((i) => i.section), ["plugin"], "spacing does not hide a section");
+	assert.deepEqual(reflectItems("## playbook\n\n### triage on Fridays\n\n- [ ] under a sub-heading\n").map((i) => i.section), ["unfiled"], "a sub-heading places nothing — doctor names it instead of inheriting ## playbook");
+});
+
+test("reflectMove re-files an item under the other section", () => {
+	const src = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] doctor double-prints — s 2026-10-01\n\n## plugin\n\n- [ ] real playbook thing — s 2026-10-02\n";
+	const out = reflectMove(src, 1, "plugin");
+	assert.match(out ?? "", /## plugin\n\n- \[ \] real playbook thing — s 2026-10-02\n- \[ \] doctor double-prints — s 2026-10-01\n$/);
+	assert.ok(!(out ?? "").includes("## playbook"), "a section emptied by a move loses its heading");
+	assert.deepEqual(reflectItems(out ?? "").map((i) => i.section), ["plugin", "plugin"]);
+	assert.equal(reflectMove(src, 3, "playbook"), null, "item 3 of 2 is out of range");
+	// a legacy flat file is migrated into sections by the move
+	const flat = "# dev-flow reflections\n\n- [ ] doctor double-prints — s 2026-10-01\n";
+	assert.match(reflectMove(flat, 1, "plugin") ?? "", /## plugin\n\n- \[ \] doctor double-prints — s 2026-10-01\n$/);
+	// an old --both filing: moving one copy onto the other merges it, it does not duplicate
+	const both = "## playbook\n\n- [ ] same note — s 1\n\n## plugin\n\n- [ ] same note — s 2\n";
+	const merged = reflectMove(both, 1, "plugin") ?? "";
+	assert.equal(openReflections(merged).length, 1, "the duplicate merges away instead of being copied");
+	assert.match(merged, /## plugin\n\n- \[ \] same note — s 2\n$/);
 });
 
 test("appendReflection writes the two sections and migrates a legacy flat file", () => {
@@ -739,7 +800,7 @@ test("githubSlug: owner/slug from manifest strings, URLs and scp-style remotes",
 });
 
 test("reflectProtocol: session-review steps, npm-based update probe, routed open items", () => {
-	const out = reflectProtocol(["- [ ] the gate prompt asks twice — x 2026-01-01"], false, { version: "1.2.3", upstream: "dmarchevsky/dev-flow" }).join("\n");
+	const out = reflectProtocol(reflectItems("## plugin\n\n- [ ] the gate prompt asks twice — x 2026-01-01\n"), false, { version: "1.2.3", upstream: "dmarchevsky/dev-flow" }).join("\n");
 	assert.match(out, /flow reflect — session reflection \(dev-flow 1\.2\.3, upstream: dmarchevsky\/dev-flow\)/);
 	assert.match(out, /this output is your work instruction: execute these steps now/);
 	assert.match(out, /gitignored and yours to edit/);
@@ -761,7 +822,7 @@ test("reflectProtocol: session-review steps, npm-based update probe, routed open
 });
 
 test("reflectProtocol: closed items add the tidy hint next to the queue line", () => {
-	const out = reflectProtocol(["- [ ] an open note"], true, { version: "1.2.3", upstream: "dmarchevsky/dev-flow", closed: 2 }).join("\n");
+	const out = reflectProtocol(reflectItems("## playbook\n\n- [ ] an open note"), true, { version: "1.2.3", upstream: "dmarchevsky/dev-flow", closed: 2 }).join("\n");
 	assert.match(out, /↻ 2 closed reflection\(s\) — flow reflect tidy drops them/);
 	assert.ok(out.indexOf("closed reflection(s)") < out.indexOf("open items ("), "the hint precedes the routed list the agent acts on");
 });
