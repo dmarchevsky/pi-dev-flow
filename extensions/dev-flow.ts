@@ -605,6 +605,16 @@ async function runChecks(root: string, state: FlowState, cfg: Config, checks: St
  *  the pre-deploy record must survive the gate that schedules the deploy. */
 const healthRerunsAfterDeploy = (cfg: Config) => !!cfg.commands.dev && !!healthProbe(cfg);
 
+/** Seed pre-existing data before a health probe, recording the step (`flow health` and the verify
+ *  deploy probe both do this). Returns an error result on failure, null when seeded or not configured. */
+async function seedStep(root: string, state: FlowState, cfg: Config): Promise<{ text: string; isError: true } | null> {
+	if (!cfg.commands.seedData) return null;
+	const seed = await sh(cfg.commands.seedData, gateCwd(root, state));
+	state.checks.seedData = { ok: seed.ok, at: now() };
+	writeState(root, state);
+	return seed.ok ? null : { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
+}
+
 /** Fingerprint of the working-tree state the checks ran against: paths (`status --porcelain`),
  *  tracked content (a hash of the uncommitted diff) and HEAD. Null when git cannot answer — a
  *  measurement failure must never mark a green record stale (see freshenChecks). */
@@ -1201,12 +1211,8 @@ ${mdDigest(draftRefresh)}`))
 					const probe = healthProbe(cfg);
 					if (!probe) did.push("health: none configured");
 					else {
-						if (cfg.commands.seedData) {
-							const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
-							state!.checks.seedData = { ok: seed.ok, at: now() };
-							writeState(root, state!);
-							if (!seed.ok) return { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
-						}
+						const seedFail = await seedStep(root, state!, cfg);
+						if (seedFail) return seedFail;
 						const probed = await runHealthProbe(probe, gateCwd(root, state!), cfg.healthWait);
 						state!.checks.health = { ok: probed.ok, at: now() };
 						await stampChecks(root, state!, ["health"]);
@@ -1258,12 +1264,8 @@ ${mdDigest(draftRefresh)}`))
 			const { state, err } = needState(root, sess, slugArg);
 			if (err) return err;
 			if (!cfg.commands.health) return { text: "no commands.health configured — add `health = <command>` (or a flow-check health block) under ## implement in .dev-flow/project.md", isError: true };
-			if (cfg.commands.seedData) {
-				const seed = await sh(cfg.commands.seedData, gateCwd(root, state!));
-				state!.checks.seedData = { ok: seed.ok, at: now() };
-				writeState(root, state!);
-				if (!seed.ok) return { text: `seedData FAILED:\n${tail(seed.out)}`, isError: true };
-			}
+			const seedFail = await seedStep(root, state!, cfg);
+			if (seedFail) return seedFail;
 			const res = await runHealthProbe(cfg.commands.health, gateCwd(root, state!), cfg.healthWait);
 			state!.checks.health = { ok: res.ok, at: now() };
 			await stampChecks(root, state!, ["health"]);
