@@ -9,7 +9,11 @@
    of the fix, open unknowns), mode proposal with its reason, your questions
    and the operator's; draft only after the direction is confirmed.
 3. Write `.dev-flow/<slug>/plan/plan.md` — problem, approach, files to touch,
-   test strategy, risks; reviewable, not exhaustive. First check
+   test strategy, risks; reviewable, not exhaustive. **Land it on disk early and
+   keep it current**: create the file the moment the direction is confirmed —
+   don't wait for the finished plan — and amend it in the file as the discussion
+   continues. Plan talk held only in the conversation is gone when pi
+   auto-compacts mid-stage; the gate reviews the file, not the memory. First check
    `git log origin/<default>..<default> --oneline`: local-only default-branch
    commits fall out of the worktree's base (push them or re-plan).
 4. **UI flag set?** Mockups live in `plan/mockups/`, one HTML per screen/state
