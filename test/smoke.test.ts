@@ -845,6 +845,36 @@ test("release with a stale session build: warn and ask, never block; the operato
 	}
 });
 
+test("release-done skew warning is self-contained: version pair and second registered copy (#117)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	await flow(["start", "skew"]);
+	mkdirSync(path.join(repo, ".dev-flow", "skew", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "skew", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "skew");
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
+	// the release gate runs on a build nobody doubts (no stale stamp); the skew surfaces only at release-done
+	try {
+		process.env.DEV_FLOW_LOADED_VERSION = "99.0.0";
+		assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
+		// between the gate and release-done the session turns out to run an older build, and a second copy sits registered
+		process.env.DEV_FLOW_LOADED_VERSION = "0.0.1";
+		testSeams.copies.push({ dir: "/other/source/pi-dev-flow", version: "0.57.0", pid: process.pid, at: new Date().toISOString() });
+		const rd = await flow(["release-done"]);
+		assert.match(rd.content[0].text, /release recorded as complete/);
+		assert.match(rd.content[0].text, /this session runs dev-flow 0\.0\.1, the dev-flow install ships \d/, "the warning prints the session vs install pair — self-contained, not 'not the build the disk ships'");
+		assert.match(rd.content[0].text, /other dev-flow copy registered.*0\.57\.0/, "names the second registered copy — the confusion the report blamed the skew on");
+	} finally {
+		delete process.env.DEV_FLOW_LOADED_VERSION;
+		for (let i = testSeams.copies.length - 1; i >= 0; i--) if (testSeams.copies[i].dir === "/other/source/pi-dev-flow") testSeams.copies.splice(i, 1);
+	}
+});
+
 test("a dev-flow checkout ahead of the running build names itself at start, version and status", async () => {
 	// the reflection: an old loaded build started a release in its own checkout, and nothing said the checkout had moved on
 	const pi = makePi();
