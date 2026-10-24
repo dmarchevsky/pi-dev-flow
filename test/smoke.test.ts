@@ -19,6 +19,8 @@ interface Stub {
 	handlers: Record<string, Handler[]>;
 	/** What the extension recorded with appendEntry — a restored session replays it as its branch. */
 	entries: { type: string; customType?: string; data?: unknown }[];
+	/** The session display name as last set through pi.setSessionName (undefined = still unnamed). */
+	sessionName?: string;
 }
 
 function makePi(): Stub & ((...a: never[]) => void) {
@@ -44,6 +46,10 @@ function makePi(): Stub & ((...a: never[]) => void) {
 		registerShortcut: () => {},
 		appendEntry: (customType: string, data?: unknown) => {
 			stub.entries.push({ type: "custom", customType, data });
+		},
+		getSessionName: () => stub.sessionName,
+		setSessionName: (name: string) => {
+			stub.sessionName = name;
 		},
 		sendMessage: (m: { content: string }, opts?: { triggerTurn?: boolean }) => {
 			if (cmdCtx) {
@@ -572,6 +578,33 @@ test("session binding: use/abort/ambiguity", async () => {
 	await pi.cmds.flow.handler("use a-one", ctx);
 	await pi.cmds.flow.handler("approve", ctx);
 	assert.ok(ctx.notices.at(-1)?.includes("plan gate FAILED"), "after the explicit take-over the gate runs on a-one");
+});
+
+test("session name follows the flow: start names the session, use re-names, unbind keeps it", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	initPlaybook(repo);
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	// a hand-picked name is overwritten: under one session = one feature the slug is the session's identity
+	pi.sessionName = "operator's pick";
+	const r0 = await flow(["start", "name-one"]);
+	assert.match(r0.content[0].text, /session renamed to name-one/, "start says what it did");
+	assert.equal(pi.sessionName, "name-one", "the slug overwrites whatever name the session had");
+	await flow(["start", "name-two"]);
+	assert.equal(pi.sessionName, "name-two", "a second start binds and re-names");
+	assert.equal((await flow(["use", "name-one"])).content[0].text.match(/session renamed to name-one/g)?.length, 1, "use re-names and says so exactly once");
+	assert.equal(pi.sessionName, "name-one");
+	await flow(["use", "name-one"]);
+	assert.equal(pi.sessionName, "name-one", "re-binding the same slug keeps the name — no duplicate session_info churn");
+	await flow(["abort", "name-one"]);
+	assert.equal(pi.sessionName, "name-one", "unbind keeps the name as the trace of what the session held");
+	// a host whose API lacks the naming methods (older pi): the gate must still pass, rename a silent no-op
+	const legacyTools: Record<string, { execute: (...a: unknown[]) => Promise<{ content: [{ text: string }]; isError?: boolean }> }> = {};
+	const legacy = { registerCommand: () => {}, registerTool: (t: { name: string }) => void (legacyTools[t.name] = t as never), on: () => () => {}, appendEntry: () => {} };
+	devFlow(legacy as never);
+	const legacyRes = await legacyTools.flow.execute("id", { args: ["use", "name-two"] }, undefined, undefined, ctx);
+	assert.ok(!legacyRes.isError && /bound to name-two/.test(legacyRes.content[0].text), `a host without setSessionName still binds: ${legacyRes.content[0].text}`);
 });
 
 test("status bar: compact refresh follows the gates", async () => {

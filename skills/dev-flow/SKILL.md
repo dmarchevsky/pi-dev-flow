@@ -47,7 +47,8 @@ Ground rules:
   sessions, one feature each, are the model. A session binds **explicitly and
   only**: `flow start <slug>` binds its own feature (main checkout must be on
   the default branch); `flow use <slug>` takes one over. Nothing auto-binds.
-  Unbound: gates demand an explicit slug and main-checkout writes stay
+  Both bind commands rename the Pi session to the slug, so the picker names each
+  session after its feature. Unbound: gates demand an explicit slug and main-checkout writes stay
   blocked — there is no bypass, an unbound session cannot edit source.
 - **Project `flow-guard` rules** (`deny`/`confirm`/`protect`/`forbid` in
   project.md `## global`) apply at **every** stage and are judged ahead of
