@@ -34,7 +34,6 @@ import {
 	appendRoadmapItem,
 	bashFlowGuard,
 	checkFingerprint,
-	changelogEntry,
 	changelogVersionsBetween,
 	normalizeReleaseBody,
 	pendingEntryLines,
