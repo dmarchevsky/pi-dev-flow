@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.62.2] - 2026-10-24
+
+### Added
+
+- **The plan stage now lands its spec on disk early.** Step 2 told agents to draft only after the direction is confirmed, and many read that as "hold the discussion in the conversation and write `plan/plan.md` at the end, just before Approve?" — when pi auto-compacts mid-stage, undrafted plan discussion is gone before the implement stage ever sees it (hit on a live flow). The plan-stage reference now says: create `plan/plan.md` the moment the direction is confirmed — don't wait for the finished plan — and let the rest of the discussion land as in-file amendments, because the gate reviews the file, not the memory (#116).
+
 ## [0.62.1] - 2026-10-24
 
 ### Fixed
