@@ -15,6 +15,9 @@ touch, test strategy, risks — plus rendered screenshots for anything user-visi
 it, the agent cannot edit code anywhere else in the repo. That is the whole "does it actually plan?"
 question, answered by the harness instead of by trust.
 
+**A bound session is self-identifying.** `flow start` (and `flow use`) renames the Pi session after
+the flow slug, so the session picker always tells you which feature each session holds.
+
 **Stages end in gates, not vibes.** Each stage has one exit gate that refuses until its criteria
 hold: your plan file exists; every command your playbook names as a check passes; the app really
 starts, with real data, and answers a health probe **after** a real deploy; changelog and version

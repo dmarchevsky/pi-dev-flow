@@ -655,6 +655,8 @@ interface Session {
 	slug: string | null;
 	key: string;
 	bind: (slug: string | null) => void;
+	/** Name the pi session after a slug (one session = one feature: the picker shows the feature). */
+	rename: (slug: string) => void;
 }
 
 /** Is this checkout the dev-flow repo itself? Plugin reflections are fixable in-repo only here. */
@@ -913,7 +915,8 @@ ${mdDigest(draftRefresh)}`))
 			mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
 			writeState(root, state);
 			sess.bind(slugArg);
-			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}).${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
+			sess.rename(slugArg);
+			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}); session renamed to ${slugArg}.${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
 		}
 
 		case "status": {
@@ -1608,7 +1611,8 @@ ${mdDigest(draftRefresh)}`))
 			const prior = readClaim(root, slugArg);
 			const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
 			sess.bind(slugArg);
-			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}${takeover}` };
+			sess.rename(slugArg);
+			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}; session renamed to ${slugArg}${takeover}` };
 		}
 
 		case "abort": {
@@ -1718,6 +1722,15 @@ export default function devFlow(pi: ExtensionAPI) {
 				// claims track the binding: claim what you bind, release what you drop.
 				if (prev && prev !== slug && readClaim(ctx.cwd, prev)?.key === key) rmSync(claimFile(ctx.cwd, prev), { force: true });
 				if (slug) writeClaim(ctx.cwd, slug, key);
+			},
+			rename: (slug) => {
+				// pi's public session-name API, kept defensive: an older host without it must not fail a gate.
+				// Skip the no-op re-bind of the current name — session_info entries would pile up per bind.
+				try {
+					if (pi.getSessionName?.() !== slug) pi.setSessionName?.(slug);
+				} catch {
+					/* naming is a courtesy, never a gate precondition */
+				}
 			},
 		};
 	};
