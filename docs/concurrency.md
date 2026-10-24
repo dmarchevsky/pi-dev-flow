@@ -5,7 +5,9 @@ How several agents work one repo at the same time without stepping on each other
 **One pi session = one feature** (flow + branch + worktree). A repo can host any number of
 features, worked by separate sessions in parallel — that is the supported shape, not an edge
 case. The binding lives with the session (persisted via session entries, restored on
-resume/fork), so nothing is repo-global. A session binds **explicitly, never automatically**:
+resume/fork), so nothing is repo-global — and the session carries its feature's name: `flow start`
+and `flow use` rename the pi session to the slug (overwriting any previous name), so the session
+picker always says which feature a session holds. A session binds **explicitly, never automatically**:
 `flow start` binds its own feature, `flow use <slug>` takes one over — even the lone unfinished
 feature waits to be claimed. Every bind leaves a claim (`claim.json`, session + pid),
 and the gates honor the claim too — `flow abort` included, so the verb that erases a feature cannot

@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.62.0] - 2026-10-24
+
+### Added
+
+- **A bound session wears its feature's name.** `flow start` and `flow use` now rename the pi session to the flow slug (pi's public `setSessionName` API), so the session picker always says which feature each session holds — the missing surface of one-session-one-feature: the footer, the branch and the worktree already named the feature, the picker named nothing. A previous name (pi's auto-title or a hand-set `/rename`) is overwritten — under the flow's model the slug *is* the session's identity; unbind (`abort`/`finish`) keeps the name as the trace of what the session held. The rename rides the binding seam and stays a courtesy: a host without the naming API degrades to a silent no-op and cannot fail a gate, and re-binding the slug a session already carries writes nothing.
+
 ## [0.61.1] - 2026-10-23
 
 ### Changed
