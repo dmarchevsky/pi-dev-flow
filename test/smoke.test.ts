@@ -700,7 +700,7 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	await flow(["start", "rfeat"]);
 	await flow(["reflect", "test", "cmd", "is", "stale"]);
 	const r2 = await flow(["reflect", "ui", "panels", "are", "ugly", "in", "the", "plugin"]);
-	assert.match(r2.content[0].text, /reflected \(plugin\): - \[ \] ui panels are ugly in the plugin — rfeat \d{4}-\d{2}-\d{2}/);
+	assert.match(r2.content[0].text, /reflected \(plugin — plugin wording\): - \[ \] ui panels are ugly in the plugin — rfeat \d{4}-\d{2}-\d{2}/, "the echo says why the note landed there");
 	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
 	assert.match(readFileSync(reflFile, "utf8"), /## playbook\n\n- \[ \] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}/);
 	const proto = await flow(["reflect"]);
@@ -715,6 +715,37 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	assert.match(st.content[0].text, /↻ 2 reflection\(s\) open/);
 });
 
+test("reflect --plugin/--playbook file by decision, list numbers them, move re-files one, doctor reads the heading", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
+	const a = await flow(["reflect", "--playbook", "the", "seed", "data", "note", "is", "stale"]);
+	assert.match(a.content[0].text, /reflected \(playbook — as told\)/);
+	const b = await flow(["reflect", "--plugin", "the", "deploy", "gate", "in", "CI", "is", "flaky"]);
+	assert.match(b.content[0].text, /reflected \(plugin — as told\)/, "an explicit flag beats the keyword guess");
+	assert.match(readFileSync(reflFile, "utf8"), /## plugin\n\n- \[ \] the deploy gate in CI is flaky — /);
+	const list = await flow(["reflect", "list"]);
+	assert.match(list.content[0].text, /1\. \[playbook\] the seed data note is stale/);
+	assert.match(list.content[0].text, /2\. \[plugin\] the deploy gate in CI is flaky/);
+	const moved = await flow(["reflect", "move", "2", "--playbook"]);
+	assert.match(moved.content[0].text, /item 2 re-filed under ## playbook/);
+	const filed = readFileSync(reflFile, "utf8");
+	assert.ok(!filed.includes("## plugin"), "the emptied section goes with its item");
+	assert.equal(filed.split("- [ ] ").length - 1, 2, "the move moves one item, it does not copy it");
+	assert.match((await flow(["reflect", "move", "1", "--playbook"])).content[0].text, /already under ## playbook/);
+	assert.match((await flow(["reflect", "move", "9", "--plugin"])).content[0].text, /open item 1–2 required/);
+	assert.match((await flow(["reflect", "move", "1"])).content[0].text, /usage: flow reflect move <n> --plugin \| --playbook/);
+	const doctor = await flow(["doctor"]);
+	assert.match(doctor.content[0].text, /\[playbook\] the seed data note is stale/, "doctor labels from the heading the item lives under");
+	assert.match(doctor.content[0].text, /docs flow/, "and routes it to the flow that can change the playbook");
+	// an item the file does not place is named instead of quietly bucketed on the next write
+	writeFileSync(reflFile, "# dev-flow reflections\n\n- [ ] orphan note — x 2026-01-01\n");
+	assert.match((await flow(["doctor"])).content[0].text, /1 open item\(s\) sit outside ## playbook \/ ## plugin/);
+});
+
 test("reflect tidy: drops closed items; every reflection surface nudges while the pile is there", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -727,12 +758,12 @@ test("reflect tidy: drops closed items; every reflection surface nudges while th
 	await flow(["reflect", "gate prompt asks twice"]);
 	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + "- [x] handled one — fixed: v0.1\n");
 	const queued = await flow(["reflect", "the", "status", "bar", "lies", "in", "the", "plugin"]);
-	assert.match(queued.content[0].text, /reflected \(plugin\): - \[ \] the status bar lies in the plugin/);
+	assert.match(queued.content[0].text, /reflected \(plugin — plugin wording\): - \[ \] the status bar lies in the plugin/);
 	assert.match(queued.content[0].text, /↻ 1 closed reflection\(s\) — flow reflect tidy drops them/, "queueing a note points at the tidy");
 	assert.match((await flow(["reflect"])).content[0].text, /↻ 1 closed reflection\(s\)/, "the protocol carries the hint too");
 	assert.match((await flow(["doctor"])).content[0].text, /↻ 1 closed reflection\(s\)/, "doctor carries it too");
 	// a note merely starting with the verb word stays a note
-	assert.match((await flow(["reflect", "tidy", "up", "the", "readme"])).content[0].text, /reflected \(playbook\): - \[ \] tidy up the readme/);
+	assert.match((await flow(["reflect", "tidy", "up", "the", "readme"])).content[0].text, /reflected \(playbook — playbook wording\): - \[ \] tidy up the readme/);
 	const t = await flow(["reflect", "tidy"]);
 	assert.match(t.content[0].text, /dropped 1 closed item\(s\) — 3 open/);
 	assert.ok(!readFileSync(reflFile, "utf8").includes("- [x]"), "closed lines are gone from the file");

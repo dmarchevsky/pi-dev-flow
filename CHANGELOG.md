@@ -4,6 +4,21 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-10-24
+
+### Fixed
+
+- **Reflections land where they are filed, and `flow doctor` reads the file.** The `## playbook` / `## plugin` section was a keyword guess, and it was re-guessed on every surface instead of being read back: `reflectionRoutes` classified the whole item line, ` — <slug> <date>` tail included, so one slug full of trigger words (`fix-versioning-guard` = "versioning" + "guard") made **every** open item read as `playbook+plugin` and routed every fix — a drifted project command included — to "file an issue against pi-dev-flow upstream". Meanwhile the heading the note actually sits under, which `appendReflection` has treated as authoritative since #69, was flattened away by the reader, so doctor's table argued with the file it had just read. Open items now come back from one section-aware reader that carries its heading, routing labels from that heading, and the classifier only ever sees the note body — an item's verdict can no longer change because of what its slug spells. A note that describes dev-flow without saying one of the old magic words also stopped being misfiled quietly: dev-flow's own commands and files (`flow doctor`, `.dev-flow`, `state.json`, gate/guard, worktree) are high-precision plugin signals, so "doctor prints the same finding twice" is a plugin item now, while "the deploy gate in CI is flaky" and "our repo's commit hook rejects rebases" stay the project's own business.
+
+### Added
+
+- **`flow reflect --playbook|--plugin "<note>"` — you file it, the tool does not guess.** The session-reflection protocol tells the agent to decide playbook-or-plugin for every finding, and then the tool re-guessed from the sentence. An explicit flag now wins, and a note queued without one prints the guess and its reason — `reflected (plugin — "gate" names dev-flow itself)`, `reflected (playbook — nothing plugin-shaped in the note — if it is a dev-flow bug: flow reflect move <n> --plugin)` — so a wrong filing is visible at the moment it is filed instead of months later in a queue nobody re-reads. `--both` stays for a genuine two-ticket note (it then gets one route per section).
+- **`flow reflect list` and `flow reflect move <n> --plugin|--playbook`.** The queue numbered (same convention as `flow roadmap`), and one command to re-file an item under the other heading — correcting a misfile used to mean hand-editing markdown and hoping the next rewrite kept it where you put it. An item outside both sections (a legacy flat line, or under a `## Plugin notes` heading nobody recognises) is reported by `flow doctor` instead of silently inheriting the previous bucket on the next write.
+
+### Changed
+
+- **A both-shaped note has one home.** When both keyword sets matched, the note was written under *both* headings — the operator checked the same issue off twice, and only the plugin half was ever routed (`reflectionRoutes` returned one route and picked the plugin branch first). A guess now picks a primary section (plugin on a strong dev-flow signal, otherwise the playbook, where the operator notices and moves it), and the printed line names the reason.
+
 ## [0.63.0] - 2026-10-24
 
 ### Added

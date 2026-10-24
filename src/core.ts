@@ -1306,15 +1306,14 @@ export const closedReflectionCount = (text: string) => text.split("\n").filter(i
  *  (a line filter — no re-bucketing like appendReflection's rewrite), and a `## section` heading
  *  left with no open items under it goes with its items. */
 export function reflectionsTidy(text: string): string {
-	const headerRe = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
+	const bucket = (l: string) => (REFLECT_HEADING.test(l) ? REFLECT_HEADING.exec(l)![1].toLowerCase() : "unfiled");
 	const lines = text.split("\n");
 	// pass 1: open items per heading decides which sections survive; items above every heading are legacy flat lines with no heading to drop
 	let section: string | null = null;
 	const openUnder = new Map<string, number>();
 	for (const raw of lines) {
 		const l = raw.trim();
-		const h = headerRe.exec(l);
-		if (h) section = h[1].toLowerCase();
+		if (ANY_HEADING.test(l)) section = bucket(l);
 		else if (section && isOpenItem(l)) openUnder.set(section, (openUnder.get(section) ?? 0) + 1);
 	}
 	// pass 2: closed items never survive; an emptied heading never survives
@@ -1322,9 +1321,8 @@ export function reflectionsTidy(text: string): string {
 	section = null;
 	for (const raw of lines) {
 		const l = raw.trim();
-		const h = headerRe.exec(l);
-		if (h) {
-			section = h[1].toLowerCase();
+		if (ANY_HEADING.test(l)) {
+			section = bucket(l);
 			if ((openUnder.get(section) ?? 0) > 0) out.push(raw);
 			continue;
 		}
@@ -1355,15 +1353,91 @@ export const REFLECT_HEADER =
 export const REFLECT_SECTIONS = ["playbook", "plugin"] as const;
 export type ReflectSection = (typeof REFLECT_SECTIONS)[number];
 
-// keyword sets decide the section: plugin = dev-flow's own behaviour, playbook = this project's
-const PLUGIN_HINT = /\b(plugin|extension|dev-flow|gate|guard|tool|session|compact\w*|hook|status bar)\b/i;
-const PLAYBOOK_HINT = /\b(project\.md|playbook|checklist|versioning|defaultBranch|prose|setup|health|release rules)\b/i;
+/** One matcher for the section headings: the writer, the tidy and the reader share it, so a heading
+ *  one of them accepts cannot be invisible to another. */
+const REFLECT_HEADING = new RegExp(`^##\\s*(${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
+/** Any `## …` line claims the items under it — one that names no section leaves them unfiled, so the
+ *  reader (and doctor) can say so instead of inheriting whichever heading came before. */
+const ANY_HEADING = /^##/;
 
-/** Which reflections.md section(s) a note belongs to. Both keyword sets → both sections;
- *  neither → playbook, where the operator will notice and move it. */
+/** An open reflections.md item together with the section that owns it. The heading is the record of
+ *  where a note was filed; the keyword guess is made once, when the note is queued. */
+export interface ReflectItem {
+	/** the `## section` the line sits under; "unfiled" = above every heading or under an unknown one */
+	section: ReflectSection | "unfiled";
+	/** the verbatim `- [ ] …` line, trimmed */
+	line: string;
+	/** the note without checkbox and without the ` — attribution` tail */
+	body: string;
+}
+
+/** Open items of reflections.md, each carrying the heading that owns it. Items above every known
+ *  heading (a legacy flat file) or under an unknown `## …` heading come back "unfiled" instead of
+ *  silently inheriting whichever bucket came before them. */
+export function reflectItems(text: string): ReflectItem[] {
+	const out: ReflectItem[] = [];
+	let section: ReflectSection | "unfiled" = "unfiled";
+	for (const raw of text.split("\n")) {
+		const l = raw.trim();
+		if (ANY_HEADING.test(l)) {
+			const h = REFLECT_HEADING.exec(l);
+			section = h ? (h[1].toLowerCase() as ReflectSection) : "unfiled";
+			continue;
+		}
+		if (!isOpenItem(l)) continue;
+		out.push({ section, line: l, body: reflectionBody(l) });
+	}
+	return out;
+}
+
+/** Open items the file does not place in a known section — doctor names the count so a note that
+ *  would once have quietly migrated to `## playbook` on the next write gets moved on purpose. */
+export const reflectUnfiledCount = (text: string) => reflectItems(text).filter((i) => i.section === "unfiled").length;
+
+// The classifier decides where a note being queued LANDS — nothing re-derives it afterwards.
+// Signals are ranked. A note that names dev-flow's own surface is a plugin issue, and its commands
+// and files are a closed set, so that read is high-precision. Vague words (tool, hook, session) are
+// weak on purpose: every project has git hooks and CI gates of its own, and matching those as
+// "plugin" is how project feedback ended up in the plugin queue.
+const PLUGIN_STRONG_SRC =
+	"\\bflow (?:help|init|reflect|roadmap|doctor|status|start|use|test|check|health|approve|verify|release(?:-done)?|finish|abort|version)\\b|\\/flow\\b|\\.dev-flow\\b|state\\.json|flow-guard|flow-check|\\bdoctor\\b|\\bgates?\\b|\\bguards?\\b|checkpoint|worktree";
+const PLUGIN_STRONG_ALL = new RegExp(PLUGIN_STRONG_SRC, "gi");
+/** …but "CI gate", "deploy gate", "review gate" is the project's own gate, not a flow gate. */
+const PROJECT_QUALIFIED = /\b(?:ci|cd|deploy|staging|stage|prod(?:uction)?|build|lint|review|preview|merge|security)\s+(?:gates?|checks?|hooks?|tools?|tooling)\b/i;
+const PLAYBOOK_STRONG = /project\.md|playbook|checklist|defaultBranch|merge policy|versionFile|versionTag|release rules|(?:npm|pnpm|yarn|bun|make|cargo)\s+\S+|\b(?:our|this) (?:repo|project)\b|health (?:command|endpoint)/i;
+const PLUGIN_WEAK = /\b(plugin|extension|dev-flow|tool|session|compact\w*|hook|status bar)\b/i;
+const PLAYBOOK_WEAK = /\b(playbook|checklist|versioning|prose|setup|docs?|readme)\b/i;
+
+export interface ReflectGuess {
+	sections: ReflectSection[];
+	/** why the note landed there — printed, so a wrong guess is visible at the moment it is filed */
+	why: string;
+}
+
+/** Where a fresh note lands: ONE primary home. Writing a both-shaped note to both sections made the
+ *  operator check the same issue off twice while only the plugin half ever got a route. A strong
+ *  plugin signal wins; otherwise the playbook, where the operator reads it and can move it. */
+export function guessReflectSections(note: string): ReflectGuess {
+	// never classify the ` — <slug> <date>` tail: slugs are made of "guard", "release", "versioning"
+	const body = reflectionBody(note);
+	// every signal counts, not just the first one found: "the CI gate is wrong, flow doctor reports it
+	// twice" is a plugin note even though its earliest match is a demoted one
+	const qualified = PROJECT_QUALIFIED.test(body);
+	const hits = [...body.matchAll(PLUGIN_STRONG_ALL)]
+		.map((m) => m[0].trim())
+		.filter((h) => !(qualified && /gates?|guards?/i.test(h)));
+	if (hits.length) return { sections: ["plugin"], why: `"${hits[0]}" names dev-flow itself` };
+	const plug = PLUGIN_WEAK.test(body);
+	const playStrong = PLAYBOOK_STRONG.test(body);
+	const play = playStrong || PLAYBOOK_WEAK.test(body);
+	if (plug && !play) return { sections: ["plugin"], why: "plugin wording" };
+	if (play) return { sections: ["playbook"], why: playStrong ? "playbook or project wording" : "playbook wording" };
+	return { sections: ["playbook"], why: "nothing plugin-shaped in the note — if it is a dev-flow bug: flow reflect move <n> --plugin" };
+}
+
+/** The section(s) a note belongs to, decided from its wording (primary home only — see guessReflectSections). */
 export function reflectSections(note: string): ReflectSection[] {
-	const plugin = PLUGIN_HINT.test(note);
-	return plugin && PLAYBOOK_HINT.test(note) ? ["playbook", "plugin"] : plugin ? ["plugin"] : ["playbook"];
+	return guessReflectSections(note).sections;
 }
 
 /** Where a fix must be implemented: every fix runs through a flow whose gates confirm it —
@@ -1376,10 +1450,12 @@ export interface ReflectionRoute {
 	route: string;
 }
 
-export function reflectionRoutes(items: string[], selfRepo: boolean): ReflectionRoute[] {
-	return items.map((l) => {
-		const text = l.replace(/^-\s*\[[ xX]\]\s*/, "").trim();
-		const sections = reflectSections(text);
+export function reflectionRoutes(items: ReflectItem[], selfRepo: boolean): ReflectionRoute[] {
+	return items.map((it) => {
+		const text = it.line.replace(/^-\s*\[[ xX]\]\s*/, "").trim();
+		// the heading the item lives under IS the filing; a both-flagged note sits under both headings
+		// and therefore yields one item per section, each with its own route.
+		const sections: ReflectSection[] = it.section === "unfiled" ? ["playbook"] : [it.section];
 		if (sections.includes("plugin"))
 			return selfRepo
 				? { text, sections, mode: "code" as const, route: "patch flow for a small fix (flow start fix-<topic> --patch --confirmed), normal flow when bigger" }
@@ -1388,13 +1464,34 @@ export function reflectionRoutes(items: string[], selfRepo: boolean): Reflection
 	});
 }
 
+/** Move open item n (1-based over open items — the numbering `flow reflect list` prints) under
+ *  `## section`. null = out of range; an item already in that section comes back unchanged, so the
+ *  caller can say so instead of pretending to relocate it. */
+export function reflectMove(text: string, n: number, section: ReflectSection): string | null {
+	const lines = text.split("\n");
+	let seen = 0;
+	let hit = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (!isOpenItem(lines[i])) continue;
+		if (++seen === n) {
+			hit = i;
+			break;
+		}
+	}
+	if (hit < 0) return null;
+	const [line] = lines.splice(hit, 1);
+	return appendReflection(lines.join("\n"), [section], line.trim());
+}
+
 /** What `flow doctor <note>` prints: the note is an investigation order, not an answer —
  *  the plugin has no LLM; the agent investigates, the gates confirm, the flow implements. */
 export function investigationBrief(note: string, selfRepo: boolean): string[] {
-	const [route] = reflectionRoutes([`- [ ] ${note}`], selfRepo);
+	const guess = guessReflectSections(note);
+	const [route] = reflectionRoutes([{ section: guess.sections[0], line: `- [ ] ${note.trim()}`, body: note.trim() }], selfRepo);
 	return [
 		`investigate: "${route.text}"`,
 		"read first: .dev-flow/project.md, flow doctor findings, and whatever files the note names.",
+		`if it is real it belongs in ## ${route.sections[0]} (${guess.why})`,
 		`fix routing: ${route.route}`,
 		"the note is not implemented by doctor — propose the fix to the operator first; only after they confirm, open the routed flow; its gates carry the confirmation.",
 	];
@@ -1403,17 +1500,17 @@ export function investigationBrief(note: string, selfRepo: boolean): string[] {
 /** Bare `flow reflect`: the full session-reflection protocol for the agent (the plugin has no LLM —
  *  the agent reviews the session log, re-checks open items against shipped fixes, dedupes new
  *  findings and puts the fix decision to the operator). Writes nothing, runs no network calls. */
-export function reflectProtocol(items: string[], selfRepo: boolean, facts: { version: string | null; upstream: string; closed?: number }): string[] {
+export function reflectProtocol(items: ReflectItem[], selfRepo: boolean, facts: { version: string | null; upstream: string; closed?: number }): string[] {
 	const ver = facts.version ? `dev-flow ${facts.version}` : "dev-flow version unknown";
 	const up = facts.upstream || "<upstream — ask the operator for the dev-flow repo>";
 	const url = facts.upstream ? `https://github.com/${facts.upstream}` : "<upstream-url>";
 	const lines = [
 		`flow reflect — session reflection (${ver}, upstream: ${up})`,
 		"this output is your work instruction: execute these steps now — do not echo the protocol and do not ask to begin.",
-		"queue: .dev-flow/reflections.md — gitignored and yours to edit; check items off as `- [x] … — fixed: <what or where>`.",
-		"1. review the current session log in full — every message, tool call and result: friction, wrong turns, repeated failures, guards or gates that misfired, playbook drift, optimization candidates. Decide for each: playbook issue or plugin issue.",
+		"queue: .dev-flow/reflections.md — gitignored and yours to edit; check items off as `- [x] … — fixed: <what or where>`; a note filed under the wrong heading is moved with flow reflect move <n> --plugin|--playbook (flow reflect list numbers them).",
+		"1. review the current session log in full — every message, tool call and result: friction, wrong turns, repeated failures, guards or gates that misfired, playbook drift, optimization candidates. Decide each one BEFORE queueing — you know what the note is about, so say it: flow reflect --plugin \"<note>\" for a dev-flow bug, --playbook for this project's playbook; a note queued without a flag is filed on a keyword guess and the printed line tells you which.",
 		`2. re-check every open item below: already handled by the current playbook (.dev-flow/project.md) or obsolete → check it off with a fixed: note. Possibly fixed in a newer dev-flow: npm view pi-dev-flow version — a newer published version covering the item → recommend the operator update the plugin (pi install npm:pi-dev-flow, then /reload; a git-installed copy updates against its own tags: git ls-remote --tags --sort=-v:refname ${url} | head -1), never update it yourself.`,
-		'3. new findings: dedupe against the open items first — never reflect the same issue twice; queue each real one with flow reflect "<one-line note>", then report to the operator structurally: playbook items vs plugin items, each with its route from the list below.',
+		'3. new findings: dedupe against the open items first — never reflect the same issue twice; queue each real one with flow reflect --plugin|--playbook "<one-line note>", then report to the operator structurally: playbook items vs plugin items, each with its route from the list below.',
 		"4. ask the operator whether to fix the open issues now. If yes:",
 		`   a. plugin items: search upstream first — gh issue list --repo ${up} --state all --search "<keywords>" — an author-addressed match → report the verdict back to the operator (fixed in v… / closed won't-fix + reason), do not re-file; no match → gh issue create --repo ${up} with a detailed description, session evidence and a suggested fix.`,
 		"   b. playbook items: run flow doctor — it reviews each open item and routes it to the docs flow that implements the fix.",
@@ -1438,7 +1535,7 @@ export function reflectProtocol(items: string[], selfRepo: boolean, facts: { ver
  */
 export function appendReflection(text: string, sections: ReflectSection[], line: string): string {
 	const lines = text.split("\n");
-	const sectionHeader = new RegExp(`^## (${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
+	const sectionHeader = REFLECT_HEADING;
 	// shortcut: only the preamble above the first header or item survives verbatim; hand-written prose below the items is dropped.
 	// a header is part of the body, not of the preamble: it owns the items under it, and one with no items left simply disappears from the rewrite.
 	const firstBody = lines.findIndex((l) => l.trim().startsWith("- [") || sectionHeader.test(l.trim()));
@@ -1450,11 +1547,12 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 	let section: ReflectSection | null = null;
 	for (const raw of firstBody < 0 ? [] : lines.slice(firstBody)) {
 		const l = raw.trim();
-		const header = sectionHeader.exec(l);
-		if (header) {
+		if (ANY_HEADING.test(l)) {
+			const header = sectionHeader.exec(l);
 			// a heading is authoritative for the items under it: deriving the bucket from the inline
 			// marker instead moved every marker-less `## plugin` line into `## playbook` on the next write.
-			section = header[1].toLowerCase() as ReflectSection;
+			// an unknown `## …` heading places nothing (it used to inherit the previous section by accident).
+			section = header ? (header[1].toLowerCase() as ReflectSection) : null;
 			continue;
 		}
 		if (!l.startsWith("- [")) continue;

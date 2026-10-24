@@ -6,12 +6,18 @@
 
 Anything the playbook or plugin should improve (drifted commands, gate friction,
 a plugin bug) gets parked, not complained about:
-`flow reflect "<one-line note>"`; gate flags are ignored —
+`flow reflect --playbook|--plugin "<one-line note>"`; gate flags are ignored —
 `flow reflect "<note>" --confirmed` queues the note alone. For a note to chase
 **now**: `flow doctor "<observation>"` prints an investigation brief without
-queueing. Notes land under `## playbook` or `## plugin` — the wording decides,
-a note about both goes to both. The open count shows in status and stage
-context; the operator decides:
+queueing. **You file the note, the tool does not guess**: `--playbook` puts it
+under `## playbook`, `--plugin` under `## plugin` (you already know which one it
+is — the session log does). With no flag the wording guesses ONE section and the
+printed line says why (`"gate" names dev-flow itself`, `playbook or project
+wording`, or `nothing plugin-shaped in the note …`); if the guess is wrong,
+`flow reflect list` numbers the queue and `flow reflect move <n> --plugin` (or
+`--playbook`) re-files the item — never hand-retype it. Nothing is ever written
+to both sections: one note, one home, one route. The open count shows in status
+and stage context; the operator decides:
 
 - Reflect real friction only, one line each, never the same issue twice.
 - **`flow reflect tidy` drops the closed (`- [x]`) items** — the `— fixed:` note has
@@ -30,7 +36,10 @@ context; the operator decides:
   now. The command writes nothing; you execute the protocol.
 - Plain `flow doctor` reviews the open items and **routes** each to the flow
   that implements it — playbook item → docs flow; plugin item → upstream issue
-  (or a patch/normal flow in the dev-flow repo). To fold items in on the
+  (or a patch/normal flow in the dev-flow repo). It labels each item with the
+  `## heading` it is filed under (the file is the record; the wording of the
+  note decided nothing since the note was queued) and flags items sitting
+  outside both sections. To fold items in on the
   operator's word: investigate, propose the fix, get confirmation, open the
   routed flow (playbook items: `flow start fold-<topic> --docs --confirmed`)
   and apply it there — project.md is editable only in that worktree. Check

@@ -1,6 +1,6 @@
 {
   "name": "pi-dev-flow",
-  "version": "0.63.0",
+  "version": "0.64.0",
   "description": "Enforced feature workflow for Pi: plan → implement → pre-release → release, gated checkpoints, self-improvement reflections, one git worktree per feature, changelog + publish as part of the release",
   "type": "module",
   "keywords": [
