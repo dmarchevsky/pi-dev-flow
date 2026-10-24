@@ -1434,7 +1434,8 @@ ${mdDigest(draftRefresh)}`))
 					ghNote = gr.ok ? `${forge} release ${tag} created. ${notesNote}`.trim() : `${forge} release skipped: ${tail(gr.out)}`;
 				}
 			}
-			const behind = sessionRunsOlderBuild(loadedVersion(), checkoutBuild(root).version);
+			const diskBuild = checkoutBuild(root);
+			const behind = sessionRunsOlderBuild(loadedVersion(), diskBuild.version);
 			const openRelease = checklistPending(cfg, state!, "release");
 			// release-stage items have no gate of their own: the operator's Finish? answer is what closes them, so
 			// name them at the last objective gate — on the way out too, or the refusal hides half the story
@@ -1471,7 +1472,9 @@ ${mdDigest(draftRefresh)}`))
 				state!.staleBuild
 					? `stale build acknowledged at release gate: this session ran dev-flow ${state!.staleBuild} — proofs newer than it did not run.`
 					: behind
-						? `warning: this session runs dev-flow ${behind}, not the build the disk ships — /reload before trusting what it printed.`
+						// #117: the pair (session vs what the disk ships) makes the warning actionable where it prints;
+						// a second registered copy is what made the skew confusing on the report — name it too
+						? `warning: this session runs dev-flow ${behind}, ${diskBuild.label} ships ${diskBuild.version ?? "?"} — /reload before trusting what it printed.${copyWarning() ? ` ${copyWarning()}` : ""}`
 					: "",
 				mergeNote,
 				openNote,

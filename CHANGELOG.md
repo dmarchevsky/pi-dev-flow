@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.62.1] - 2026-10-24
+
+### Fixed
+
+- **The release-done version-skew warning is now self-contained.** When the release gate passed unstamped but `flow release-done` found the session behind the checkout, the warning said only "this session runs dev-flow X, not the build the disk ships" — naming no second version and no second source, so it was not actionable where it printed (`flow status` said the pair; the release output did not). It now prints both versions — `this session runs dev-flow X, <this checkout|the dev-flow install> ships Y` — and appends the two-copies warning when another dev-flow copy is registered in the process, since that duplicate was the real source of the reported confusion (#117).
+
 ## [0.62.0] - 2026-10-24
 
 ### Added
