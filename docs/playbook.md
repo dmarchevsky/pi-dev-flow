@@ -173,3 +173,46 @@ shipped, dedupe new findings, put the fix decision to the operator) — and noth
 Future features have their own file: `.dev-flow/roadmap.md`, a gitignored backlog `flow roadmap`
 manages (add / pick → `flow start` / done / tidy) — a picked item is checked off by `finish` when
 its feature ships, and it never gates either.
+
+### Structured stage reports (a prose convention, not a gate)
+
+The gates enforce *state*; how the agent *talks* about that state at each stage is a tier-3 convention —
+type `prose.implement`-style guidance into the stage sections and every session inherits it. The contract
+this repo runs on has two fixed shapes:
+
+**The header block.** Every stage report opens with a fenced block carrying the *decision record* — the
+fields every later stage still needs: `slug`, `mode` (`normal`/`patch`/`docs`, marked granted once the
+operator said the word), `ui`, `branch`/`worktree`, `checks`, plus whatever the stage decides:
+
+| Stage | Header must add |
+|---|---|
+| start/init | proposed slug + mode with a one-line why, detected knob defaults, merge policy when `flow start` refused |
+| plan | `plan.md` path (created/amended), mockups rendered/total, open questions |
+| implement | `commits: N ahead, M uncommitted`, tier-1 pass count, tier-2 walked, deploy + health result |
+| pre-release | the **version decision**: `pending → bump <patch\|minor\|major> → vX.Y.Z` or `no-version [operator word]`, tag, changelog heading, fold status, `/flow-review` tally, merge style |
+| release | PR number/state, merge style used, tag pushed?, artifact proof, forge release state |
+| finish | release recorded, main clean+pushed, unmerged commits, reflections parked, open release checklist |
+
+A decision that was *not* made is recorded as `pending` — never left unstated, never silently invented
+(a version bump needs the operator's word; `no-version` too).
+
+**The checkpoint block.** Exactly one per stage, as a plain chat message (a structured-question tool is
+not chat and never licenses `--confirmed`), closing with the single verb and naming **yolo** as an
+available answer:
+
+````markdown
+CHECKPOINT Release?
+  context: checks green; manifest ahead of last tag; Unreleased folded.
+  options: release → bump minor 0.56.0, tag v0.56.0, forge release
+         | no-version → merge only, entry rides under Unreleased
+         | edit — <what to change>
+         | yolo → release with the parameters above, remaining gates run back to back
+  recommend: release — user-facing feature, minor per playbook semver
+Answer in chat: Release?  (or yolo)
+````
+
+After each gate that advances a stage, one echo line confirms the new state before new work
+(`▶ stage: implement — worktree …, mode docs, ui off`). Mid-stage additions amend `plan.md` with an
+`**Added mid-stage:**` line instead of opening a second checkpoint — the verb count stays one per
+stage. The contract is advisory like all tier-3 prose: gates refuse what gates refuse regardless of
+how neatly the report is formatted.
