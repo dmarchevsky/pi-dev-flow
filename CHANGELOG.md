@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- **Repo dogfood of `/flow-simplify`, shipped as a patch**: dropped the one dead import `tsc --noUnusedLocals` reports repo-wide (`unreleasedBody` in `test/core.test.ts`), and collapsed the thrice-duplicated yolo-word intake — the byte-identical `--yolo` acceptance block and its error string in the verify, release and finish gates — into one `takeYoloWord` helper, so the operator-word wording lives in one place. Also committed the `package-lock.json` version fields `npm install` rewrites in every worktree since the 0.64.1 bump left them unsynced.
+
 ## [0.64.1] - 2026-10-24
 
 ### Changed
