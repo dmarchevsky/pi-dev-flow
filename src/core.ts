@@ -10,7 +10,6 @@ import os from "node:os";
 import path from "node:path";
 
 export type Stage = "plan" | "implement" | "pre-release" | "release" | "done";
-export const STAGES: Stage[] = ["plan", "implement", "pre-release", "release", "done"];
 
 export interface Check {
 	ok: boolean;

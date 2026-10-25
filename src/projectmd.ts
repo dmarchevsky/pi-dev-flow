@@ -7,7 +7,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseMergeStyle, parseVersion, toSeconds, type GuardRules, type MergeStyle, type StageCheck } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseMergeStyle, parseVersion, toSeconds, type GuardRules, type StageCheck } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "pre-release", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
