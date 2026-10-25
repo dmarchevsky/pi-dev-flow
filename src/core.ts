@@ -865,6 +865,9 @@ const DF_ANYWHERE = /\.dev-flow\b/;
  *  plan/mockups path), are not "the folder". The leading boundary takes `/` too: an absolute path names
  *  the same folder, and absolute paths are the shape the harness hands the agent. */
 const DF_FOLDER = /(?:^|[\s'"/])\.dev-flow(?:\/(?!project\.md$|roadmap\.md$|reflections\.md$|\.gitignore$)[\w.-]+)?(?=$|[\s'"])/;
+/** The advisory files under `.dev-flow/` the agent owns (the reflection queue and the roadmap backlog):
+ *  writable with no flow bound — they are suggestions, not state — unlike everything else in the folder. */
+export const DF_ADVISORY_FILES = new Set(["reflections.md", "roadmap.md"]);
 // write tools that can overwrite a file. A bare `>` is deliberately absent: the redirect target is
 // checked on its own, and testing for any `>` here refused every segment that merely mentioned an
 // owned path while redirecting elsewhere (`gh pr create … 2>&1`).
@@ -1299,7 +1302,15 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	// feature's plan and that feature's approval gate then rubber-stamps text it never wrote.
 	if (bound?.state.stage === "plan" && !within(abs, path.join(dfDir, bound.state.slug)))
 		return `bound feature ${bound.state.slug} is in plan — write only inside its own .dev-flow/${bound.state.slug}/`;
-	if (within(abs, dfDir)) return null;
+	if (within(abs, dfDir)) {
+		// `.dev-flow/` is not a free write area: it gitignores everything, so the blanket allow let an unbound
+		// session drop arbitrary files there (.dev-flow/COMMUNICATION-PLAN.md was one) — a folder whose whole
+		// point is flow state must not double as an untracked scratch dir. Only the two advisory files the
+		// agent owns stay writable with no binding; project.md is refused above, state/claim.json too.
+		if (DF_ADVISORY_FILES.has(path.relative(dfDir, abs))) return null;
+		if (!bound) return `.dev-flow/ holds flow state — an unbound session may write only its advisory files there (.dev-flow/reflections.md, .dev-flow/roadmap.md); bind with flow start <slug> or flow use <slug>, and a throwaway script goes outside the repo (under $TMPDIR)`;
+		return null;
+	}
 	if (bound) {
 		if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
 			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout; a throwaway script goes outside the repo (under $TMPDIR)`;
