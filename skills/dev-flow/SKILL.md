@@ -33,6 +33,13 @@ Ground rules:
   when the session is demonstrably wrong, stuck, or claiming a gate result it
   never ran (and `/reload` when `flow version` says this session runs an older
   build).
+  - **Stage reports** — a gate message = a **stage line** (statusbar glyph 💬 pre-flow / 📝 / 🔨 / 🔍 / 🚀 / 🏁
+    + slug + `·`-separated decision fields, provenance-marked `✓` operator · `✓playbook`/`✓detected` rule
+    · `~` agent-assumed · `?` pending; never fenced; undecided reads `pending`, never invented) + event
+    title + **`Done:`**/**`Next steps:`** on own lines: verbs italic (***bold italic*** = recommended),
+    no gate commands; recommended first, *yolo* last, plain closing line
+    "or say what to do differently". Long form: docs/playbook.md;
+    per-stage fields: the stage reference file.
   - **yolo** at any checkpoint → run that gate `--yolo --confirmed`; every later
     checkpoint is pre-confirmed — run the remaining gates back to back without
     asking, honoring guidance attached to the word ("yolo, create a patch

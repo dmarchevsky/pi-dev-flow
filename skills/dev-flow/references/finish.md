@@ -14,6 +14,9 @@ the session context goes with it. Run the end-of-session reflection (bare
   `flow doctor`, drop = discard them. The answer replaces **Finish?** — act
   on it, then run `flow finish --confirmed` without asking again;
 - nothing parked → ask the operator **Finish?** → `flow finish --confirmed`.
+  Checkpoint report: stage line **🏁 finish · `<slug>`** — release recorded ·
+  main state · unmerged count · reflections open · release-checklist open,
+  then `Done:`/`Next steps:` per the Stage reports rule.
 
 The question covers the whole cleanup and mentions any commits that look
 unmerged. `flow finish [slug]`:

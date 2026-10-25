@@ -174,43 +174,60 @@ Future features have their own file: `.dev-flow/roadmap.md`, a gitignored backlo
 manages (add / pick → `flow start` / done / tidy) — a picked item is checked off by `finish` when
 its feature ships, and it never gates either.
 
-### Structured stage reports (a prose convention, not a gate)
+### Structured stage reports (a convention, not a gate)
 
-The gates enforce *state*; how the agent *talks* about that state at each stage is a tier-3 convention —
-type `prose.implement`-style guidance into the stage sections and every session inherits it. The contract
-this repo runs on has two fixed shapes, both **plain markdown inline lines — never fenced** (a code block
-renders monospace with a horizontal scrollbar in web UIs; fences stay for diffs and command output).
+The gates enforce *state*; how the agent *talks* about that state is presentation. The norm lives in
+the skill itself — the **Stage reports** clause in `SKILL.md` ground rules, echoed by the
+`Stage reports:` line in every stage-context injection — so every repo using dev-flow gets the same
+output protocol without writing a word of playbook prose. This is the human explanation of it.
 
-**The stage line.** Every stage report opens with one inline line: a `◆` marker, the stage and slug, then
-the *decision record* as `·`-separated `key value` pairs with backticked values. The core — stage · slug ·
-mode (+ grant mark: `✓` operator-granted, `?` proposed) · ui — repeats at every stage; stage-specific
-fields append:
+One gate message = **stage line** + event title + **`Done:`** / **`Next steps:`** blocks, all plain
+markdown, **never fenced** (a fenced block renders monospace with a horizontal scrollbar in web UIs;
+fences stay for diffs and command output).
 
-| Stage | Fields after the core | Example |
-|---|---|---|
-| pre-flow | mode proposal + why, detected knob defaults, merge-policy state | **◆ pre-flow · new work** — mode `normal` (proposed: touches behavior) · ui on · forge `github` ✓ · merge policy **missing** |
-| plan | plan.md status, mockups `rendered/total`, open questions | **◆ plan · `dark-mode`** — `normal` ✓ · ui on · plan `created` · mockups `3/3` · open questions `0` |
-| implement | commits `N ahead, M uncommitted`, tier-1, tier-2, deploy/health, branch@sha | **◆ implement · `dark-mode`** — `normal` ✓ · ui on · commits `2 ahead, 0 uncommitted` · tier-1 `5/5` · deploy `health PASS` · `feat/dark-mode@a1b2c3` |
-| pre-release | **version decision** — `pending` / `bump <patch\|minor\|major> → vX.Y.Z (pending your word)` / `no-version [your word]` — tag, changelog, fold, review tally, merge style | **◆ pre-release · `dark-mode`** — `normal` ✓ · ui on · version **`bump minor → 0.56.0 (pending your word)`** · tag `v0.56.0` · changelog `ready` · review `0 must / 0 should` · merge `merge` |
-| release | PR + state, merge style used, tag state, artifact proof, forge release state (one line per step — this stage has no checkpoint) | **◆ release · `dark-mode`** — PR `#131 merged` · merge `--merge (playbook)` · tag `v0.56.0 pushed` · artifact `npm view OK` · forge release `created` |
-| finish | release recorded, main state, unmerged commits, reflections open, release-checklist open | **◆ finish · `dark-mode`** — release `recorded` · main `clean, pushed` · unmerged `0` · reflections `2 open` |
+**The stage line** *is* the decision record — one copy of every fact. It opens with the statusbar's
+own stage glyph (the footer is the legend: 💬 pre-flow "operator, your turn" · 📝 plan · 🔨 implement
+· 🔍 pre-release · 🚀 release · 🏁 finish), then `slug — key value` pairs separated by `·`, with the
+mode glyphs after the slug as in the footer (⚡ patch · 📚 docs · 🎱 yolo). Every value carries a
+provenance mark:
 
-A decision that was *not* made is recorded as `pending` — never left unstated, never silently invented
-(a version bump needs the operator's word; `no-version` too).
+| mark | meaning |
+|---|---|
+| `✓` | operator-decided |
+| `✓playbook` / `✓detected` | decided by a rule or auto-detection |
+| `~` | agent-assumed — vetoable; flips to `✓` when the stage's verb is given |
+| `?` | pending the operator's word |
 
-**The checkpoint.** Exactly one per stage, as a plain chat message (a structured-question tool is
-not chat and never licenses `--confirmed`), three markdown bullets and the single verb, **yolo** named
-as an available answer:
+A decision not made reads `pending` — never left unstated, never silently invented (a version bump
+needs the operator's word; `no-version` too). Per-stage fields after the core (stage · slug · mode ·
+ui): plan status and mockups; commits `N ahead, M uncommitted`, tier-1, deploy/health, `branch@sha`;
+the version decision (`bump <level> → vX.Y.Z ~`) with tag/changelog/fold/review/merge-style beside
+it; PR/tag/artifact/forge proofs at 🚀 (stage lines only there — that stage asks nothing); release-
+recorded / main-state / unmerged / reflections at 🏁.
 
-> **CHECKPOINT — Release?**
-> - **context** — checks green; manifest ahead of last tag; `Unreleased` folded.
-> - **options** — *release* → bump minor 0.56.0, tag `v0.56.0`, forge release · *no-version* → merge only, entry rides under `Unreleased` · *edit* — what to change · *yolo* → release with the parameters above, remaining gates run back to back
-> - **recommend** — *release* — user-facing feature, minor per playbook semver
+**The checkpoint** closes exactly one message per stage (the operator's verb stays a plain-chat word
+— a structured-question tool is not chat). Event title, then the labels **`Done:`** and
+**`Next steps:`** standing alone on their own lines. `Done:` names the review surface — paths, SHAs,
+counts, not vibes. `Next steps:` lists the operator's verbs in italics (the recommended one
+***bold italic***, and no line needs a "(recommended)" tag when the styling carries it) and **never
+gate commands** (the agent runs those): recommended first, then alternatives, then *yolo* last with
+what it pre-confirms, then the plain closing line "or say what to do differently". Example:
+
+> **🔍 pre-release · `dark-mode`** — `normal` ✓ · ui `on ✓` · version **`bump minor → 0.56.0 ~`** · tag `v0.56.0 ~` · changelog `ready ~` · merge `merge ✓playbook`
 >
-> Answer in chat: **Release?** (or yolo)
+> **Release prep done**
+>
+> **Done:**
+> review 0 must / 0 should; CHANGELOG `## [0.56.0]` folded from `Unreleased`; manifest bumped
+>
+> **Next steps:**
+> - ***Release*** → tag `v0.56.0`, forge release — locks the `~` fields
+> - *No-version* → merge only, entry rides under `Unreleased`
+> - *Yolo* → release with these parameters, remaining gates back to back
+> - or say what to do differently — bump level, changelog wording
 
-After each gate that advances a stage, one short echo line confirms the new state before new work
-(`▶ stage: implement — 2 commits ahead, tier-1 5/5`). Mid-stage additions amend `plan.md` with an
-`**Added mid-stage:**` line instead of opening a second checkpoint — the verb count stays one per
-stage. The contract is advisory like all tier-3 prose: gates refuse what gates refuse regardless of
-how neatly the report is formatted.
+Mid-stage (non-checkpoint) reports are the stage line plus a short body — no `Next steps:` block —
+and mid-stage scope additions amend `plan.md` with an `**Added mid-stage:**` line instead of opening
+a second checkpoint. Like all tier-3 prose this is advisory: gates refuse what gates refuse no matter
+how the report is formatted. A project can still set `prose.<stage>` for its own stage guidance —
+that replaces the built-in guidance text but the Stage reports rule keeps applying.

@@ -46,7 +46,9 @@
      via DOM/code and move on — screenshots are a spot-check, not a test loop.
 5. Tell the user the plan is ready and **stop** — one word: **Approve?**
    Answered → `flow approve --confirmed` (yolo → `flow approve --yolo
-   --confirmed`).
+   --confirmed`). Checkpoint report: stage line **📝 plan · `<slug>`** — mode ·
+   ui · plan status · mockups `rendered/total` · open questions, then
+   `Done:`/`Next steps:` per the Stage reports rule.
 
 Approval creates the worktree and branch, running `commands.setup` inside when
 configured — a failing setup fails the gate and the next `approve` **retries**
