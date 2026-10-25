@@ -4,7 +4,7 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
-## [0.64.4] - 2026-10-25
+## [0.64.5] - 2026-10-25
 
 ### Fixed
 
@@ -15,6 +15,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 ### Added
 
 - **💬 in the footer while the operator's word is outstanding.** The legend already said 💬 means "operator, your turn" (stage lines open with it); the footer never did, so a flow parked on an unanswered checkpoint looked exactly like one with nothing pending. A gate that tells the agent to go ask now records the word it wants (`FlowState.pendingAsk`), the footer renders `🔨 slug 💬`, and `flow status` prints `💬 Approve?` — set for a chat question or an interactive dialog alike, cleared when the word arrives or the answer comes back no, and dropped when another session takes the feature over (the question belonged to whoever asked it). An unbound session shows the same pre-flow glyph: `💬 no flows`, `💬 N flow(s) open` — an unbound session is parked on the operator by definition, so `⧖` leaves the legend. Presentation only: no gate, guard or verdict reads the field.
+
+## [0.64.4] - 2026-10-25
+
+### Added
+
+- **Stage reports: a uniform output contract for every gate message, carried by the skill itself.** A gate message is now a stage line (the statusbar's own stage glyph 💬 pre-flow / 📝 / 🔨 / 🔍 / 🚀 / 🏁 + slug + `·`-separated decision fields with provenance marks `✓` operator, `✓playbook`/`✓detected` rule, `~` agent-assumed, `?` pending) plus an event title and `Done:`/`Next steps:` blocks — operator verbs in italics (recommended one bold italic), never gate commands, recommended first, *yolo* last, plain "or say what to do differently" closing line. The norm lives in the `SKILL.md` ground rules (budget raised 4000→4500 with the reason noted), each stage reference file names its own fields, the stage-context injection carries a one-line reminder, and `docs/playbook.md` holds the human long form with the worked example — so every repo gets the protocol without writing playbook prose. A consistency test locks the clause, the markers, and every stage file's glyph.
 
 ## [0.64.3] - 2026-10-25
 

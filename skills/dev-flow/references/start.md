@@ -35,7 +35,9 @@ operator how a merged PR should land on the default branch — `squash`, `merge`
 or `any` (no policy) — with the suggestion the refusal read off their own history, then re-run
 `flow start <slug> --merge=<style> --confirmed`. The gate writes the answer into `## release` (single-line
 insert, validated, `.bak` kept) and never asks again. Never pick the style yourself and never write
-`project.md` by hand to get rid of the question.
+`project.md` by hand to get rid of the question. Pre-flow reports open with **💬 pre-flow · new work** —
+mode proposal + why · detected knobs · merge-policy state (💬 = "operator, your turn": a grant or
+answer is pending).
 
 
 ---

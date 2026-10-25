@@ -28,7 +28,10 @@ the worktree unless noted:
    `Unreleased` until the next versioned release folds it), `release-done`
    asks nothing version-side.
 3. `flow release-done` — **no question** (the Release? answer covered the
-   publication). It re-verifies (tag on the default branch, on origin, artifact
+   publication). Reporting at this stage is stage lines only, one per step —
+   **🚀 release · `<slug>`** — PR + state · merge style used · tag state ·
+   artifact · forge release (all values `✓` — the Release? verb locked them);
+   no `Done:`/`Next steps:` block, nothing is asked. It re-verifies (tag on the default branch, on origin, artifact
    when configured) against **the version the release gate stamped** — never a
    re-read from a checkout that may be behind — and refuses anything older than
    the newest matching tag on origin (lists come from `git ls-remote`, so an

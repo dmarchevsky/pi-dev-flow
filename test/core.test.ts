@@ -1289,3 +1289,16 @@ test("nextHint names the playbook merge style at the release stage", () => {
 	assert.match(nextHint(st, cfg), /merge = squash — gh pr merge <n> --squash/, "the number goes before the flag — a trailing flag reads the branch as the PR selector");
 	assert.doesNotMatch(nextHint(st, DEFAULTS), /gh pr merge/, "no policy, no advice");
 });
+
+test("Stage reports: the skill carries the report contract and each stage file shows its glyph", () => {
+	const skill = readFileSync(new URL("../skills/dev-flow/SKILL.md", import.meta.url), "utf8");
+	assert.match(skill, /\*\*Stage reports\*\*/, "the ground rules carry the Stage reports clause");
+	assert.match(skill, /Next steps:/, "the clause defines the Next steps block");
+	assert.match(skill, /or say what to do differently/, "the escape-hatch line is part of the contract");
+	assert.match(skill, /\*\*\*bold italic\*\*\*/, "the recommended verb is bold italic");
+	const glyphs: [string, string][] = [["start", "💬 pre-flow"], ["plan", "📝 plan"], ["implement", "🔨 implement"], ["pre-release", "🔍 pre-release"], ["release", "🚀 release"], ["finish", "🏁 finish"]];
+	for (const [stage, needle] of glyphs) {
+		const ref = readFileSync(new URL(`../skills/dev-flow/references/${stage}.md`, import.meta.url), "utf8");
+		assert.ok(ref.includes(needle), `${stage}.md carries its stage-line marker ${needle}`);
+	}
+});
