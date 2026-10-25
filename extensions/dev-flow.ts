@@ -2193,6 +2193,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (ref) guidance.push(`Stage playbook: read ${path.join(SKILL_DIR, ref)} before gate work in this stage.`);
 		const prose = stageGuidance(cfg, state.stage);
 		if (prose) guidance.push(`Stage guidance (${prose.source}): ${prose.text}`);
+		guidance.push("Stage reports: open every report with the stage line (statusbar glyph + slug + provenance-marked decision fields); close a checkpoint with an event title and `Done:` / `Next steps:` on own lines — italic verbs, recommended first, yolo last. See Stage reports in the ground rules.");
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
 		const refl = readReflections(ctx.cwd);

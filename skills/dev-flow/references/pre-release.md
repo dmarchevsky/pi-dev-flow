@@ -25,7 +25,11 @@ invent one mid-release. Sequence:
 4. `flow check` — the prep edits invalidated the implement checks; the release
    gate demands them green again.
 5. State what the PR will contain, present version and changelog entry,
-   **stop** — **Release?** → `flow release --confirmed`. The gate re-checks
+   **stop** — **Release?** → `flow release --confirmed`. Checkpoint report:
+   stage line **🔍 pre-release · `<slug>`** — version decision (`pending` /
+   `bump <level> → vX.Y.Z ~` / `no-version ✓`) · tag · changelog · fold ·
+   review tally · merge style, then `Done:`/`Next steps:` per the Stage
+   reports rule. The gate re-checks
    tier-1, requires the manifest **ahead of the last tag**, a changelog
    **heading** naming that version (a mention in prose is not an entry) and that
    this branch prepared the entry. Operator ships this flow **without

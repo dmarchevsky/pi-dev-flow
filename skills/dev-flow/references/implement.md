@@ -36,7 +36,9 @@ feature).
    container starts is not a failed deploy; say so rather than declaring a
    healthy deploy broken. Walk the **tier-2 checklist** (`- [ ]`) with the
    operator honestly — it cannot be scripted. Then ask **Verified?** →
-   `flow verify --confirmed`. Fixes = iterate and re-verify; that loop is
+   `flow verify --confirmed`. Checkpoint report: stage line **🔨 implement ·
+   `<slug>`** — commits `N ahead, M uncommitted` · tier-1 · tier-2 · deploy/
+   health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = iterate and re-verify; that loop is
    free.
 
 `flow verify` re-runs build, runs the `dev` deploy when configured (the
