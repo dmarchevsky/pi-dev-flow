@@ -774,6 +774,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		return null;
 	};
 	const slugArg = rest.find((a) => !a.startsWith("--"));
+	const o: GateCtx = { root, ui, sess, cfg, rest, flag, slugArg, takeYoloWord };
 
 	switch (sub) {
 		case "init": {
@@ -1099,22 +1100,8 @@ ${mdDigest(draftRefresh)}`))
 			return { text: investigationBrief(rest.filter((a) => !a.startsWith("--")).join(" "), isSelfRepo(root)).join("\n") };
 		}
 
-		case "version": {
-			// the plugin's own version — separate from the project's versioning.file version the release gates use
-			const self = checkoutBuild(root);
-			const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
-			const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
-			// in the dev-flow repo head names the checkout, so name where the stale code actually lives
-			const from = SELF_BUILD.dir !== self.dir ? ` (from ${SELF_BUILD.dir})` : "";
-			const dupNote = copyWarning();
-			// --check-upstream is the one that asks the registry; plain flow version stays offline and instant
-			if (flag("check-upstream")) {
-				const pub = await sh("npm view pi-dev-flow version", root);
-				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
-				return { text: newest ? `${head} — published: ${newest}${self.version && newest !== self.version ? " (update available)" : ""}` : `${head} — could not read the published version (offline?)` };
-			}
-			return { text: `${behind ? `${head} — but this session runs ${behind}${from}; /reload to run ${self.version} \u2014 in a shared-process host (pi-web) reload cannot swap loaded code: only a host restart does` : head}${dupNote ? `\n${dupNote}` : ""}` };
-		}
+		case "version":
+			return gateVersion(o);
 
 		case "approve": {
 			const { state, err } = needState(root, sess, slugArg);
@@ -1160,16 +1147,8 @@ ${mdDigest(draftRefresh)}`))
 			return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
 		}
 
-		case "test": {
-			const { state, err } = needState(root, sess, slugArg);
-			if (err) return err;
-			if (!cfg.commands.test) return { text: "no commands.test configured — add `test = <command>` under ## implement in .dev-flow/project.md", isError: true };
-			const res = await sh(cfg.commands.test, gateCwd(root, state!));
-			state!.checks.test = { ok: res.ok, at: now() };
-			await stampChecks(root, state!, ["test"]);
-			writeState(root, state!);
-			return { text: `test: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.test})\n${tail(res.out)}` };
-		}
+		case "test":
+			return gateTest(o);
 
 		case "verify": {
 			const { state, err } = needState(root, sess, slugArg);
@@ -1251,33 +1230,11 @@ ${mdDigest(draftRefresh)}`))
 			return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${nextHint(state!, cfg)}` };
 		}
 
-		case "check": {
-			const { state, err } = needState(root, sess, slugArg);
-			if (err) return err;
-			// a docs flow runs no project command anywhere else — pendingChecks, verifyGate and releaseGate all skip
-			// it — so running tier-1 here only produced a FAIL that read like a broken deploy in a checkout that
-			// never built the binary (#96)
-			// shortcut: --docs is the operator's word, nothing checks the changeset is docs-only, so a mislabelled
-			// flow now gets no test run at all; the mechanical fix is a diff-scope guard at verify if it ever bites
-			if (state!.docs) return { text: "docs mode: project commands skipped — a docs flow runs no tier-1 checks (CI on the tag and the artifact proof still do)" };
-			if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
-			const ran = await runChecks(root, state!, cfg, cfg.checkList);
-			return { text: `tier-1 checks:\n${ran.lines.join("\n")}`, isError: ran.failed };
-		}
+		case "check":
+			return gateCheck(o);
 
-		case "health": {
-			const { state, err } = needState(root, sess, slugArg);
-			if (err) return err;
-			if (!cfg.commands.health) return { text: "no commands.health configured — add `health = <command>` (or a flow-check health block) under ## implement in .dev-flow/project.md", isError: true };
-			const seedFail = await seedStep(root, state!, cfg);
-			if (seedFail) return seedFail;
-			const res = await runHealthProbe(cfg.commands.health, gateCwd(root, state!), cfg.healthWait);
-			state!.checks.health = { ok: res.ok, at: now() };
-			await stampChecks(root, state!, ["health"]);
-			writeState(root, state!);
-			const tried = res.attempts > 1 ? `, ${res.attempts} attempts` : "";
-			return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health}${tried})\n${tail(res.out)}` };
-		}
+		case "health":
+			return gateHealth(o);
 
 		case "release": {
 			const { state, err } = needState(root, sess, slugArg);
@@ -1660,40 +1617,121 @@ ${mdDigest(draftRefresh)}`))
 			return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}${syncNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 		}
 
-		case "use": {
-			if (!slugArg) return { text: "usage: flow use <slug>", isError: true };
-			const st = readState(root, slugArg);
-			if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
-			const prior = readClaim(root, slugArg);
-			const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
-			sess.bind(slugArg);
-			sess.rename(slugArg);
-			return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}; session renamed to ${slugArg}${takeover}` };
-		}
+		case "use":
+			return gateUse(o);
 
-		case "abort": {
-			// Unbinds the session only; state and worktree stay for manual recovery.
-			const target = slugArg ?? sess.slug;
-			if (!target) return { text: "nothing bound — pass a slug", isError: true };
-			const st = readState(root, target);
-			// a live claim locks the whole feature, not only its gates: aborting it out from under the session
-			// that works it erases the plan that session is still writing (same rule needState applies)
-			const claim = readClaim(root, target);
-			if (claimBlocks(claim, sess.key)) return { text: `${target} is claimed by another live session (pid ${claim!.pid}) — flow use ${target} takes it over explicitly`, isError: true };
-			if (sess.slug === target) sess.bind(null);
-			if (st && !st.worktree) {
-				// plan-stage abort = drop: no worktree/branch exists, so the state dir would linger
-				// as a ghost the doctor flags (a plan/ whose state.json is gone)
-				rmSync(featDir(root, target), { recursive: true, force: true });
-				return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
-			}
-			return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
-		}
+		case "abort":
+			return gateAbort(o);
 
 		default:
 			return { text: `unknown subcommand "${sub}" — ${GATE_HELP}`, isError: true };
 	}
 }
+/** What a gate handler needs from the runFlow preamble. Bodies moved verbatim destructure
+ *  their own names back, so the bodies needed zero edits. */
+interface GateCtx {
+	root: string;
+	ui: Ui;
+	sess: Session;
+	cfg: Config;
+	rest: string[];
+	flag: (name: string) => boolean;
+	slugArg?: string;
+	takeYoloWord: (state: FlowState) => string | null;
+}
+
+async function gateVersion(o: GateCtx): Promise<RunResult> {
+	const { root, flag } = o;
+	// the plugin's own version — separate from the project's versioning.file version the release gates use
+	const self = checkoutBuild(root);
+	const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
+	const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
+	// in the dev-flow repo head names the checkout, so name where the stale code actually lives
+	const from = SELF_BUILD.dir !== self.dir ? ` (from ${SELF_BUILD.dir})` : "";
+	const dupNote = copyWarning();
+	// --check-upstream is the one that asks the registry; plain flow version stays offline and instant
+	if (flag("check-upstream")) {
+		const pub = await sh("npm view pi-dev-flow version", root);
+		const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
+		return { text: newest ? `${head} — published: ${newest}${self.version && newest !== self.version ? " (update available)" : ""}` : `${head} — could not read the published version (offline?)` };
+	}
+	return { text: `${behind ? `${head} — but this session runs ${behind}${from}; /reload to run ${self.version} \u2014 in a shared-process host (pi-web) reload cannot swap loaded code: only a host restart does` : head}${dupNote ? `\n${dupNote}` : ""}` };
+}
+
+async function gateTest(o: GateCtx): Promise<RunResult> {
+	const { root, sess, cfg, slugArg } = o;
+	const { state, err } = needState(root, sess, slugArg);
+	if (err) return err;
+	if (!cfg.commands.test) return { text: "no commands.test configured — add `test = <command>` under ## implement in .dev-flow/project.md", isError: true };
+	const res = await sh(cfg.commands.test, gateCwd(root, state!));
+	state!.checks.test = { ok: res.ok, at: now() };
+	await stampChecks(root, state!, ["test"]);
+	writeState(root, state!);
+	return { text: `test: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.test})\n${tail(res.out)}` };
+}
+
+async function gateCheck(o: GateCtx): Promise<RunResult> {
+	const { root, sess, cfg, slugArg } = o;
+	const { state, err } = needState(root, sess, slugArg);
+	if (err) return err;
+	// a docs flow runs no project command anywhere else — pendingChecks, verifyGate and releaseGate all skip
+	// it — so running tier-1 here only produced a FAIL that read like a broken deploy in a checkout that
+	// never built the binary (#96)
+	// shortcut: --docs is the operator's word, nothing checks the changeset is docs-only, so a mislabelled
+	// flow now gets no test run at all; the mechanical fix is a diff-scope guard at verify if it ever bites
+	if (state!.docs) return { text: "docs mode: project commands skipped — a docs flow runs no tier-1 checks (CI on the tag and the artifact proof still do)" };
+	if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
+	const ran = await runChecks(root, state!, cfg, cfg.checkList);
+	return { text: `tier-1 checks:\n${ran.lines.join("\n")}`, isError: ran.failed };
+}
+
+async function gateHealth(o: GateCtx): Promise<RunResult> {
+	const { root, sess, cfg, slugArg } = o;
+	const { state, err } = needState(root, sess, slugArg);
+	if (err) return err;
+	if (!cfg.commands.health) return { text: "no commands.health configured — add `health = <command>` (or a flow-check health block) under ## implement in .dev-flow/project.md", isError: true };
+	const seedFail = await seedStep(root, state!, cfg);
+	if (seedFail) return seedFail;
+	const res = await runHealthProbe(cfg.commands.health, gateCwd(root, state!), cfg.healthWait);
+	state!.checks.health = { ok: res.ok, at: now() };
+	await stampChecks(root, state!, ["health"]);
+	writeState(root, state!);
+	const tried = res.attempts > 1 ? `, ${res.attempts} attempts` : "";
+	return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health}${tried})\n${tail(res.out)}` };
+}
+
+async function gateUse(o: GateCtx): Promise<RunResult> {
+	const { root, sess, slugArg } = o;
+	if (!slugArg) return { text: "usage: flow use <slug>", isError: true };
+	const st = readState(root, slugArg);
+	if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
+	const prior = readClaim(root, slugArg);
+	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
+	sess.bind(slugArg);
+	sess.rename(slugArg);
+	return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}; session renamed to ${slugArg}${takeover}` };
+}
+
+async function gateAbort(o: GateCtx): Promise<RunResult> {
+	const { root, sess, slugArg } = o;
+	// Unbinds the session only; state and worktree stay for manual recovery.
+	const target = slugArg ?? sess.slug;
+	if (!target) return { text: "nothing bound — pass a slug", isError: true };
+	const st = readState(root, target);
+	// a live claim locks the whole feature, not only its gates: aborting it out from under the session
+	// that works it erases the plan that session is still writing (same rule needState applies)
+	const claim = readClaim(root, target);
+	if (claimBlocks(claim, sess.key)) return { text: `${target} is claimed by another live session (pid ${claim!.pid}) — flow use ${target} takes it over explicitly`, isError: true };
+	if (sess.slug === target) sess.bind(null);
+	if (st && !st.worktree) {
+		// plan-stage abort = drop: no worktree/branch exists, so the state dir would linger
+		// as a ghost the doctor flags (a plan/ whose state.json is gone)
+		rmSync(featDir(root, target), { recursive: true, force: true });
+		return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
+	}
+	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
+}
+
 
 async function currentBranch(root: string): Promise<string> {
 	const r = await sh("git branch --show-current", root);
