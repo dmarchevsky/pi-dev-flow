@@ -4,6 +4,18 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.64.4] - 2026-10-25
+
+### Fixed
+
+- **A heredoc body is an argument's prose, not a command.** `bashSegments` splits on newlines outside quotes, so every line of `git commit -F - <<'MSG' … MSG` was judged as its own command: a commit message whose line began with `flow status` was refused with *there is no "flow" shell command*, and one that named `.dev-flow/<slug>/state.json` tripped the state-tamper block. `stripHeredocBodies` now blanks heredoc bodies (line count kept, so segment order survives) before the split, which every guard inherits — flow invocation, state/playbook tamper, project deny rules, git parsing, merge style and force-push detection. A head that executes its argument (`sh`, `node`, `python`…) is never masked: a heredoc fed to an interpreter really runs, and prose-is-argument is a rule about data, not a licence to unsee code. Unterminated bodies are left judged — masking less is the safe direction.
+- **`.dev-flow/` is no longer a free write area for an unbound session.** The write guard allowed anything under `.dev-flow/`, and the folder gitignores everything, so an unbound session could park arbitrary files there (`.dev-flow/COMMUNICATION-PLAN.md` was one) — a folder whose whole purpose is flow state doubled as untracked scratch space. Only the two advisory files the agent owns (`reflections.md`, `roadmap.md`) stay writable with no binding; anything else in the folder is refused, and the refusal names the writable pair. A bound session keeps the folder exactly as it had it — the flow-owned paths inside it were, and stay, refused by their own rules.
+- **`gh pr merge --merge main` merges nothing, so every hint now spells `gh pr merge <n> --merge`.** A positional after the style flag is read by gh as the PR selector ("no pull requests found for main"), which turned the form the release reference and the release-stage hint showed into a silent no-op at the one step of the release. The skill's release reference, the merge-policy section of `docs/playbook.md` and `nextHint` all put the number first and say why the order matters.
+
+### Added
+
+- **💬 in the footer while the operator's word is outstanding.** The legend already said 💬 means "operator, your turn" (stage lines open with it); the footer never did, so a flow parked on an unanswered checkpoint looked exactly like one with nothing pending. A gate that tells the agent to go ask now records the word it wants (`FlowState.pendingAsk`), the footer renders `🔨 slug 💬`, and `flow status` prints `💬 Approve?` — set for a chat question or an interactive dialog alike, cleared when the word arrives or the answer comes back no, and dropped when another session takes the feature over (the question belonged to whoever asked it). An unbound session shows the same pre-flow glyph: `💬 no flows`, `💬 N flow(s) open` — an unbound session is parked on the operator by definition, so `⧖` leaves the legend. Presentation only: no gate, guard or verdict reads the field.
+
 ## [0.64.3] - 2026-10-25
 
 ### Changed
