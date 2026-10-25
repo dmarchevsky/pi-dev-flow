@@ -178,41 +178,39 @@ its feature ships, and it never gates either.
 
 The gates enforce *state*; how the agent *talks* about that state at each stage is a tier-3 convention —
 type `prose.implement`-style guidance into the stage sections and every session inherits it. The contract
-this repo runs on has two fixed shapes:
+this repo runs on has two fixed shapes, both **plain markdown inline lines — never fenced** (a code block
+renders monospace with a horizontal scrollbar in web UIs; fences stay for diffs and command output).
 
-**The header block.** Every stage report opens with a fenced block carrying the *decision record* — the
-fields every later stage still needs: `slug`, `mode` (`normal`/`patch`/`docs`, marked granted once the
-operator said the word), `ui`, `branch`/`worktree`, `checks`, plus whatever the stage decides:
+**The stage line.** Every stage report opens with one inline line: a `◆` marker, the stage and slug, then
+the *decision record* as `·`-separated `key value` pairs with backticked values. The core — stage · slug ·
+mode (+ grant mark: `✓` operator-granted, `?` proposed) · ui — repeats at every stage; stage-specific
+fields append:
 
-| Stage | Header must add |
-|---|---|
-| start/init | proposed slug + mode with a one-line why, detected knob defaults, merge policy when `flow start` refused |
-| plan | `plan.md` path (created/amended), mockups rendered/total, open questions |
-| implement | `commits: N ahead, M uncommitted`, tier-1 pass count, tier-2 walked, deploy + health result |
-| pre-release | the **version decision**: `pending → bump <patch\|minor\|major> → vX.Y.Z` or `no-version [operator word]`, tag, changelog heading, fold status, `/flow-review` tally, merge style |
-| release | PR number/state, merge style used, tag pushed?, artifact proof, forge release state |
-| finish | release recorded, main clean+pushed, unmerged commits, reflections parked, open release checklist |
+| Stage | Fields after the core | Example |
+|---|---|---|
+| pre-flow | mode proposal + why, detected knob defaults, merge-policy state | **◆ pre-flow · new work** — mode `normal` (proposed: touches behavior) · ui on · forge `github` ✓ · merge policy **missing** |
+| plan | plan.md status, mockups `rendered/total`, open questions | **◆ plan · `dark-mode`** — `normal` ✓ · ui on · plan `created` · mockups `3/3` · open questions `0` |
+| implement | commits `N ahead, M uncommitted`, tier-1, tier-2, deploy/health, branch@sha | **◆ implement · `dark-mode`** — `normal` ✓ · ui on · commits `2 ahead, 0 uncommitted` · tier-1 `5/5` · deploy `health PASS` · `feat/dark-mode@a1b2c3` |
+| pre-release | **version decision** — `pending` / `bump <patch\|minor\|major> → vX.Y.Z (pending your word)` / `no-version [your word]` — tag, changelog, fold, review tally, merge style | **◆ pre-release · `dark-mode`** — `normal` ✓ · ui on · version **`bump minor → 0.56.0 (pending your word)`** · tag `v0.56.0` · changelog `ready` · review `0 must / 0 should` · merge `merge` |
+| release | PR + state, merge style used, tag state, artifact proof, forge release state (one line per step — this stage has no checkpoint) | **◆ release · `dark-mode`** — PR `#131 merged` · merge `--merge (playbook)` · tag `v0.56.0 pushed` · artifact `npm view OK` · forge release `created` |
+| finish | release recorded, main state, unmerged commits, reflections open, release-checklist open | **◆ finish · `dark-mode`** — release `recorded` · main `clean, pushed` · unmerged `0` · reflections `2 open` |
 
 A decision that was *not* made is recorded as `pending` — never left unstated, never silently invented
 (a version bump needs the operator's word; `no-version` too).
 
-**The checkpoint block.** Exactly one per stage, as a plain chat message (a structured-question tool is
-not chat and never licenses `--confirmed`), closing with the single verb and naming **yolo** as an
-available answer:
+**The checkpoint.** Exactly one per stage, as a plain chat message (a structured-question tool is
+not chat and never licenses `--confirmed`), three markdown bullets and the single verb, **yolo** named
+as an available answer:
 
-````markdown
-CHECKPOINT Release?
-  context: checks green; manifest ahead of last tag; Unreleased folded.
-  options: release → bump minor 0.56.0, tag v0.56.0, forge release
-         | no-version → merge only, entry rides under Unreleased
-         | edit — <what to change>
-         | yolo → release with the parameters above, remaining gates run back to back
-  recommend: release — user-facing feature, minor per playbook semver
-Answer in chat: Release?  (or yolo)
-````
+> **CHECKPOINT — Release?**
+> - **context** — checks green; manifest ahead of last tag; `Unreleased` folded.
+> - **options** — *release* → bump minor 0.56.0, tag `v0.56.0`, forge release · *no-version* → merge only, entry rides under `Unreleased` · *edit* — what to change · *yolo* → release with the parameters above, remaining gates run back to back
+> - **recommend** — *release* — user-facing feature, minor per playbook semver
+>
+> Answer in chat: **Release?** (or yolo)
 
-After each gate that advances a stage, one echo line confirms the new state before new work
-(`▶ stage: implement — worktree …, mode docs, ui off`). Mid-stage additions amend `plan.md` with an
+After each gate that advances a stage, one short echo line confirms the new state before new work
+(`▶ stage: implement — 2 commits ahead, tier-1 5/5`). Mid-stage additions amend `plan.md` with an
 `**Added mid-stage:**` line instead of opening a second checkpoint — the verb count stays one per
 stage. The contract is advisory like all tier-3 prose: gates refuse what gates refuse regardless of
 how neatly the report is formatted.
