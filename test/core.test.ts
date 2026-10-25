@@ -1286,6 +1286,6 @@ test("nextHint: the UI clause appends to the plan path instead of replacing it",
 test("nextHint names the playbook merge style at the release stage", () => {
 	const st = { ...newState("x", false), stage: "release" as const };
 	const cfg = { ...DEFAULTS, release: { ...DEFAULTS.release, merge: "squash" as const } };
-	assert.match(nextHint(st, cfg), /merge = squash — gh pr merge --squash/);
+	assert.match(nextHint(st, cfg), /merge = squash — gh pr merge <n> --squash/, "the number goes before the flag — a trailing flag reads the branch as the PR selector");
 	assert.doesNotMatch(nextHint(st, DEFAULTS), /gh pr merge/, "no policy, no advice");
 });

@@ -1759,7 +1759,7 @@ export function compactionReflectionLine(slug: string, stage: Stage, reason: str
 /** The playbook's merge style spelled for a hint: "" when the project has no policy. */
 function mergeHintFor(cfg: Config): string {
 	const m = cfg.release.merge;
-	return m && m !== "any" ? ` (the playbook says merge = ${m} — gh pr merge --${m === "merge" ? "merge" : m})` : "";
+	return m && m !== "any" ? ` (the playbook says merge = ${m} — gh pr merge <n> --${m === "merge" ? "merge" : m}, number before the flag: a trailing one reads as the PR selector)` : "";
 }
 
 export function nextHint(state: FlowState, cfg: Config): string {

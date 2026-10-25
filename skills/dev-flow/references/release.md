@@ -9,8 +9,10 @@ here) — this stage publishes; the preparation happened in pre-release. Run in
 the worktree unless noted:
 
 1. Commit everything, push the feature branch, open the PR, wait for the merge
-   (`gh pr merge` or ask the user) — with the **playbook's merge style spelled out**
-   (`gh pr merge --squash` under `merge = squash`): the guard blocks a style that contradicts the
+   (`gh pr merge <n> --merge` or ask the user) — with the **playbook's merge style spelled out**
+   (`gh pr merge <n> --squash` under `merge = squash`), and **the PR number before the flag**: a bare
+   `gh pr merge --merge main` makes gh read `main` as the PR selector ("no pull requests found for
+   main"). The guard blocks a style that contradicts the
    playbook and asks the operator about a merge with no style flag, so let the playbook decide rather
    than the forge default. Merge without `--delete-branch`: it fails when
    the default branch is checked out in the main worktree, and `flow finish`
