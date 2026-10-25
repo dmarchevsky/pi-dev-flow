@@ -973,132 +973,17 @@ ${mdDigest(draftRefresh)}`))
 			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}); session renamed to ${slugArg}.${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
 		}
 
-		case "status": {
-			const df = dfDir(root);
-			const { md } = loadProject(df);
-			// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
-			const findings = md ? doctorFindings(root, cfg, md) : [];
-			// a session running an older build than the disk ships is the one thing a glance must say: every
-			// gate proof printed since the drift began belongs to the older code.
-			const disk = checkoutBuild(root);
-			const staleBuild = sessionRunsOlderBuild(loadedVersion(), disk.version);
-			const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(staleBuild ? [`⚠ this session runs dev-flow ${staleBuild}, ${disk.label} ships ${disk.version} — /reload rebinds; restart swaps code`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
-			// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
-			const rmap = roadmapOpenCount(readRoadmap(root));
-			const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
-			const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
-			const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
-			if (flag("json")) {
-				const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
-				return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
-			}
-			if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
-			const lines = slugs.flatMap((s) => {
-				const st = readState(root, s);
-				if (!st) return [];
-				return [
-					`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""}${st.yolo ? " [yolo]" : ""}${st.noVersion ? " [no-version]" : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""}`,
-					`  approvals: ${Object.keys(st.approvals).join(", ") || "none"} | checks: ${Object.entries(st.checks).map(([k, v]) => `${k}:${v.ok ? "ok" : "FAILED"}`).join(", ") || "none"}${st.confirmations?.implement ? " | checklist: confirmed" : ""}`,
-					`  next: ${nextHint(st, cfg)}`,
-				];
-			});
-			if (warn.length) lines.push(...warn);
-			// which identity this session's state is keyed by: a claim fight is undiagnosable when the key
-			// could be a session id or a shared directory and the output does not say which
-			lines.push(`session: ${sess.key}${sess.key.startsWith("cwd:") ? " — no session id from pi, so every pi session in this directory shares one dev-flow binding (pass flow use <slug> in each)" : ""}`);
-			const refl = readReflections(root);
-			if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — run flow doctor (it reviews and routes them)`);
-			lines.push(...rmapLine);
-			return { text: lines.join("\n") || "no features" };
-		}
+		case "status":
+			return gateStatus(o);
 
-		case "reflect": {
-			// gate flags belong to the state verbs — pasted into the note they read as part of the operator's
-			// own sentence in reflections.md (#43). --plugin/--playbook/--both are reflect's own: they state
-			// the filing instead of leaving it to a keyword guess.
-			const words = rest.filter((a) => !a.startsWith("--"));
-			const forced: ReflectSection[] | null = flag("both")
-				? (["playbook", "plugin"] as ReflectSection[])
-				: flag("plugin")
-					? (["plugin"] as ReflectSection[])
-					: flag("playbook")
-						? (["playbook"] as ReflectSection[])
-						: null;
-			// single words are verbs (roadmap-style); a note merely starting with one stays a note
-			if (words.length === 1 && words[0] === "tidy") return reflectTidy(root);
-			if (words.length === 1 && words[0] === "list") return reflectList(root);
-			if (words[0] === "move") return reflectMoveNote(root, words.slice(1), forced);
-			if (words.length) return reflectNote(root, sess, words, forced);
-			// upstream for the update probe: the manifest's repository field; the dev-flow checkout itself falls back to its origin
-			const self = pluginVersion(import.meta.dirname);
-			const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
-			return { text: reflectProtocol(readReflections(root), isSelfRepo(root), { version: self.version, upstream, closed: closedReflectionCount(readReflectionsText(root)) }).join("\n") };
-		}
+		case "reflect":
+			return gateReflect(o);
 
-		case "roadmap": {
-			// the backlog is advisory — no state, no gating; direct file edits stay allowed like reflections.md
-			const words = rest.filter((a) => !a.startsWith("--")); // gate flags are not backlog prose (#43 applies here too)
-			const [verb = "list", ...args] = words;
-			const text = readRoadmap(root);
-			const open = roadmapOpenCount(text);
-			const done = roadmapDoneCount(text);
-			const save = (next: string) => writeFileSync(roadmapFile(root), next); // .dev-flow/ existence is runFlow's precondition
-			const idx = Number(args[0]);
-			const validIdx = Number.isInteger(idx) && idx >= 1 && idx <= open;
-			switch (verb) {
-				case "list": {
-					if (!open) return { text: done ? `roadmap: nothing open (${done} done — flow roadmap tidy drops them)` : "roadmap: empty — flow roadmap add \"<future feature>\"" };
-					return { text: [`roadmap — ${open} open (${done} done):`, ...openChecklistItems(text).map((l, i) => `  ${i + 1}. ${l.slice(6)}`)].join("\n") };
-				}
-				case "add": {
-					if (!args.length) return { text: 'usage: flow roadmap add "<future feature>"', isError: true };
-					save(appendRoadmapItem(text, args.join(" ")));
-					return { text: `roadmap: added — ${open + 1} open` };
-				}
-				case "pick": {
-					const slug = args[1] ?? "";
-					if (!validIdx) return { text: `pick: open item 1–${open} required — flow roadmap lists them`, isError: true };
-					if (!slug || !validSlug(slug)) return { text: `usage: flow roadmap pick <n> <slug> — the slug flow start will use (lowercase, dashes)`, isError: true };
-					save(roadmapPick(text, idx, slug)!);
-					return { text: `roadmap: item ${idx} picked for ${slug} — now: flow start ${slug} (flow finish checks the item off when it ships)` };
-				}
-				case "done": {
-					if (!validIdx) return { text: `done: open item 1–${open} required — flow roadmap lists them`, isError: true };
-					// stamped with date + bound slug, so history says what shipped it
-					save(roadmapDone(text, idx, [new Date().toISOString().slice(0, 10), sess.slug].filter(Boolean).join(" "))!);
-					return { text: `roadmap: item ${idx} marked done (${open - 1} open)` };
-				}
-				case "tidy": {
-					if (!done) return { text: `roadmap: nothing to tidy (${open} open, 0 done)` };
-					save(roadmapTidy(text));
-					return { text: `roadmap: dropped ${done} done item(s) — ${open} open` };
-				}
-				default:
-					return { text: "usage: flow roadmap [list|add <text>|pick <n> <slug>|done <n>|tidy]", isError: true };
-				}
-			}
+		case "roadmap":
+			return gateRoadmap(o);
 
-		case "doctor": {
-			// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
-			const df = dfDir(root);
-			const loaded = loadProject(df);
-			const findings = doctorFindings(root, loaded.cfg, loaded.md);
-			findings.push(...(await gitConsistency(root, loaded.cfg)));
-			const refl = readReflections(root);
-			if (refl.length) {
-				findings.push(`reflection review — ${refl.length} open item(s); doctor never implements: investigate each, present the fix, the operator confirms, then the routed flow implements it:`);
-				// labelled from the heading each item sits under — the file is the record, re-guessing from the
-				// note text made doctor's table disagree with where the note was actually filed
-				for (const r of reflectionRoutes(refl, isSelfRepo(root))) findings.push(`  [${r.sections.join("+")}] ${r.text}\n      → ${r.route}`);
-			}
-			const unfiled = reflectUnfiledCount(readReflectionsText(root));
-			if (unfiled) findings.push(`  reflections: ${unfiled} open item(s) sit outside ## playbook / ## plugin — flow reflect list shows them, flow reflect move <n> --plugin|--playbook files them`);
-			const closedRefl = closedReflectionCount(readReflectionsText(root));
-			if (closedRefl) findings.push(reflectionsTidyHint(closedRefl));
-			if (!rest.length) return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
-			// flow doctor <note>: a fresh observation gets an investigation brief and a fix route
-			return { text: investigationBrief(rest.filter((a) => !a.startsWith("--")).join(" "), isSelfRepo(root)).join("\n") };
-		}
+		case "doctor":
+			return gateDoctor(o);
 
 		case "version":
 			return gateVersion(o);
@@ -1627,6 +1512,137 @@ ${mdDigest(draftRefresh)}`))
 			return { text: `unknown subcommand "${sub}" — ${GATE_HELP}`, isError: true };
 	}
 }
+async function gateStatus(o: GateCtx): Promise<RunResult> {
+	const { root, ui, sess, cfg, flag, slugArg } = o;
+	const df = dfDir(root);
+	const { md } = loadProject(df);
+	// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
+	const findings = md ? doctorFindings(root, cfg, md) : [];
+	// a session running an older build than the disk ships is the one thing a glance must say: every
+	// gate proof printed since the drift began belongs to the older code.
+	const disk = checkoutBuild(root);
+	const staleBuild = sessionRunsOlderBuild(loadedVersion(), disk.version);
+	const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(staleBuild ? [`⚠ this session runs dev-flow ${staleBuild}, ${disk.label} ships ${disk.version} — /reload rebinds; restart swaps code`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
+	// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
+	const rmap = roadmapOpenCount(readRoadmap(root));
+	const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
+	const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
+	const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
+	if (flag("json")) {
+		const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
+		return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
+	}
+	if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
+	const lines = slugs.flatMap((s) => {
+		const st = readState(root, s);
+		if (!st) return [];
+		return [
+			`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""}${st.yolo ? " [yolo]" : ""}${st.noVersion ? " [no-version]" : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""}`,
+			`  approvals: ${Object.keys(st.approvals).join(", ") || "none"} | checks: ${Object.entries(st.checks).map(([k, v]) => `${k}:${v.ok ? "ok" : "FAILED"}`).join(", ") || "none"}${st.confirmations?.implement ? " | checklist: confirmed" : ""}`,
+			`  next: ${nextHint(st, cfg)}`,
+		];
+	});
+	if (warn.length) lines.push(...warn);
+	// which identity this session's state is keyed by: a claim fight is undiagnosable when the key
+	// could be a session id or a shared directory and the output does not say which
+	lines.push(`session: ${sess.key}${sess.key.startsWith("cwd:") ? " — no session id from pi, so every pi session in this directory shares one dev-flow binding (pass flow use <slug> in each)" : ""}`);
+	const refl = readReflections(root);
+	if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — run flow doctor (it reviews and routes them)`);
+	lines.push(...rmapLine);
+	return { text: lines.join("\n") || "no features" };
+}
+
+async function gateReflect(o: GateCtx): Promise<RunResult> {
+	const { root, sess, rest, flag } = o;
+	// gate flags belong to the state verbs — pasted into the note they read as part of the operator's
+	// own sentence in reflections.md (#43). --plugin/--playbook/--both are reflect's own: they state
+	// the filing instead of leaving it to a keyword guess.
+	const words = rest.filter((a) => !a.startsWith("--"));
+	const forced: ReflectSection[] | null = flag("both")
+		? (["playbook", "plugin"] as ReflectSection[])
+		: flag("plugin")
+			? (["plugin"] as ReflectSection[])
+			: flag("playbook")
+				? (["playbook"] as ReflectSection[])
+				: null;
+	// single words are verbs (roadmap-style); a note merely starting with one stays a note
+	if (words.length === 1 && words[0] === "tidy") return reflectTidy(root);
+	if (words.length === 1 && words[0] === "list") return reflectList(root);
+	if (words[0] === "move") return reflectMoveNote(root, words.slice(1), forced);
+	if (words.length) return reflectNote(root, sess, words, forced);
+	// upstream for the update probe: the manifest's repository field; the dev-flow checkout itself falls back to its origin
+	const self = pluginVersion(import.meta.dirname);
+	const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
+	return { text: reflectProtocol(readReflections(root), isSelfRepo(root), { version: self.version, upstream, closed: closedReflectionCount(readReflectionsText(root)) }).join("\n") };
+}
+
+async function gateRoadmap(o: GateCtx): Promise<RunResult> {
+	const { root, sess, rest } = o;
+	// the backlog is advisory — no state, no gating; direct file edits stay allowed like reflections.md
+	const words = rest.filter((a) => !a.startsWith("--")); // gate flags are not backlog prose (#43 applies here too)
+	const [verb = "list", ...args] = words;
+	const text = readRoadmap(root);
+	const open = roadmapOpenCount(text);
+	const done = roadmapDoneCount(text);
+	const save = (next: string) => writeFileSync(roadmapFile(root), next); // .dev-flow/ existence is runFlow's precondition
+	const idx = Number(args[0]);
+	const validIdx = Number.isInteger(idx) && idx >= 1 && idx <= open;
+	switch (verb) {
+		case "list": {
+			if (!open) return { text: done ? `roadmap: nothing open (${done} done — flow roadmap tidy drops them)` : "roadmap: empty — flow roadmap add \"<future feature>\"" };
+			return { text: [`roadmap — ${open} open (${done} done):`, ...openChecklistItems(text).map((l, i) => `  ${i + 1}. ${l.slice(6)}`)].join("\n") };
+		}
+		case "add": {
+			if (!args.length) return { text: 'usage: flow roadmap add "<future feature>"', isError: true };
+			save(appendRoadmapItem(text, args.join(" ")));
+			return { text: `roadmap: added — ${open + 1} open` };
+		}
+		case "pick": {
+			const slug = args[1] ?? "";
+			if (!validIdx) return { text: `pick: open item 1–${open} required — flow roadmap lists them`, isError: true };
+			if (!slug || !validSlug(slug)) return { text: `usage: flow roadmap pick <n> <slug> — the slug flow start will use (lowercase, dashes)`, isError: true };
+			save(roadmapPick(text, idx, slug)!);
+			return { text: `roadmap: item ${idx} picked for ${slug} — now: flow start ${slug} (flow finish checks the item off when it ships)` };
+		}
+		case "done": {
+			if (!validIdx) return { text: `done: open item 1–${open} required — flow roadmap lists them`, isError: true };
+			// stamped with date + bound slug, so history says what shipped it
+			save(roadmapDone(text, idx, [new Date().toISOString().slice(0, 10), sess.slug].filter(Boolean).join(" "))!);
+			return { text: `roadmap: item ${idx} marked done (${open - 1} open)` };
+		}
+		case "tidy": {
+			if (!done) return { text: `roadmap: nothing to tidy (${open} open, 0 done)` };
+			save(roadmapTidy(text));
+			return { text: `roadmap: dropped ${done} done item(s) — ${open} open` };
+		}
+		default:
+			return { text: "usage: flow roadmap [list|add <text>|pick <n> <slug>|done <n>|tidy]", isError: true };
+		}
+}
+
+async function gateDoctor(o: GateCtx): Promise<RunResult> {
+	const { root, cfg, rest } = o;
+	// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
+	const df = dfDir(root);
+	const loaded = loadProject(df);
+	const findings = doctorFindings(root, loaded.cfg, loaded.md);
+	findings.push(...(await gitConsistency(root, loaded.cfg)));
+	const refl = readReflections(root);
+	if (refl.length) {
+		findings.push(`reflection review — ${refl.length} open item(s); doctor never implements: investigate each, present the fix, the operator confirms, then the routed flow implements it:`);
+		// labelled from the heading each item sits under — the file is the record, re-guessing from the
+		// note text made doctor's table disagree with where the note was actually filed
+		for (const r of reflectionRoutes(refl, isSelfRepo(root))) findings.push(`  [${r.sections.join("+")}] ${r.text}\n      → ${r.route}`);
+	}
+	const unfiled = reflectUnfiledCount(readReflectionsText(root));
+	if (unfiled) findings.push(`  reflections: ${unfiled} open item(s) sit outside ## playbook / ## plugin — flow reflect list shows them, flow reflect move <n> --plugin|--playbook files them`);
+	const closedRefl = closedReflectionCount(readReflectionsText(root));
+	if (closedRefl) findings.push(reflectionsTidyHint(closedRefl));
+	if (!rest.length) return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
+	// flow doctor <note>: a fresh observation gets an investigation brief and a fix route
+	return { text: investigationBrief(rest.filter((a) => !a.startsWith("--")).join(" "), isSelfRepo(root)).join("\n") };
+}
+
 /** What a gate handler needs from the runFlow preamble. Bodies moved verbatim destructure
  *  their own names back, so the bodies needed zero edits. */
 interface GateCtx {
