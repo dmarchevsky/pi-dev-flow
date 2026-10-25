@@ -75,6 +75,8 @@ import {
 	statusCompact,
 	statusFor,
 	statusJson,
+	stripHeredocBodies,
+	DF_ADVISORY_FILES,
 	sq,
 	tagNotesCommand,
 	openReflections,
@@ -464,6 +466,12 @@ test("writeGuard: path attribution + session binding rules", () => {
 	const normF = { state: { ...newState("n", false), stage: "implement" as const, worktree: ".wt/n" }, worktreeAbs: "/repo/.wt/n" };
 	assert.equal(writeGuard({ abs: "/repo/.wt/d/.dev-flow/project.md", dfDir: df, features: [docsF], boundSlug: "d" }), null, "a docs flow edits the playbook in its worktree");
 	assert.ok(writeGuard({ abs: "/repo/.wt/n/.dev-flow/project.md", dfDir: df, features: [normF], boundSlug: "n" }), "a normal feature cannot touch the playbook");
+	assert.equal(writeGuard({ abs: "/repo/.dev-flow/roadmap.md", dfDir: df, features: [], boundSlug: null }), null, "the roadmap backlog is the agent's too");
+	assert.deepEqual([...DF_ADVISORY_FILES].sort(), ["reflections.md", "roadmap.md"], "the writable set is exactly these two");
+	assert.match(writeGuard({ abs: "/repo/.dev-flow/COMMUNICATION-PLAN.md", dfDir: df, features: [], boundSlug: null }) ?? "", /advisory files/, "the folder gitignores everything — it is not an untracked scratch dir for an unbound session");
+	assert.ok(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: [], boundSlug: null }), "and that reaches nested paths too");
+	assert.equal(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: feats, boundSlug: "b" }), null, "a bound session keeps the folder as it had it — flow-owned paths inside it are refused by their own rules");
+	assert.equal(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: [{ state: { ...impl, stage: "release" as const }, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores keep the folder");
 	assert.equal(checkoutTarget("git checkout feat/x"), "feat/x");
 	assert.equal(checkoutTarget("git switch -c feat/y && make"), "feat/y");
 	assert.equal(checkoutTarget("git checkout -- src/app.ts"), "--");
@@ -717,6 +725,12 @@ test("statusFor: bound flow renders as before; unbound shows only the count", ()
 	const done = newState("f", false);
 	done.stage = "done";
 	assert.deepEqual(statusFor(done, 0), { text: "⧖ no flows" }, "a done bound feature falls back to the idle line");
+	const asked = newState("f", false);
+	asked.pendingAsk = "Approve?";
+	assert.deepEqual(statusFor(asked, 1), { text: "📝 f 💬" }, "an unanswered checkpoint is the operator's turn — 💬 is the legend's glyph for it");
+	asked.yolo = true;
+	assert.deepEqual(statusFor(asked, 1), { text: "📝 f 🎱 💬" }, "💬 rides after the mode markers");
+	assert.deepEqual(statusFor(newState("f", false), 1), { text: "📝 f" }, "no pendingAsk, no glyph — an open flow reads exactly as before");
 });
 
 test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
@@ -922,6 +936,23 @@ test("playbookTamper: quoting the target does not hide the write", () => {
 test("maskQuoted: what a command says is not what it does", () => {
 	assert.equal(maskQuoted('gh pr create --body "ship it"'), 'gh pr create --body ""');
 	assert.equal(maskQuoted("git commit -m 'ship it' -a"), 'git commit -m "" -a');
+});
+
+test("heredoc bodies are an argument's prose, not commands", () => {
+	const commit = "git commit -F - <<'MSG'\nfix: the gate\n\nflow status said otherwise, and .dev-flow/demo/state.json was named here\nMSG";
+	assert.equal(flowShellInvocation(commit), false, "a commit message line starting with `flow status` is not an invocation");
+	assert.equal(stateTamper(commit), false, "naming flow state inside a message is not a write to it");
+	assert.equal(playbookTamper("cat > /tmp/note.md <<'MD'\nsee .dev-flow/project.md\nMD"), false, "the redirect goes to /tmp, the body names the playbook");
+	assert.deepEqual(bashSegments(commit), ["git commit -F -", "MSG"], "the body is blanked, the terminator line stays");
+	assert.equal(stripHeredocBodies("a <<'M'\nx\ny\nM\n").length, 5, "line count is kept, so segment order survives");
+	// the mask is scoped per segment: a real command after the terminator is still judged
+	assert.ok(flowShellInvocation("git commit -m x <<'M'\nflow doctor\nM\nflow status"), "a later segment is untouched by the mask");
+	assert.ok(stateTamper("cat <<'M'\nprose\nM\nrm -rf .dev-flow/demo"), "and so is a destructive one");
+	// a head that execs its argument really runs its heredoc — masking it would unsee code
+	assert.ok(flowShellInvocation("node - <<'JS'\nflow status\nJS"), "a heredoc piped into node is a program");
+	assert.ok(flowShellInvocation("sh <<'SH'\nflow status\nSH"), "same for sh");
+	assert.deepEqual(bashSegments("echo $((1<<2))\nflow status").length, 2, "a shift is not a heredoc opener");
+	assert.deepEqual(bashSegments("flow status"), ["flow status"], "no heredoc, no change");
 });
 
 test("playbookTamper: prose about a write is not a write; a wrapper's payload is", () => {

@@ -46,6 +46,7 @@ export interface FlowState {
 	releaseVersion?: string; // the manifest version the release gate approved — release-done publishes this, not whatever a checkout says later (#52)
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
 	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
+	pendingAsk?: string; // the checkpoint word a gate asked for and has not been given ("Approve?", "Verified?", …) — presentation only (💬 in the footer), it never gates
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
@@ -1358,7 +1359,9 @@ export const STAGE_EMOJI: Record<Stage, string> = { plan: "📝", implement: "�
 
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
 	const failed = Object.values(state.checks).some((c) => !c.ok);
-	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}`, failed };
+	// 💬 is the legend's "operator, your turn" (docs/playbook.md stage lines): a bound flow whose checkpoint
+	// is unanswered is parked on the operator, and the footer is the only thing they see.
+	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}${state.pendingAsk ? " 💬" : ""}`, failed };
 }
 
 /** Footer decision for any session in an initiated repo: a bound feature renders as statusCompact, its ⚠️
