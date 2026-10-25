@@ -719,12 +719,12 @@ test("statusFor: bound flow renders as before; unbound shows only the count", ()
 	assert.deepEqual(statusFor(s, 3), { text: "📝 f" }, "a bound feature renders exactly like statusCompact");
 	s.checks.test = { ok: false, at: "2026-01-01T10:00:00Z" };
 	assert.deepEqual(statusFor(s, 3), { text: "📝 f ⚠️" }, "⚠️ rides on the bound flow's own failing checks");
-	assert.deepEqual(statusFor(null, 1), { text: "⧖ 1 flow open" }, "unbound names nobody — count only");
-	assert.deepEqual(statusFor(null, 2), { text: "⧖ 2 flows open" });
-	assert.deepEqual(statusFor(null, 0), { text: "⧖ no flows" }, "an initiated repo always carries the footer");
+	assert.deepEqual(statusFor(null, 1), { text: "💬 1 flow open" }, "unbound names nobody — count only, under the pre-flow glyph");
+	assert.deepEqual(statusFor(null, 2), { text: "💬 2 flows open" });
+	assert.deepEqual(statusFor(null, 0), { text: "💬 no flows" }, "an initiated repo always carries the footer");
 	const done = newState("f", false);
 	done.stage = "done";
-	assert.deepEqual(statusFor(done, 0), { text: "⧖ no flows" }, "a done bound feature falls back to the idle line");
+	assert.deepEqual(statusFor(done, 0), { text: "💬 no flows" }, "a done bound feature falls back to the idle line");
 	const asked = newState("f", false);
 	asked.pendingAsk = "Approve?";
 	assert.deepEqual(statusFor(asked, 1), { text: "📝 f 💬" }, "an unanswered checkpoint is the operator's turn — 💬 is the legend's glyph for it");

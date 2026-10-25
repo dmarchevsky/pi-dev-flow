@@ -1367,14 +1367,16 @@ export function statusCompact(state: FlowState): { text: string; failed: boolean
 /** Footer decision for any session in an initiated repo: a bound feature renders as statusCompact, its ⚠️
  *  from its own failing checks only; an unbound session shows the count of unfinished features — never a
  *  slug, so a fresh session is never shown (or made to feel bound to) a feature it did not take with flow
- *  use — and `⧖ no flows` when nothing is in flight: dev-flow initiated means a footer always present. */
+ *  use — and `💬 no flows` when nothing is in flight: dev-flow initiated means a footer always present.
+ *  💬 is the legend's "operator, your turn": an unbound session is parked on the operator by definition (an
+ *  answer to start, or nothing to do until they say), so the pre-flow glyph is the honest one there too. */
 export function statusFor(bound: FlowState | null, openCount: number): { text: string } {
 	if (bound && bound.stage !== "done") {
 		const { text, failed } = statusCompact(bound);
 		return { text: failed ? `${text} ⚠️` : text };
 	}
-	if (openCount < 1) return { text: "⧖ no flows" };
-	return { text: `⧖ ${openCount} flow${openCount === 1 ? "" : "s"} open` };
+	if (openCount < 1) return { text: "💬 no flows" };
+	return { text: `💬 ${openCount} flow${openCount === 1 ? "" : "s"} open` };
 }
 
 /** `- [ ]` checklist items of a markdown document (reflections.md and roadmap.md share the format). */

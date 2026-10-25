@@ -1861,7 +1861,7 @@ function tail(out: string, n = 15): string {
 // ------------------------------------------------------------------ extension
 
 /** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
- *  unfinished-flow count, or `⧖ no flows` — an initiated repo always carries the footer. An uninitiated
+ *  unfinished-flow count, or `💬 no flows` — an initiated repo always carries the footer. An uninitiated
  *  folder gets nothing: the status is cleared. Pure read — rendering never binds or claims anything. */
 function refreshStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;

@@ -620,7 +620,7 @@ test("status bar: compact refresh follows the gates", async () => {
 	const seenB: (string | undefined)[] = [];
 	const b = { ...ctx, sessionManager: { getSessionId: () => "sess-foot-B", getBranch: () => [] as never[] }, ui: { ...ctx.ui, setStatus: (_k: string, t?: string) => seenB.push(t) } };
 	await pi.cmds.flow.handler("status", b);
-	assert.equal(seenB.at(-1), "⧖ 1 flow open", "unbound footer shows the count, not the slug");
+	assert.equal(seenB.at(-1), "💬 1 flow open", "unbound footer shows the count, not the slug");
 });
 
 test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {
@@ -641,10 +641,10 @@ test("initiated repos always carry the footer, repainted at run start; uninitiat
 	initPlaybook(repo);
 	const seen: (string | undefined)[] = [];
 	await pi.cmds.flow.handler("status", statusCtx(repo, seen));
-	assert.equal(seen.at(-1), "⧖ no flows", "an initiated repo always carries the footer");
+	assert.equal(seen.at(-1), "💬 no flows", "an initiated repo always carries the footer");
 	const inj = await pi.handlers.before_agent_start[0]({}, statusCtx(repo, seen));
 	assert.ok(inj, "the injection runs in an initiated repo");
-	assert.equal(seen.at(-1), "⧖ no flows", "run start repaints the footer — the earliest point a web client is certainly listening");
+	assert.equal(seen.at(-1), "💬 no flows", "run start repaints the footer — the earliest point a web client is certainly listening");
 });
 
 test("flow version: the plugin's own version, and no .dev-flow/ needed", async () => {
