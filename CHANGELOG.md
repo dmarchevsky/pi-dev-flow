@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.64.1] - 2026-10-24
+
+### Changed
+
+- **Whole-repo `/flow-simplify` pass on dev-flow itself.** A full simplification sweep (dead-code hunt with grep + semantic confirmation, sliding-window duplication scan across `src/` and `extensions/`) found a lean codebase and three honest cuts: the `STAGES` constant in core was a zero-reference export (stage order lives in the state transitions and `MD_STAGES`), and `changelogEntry`/`MergeStyle` were imported by files that never used them (tsc `--noUnusedLocals`-confirmed). The one real duplication — the recorded `seedData` step written twice, once in the verify deploy probe and once in `flow health` — now lives in a single `seedStep` helper; as a side effect `flow health` names the seed command in its failure message the way verify always did. Cross-file duplicate blocks of four or more lines: none found; the one remaining structural weight (`runFlow`'s size) is an architecture reshuffle left for its own flow.
+
 ## [0.64.0] - 2026-10-24
 
 ### Fixed
