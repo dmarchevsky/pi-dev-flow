@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.64.3] - 2026-10-25
+
+### Changed
+
+- **`runFlow` is now a dispatcher: 938 lines → 74, one handler per gate.** The 0.64.1 simplify pass named the one structural weight left in the repo — a single ~940-line function holding all twenty verbs — and this is the dedicated flow that split it: every case body moved verbatim into a top-level `gateInit`/`gateStart`/…/`gateAbort` handler sharing one small `GateCtx` (`root, ui, sess, cfg, rest, flag, slugArg, takeYoloWord`), and `runFlow` keeps only arg parsing, the help/no-playbook guards, the preamble helpers and a switch of one-line dispatches. Zero behavior change by construction, and auditable rather than promised: the extraction was scripted by a brace-matching, string/comment/template-aware splitter (the file defeats indentation-based tooling — roadmap's closer is misindented, init's draft help sits at column 0 inside a template literal), and an independent audit re-compared all 17 handler bodies against the base — verbatim, de-indent only. Same-file split by design: a `src/gates/*.ts` module layout would export half the extension's IO plumbing for the same readability, and can ride later wholesale if ever wanted.
+
 ## [0.64.2] - 2026-10-25
 
 ### Changed
