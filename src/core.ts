@@ -46,6 +46,7 @@ export interface FlowState {
 	releaseVersion?: string; // the manifest version the release gate approved — release-done publishes this, not whatever a checkout says later (#52)
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
 	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
+	pendingAsk?: string; // the checkpoint word a gate asked for and has not been given ("Approve?", "Verified?", …) — presentation only (💬 in the footer), it never gates
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
@@ -865,6 +866,9 @@ const DF_ANYWHERE = /\.dev-flow\b/;
  *  plan/mockups path), are not "the folder". The leading boundary takes `/` too: an absolute path names
  *  the same folder, and absolute paths are the shape the harness hands the agent. */
 const DF_FOLDER = /(?:^|[\s'"/])\.dev-flow(?:\/(?!project\.md$|roadmap\.md$|reflections\.md$|\.gitignore$)[\w.-]+)?(?=$|[\s'"])/;
+/** The advisory files under `.dev-flow/` the agent owns (the reflection queue and the roadmap backlog):
+ *  writable with no flow bound — they are suggestions, not state — unlike everything else in the folder. */
+export const DF_ADVISORY_FILES = new Set(["reflections.md", "roadmap.md"]);
 // write tools that can overwrite a file. A bare `>` is deliberately absent: the redirect target is
 // checked on its own, and testing for any `>` here refused every segment that merely mentioned an
 // owned path while redirecting elsewhere (`gh pr create … 2>&1`).
@@ -1042,18 +1046,93 @@ function quotesBalanced(command: string): boolean {
 	return q === null;
 }
 
+/** A heredoc redirector at the end of a word: `<<EOF`, `<<'EOF'`, `<<-MSG`, `<<- 'SQL'`. `2>file` and `<<<`
+ *  are not heredocs; neither is the shift in `$((1<<2))` — the lookbehind refuses a word character or `(` in
+ *  front of the second `<`, and a word character or quote in front of the first. */
+const HEREDOC_OP = /(?<![\w(<])<<(-)?(['"]?)([A-Za-z_][\w]*)\2\s*$/;
+
+/** Blank the body of every heredoc, keeping the line count. A heredoc body is an argument's prose exactly
+ *  like a quoted string — `git commit -F - <<'MSG' … flow approve … MSG` carries no invocation — but the
+ *  body lines are unquoted, so the newline split read each of them as its own command and a commit message
+ *  that started a line with `flow …` was refused as an invocation. A head that execs its argument is not
+ *  masked: a heredoc fed to `sh`/`node`/`python` really executes, and prose-is-argument is a rule about
+ *  data, not a licence to unsee code. Unterminated bodies are left alone (fail toward judging more).
+ *  shortcut: a heredoc whose redirector sits on a continuation line takes the head of that line, so a
+ *  re-exec head written on the line above keeps its body judged — again the safe direction. */
+export function stripHeredocBodies(command: string): string[] {
+	const lines = command.split("\n");
+	const out = lines.slice();
+	const skip = new Set<number>(); // redirector lines, so a nested opener inside a body is never parsed
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i];
+		if (skip.has(i) || line.trim() === "") {
+			i++;
+			continue;
+		}
+		const m = line.match(HEREDOC_OP);
+		if (!m || REEXEC_HEADS.has(heredocHead(line))) {
+			i++;
+			continue;
+		}
+		const term = m[3];
+		const tab = !!m[1];
+		const stops: number[] = [];
+		let j = i + 1;
+		let terminated = false;
+		while (j < lines.length) {
+			const t = tab ? lines[j].trimStart() : lines[j];
+			if (t === term) {
+				terminated = true;
+				break;
+			}
+			const inner = skip.has(j) ? null : lines[j].match(HEREDOC_OP);
+			if (inner && !REEXEC_HEADS.has(heredocHead(lines[j]))) {
+				// a nested heredoc: its body is data for the data — skip past its terminator unparsed
+				const it = inner[3];
+				let k = j + 1;
+				for (; k < lines.length && lines[k] !== it; k++) skip.add(k);
+				if (k < lines.length) {
+					skip.add(k);
+					j = k + 1;
+					continue;
+				}
+			}
+			stops.push(j);
+			j++;
+		}
+		if (!terminated) {
+			i++;
+			continue; // an unterminated body is left for the guard to judge — masking less is the safe direction
+		}
+		for (const l of stops) out[l] = "";
+		out[i] = line.replace(HEREDOC_OP, " ");
+		skip.add(i);
+		i = j + 1;
+	}
+	return out;
+}
+
+/** The head a heredoc redirector belongs to: the first word of its line, env-prefixes and a `dir/` path
+ *  ignored (`/usr/bin/git commit -F - <<'MSG'`), so REEXEC_HEADS reads the verb and not the path. */
+function heredocHead(line: string): string {
+	return segHead(line.replace(/^(?:\w+=\S*\s+)+/, "")).replace(/\S*\/$/, "");
+}
+
 /** Split on shell separators — but only outside quotes. Text inside quotes is an argument's prose, not a
  * command: a gh --body that discusses a commit is one segment, not five. Unbalanced quoting keeps the plain
  * split, so a stray quote cannot be used to hide a real command. The same split the git guard uses, so
- * `cd … &&`, `;`, pipes and `&` each judge on their own. */
+ * `cd … &&`, `;`, pipes and `&` each judge on their own. Heredoc bodies are stripped first (see
+ * stripHeredocBodies) — a `git commit -F - <<'MSG'` message is an argument, not five commands. */
 export function bashSegments(command: string): string[] {
-	if (!quotesBalanced(command)) return command.split(/[\n;|&]+/).map((s) => s.trim()).filter(Boolean);
+	const src = stripHeredocBodies(command).join("\n");
+	if (!quotesBalanced(src)) return src.split(/[\n;|&]+/).map((s) => s.trim()).filter(Boolean);
 	const out: string[] = [];
 	let cur = "";
 	let q: string | null = null;
-	for (let i = 0; i < command.length; i++) {
-		const c = command[i];
-		const esc = i > 0 && command[i - 1] === "\\" && q !== "'";
+	for (let i = 0; i < src.length; i++) {
+		const c = src[i];
+		const esc = i > 0 && src[i - 1] === "\\" && q !== "'";
 		if (!esc && (c === '"' || c === "'")) q = q === null ? c : q === c ? null : q;
 		if (q === null && /[\n;|&]/.test(c)) {
 			if (cur.trim()) out.push(cur.trim());
@@ -1224,7 +1303,15 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	// feature's plan and that feature's approval gate then rubber-stamps text it never wrote.
 	if (bound?.state.stage === "plan" && !within(abs, path.join(dfDir, bound.state.slug)))
 		return `bound feature ${bound.state.slug} is in plan — write only inside its own .dev-flow/${bound.state.slug}/`;
-	if (within(abs, dfDir)) return null;
+	if (within(abs, dfDir)) {
+		// `.dev-flow/` is not a free write area: it gitignores everything, so the blanket allow let an unbound
+		// session drop arbitrary files there (.dev-flow/COMMUNICATION-PLAN.md was one) — a folder whose whole
+		// point is flow state must not double as an untracked scratch dir. Only the two advisory files the
+		// agent owns stay writable with no binding; project.md is refused above, state/claim.json too.
+		if (DF_ADVISORY_FILES.has(path.relative(dfDir, abs))) return null;
+		if (!bound) return `.dev-flow/ holds flow state — an unbound session may write only its advisory files there (.dev-flow/reflections.md, .dev-flow/roadmap.md); bind with flow start <slug> or flow use <slug>, and a throwaway script goes outside the repo (under $TMPDIR)`;
+		return null;
+	}
 	if (bound) {
 		if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
 			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout; a throwaway script goes outside the repo (under $TMPDIR)`;
@@ -1272,20 +1359,24 @@ export const STAGE_EMOJI: Record<Stage, string> = { plan: "📝", implement: "�
 
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
 	const failed = Object.values(state.checks).some((c) => !c.ok);
-	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}`, failed };
+	// 💬 is the legend's "operator, your turn" (docs/playbook.md stage lines): a bound flow whose checkpoint
+	// is unanswered is parked on the operator, and the footer is the only thing they see.
+	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}${state.pendingAsk ? " 💬" : ""}`, failed };
 }
 
 /** Footer decision for any session in an initiated repo: a bound feature renders as statusCompact, its ⚠️
  *  from its own failing checks only; an unbound session shows the count of unfinished features — never a
  *  slug, so a fresh session is never shown (or made to feel bound to) a feature it did not take with flow
- *  use — and `⧖ no flows` when nothing is in flight: dev-flow initiated means a footer always present. */
+ *  use — and `💬 no flows` when nothing is in flight: dev-flow initiated means a footer always present.
+ *  💬 is the legend's "operator, your turn": an unbound session is parked on the operator by definition (an
+ *  answer to start, or nothing to do until they say), so the pre-flow glyph is the honest one there too. */
 export function statusFor(bound: FlowState | null, openCount: number): { text: string } {
 	if (bound && bound.stage !== "done") {
 		const { text, failed } = statusCompact(bound);
 		return { text: failed ? `${text} ⚠️` : text };
 	}
-	if (openCount < 1) return { text: "⧖ no flows" };
-	return { text: `⧖ ${openCount} flow${openCount === 1 ? "" : "s"} open` };
+	if (openCount < 1) return { text: "💬 no flows" };
+	return { text: `💬 ${openCount} flow${openCount === 1 ? "" : "s"} open` };
 }
 
 /** `- [ ]` checklist items of a markdown document (reflections.md and roadmap.md share the format). */
@@ -1670,7 +1761,7 @@ export function compactionReflectionLine(slug: string, stage: Stage, reason: str
 /** The playbook's merge style spelled for a hint: "" when the project has no policy. */
 function mergeHintFor(cfg: Config): string {
 	const m = cfg.release.merge;
-	return m && m !== "any" ? ` (the playbook says merge = ${m} — gh pr merge --${m === "merge" ? "merge" : m})` : "";
+	return m && m !== "any" ? ` (the playbook says merge = ${m} — gh pr merge <n> --${m === "merge" ? "merge" : m}, number before the flag: a trailing one reads as the PR selector)` : "";
 }
 
 export function nextHint(state: FlowState, cfg: Config): string {

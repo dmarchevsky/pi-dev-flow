@@ -620,7 +620,7 @@ test("status bar: compact refresh follows the gates", async () => {
 	const seenB: (string | undefined)[] = [];
 	const b = { ...ctx, sessionManager: { getSessionId: () => "sess-foot-B", getBranch: () => [] as never[] }, ui: { ...ctx.ui, setStatus: (_k: string, t?: string) => seenB.push(t) } };
 	await pi.cmds.flow.handler("status", b);
-	assert.equal(seenB.at(-1), "⧖ 1 flow open", "unbound footer shows the count, not the slug");
+	assert.equal(seenB.at(-1), "💬 1 flow open", "unbound footer shows the count, not the slug");
 });
 
 test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {
@@ -641,10 +641,10 @@ test("initiated repos always carry the footer, repainted at run start; uninitiat
 	initPlaybook(repo);
 	const seen: (string | undefined)[] = [];
 	await pi.cmds.flow.handler("status", statusCtx(repo, seen));
-	assert.equal(seen.at(-1), "⧖ no flows", "an initiated repo always carries the footer");
+	assert.equal(seen.at(-1), "💬 no flows", "an initiated repo always carries the footer");
 	const inj = await pi.handlers.before_agent_start[0]({}, statusCtx(repo, seen));
 	assert.ok(inj, "the injection runs in an initiated repo");
-	assert.equal(seen.at(-1), "⧖ no flows", "run start repaints the footer — the earliest point a web client is certainly listening");
+	assert.equal(seen.at(-1), "💬 no flows", "run start repaints the footer — the earliest point a web client is certainly listening");
 });
 
 test("flow version: the plugin's own version, and no .dev-flow/ needed", async () => {
@@ -1314,6 +1314,29 @@ test("flow abort honors another live session's claim — the lock covers the ver
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "stolen", "plan")), "the claimed feature's dir is untouched");
 	await pi.cmds.flow.handler("abort stolen", a);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "stolen")), "the owning session can still drop its own plan-stage feature");
+});
+
+test("pending checkpoint: 💬 rides the footer until the word arrives, and is not inherited on takeover", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const seen: string[] = [];
+	const ctx = { cwd: repo, hasUI: false, notices: [] as string[], ui: { notify: () => {}, setStatus: (_k: string, s?: string) => seen.push(s ?? ""), theme: { fg: (_c: string, s: string) => s } }, mode: "rpc" };
+	const uiCtx = { ...ctx, hasUI: true, ui: { ...ctx.ui, confirm: async () => true } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "plan-gate"]);
+	writeFileSync(path.join(repo, ".dev-flow", "plan-gate", "plan", "plan.md"), "# plan\n\n- do it\n");
+	assert.match((await flow(["approve"])).content[0].text, /needs the operator/, "without the word the gate refuses and goes pending");
+	assert.equal((await flow(["status"])).content[0].text.includes("💬 Approve?"), true, "flow status names the pending checkpoint");
+	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, uiCtx);
+	assert.equal(seen.at(-1), "📝 plan-gate 💬", "the footer carries the checkpoint glyph on a bound flow");
+	await flow(["abort", "plan-gate"]);
+	await flow(["start", "other"]);
+	writeFileSync(path.join(repo, ".dev-flow", "other", "plan", "plan.md"), "# plan\n\n- do it\n");
+	await flow(["approve"]);
+	await flow(["use", "other"]);
+	assert.equal((await flow(["status"])).content[0].text.includes("💬"), false, "a takeover does not inherit the previous session's pending question");
 });
 
 test("patch feature: no plan file, same gates end to end", async () => {

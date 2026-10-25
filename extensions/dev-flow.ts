@@ -832,6 +832,20 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 			return { text: `unknown subcommand "${sub}" — ${GATE_HELP}`, isError: true };
 	}
 }
+/** Records the checkpoint word a gate asked for and has not been given: the footer shows 💬 (“operator,
+ *  your turn”, the legend in docs/playbook.md) while a session is parked on an answer. Presentation only —
+ *  no verdict reads it — and the same gate clears it when the word arrives (or when the answer is no and the
+ *  turn returns to the agent). */
+function markPendingAsk(root: string, state: FlowState, word: string): void {
+	state.pendingAsk = word;
+	writeState(root, state);
+}
+
+/** The pending checkpoint is answered either way — the 💬 leaves the footer with it. */
+function clearPendingAsk(state: FlowState): void {
+	delete state.pendingAsk;
+}
+
 async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg, takeYoloWord } = o;
 	const { state, err } = needState(root, sess, slugArg);
@@ -898,17 +912,26 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
-	if (!flag("confirmed") && !state!.yolo) {
+	const askPending = !flag("confirmed") && !state!.yolo;
+	if (askPending) {
+		markPendingAsk(root, state!, "Verified?"); // pending however it is asked — a chat question or a dialog
 		// these commands already ran — say so even on the way out
-		if (!ui.hasUI) return { text: `${needsOperator("verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat.", "Verified?")}\n${ran}`, isError: true };
+		if (!ui.hasUI) {
+			return { text: `${needsOperator("verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat.", "Verified?")}\n${ran}`, isError: true };
+		}
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
-		if (!ok) return { text: "verification declined — stay in implement and fix what failed" };
+		if (!ok) {
+			clearPendingAsk(state!);
+			writeState(root, state!);
+			return { text: "verification declined — stay in implement and fix what failed" };
+		}
 	}
 	state!.confirmations = { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } };
 	const final = verifyGate(state!, cfg, branch);
 	if (final.length) return { text: `verify gate FAILED:\n- ${final.join("\n- ")}`, isError: true };
 	state!.approvals.verify = now();
 	state!.stage = "pre-release";
+	clearPendingAsk(state!);
 	writeState(root, state!);
 	return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${nextHint(state!, cfg)}` };
 }
@@ -992,10 +1015,18 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 		staleNote = `released under dev-flow ${behind} (${selfBuild.label} ${selfBuild.version ?? "?"}) by operator choice — proofs newer than ${behind} did not run`;
 	}
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
-	if (!flag("confirmed") && !state!.yolo) {
-		if (!ui.hasUI) return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}`, "Release?"), isError: true };
+	const askPending = !flag("confirmed") && !state!.yolo;
+	if (askPending) {
+		markPendingAsk(root, state!, "Release?");
+		if (!ui.hasUI) {
+			return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}`, "Release?"), isError: true };
+		}
 		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${state!.noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${state!.noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
-		if (!ok) return { text: "release declined — keep preparing in pre-release" };
+		if (!ok) {
+			clearPendingAsk(state!);
+			writeState(root, state!);
+			return { text: "release declined — keep preparing in pre-release" };
+		}
 	}
 	state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
 	state!.approvals["pre-release"] = now();
@@ -1012,6 +1043,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// re-read a checkout that may still be behind (#52)
 	if (!state!.noVersion && manifestVer) state!.releaseVersion = manifestVer;
 	if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
+	clearPendingAsk(state!);
 	writeState(root, state!);
 	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${nextHint(state!, cfg)}` };
 }
@@ -1229,8 +1261,10 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 						: ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?)`;
 			// under a merge-commit policy this is a violation, not a routine cleanup note: yolo does not
 			// answer it, only the operator does
-			if (policy === "merge" && measurable && !flag("confirmed"))
+			if (policy === "merge" && measurable && !flag("confirmed")) {
+				markPendingAsk(root, state!, "Merge policy violation?");
 				return { text: needsOperator(`the playbook says merge = merge, but ${assess.unmerged.length} commit(s) of ${state!.slug} are not on ${cfg.defaultBranch} — the PR landed as a squash or a rebase. Ask the operator how to proceed, then re-run with --confirmed`, "Merge policy violation?"), isError: true };
+			}
 		}
 	}
 	// a forge release that failed at release-done is still the operator's call — but they must see it before the state vanishes (#63)
@@ -1239,10 +1273,18 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// yolo works uniformly at every gate: at Finish? nothing later remains to pre-confirm, the flag just answers this one
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
-	if (!flag("confirmed") && !state!.yolo) {
-		if (!ui.hasUI) return { text: needsOperator(`finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, "Finish?"), isError: true };
+	const askPending = !flag("confirmed") && !state!.yolo;
+	if (askPending) {
+		markPendingAsk(root, state!, "Finish?");
+		if (!ui.hasUI) {
+			return { text: needsOperator(`finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, "Finish?"), isError: true };
+		}
 		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
-		if (!ok) return { text: "finish declined" };
+		if (!ok) {
+			clearPendingAsk(state!);
+			writeState(root, state!);
+			return { text: "finish declined" };
+		}
 	}
 	if (wt && existsSync(wt)) {
 		const rm = await sh(`git worktree remove ${sq(wt)} && git branch -D ${sq(state!.branch)}`, root);
@@ -1504,8 +1546,12 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	const planItems = applicableItems(cfg, state!, "plan");
 	if (flag("yolo")) state!.yolo = true; // operator's word at Approve? — every later gate question is pre-confirmed; checks and guardrails stay
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
-	if (!flag("confirmed")) {
-		if (!ui.hasUI) return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
+	const askPending = !flag("confirmed");
+	if (askPending) {
+		markPendingAsk(root, state!, "Approve?");
+		if (!ui.hasUI) {
+			return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
+		}
 		const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
 		if (!ok) return { text: "approval declined — keep iterating on the plan" };
 	}
@@ -1536,6 +1582,7 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	state!.worktree = wtRel;
 	state!.stage = "implement";
 	state!.approvals.plan = now();
+	clearPendingAsk(state!);
 	writeState(root, state!);
 	return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
 }
@@ -1565,7 +1612,7 @@ async function gateStatus(o: GateCtx): Promise<RunResult> {
 		const st = readState(root, s);
 		if (!st) return [];
 		return [
-			`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""}${st.yolo ? " [yolo]" : ""}${st.noVersion ? " [no-version]" : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""}`,
+			`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""}${st.yolo ? " [yolo]" : ""}${st.noVersion ? " [no-version]" : ""}${st.pendingAsk ? ` 💬 ${st.pendingAsk}` : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""}`,
 			`  approvals: ${Object.keys(st.approvals).join(", ") || "none"} | checks: ${Object.entries(st.checks).map(([k, v]) => `${k}:${v.ok ? "ok" : "FAILED"}`).join(", ") || "none"}${st.confirmations?.implement ? " | checklist: confirmed" : ""}`,
 			`  next: ${nextHint(st, cfg)}`,
 		];
@@ -1753,6 +1800,12 @@ async function gateUse(o: GateCtx): Promise<RunResult> {
 	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
 	sess.bind(slugArg);
 	sess.rename(slugArg);
+	// a checkpoint that was still unanswered belongs to whoever asked; a session taking the feature over
+	// must not inherit a 💬 for a question it never posed
+	if (st.pendingAsk) {
+		clearPendingAsk(st);
+		writeState(root, st);
+	}
 	return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}; session renamed to ${slugArg}${takeover}` };
 }
 
@@ -1814,7 +1867,7 @@ function tail(out: string, n = 15): string {
 // ------------------------------------------------------------------ extension
 
 /** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
- *  unfinished-flow count, or `⧖ no flows` — an initiated repo always carries the footer. An uninitiated
+ *  unfinished-flow count, or `💬 no flows` — an initiated repo always carries the footer. An uninitiated
  *  folder gets nothing: the status is cleared. Pure read — rendering never binds or claims anything. */
 function refreshStatus(ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
