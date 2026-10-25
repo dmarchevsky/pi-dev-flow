@@ -46,7 +46,6 @@ import {
 	pluginVersion,
 	preReleaseGate,
 	unreleasedPending,
-	unreleasedBody,
 	pendingEntryLines,
 	missingFoldedLines,
 	normalizeEntryLine,

@@ -766,6 +766,13 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 	if (!initiated(root) && sub !== "init" && sub !== "version") return { text: "dev-flow is not initiated here — no .dev-flow/project.md — run flow init first", isError: true };
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
+	// the yolo word at Verified?/Release?/Finish?: the operator said it in chat, then re-run with --confirmed; checks and guardrails stay enforced
+	const takeYoloWord = (state: FlowState): string | null => {
+		if (!flag("yolo")) return null;
+		if (!state.yolo && !flag("confirmed")) return "yolo is the operator's word — the operator must have said it in chat, then re-run with --yolo --confirmed";
+		state.yolo = true;
+		return null;
+	};
 	const slugArg = rest.find((a) => !a.startsWith("--"));
 
 	switch (sub) {
@@ -1225,11 +1232,9 @@ ${mdDigest(draftRefresh)}`))
 				} else did.push("dev: none configured");
 			}
 			const ran = [branchLine, ...did].join("; ");
-			// yolo is the operator's word at Verified? — answers this question and pre-confirms the later ones; --confirmed anchors it, checks and guardrails stay
-			if (flag("yolo")) {
-				if (!state!.yolo && !flag("confirmed")) return { text: "yolo is the operator's word — the operator must have said it in chat, then re-run with --yolo --confirmed", isError: true };
-				state!.yolo = true;
-			}
+			// yolo is the operator's word at Verified? — answers this question and pre-confirms the later ones
+			const yoloWord = takeYoloWord(state!);
+			if (yoloWord) return { text: yoloWord, isError: true };
 			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 			if (!flag("confirmed") && !state!.yolo) {
 				// these commands already ran — say so even on the way out
@@ -1279,11 +1284,9 @@ ${mdDigest(draftRefresh)}`))
 			if (err) return err;
 			const items = applicableItems(cfg, state!, "pre-release");
 			if (flag("no-version")) state!.noVersion = true; // operator's word at Release?: this flow ships without a version bump or tag
-			// yolo is the operator's word at Release? — answers this question and pre-confirms Finish?; publishing guardrails stay enforced
-			if (flag("yolo")) {
-				if (!state!.yolo && !flag("confirmed")) return { text: "yolo is the operator's word — the operator must have said it in chat, then re-run with --yolo --confirmed", isError: true };
-				state!.yolo = true;
-			}
+			// yolo is the operator's word at Release? — pre-confirms Finish?; publishing guardrails stay enforced
+			const yoloWord = takeYoloWord(state!);
+			if (yoloWord) return { text: yoloWord, isError: true };
 			// prep evidence is read from the worktree: the bump and changelog entry exist on the branch before the PR merges
 			const wtCwd = gateCwd(root, state!);
 			const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
@@ -1597,10 +1600,8 @@ ${mdDigest(draftRefresh)}`))
 			const forgeSkipNote = state!.forgeReleaseSkipped ? ` WARNING: the forge release was not created (${state!.forgeReleaseSkipped}) — recreate it manually or re-run release-done before finishing.` : "";
 			// the one finish question — asked after the safety checks so it can never be a wasted question
 			// yolo works uniformly at every gate: at Finish? nothing later remains to pre-confirm, the flag just answers this one
-			if (flag("yolo")) {
-				if (!state!.yolo && !flag("confirmed")) return { text: "yolo is the operator's word — the operator must have said it in chat, then re-run with --yolo --confirmed", isError: true };
-				state!.yolo = true;
-			}
+			const yoloWord = takeYoloWord(state!);
+			if (yoloWord) return { text: yoloWord, isError: true };
 			if (!flag("confirmed") && !state!.yolo) {
 				if (!ui.hasUI) return { text: needsOperator(`finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, "Finish?"), isError: true };
 				const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
