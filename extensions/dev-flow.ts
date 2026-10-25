@@ -911,67 +911,8 @@ ${mdDigest(draftRefresh)}`))
 			return { text: notes.join("\n") };
 		}
 
-		case "start": {
-			if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --patch/--docs are operator-granted modes — ask the operator in chat, then add --confirmed", isError: true };
-			if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
-			// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
-			if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
-			const mode = flag("patch") ? "patch" : flag("docs") ? "docs" : null;
-			if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — the operator must grant it in chat, then re-run with --confirmed`, isError: true };
-			// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
-			const curBr = await currentBranch(root);
-			if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
-			// --- preflight: is this session running the current build, and is the playbook complete? ---
-			const notes: string[] = [];
-			const disk = checkoutBuild(root);
-			const behind = sessionRunsOlderBuild(loadedVersion(), disk.version);
-			if (behind) notes.push(`warning: this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version} — /reload rebinds session state; only restarting the host swaps the code it runs`);
-			const dupStart = copyWarning();
-			if (dupStart) notes.push(dupStart);
-			if (flag("check-upstream")) {
-				const pub = await sh("npm view pi-dev-flow version", root);
-				const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
-				notes.push(newest ? `published dev-flow: ${newest} (this build: ${loadedVersion() ?? "?"})${loadedVersion() && newest !== loadedVersion() ? " — an update is available" : ""}` : "could not read the published dev-flow version (offline?)");
-			}
-			// missing playbook parameters are printed at the moment they start to matter, not promised to a later doctor run
-			const gaps = doctorFindings(root, cfg, loadProject(dfDir(root)).md).filter((x) => !x.startsWith("no merge policy"));
-			if (gaps.length) notes.push(`playbook gaps (${gaps.length}) — advisory, flow doctor reviews and routes them:\n${gaps.slice(0, 5).map((g) => `  ${g}`).join("\n")}`);
-			// the merge policy is the one blocking gap: it decides the shape of the default branch and nobody can
-			// reconstruct it afterwards. Ask once in chat (a checkpoint word like any other), write the answer, continue.
-			const styleArg = flagValue(rest, "merge");
-			const style = styleArg === null ? null : parseMergeStyle(styleArg);
-			if (styleArg !== null && !style) return { text: `--merge=${styleArg} is not a policy — use squash, merge, rebase or any`, isError: true };
-			// with no playbook at all there is nothing to ask about: writing the playbook is `flow init`'s job, and
-			// a repo that never ran init must not be refused a feature by a merge-policy question
-			const hasPlaybook = existsSync(path.join(dfDir(root), "project.md"));
-			if (!hasPlaybook) notes.push("no .dev-flow/project.md yet — flow init writes the playbook (it now asks for the merge policy too)");
-			if (hasPlaybook && (!cfg.release.merge || (style && style !== cfg.release.merge))) {
-				if (!style) {
-					const ev = await mergeHistoryEvidence(root, cfg.defaultBranch);
-					return {
-						text: needsOperator(
-							`the playbook has no merge policy — ask the operator how a merged PR should land on ${cfg.defaultBranch}: squash, merge (a merge commit), rebase, or any (no policy).${ev ? ` ${ev.note}${ev.recent ? ` Detected suggestion: ${ev.recent}.` : ""}` : ""} Then re-run: flow start ${slugArg} --merge=<style> --confirmed (the answer is written into .dev-flow/project.md)`,
-							"Merge policy?",
-						),
-						isError: true,
-					};
-				}
-				if (!flag("confirmed")) return { text: `writing merge = ${style} changes the operator playbook — the operator must answer it in chat first, then re-run with --confirmed`, isError: true };
-				const written = await writePlaybookMergePolicy(root, style);
-				if ("err" in written) return { text: written.err, isError: true };
-				// the flow that just wrote the policy must see it: nextHint and the merge guard read this config
-				cfg.release.merge = style;
-				notes.push(written.note);
-			}
-			// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling.
-			// the stamp is what ran, not what the disk claims (that mismatch is the warning above).
-			const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), loadedVersion() ?? undefined);
-			mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
-			writeState(root, state);
-			sess.bind(slugArg);
-			sess.rename(slugArg);
-			return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}); session renamed to ${slugArg}.${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
-		}
+		case "start":
+			return gateStart(o);
 
 		case "status":
 			return gateStatus(o);
@@ -988,49 +929,8 @@ ${mdDigest(draftRefresh)}`))
 		case "version":
 			return gateVersion(o);
 
-		case "approve": {
-			const { state, err } = needState(root, sess, slugArg);
-			if (err) return err;
-			const errs = approveGate(state!, cfg, listFiles(path.join(featDir(root, state!.slug), "plan")));
-			if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
-			const planItems = applicableItems(cfg, state!, "plan");
-			if (flag("yolo")) state!.yolo = true; // operator's word at Approve? — every later gate question is pre-confirmed; checks and guardrails stay
-			const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
-			if (!flag("confirmed")) {
-				if (!ui.hasUI) return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
-				const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
-				if (!ok) return { text: "approval declined — keep iterating on the plan" };
-			}
-			if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
-			const branch = subst(cfg.branchPattern, state!.slug);
-			const wtRel = subst(cfg.worktreeDir, state!.slug);
-			const wt = path.resolve(root, wtRel);
-			let setupNote = "";
-			if (!existsSync(wt)) {
-				// branch discipline: features branch off the default branch — never from a stale checkout HEAD
-				const base = (await sh(`git rev-parse --verify -q origin/${cfg.defaultBranch}`, root)).ok ? `origin/${cfg.defaultBranch}` : cfg.defaultBranch;
-				const res = await sh(`git worktree add ${sq(wt)} -b ${branch} ${base}`, root);
-				if (!res.ok) return { text: `worktree creation failed:\n${res.out}`, isError: true };
-			}
-			// setup is worktree work of a normal feature: a docs flow runs no project command at all (#49),
-			// and a worktree left behind by a setup that never succeeded must be retried — "fix it and run
-			// approve again" was a silent no-op on the reused directory (#49). setup is expected to be idempotent.
-			const setupCmd = state!.docs ? undefined : cfg.commands.setup;
-			if (setupCmd && !state!.setupAt) {
-				const s = await sh(setupCmd, wt);
-				if (!s.ok) return { text: `setup failed in ${wtRel} — fix commands.setup, then run flow approve again (the worktree is kept and setup retried):\n${tail(s.out)}`, isError: true };
-				state!.setupAt = now();
-				setupNote = `\nsetup ran in the worktree (${setupCmd}).`;
-			} else if (state!.docs && cfg.commands.setup) {
-				setupNote = "\nsetup skipped (docs mode — no project commands run).";
-			}
-			state!.branch = branch;
-			state!.worktree = wtRel;
-			state!.stage = "implement";
-			state!.approvals.plan = now();
-			writeState(root, state!);
-			return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
-		}
+		case "approve":
+			return gateApprove(o);
 
 		case "test":
 			return gateTest(o);
@@ -1512,6 +1412,114 @@ ${mdDigest(draftRefresh)}`))
 			return { text: `unknown subcommand "${sub}" — ${GATE_HELP}`, isError: true };
 	}
 }
+async function gateStart(o: GateCtx): Promise<RunResult> {
+	const { root, ui, sess, cfg, rest, flag, slugArg } = o;
+	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --patch/--docs are operator-granted modes — ask the operator in chat, then add --confirmed", isError: true };
+	if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
+	// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
+	if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
+	const mode = flag("patch") ? "patch" : flag("docs") ? "docs" : null;
+	if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — the operator must grant it in chat, then re-run with --confirmed`, isError: true };
+	// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
+	const curBr = await currentBranch(root);
+	if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
+	// --- preflight: is this session running the current build, and is the playbook complete? ---
+	const notes: string[] = [];
+	const disk = checkoutBuild(root);
+	const behind = sessionRunsOlderBuild(loadedVersion(), disk.version);
+	if (behind) notes.push(`warning: this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version} — /reload rebinds session state; only restarting the host swaps the code it runs`);
+	const dupStart = copyWarning();
+	if (dupStart) notes.push(dupStart);
+	if (flag("check-upstream")) {
+		const pub = await sh("npm view pi-dev-flow version", root);
+		const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
+		notes.push(newest ? `published dev-flow: ${newest} (this build: ${loadedVersion() ?? "?"})${loadedVersion() && newest !== loadedVersion() ? " — an update is available" : ""}` : "could not read the published dev-flow version (offline?)");
+	}
+	// missing playbook parameters are printed at the moment they start to matter, not promised to a later doctor run
+	const gaps = doctorFindings(root, cfg, loadProject(dfDir(root)).md).filter((x) => !x.startsWith("no merge policy"));
+	if (gaps.length) notes.push(`playbook gaps (${gaps.length}) — advisory, flow doctor reviews and routes them:\n${gaps.slice(0, 5).map((g) => `  ${g}`).join("\n")}`);
+	// the merge policy is the one blocking gap: it decides the shape of the default branch and nobody can
+	// reconstruct it afterwards. Ask once in chat (a checkpoint word like any other), write the answer, continue.
+	const styleArg = flagValue(rest, "merge");
+	const style = styleArg === null ? null : parseMergeStyle(styleArg);
+	if (styleArg !== null && !style) return { text: `--merge=${styleArg} is not a policy — use squash, merge, rebase or any`, isError: true };
+	// with no playbook at all there is nothing to ask about: writing the playbook is `flow init`'s job, and
+	// a repo that never ran init must not be refused a feature by a merge-policy question
+	const hasPlaybook = existsSync(path.join(dfDir(root), "project.md"));
+	if (!hasPlaybook) notes.push("no .dev-flow/project.md yet — flow init writes the playbook (it now asks for the merge policy too)");
+	if (hasPlaybook && (!cfg.release.merge || (style && style !== cfg.release.merge))) {
+		if (!style) {
+			const ev = await mergeHistoryEvidence(root, cfg.defaultBranch);
+			return {
+				text: needsOperator(
+					`the playbook has no merge policy — ask the operator how a merged PR should land on ${cfg.defaultBranch}: squash, merge (a merge commit), rebase, or any (no policy).${ev ? ` ${ev.note}${ev.recent ? ` Detected suggestion: ${ev.recent}.` : ""}` : ""} Then re-run: flow start ${slugArg} --merge=<style> --confirmed (the answer is written into .dev-flow/project.md)`,
+					"Merge policy?",
+				),
+				isError: true,
+			};
+		}
+		if (!flag("confirmed")) return { text: `writing merge = ${style} changes the operator playbook — the operator must answer it in chat first, then re-run with --confirmed`, isError: true };
+		const written = await writePlaybookMergePolicy(root, style);
+		if ("err" in written) return { text: written.err, isError: true };
+		// the flow that just wrote the policy must see it: nextHint and the merge guard read this config
+		cfg.release.merge = style;
+		notes.push(written.note);
+	}
+	// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling.
+	// the stamp is what ran, not what the disk claims (that mismatch is the warning above).
+	const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), loadedVersion() ?? undefined);
+	mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
+	writeState(root, state);
+	sess.bind(slugArg);
+	sess.rename(slugArg);
+	return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}); session renamed to ${slugArg}.${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
+}
+
+async function gateApprove(o: GateCtx): Promise<RunResult> {
+	const { root, ui, sess, cfg, flag, slugArg } = o;
+	const { state, err } = needState(root, sess, slugArg);
+	if (err) return err;
+	const errs = approveGate(state!, cfg, listFiles(path.join(featDir(root, state!.slug), "plan")));
+	if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
+	const planItems = applicableItems(cfg, state!, "plan");
+	if (flag("yolo")) state!.yolo = true; // operator's word at Approve? — every later gate question is pre-confirmed; checks and guardrails stay
+	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
+	if (!flag("confirmed")) {
+		if (!ui.hasUI) return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
+		const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
+		if (!ok) return { text: "approval declined — keep iterating on the plan" };
+	}
+	if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
+	const branch = subst(cfg.branchPattern, state!.slug);
+	const wtRel = subst(cfg.worktreeDir, state!.slug);
+	const wt = path.resolve(root, wtRel);
+	let setupNote = "";
+	if (!existsSync(wt)) {
+		// branch discipline: features branch off the default branch — never from a stale checkout HEAD
+		const base = (await sh(`git rev-parse --verify -q origin/${cfg.defaultBranch}`, root)).ok ? `origin/${cfg.defaultBranch}` : cfg.defaultBranch;
+		const res = await sh(`git worktree add ${sq(wt)} -b ${branch} ${base}`, root);
+		if (!res.ok) return { text: `worktree creation failed:\n${res.out}`, isError: true };
+	}
+	// setup is worktree work of a normal feature: a docs flow runs no project command at all (#49),
+	// and a worktree left behind by a setup that never succeeded must be retried — "fix it and run
+	// approve again" was a silent no-op on the reused directory (#49). setup is expected to be idempotent.
+	const setupCmd = state!.docs ? undefined : cfg.commands.setup;
+	if (setupCmd && !state!.setupAt) {
+		const s = await sh(setupCmd, wt);
+		if (!s.ok) return { text: `setup failed in ${wtRel} — fix commands.setup, then run flow approve again (the worktree is kept and setup retried):\n${tail(s.out)}`, isError: true };
+		state!.setupAt = now();
+		setupNote = `\nsetup ran in the worktree (${setupCmd}).`;
+	} else if (state!.docs && cfg.commands.setup) {
+		setupNote = "\nsetup skipped (docs mode — no project commands run).";
+	}
+	state!.branch = branch;
+	state!.worktree = wtRel;
+	state!.stage = "implement";
+	state!.approvals.plan = now();
+	writeState(root, state!);
+	return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
+}
+
 async function gateStatus(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg } = o;
 	const df = dfDir(root);
