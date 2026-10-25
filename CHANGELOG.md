@@ -4,8 +4,11 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.64.2] - 2026-10-25
+
 ### Changed
 
+- **Structured stage reports — a tier-3 communication convention, documented and injected.** `docs/playbook.md` gains a "Structured stage reports" section: every stage report opens with one inline `◆ <stage> · <slug>` line (mode + grant mark, ui, then per-stage decision fields — plan status, commits/tier-1/deploy, the version decision with its pending/bump/no-version states, PR/tag/artifact proofs, finish cleanup state) and closes with exactly one plain-chat checkpoint rendered as three markdown bullets (context / options incl. yolo / recommend) plus the single verb. The shape is plain markdown, never fenced — fenced header blocks rendered as horizontal-scroll boxes in web UIs. This repo's `project.md` carries the matching per-stage prose so every session inherits the contract at stage start; gates and guardrails are untouched — the contract is advisory like all tier-3 prose.
 - **Repo dogfood of `/flow-simplify`, shipped as a patch**: dropped the one dead import `tsc --noUnusedLocals` reports repo-wide (`unreleasedBody` in `test/core.test.ts`), and collapsed the thrice-duplicated yolo-word intake — the byte-identical `--yolo` acceptance block and its error string in the verify, release and finish gates — into one `takeYoloWord` helper, so the operator-word wording lives in one place. Also committed the `package-lock.json` version fields `npm install` rewrites in every worktree since the 0.64.1 bump left them unsynced.
 
 ## [0.64.1] - 2026-10-24
