@@ -1316,6 +1316,29 @@ test("flow abort honors another live session's claim — the lock covers the ver
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "stolen")), "the owning session can still drop its own plan-stage feature");
 });
 
+test("pending checkpoint: 💬 rides the footer until the word arrives, and is not inherited on takeover", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const seen: string[] = [];
+	const ctx = { cwd: repo, hasUI: false, notices: [] as string[], ui: { notify: () => {}, setStatus: (_k: string, s?: string) => seen.push(s ?? ""), theme: { fg: (_c: string, s: string) => s } }, mode: "rpc" };
+	const uiCtx = { ...ctx, hasUI: true, ui: { ...ctx.ui, confirm: async () => true } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "plan-gate"]);
+	writeFileSync(path.join(repo, ".dev-flow", "plan-gate", "plan", "plan.md"), "# plan\n\n- do it\n");
+	assert.match((await flow(["approve"])).content[0].text, /needs the operator/, "without the word the gate refuses and goes pending");
+	assert.equal((await flow(["status"])).content[0].text.includes("💬 Approve?"), true, "flow status names the pending checkpoint");
+	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, uiCtx);
+	assert.equal(seen.at(-1), "📝 plan-gate 💬", "the footer carries the checkpoint glyph on a bound flow");
+	await flow(["abort", "plan-gate"]);
+	await flow(["start", "other"]);
+	writeFileSync(path.join(repo, ".dev-flow", "other", "plan", "plan.md"), "# plan\n\n- do it\n");
+	await flow(["approve"]);
+	await flow(["use", "other"]);
+	assert.equal((await flow(["status"])).content[0].text.includes("💬"), false, "a takeover does not inherit the previous session's pending question");
+});
+
 test("patch feature: no plan file, same gates end to end", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

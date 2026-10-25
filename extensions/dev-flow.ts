@@ -914,9 +914,9 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 	const askPending = !flag("confirmed") && !state!.yolo;
 	if (askPending) {
+		markPendingAsk(root, state!, "Verified?"); // pending however it is asked — a chat question or a dialog
 		// these commands already ran — say so even on the way out
 		if (!ui.hasUI) {
-			markPendingAsk(root, state!, "Verified?");
 			return { text: `${needsOperator("verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat.", "Verified?")}\n${ran}`, isError: true };
 		}
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
@@ -1017,8 +1017,8 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 	const askPending = !flag("confirmed") && !state!.yolo;
 	if (askPending) {
+		markPendingAsk(root, state!, "Release?");
 		if (!ui.hasUI) {
-			markPendingAsk(root, state!, "Release?");
 			return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}`, "Release?"), isError: true };
 		}
 		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${state!.noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${state!.noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
@@ -1275,8 +1275,8 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	if (yoloWord) return { text: yoloWord, isError: true };
 	const askPending = !flag("confirmed") && !state!.yolo;
 	if (askPending) {
+		markPendingAsk(root, state!, "Finish?");
 		if (!ui.hasUI) {
-			markPendingAsk(root, state!, "Finish?");
 			return { text: needsOperator(`finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, "Finish?"), isError: true };
 		}
 		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
@@ -1548,8 +1548,8 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 	const askPending = !flag("confirmed");
 	if (askPending) {
+		markPendingAsk(root, state!, "Approve?");
 		if (!ui.hasUI) {
-			markPendingAsk(root, state!, "Approve?");
 			return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
 		}
 		const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
@@ -1800,6 +1800,12 @@ async function gateUse(o: GateCtx): Promise<RunResult> {
 	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
 	sess.bind(slugArg);
 	sess.rename(slugArg);
+	// a checkpoint that was still unanswered belongs to whoever asked; a session taking the feature over
+	// must not inherit a 💬 for a question it never posed
+	if (st.pendingAsk) {
+		clearPendingAsk(st);
+		writeState(root, st);
+	}
 	return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}; session renamed to ${slugArg}${takeover}` };
 }
 
