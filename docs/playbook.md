@@ -98,8 +98,7 @@ net change of a branch, not its commit history — a feature that landed through
 commits is one entry telling the final state, and the fold proofs (which guard only lines already
 pending under `Unreleased`) never stand in the way of merging your own lines. Say it differently
 here if your project wants that (per-sprint grouping, issue numbers, a strict Keep-a-Changelog
-vocabulary); `release.changelog` names the file (empty value = no changelog convention, and the
-gate stops asking for one).
+vocabulary).
 
 `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = require`
