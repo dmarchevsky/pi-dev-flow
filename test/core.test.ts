@@ -1302,3 +1302,11 @@ test("Stage reports: the skill carries the report contract and each stage file s
 		assert.ok(ref.includes(needle), `${stage}.md carries its stage-line marker ${needle}`);
 	}
 });
+
+test("pre-reference: the changelog writer reviews the branch, not its commits", () => {
+	const ref = readFileSync(new URL("../skills/dev-flow/references/pre-release.md", import.meta.url), "utf8");
+	assert.match(ref, /\*\*The changelog writer reviews the branch, not its commit list\*\*/, "the writer is told to read the diff, not the commit list");
+	assert.match(ref, /git diff/, "reading the branch diff is an explicit step");
+	assert.match(ref, /One entry per net change, never\s+one per commit/, "iteration commits collapse into one entry");
+	assert.match(ref, /fold-safe/, "consolidating one's own entry is stated as fold-proof-safe");
+});

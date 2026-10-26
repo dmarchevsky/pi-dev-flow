@@ -92,7 +92,15 @@ otherwise; confirm the number before tagging” live — the agent sees them at 
 `flow release` / `flow release-done` hard-check the manifest side (bumped past the last tag, then
 manifest↔tag agreement) and the changelog side (a heading for the version, an entry this branch
 prepared, and every entry that was pending before the release folded into it — see
-[gates.md](gates.md)). `## global` holds
+[gates.md](gates.md)).
+What an entry **is** stays the agent's stage convention, not a gate matter: the changelog records the
+net change of a branch, not its commit history — a feature that landed through several iteration
+commits is one entry telling the final state, and the fold proofs (which guard only lines already
+pending under `Unreleased`) never stand in the way of merging your own lines. Say it differently
+here if your project wants that (per-sprint grouping, issue numbers, a strict Keep-a-Changelog
+vocabulary).
+
+`## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = require`
 (default: every shell call must state its own timeout) `| inject`, `release.review`,
 `release.changelog` (default `CHANGELOG.md`; set it empty to opt out), `release.releases` and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/

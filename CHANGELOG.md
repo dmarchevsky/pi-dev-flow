@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.64.6] - 2026-10-26
+
+### Changed
+
+- **The changelog writer reviews the branch, not its commit list.** Changelog prose was the one part of the release the agent wrote from nothing but a clause — *update the changelog* — while every real rule was a gate proof (the heading names the version, this branch prepared the entry, folded lines survive verbatim, nothing left under `Unreleased`). Proofs check structure and never granularity, so the entry kept the shape its branch was built from: a change that landed as the fix, its follow-up and the test chasing it read as three near-identical lines — and that entry is also the forge release body, so the noise published verbatim. The pre-release reference now tells the writer to read `git log` *and* `git diff <default>…HEAD` and write the net change in the reader's terms (what was broken, what works now): **one entry per net change, never one per commit**, two lines sharing a subject being the tell to merge them, and work that never reached the reader (reverted mid-branch, dropped on the way, pure moves) getting no line at all. The rule is stated as fold-safe on purpose — the fold proofs guard lines that were already pending under `Unreleased` (another flow's, moved verbatim), never the wording of the entry this flow is writing — and `docs/gates.md` says so where the proofs are documented, so their verbatim discipline is not read as *one line per commit, forever*. `docs/playbook.md` adds the human counterpart: what an entry *is* stays the project's own prose, the gate asks only for the heading and the branch's hand in it. A consistency test locks the clause, the diff step, the one-per-change rule and the fold-safe note into the stage reference.
+
 ## [0.64.5] - 2026-10-25
 
 ### Fixed
