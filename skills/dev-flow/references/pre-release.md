@@ -16,7 +16,19 @@ invent one mid-release. Sequence:
 2. Update documentation to reflect the change.
 3. Update the changelog and bump the manifest to the exact version you will
    tag — manifest, changelog and tag must agree; commit the prep on the feature
-   branch. A versioned release **folds the `Unreleased` section** (entries
+   branch. **The changelog writer reviews the branch, not its commit list**:
+   read `git log <default>..HEAD` *and* `git diff <default>…HEAD` first and
+   write the entry from the net change the branch delivers, in the reader's
+   terms (what was broken, what works now) — this entry is also the forge
+   release body, so it publishes verbatim. **One entry per net change, never
+   one per commit:** a feature that needed iteration commits (the fix, its
+   follow-up, the test that chases it) is **one** line telling the final state;
+   two lines sharing a subject are the tell to merge them. Work that never
+   reached the reader — reverted mid-branch, dropped on the way, pure moves —
+   gets no line. Consolidating your own entry is fold-safe: the fold proofs
+   below guard lines that were already pending under `Unreleased` (another
+   flow's), which you move verbatim; your own prose is yours until the heading
+   ships. A versioned release **folds the `Unreleased` section** (entries
    `--no-version` flows left there) under the new version heading: the gate
    refuses while entries remain, refuses a fold that **drops or rewrites** one
    (move the lines as they are and reword afterwards in a follow-up), and
