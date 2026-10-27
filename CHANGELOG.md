@@ -4,7 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
-## [0.65.1] - 2026-10-27
+## [0.66.0] - 2026-10-27
+
+### Changed
+
+- **The approve gate now proves what the plan prose always demanded.** A regular feature needs `plan/plan.md` **by name** — a preliminary direction belongs inside plan.md (marked draft); a separate `pre-plan`/`direction.md` file no longer opens the gate (the old check accepted any `*.md`, which let a direction draft stand in for the plan). For `--ui` features the gate opens plan.md itself and refuses every render file under `plan/` that is not embedded with `![...](…)` and every `mockups/<screen>.html` that carries no embedded `<screen>-<width>.` shot — an unrendered or unembedded screenshot is one the operator never saw. Glob matching (incl. `mockupGlobs`) is case-insensitive, so `Screenshot.PNG` can no longer slip the `*.png` proof.
+- **`flow verify` proves a live app before asking Verified?.** With a `health` command configured and no `dev` deploy, verify now re-probes the app itself (`health: live re-probe PASS`) instead of trusting the `flow check` record — a green record survives a killed server (process death dirties no worktree fingerprint), so a dead app now refuses with `live probe FAILED … start it and rerun` rather than letting the operator be asked to review nothing. With `dev` configured the existing post-deploy probe still proves liveness. The implement nextHint and stage reference state the rule the gates now enforce: keep the app running until the checkpoint is answered.
 
 ### Changed
 
