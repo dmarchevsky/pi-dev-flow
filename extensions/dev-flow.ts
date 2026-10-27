@@ -938,6 +938,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 			did.push(`build ran (${cfg.commands.build})`);
 		}
 		// deploy to dev before asking — the operator reviews the running dev app, not a promise
+		const probe = healthProbe(cfg);
 		if (cfg.commands.dev) {
 			const res = await sh(cfg.commands.dev, gateCwd(root, state!));
 			state!.checks.dev = { ok: res.ok, at: now() };
@@ -948,7 +949,6 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 			// still serves the previous build, must not pass on a health PASS recorded before it was
 			// recreated. What "the expected version" means is the project's business — the probe runs in
 			// the worktree cwd, so it can compare the served build stamp with `git rev-parse HEAD`.
-			const probe = healthProbe(cfg);
 			if (!probe) did.push("health: none configured");
 			else {
 				const seedFail = await seedStep(root, state!, cfg);
@@ -962,7 +962,22 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 				if (!probed.ok) return { text: `post-deploy probe FAILED (${probe}) — the deploy is not healthy / not serving this build (gave up after ${probed.attempts} attempt(s), healthWait ${cfg.healthWait}s):\n${tail(probed.out)}`, isError: true };
 				did.push(`health: PASS (${probe}${tried})`);
 			}
-		} else did.push("dev: none configured");
+		} else if (!probe) did.push("dev: none configured");
+		else {
+			// no deploy to prove, but the operator still reviews a live app — and a green health record
+			// survives a killed server (process death dirties no worktree fingerprint), so the record
+			// cannot stand for liveness: re-probe, before anyone is asked.
+			const seedFail = await seedStep(root, state!, cfg);
+			if (seedFail) return seedFail;
+			const probed = await runHealthProbe(probe, gateCwd(root, state!), cfg.healthWait);
+			state!.checks.health = { ok: probed.ok, at: now() };
+			await stampChecks(root, state!, ["health"]);
+			writeState(root, state!);
+			const tried = probed.attempts > 1 ? `, ${probed.attempts} attempts` : "";
+			if (!probed.ok)
+				return { text: `live probe FAILED (${probe}) — nothing is answering and no dev deploy is configured: the app the operator must review has to be running before verify — start it and rerun (gave up after ${probed.attempts} attempt(s), healthWait ${cfg.healthWait}s):\n${tail(probed.out)}`, isError: true };
+			did.push(`health: live re-probe PASS (${probe}${tried})`);
+		}
 	}
 	const ran = [branchLine, ...did].join("; ");
 	// yolo is the operator's word at Verified? — answers this question and pre-confirms the later ones
@@ -1598,7 +1613,11 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg } = o;
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
-	const errs = approveGate(state!, cfg, listFiles(path.join(featDir(root, state!.slug), "plan")));
+	const planDir = path.join(featDir(root, state!.slug), "plan");
+	// the embed proofs read the plan document itself: a render that exists on disk but is not
+	// embedded in plan.md is one the operator would never be shown
+	const planMd = path.join(planDir, "plan.md");
+	const errs = approveGate(state!, cfg, listFiles(planDir), existsSync(planMd) ? readFileSync(planMd, "utf8") : undefined);
 	if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 	const planItems = applicableItems(cfg, state!, "plan");
 	if (flag("yolo")) state!.yolo = true; // operator's word at Approve? — every later gate question is pre-confirmed; checks and guardrails stay

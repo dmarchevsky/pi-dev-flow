@@ -227,16 +227,43 @@ export function listFiles(dir: string): string[] {
 }
 
 function matchesGlob(file: string, globs: string[]): boolean {
-	return globs.some((g) => (g.startsWith("*.") ? file.endsWith(g.slice(1)) : file.includes(g)));
+	const f = file.toLowerCase();
+	return globs.some((g) => {
+		const glob = g.toLowerCase();
+		return glob.startsWith("*.") ? f.endsWith(glob.slice(1)) : f.includes(glob);
+	});
 }
 
-/** Gate: plan → implement. Returns reasons it cannot advance (empty = pass). */
-export function approveGate(state: FlowState, cfg: Config, planFiles: string[]): string[] {
+/** Image extensions the embed proof keys on — independent of mockupGlobs: whatever the operator
+ *  configured as the render proof, a render nobody embedded is one the operator never saw. */
+const IMG_EXT = /\.(?:png|jpe?g|webp|gif)$/i;
+
+/** Gate: plan → implement. Returns reasons it cannot advance (empty = pass).
+ *  planDoc is the text of plan/plan.md (undefined = absent) — the embed proofs read the plan
+ *  document itself. Before it, the gate checked only that *a* *.md and *a* *.png existed, which
+ *  let a pre-plan/direction file with unembedded screenshots walk through Approve. */
+export function approveGate(state: FlowState, cfg: Config, planFiles: string[], planDoc?: string): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "plan") errs.push(`stage is "${state.stage}", approval only applies to "plan"`);
-	if (!state.patch && !state.docs && !planFiles.some((f) => f.endsWith(".md"))) errs.push("plan/ must contain the written plan (*.md)");
+	if (!state.patch && !state.docs && !planFiles.includes("plan.md"))
+		errs.push("plan/plan.md is missing — the plan IS plan.md (a preliminary direction belongs inside it, marked draft; a separate pre-plan/direction file does not open the gate)");
 	if (state.ui && !planFiles.some((f) => matchesGlob(f, cfg.mockupGlobs)))
 		errs.push(`UI feature: plan/mockups/ must contain rendered screenshots matching ${cfg.mockupGlobs.join(", ")} (headless chromium, embedded in plan.md)`);
+	if (state.ui && planDoc !== undefined) {
+		// ![alt](mockups/screen-390.png) with an optional "title" tolerated; matching is case-insensitive
+		const embeds = [...planDoc.matchAll(/!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)].map((m) => m[1].toLowerCase());
+		const unembedded = planFiles.filter((f) => IMG_EXT.test(f) && !embeds.some((e) => e === f.toLowerCase() || e.endsWith("/" + f.toLowerCase())));
+		if (unembedded.length) errs.push(`plan.md must embed every render — missing embed: ${unembedded.join(", ")} (write ![<screen> — width](mockups/<file>) under the screen's section)`);
+		// the naming plan.md prescribes (screen.html → screen-<width>.png): a mockups/*.html with no
+		// embedded shot of its own was never rendered
+		const unrendered = planFiles
+			.filter((f) => /^mockups\/[^/]+\.html$/i.test(f))
+			.filter((f) => {
+				const stem = f.toLowerCase().replace(/\.html$/, "").split("/").pop()!;
+				return !embeds.some((e) => (e.split("/").pop() ?? "").startsWith(stem) && IMG_EXT.test(e));
+			});
+		if (unrendered.length) errs.push(`mockups without an embedded render — ${unrendered.join(", ")} (render each screen and name the shot after it: <screen>-<width>.png)`);
+	}
 	return errs;
 }
 
@@ -1776,7 +1803,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask the operator Approve? in chat and run flow approve --confirmed when they answer`;
 		case "implement":
 			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
-			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
+			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
 		case "pre-release":
 			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog} (a heading for the new version, carrying every pending Unreleased line over as it stands)` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":

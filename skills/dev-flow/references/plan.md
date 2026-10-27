@@ -13,7 +13,11 @@
    keep it current**: create the file the moment the direction is confirmed —
    don't wait for the finished plan — and amend it in the file as the discussion
    continues. Plan talk held only in the conversation is gone when pi
-   auto-compacts mid-stage; the gate reviews the file, not the memory. First check
+   auto-compacts mid-stage; the gate reviews the file, not the memory. The file
+   name is itself the gate's proof: **plan.md** — a preliminary direction
+   belongs *inside* plan.md (marked draft), never a separate
+   `pre-plan`/`direction.md` file: the approve gate requires plan.md by name.
+   First check
    `git log origin/<default>..<default> --oneline`: local-only default-branch
    commits fall out of the worktree's base (push them or re-plan).
 4. **UI flag set?** Mockups live in `plan/mockups/`, one HTML per screen/state
@@ -29,7 +33,9 @@
    - Embed every render in plan.md under its section —
      `![<screen> — phone](mockups/<screen>-390.png)`. Image syntax only (a
      filename in prose is a broken link); before Approve? re-check that every
-     tag points at an existing file.
+     tag points at an existing file. The approve gate proves this: it opens
+     plan.md and refuses every render file that is not embedded, and every
+     `mockups/<screen>.html` with no embedded `<screen>-<width>.` shot.
    - No chromium anywhere → tell the operator and ask; `*.html`-only plans
      only with their OK (knob: `mockupGlobs`); never fake or skip silently.
    - Gotchas: for a component question prefer a **static strip** — standalone

@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -411,6 +411,31 @@ test("verify re-probes health after the dev deploy — a stale pre-deploy PASS c
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /dev ran \(touch dev-up\); health: PASS \(node --version\)/);
 	assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "probed", "state.json"), "utf8")).checks.health.ok, "the post-deploy PASS is what lands in state");
+});
+
+test("without a dev deploy, verify live-probes the app — a killed server cannot carry the gate", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n\n## release\n\n\`\`\`flow\nmerge = merge\n\`\`\`\n`;
+	const stage = (slug: string) => JSON.parse(readFileSync(path.join(repo, ".dev-flow", slug, "state.json"), "utf8")).stage;
+	const dead = path.join(repo, "server-down"); // the marker lives outside the worktree: process death must dirty no worktree fingerprint
+	await flow(["init"]);
+	await flow(["init", "--write", md(`test = node --version\nhealth = test ! -e ${dead}\nhealthWait = 0\n`)]);
+	await flow(["start", "deadapp"]); // the operator's "test server" case: health set, dev unset
+	mkdirSync(path.join(repo, ".dev-flow", "deadapp", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "deadapp", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "deadapp"); // commit before the check so the gate's fingerprint stays stable: the live probe, not a stale-rerun, is the proof
+	await flow(["check"]); // the app is up: health goes green
+	writeFileSync(dead, ""); // the agent kills the test server before Verified? — the green record survives it
+	const refused = await flow(["verify", "--confirmed"]);
+	assert.ok(refused.isError && /live probe FAILED/.test(refused.content[0].text), `the live app must answer, not the record: ${refused.content[0].text}`);
+	assert.match(refused.content[0].text, /has to be running before verify/, "the refusal says what to do");
+	assert.equal(stage("deadapp"), "implement", "a dead app leaves the flow in implement");
+	rmSync(dead); // server started again — start it and rerun, exactly as the refusal says
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /health: live re-probe PASS/);
 });
 
 test("the health probe waits for a service that lags its deploy; healthWait 0 keeps the single shot (#42)", async () => {
