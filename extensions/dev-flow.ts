@@ -1712,7 +1712,7 @@ async function gateReflect(o: GateCtx): Promise<RunResult> {
 			version: self.version,
 			upstream,
 			closed: closedReflectionCount(readReflectionsText(root)),
-			ghFold: fold.state === "ok" ? { repo: fold.slug, open: fold.open, similar: fold.result.similar.length } : undefined,
+			ghFold: fold.state === "ok" && fold.open ? { repo: fold.slug, open: fold.open, similar: fold.result.similar.length } : undefined,
 		}).join("\n"),
 	};
 }
