@@ -164,11 +164,19 @@ test("newState stamps the dev-flow build when supplied", () => {
 test("approveGate requires plan.md, rendered mockups when ui", () => {
 	const s = newState("f", false);
 	assert.ok(approveGate(s, cfg, []).length > 0);
+	assert.ok(approveGate(s, cfg, ["pre-plan.md", "direction.md"]).some((e) => /plan\.md/.test(e)), "a pre-plan/direction file is not the plan — the gate names plan.md");
 	assert.equal(approveGate(s, cfg, ["plan.md"]).length, 0);
 	const su = newState("f", true);
 	assert.ok(approveGate(su, cfg, ["plan.md"]).length > 0, "ui feature without a render must not pass");
 	assert.ok(approveGate(su, cfg, ["plan.md", "mockups/screen.html"]).length > 0, "html source alone is not evidence of a render");
-	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"]).length, 0);
+	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"]).length, 0, "no planDoc passed → embed proofs stay back-compat skipped");
+	const doc = "# plan\n![screen — phone](mockups/screen-390.png)\n";
+	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"], doc).length, 0);
+	assert.ok(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"], "# plan\nno images here").some((e) => /screen-390\.png/.test(e)), "a render nobody embedded was never shown to the operator");
+	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen-390.PNG"], '![s](mockups/screen-390.PNG "t")').length, 0, "case-insensitive glob and embed; an optional title is tolerated");
+	assert.ok(approveGate(su, cfg, ["plan.md", "mockups/screen.html", "mockups/other-390.png"], "![o](mockups/other-390.png)").some((e) => /screen\.html/.test(e)), "screen.html without a screen-* shot is an unrendered mockup");
+	const doc2 = doc + "![screen — desktop](mockups/screen-1280.png)\n";
+	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen.html", "mockups/screen-390.png", "mockups/screen-1280.png"], doc2).length, 0, "every screen rendered and embedded passes");
 	const htmlCfg = buildConfig({ mockupGlobs: ["*.html"] });
 	assert.equal(approveGate(su, htmlCfg, ["plan.md", "mockups/screen.html"]).length, 0, "configured glob overrides the png default");
 	const done = { ...s, stage: "release" as const };

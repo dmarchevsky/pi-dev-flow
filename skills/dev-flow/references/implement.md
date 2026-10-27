@@ -35,8 +35,11 @@ feature).
    up to `healthWait` (default 30s) — a service needing a moment after its
    container starts is not a failed deploy; say so rather than declaring a
    healthy deploy broken. Walk the **tier-2 checklist** (`- [ ]`) with the
-   operator honestly — it cannot be scripted. Then ask **Verified?** →
-   `flow verify --confirmed`. Checkpoint report: stage line **🔨 implement ·
+   operator honestly — it cannot be scripted. Keep the app **running** when
+   you ask **Verified?** → `flow verify --confirmed` — the operator reviews
+   the live app, so never tear the test server down before the checkpoint is
+   answered (with no `dev` deploy configured, `flow verify` live-re-probes
+   `health` itself and refuses while nothing is answering). Checkpoint report: stage line **🔨 implement ·
    `<slug>`** — commits `N ahead, M uncommitted` · tier-1 · tier-2 · deploy/
    health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = iterate and re-verify; that loop is
    free.
