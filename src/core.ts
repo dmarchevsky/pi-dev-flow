@@ -1590,7 +1590,7 @@ export function investigationBrief(note: string, selfRepo: boolean): string[] {
 /** Bare `flow reflect`: the full session-reflection protocol for the agent (the plugin has no LLM —
  *  the agent reviews the session log, re-checks open items against shipped fixes, dedupes new
  *  findings and puts the fix decision to the operator). Writes nothing, runs no network calls. */
-export function reflectProtocol(items: ReflectItem[], selfRepo: boolean, facts: { version: string | null; upstream: string; closed?: number }): string[] {
+export function reflectProtocol(items: ReflectItem[], selfRepo: boolean, facts: { version: string | null; upstream: string; closed?: number; ghFold?: { repo: string; open: number; similar: number } }): string[] {
 	const ver = facts.version ? `dev-flow ${facts.version}` : "dev-flow version unknown";
 	const up = facts.upstream || "<upstream — ask the operator for the dev-flow repo>";
 	const url = facts.upstream ? `https://github.com/${facts.upstream}` : "<upstream-url>";
@@ -1605,6 +1605,10 @@ export function reflectProtocol(items: ReflectItem[], selfRepo: boolean, facts: 
 		`   a. plugin items: search upstream first — gh issue list --repo ${up} --state all --search "<keywords>" — an author-addressed match → report the verdict back to the operator (fixed in v… / closed won't-fix + reason), do not re-file; no match → gh issue create --repo ${up} with a detailed description, session evidence and a suggested fix.`,
 		"   b. playbook items: run flow doctor — it reviews each open item and routes it to the docs flow that implements the fix.",
 	];
+	if (facts.ghFold)
+		lines.push(
+			`upstream fold: ${facts.ghFold.open} open issue(s) on ${facts.ghFold.repo} ride along in flow doctor and flow reflect list — treat them as already filed: never file a finding an open issue covers, resolve upstream items on GitHub (close there, never in reflections.md)${facts.ghFold.similar ? `; ${facts.ghFold.similar} flagged near-duplicate(s) of local items need your verdict before anything is fixed twice` : ""}. When filing an issue for a local item, end the body with '— reflection from <flow-slug> <date>' so future folds match it, then check the item off with '— filed: gh#NNN'.`,
+		);
 	if (facts.closed) lines.push(`${reflectionsTidyHint(facts.closed)} — check an item off only when it is handled; tidy once the checked-off pile grows.`);
 	if (!items.length) lines.push("open items: none — steps 1 and 3 still apply.");
 	else {

@@ -123,6 +123,7 @@ import {
 	type SessionClaim,
 } from "../src/core.ts";
 import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
+import { dedupeReflections, linkedTag, parseGhIssues, similarNote, type FoldResult, type GhIssue } from "../src/fold.ts";
 import { bashTimeout, requireTimeout } from "../src/timeouts.ts";
 import { detectProject } from "../src/detect.ts";
 
@@ -205,9 +206,9 @@ const now = () => new Date().toISOString();
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function sh(command: string, cwd: string): Promise<{ ok: boolean; out: string }> {
+async function sh(command: string, cwd: string, timeoutMs = 15 * 60_000): Promise<{ ok: boolean; out: string }> {
 	try {
-		const { stdout, stderr } = await execAsync(command, { cwd, timeout: 15 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+		const { stdout, stderr } = await execAsync(command, { cwd, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
 		return { ok: true, out: `${stdout}\n${stderr}`.trim() };
 	} catch (e) {
 		const err = e as { stdout?: string; stderr?: string; message?: string };
@@ -717,13 +718,69 @@ function reflectNote(root: string, sess: Session, note: string[], forced: Reflec
 	return { text: `reflected (${sections.join(" + ")} — ${why}): ${line}` + (closed ? `\n${reflectionsTidyHint(closed)}` : "") };
 }
 
-/** `flow reflect list` — the queue numbered, so `move <n>` can address an item (same numbering as `flow roadmap`). */
-function reflectList(root: string): RunResult {
+/** In-process TTL cache per repo slug — repeat doctor runs in one session must not re-hit the API. */
+const ghFoldCache = new Map<string, { at: number; issues: GhIssue[] }>();
+const GH_FOLD_TTL_MS = 5 * 60_000;
+
+/** Open GitHub issues of the repo's own origin — the channel external parties can file through.
+ *  Three outcomes, only the third ever speaks: absent (no GitHub remote — not every repo has one,
+ *  say nothing), skipped (gh missing / unauthenticated / offline / DEV_FLOW_NO_ISSUES — one line
+ *  with the reason, never a guess), ok (the parsed list). */
+async function fetchUpstream(root: string): Promise<{ slug: string; issues: GhIssue[] } | { skipped: string } | { absent: true }> {
+	if (process.env.DEV_FLOW_NO_ISSUES) return { skipped: "disabled (DEV_FLOW_NO_ISSUES)" };
+	const origin = await sh("git remote get-url origin", root, 10_000);
+	const slug = origin.ok ? githubSlug(origin.out) : "";
+	if (!slug) return { absent: true };
+	const hit = ghFoldCache.get(slug);
+	if (hit && Date.now() - hit.at < GH_FOLD_TTL_MS) return { slug, issues: hit.issues };
+	const r = await sh(`gh issue list --repo ${slug} --state open --json number,title,body --limit 100`, root, 10_000);
+	if (!r.ok) return { skipped: `gh: ${r.out.split("\n").find(Boolean)?.slice(0, 140) || "failed"}` };
+	const parsed = parseGhIssues(r.out);
+	if (parsed === null) return { skipped: "unparseable gh output" };
+	ghFoldCache.set(slug, { at: Date.now(), issues: parsed });
+	return { slug, issues: parsed };
+}
+
+type FoldView = { state: "absent" } | { state: "skipped"; why: string } | { state: "ok"; slug: string; result: FoldResult; open: number };
+
+async function foldView(root: string, items: ReflectItem[], selfRepo: boolean): Promise<FoldView> {
+	const up = await fetchUpstream(root);
+	if ("absent" in up) return { state: "absent" };
+	if ("skipped" in up) return { state: "skipped", why: up.skipped };
+	return { state: "ok", slug: up.slug, result: dedupeReflections(items, up.issues), open: up.issues.length };
+}
+
+/** The fold block shared by flow doctor and flow reflect list: header, one row per unmatched
+ *  issue with its route, then the unmerged near-miss hints. Local rows carry their ⟷ gh#N tag
+ *  at the call site — the fold lists upstream items, it never re-numbers the local queue. */
+function foldRows(fold: FoldView, selfRepo: boolean): string[] {
+	if (fold.state === "absent") return [];
+	if (fold.state === "skipped") return [`upstream issues: skipped (${fold.why})`];
+	if (!fold.open) return [];
+	const rows = [`upstream on ${fold.slug} — ${fold.open} open issue(s) on GitHub (canonical there — close on GitHub, never here; this is a fold, not a copy):`];
+	for (const i of fold.result.upstreamOnly) rows.push(`  gh#${i.number} ${i.title} → ${selfRepo ? "fix in a flow here (patch flow if small)" : "fix in a flow here, or close won't-fix on GitHub"}`);
+	for (const s of fold.result.similar) rows.push(`  ${similarNote(s, s.item + 1)}`);
+	return rows;
+}
+
+/** `flow reflect list` — the queue numbered, so `move <n>` can address an item (same numbering as
+ *  `flow roadmap`). Upstream items ride below the local queue as gh#N — never numbered, never
+ *  addressable by move: each item keeps the home it is resolved in. */
+async function reflectList(root: string): Promise<RunResult> {
 	const items = readReflections(root);
-	if (!items.length) return { text: "reflections: nothing open" };
-	return {
-		text: [`reflections — ${items.length} open:`, ...items.map((it, i) => `  ${i + 1}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}`)].join("\n"),
-	};
+	const fold = await foldView(root, items, isSelfRepo(root));
+	const local = items.length
+		? [
+				`reflections — ${items.length} open:`,
+				...items.map((it, i) => {
+					const link = fold.state === "ok" ? fold.result.linked.find((l) => l.item === i) : undefined;
+					return `  ${i + 1}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}${link ? linkedTag(link.issue) : ""}`;
+				}),
+			]
+		: fold.state === "absent" || fold.state === "skipped"
+			? ["reflections: nothing open"]
+			: ["reflections: nothing open locally"];
+	return { text: [...local, ...foldRows(fold, isSelfRepo(root))].join("\n") };
 }
 
 /** `flow reflect move <n> --plugin|--playbook` — re-file an item under the other heading, so fixing a
@@ -1642,13 +1699,22 @@ async function gateReflect(o: GateCtx): Promise<RunResult> {
 				: null;
 	// single words are verbs (roadmap-style); a note merely starting with one stays a note
 	if (words.length === 1 && words[0] === "tidy") return reflectTidy(root);
-	if (words.length === 1 && words[0] === "list") return reflectList(root);
+	if (words.length === 1 && words[0] === "list") return await reflectList(root);
 	if (words[0] === "move") return reflectMoveNote(root, words.slice(1), forced);
 	if (words.length) return reflectNote(root, sess, words, forced);
 	// upstream for the update probe: the manifest's repository field; the dev-flow checkout itself falls back to its origin
 	const self = pluginVersion(import.meta.dirname);
 	const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
-	return { text: reflectProtocol(readReflections(root), isSelfRepo(root), { version: self.version, upstream, closed: closedReflectionCount(readReflectionsText(root)) }).join("\n") };
+	const refl = readReflections(root);
+	const fold = await foldView(root, refl, isSelfRepo(root));
+	return {
+		text: reflectProtocol(refl, isSelfRepo(root), {
+			version: self.version,
+			upstream,
+			closed: closedReflectionCount(readReflectionsText(root)),
+			ghFold: fold.state === "ok" ? { repo: fold.slug, open: fold.open, similar: fold.result.similar.length } : undefined,
+		}).join("\n"),
+	};
 }
 
 async function gateRoadmap(o: GateCtx): Promise<RunResult> {
@@ -1703,12 +1769,17 @@ async function gateDoctor(o: GateCtx): Promise<RunResult> {
 	const findings = doctorFindings(root, loaded.cfg, loaded.md);
 	findings.push(...(await gitConsistency(root, loaded.cfg)));
 	const refl = readReflections(root);
+	const fold = await foldView(root, refl, isSelfRepo(root));
 	if (refl.length) {
 		findings.push(`reflection review — ${refl.length} open item(s); doctor never implements: investigate each, present the fix, the operator confirms, then the routed flow implements it:`);
 		// labelled from the heading each item sits under — the file is the record, re-guessing from the
 		// note text made doctor's table disagree with where the note was actually filed
-		for (const r of reflectionRoutes(refl, isSelfRepo(root))) findings.push(`  [${r.sections.join("+")}] ${r.text}\n      → ${r.route}`);
+		reflectionRoutes(refl, isSelfRepo(root)).forEach((r, i) => {
+			const link = fold.state === "ok" ? fold.result.linked.find((l) => l.item === i) : undefined;
+			findings.push(`  [${r.sections.join("+")}] ${r.text}${link ? linkedTag(link.issue) : ""}\n      → ${r.route}${link ? ` — already upstream (gh#${link.issue}); check off with — filed: gh#${link.issue} once it lands` : ""}`);
+		});
 	}
+	findings.push(...foldRows(fold, isSelfRepo(root)));
 	const unfiled = reflectUnfiledCount(readReflectionsText(root));
 	if (unfiled) findings.push(`  reflections: ${unfiled} open item(s) sit outside ## playbook / ## plugin — flow reflect list shows them, flow reflect move <n> --plugin|--playbook files them`);
 	const closedRefl = closedReflectionCount(readReflectionsText(root));
