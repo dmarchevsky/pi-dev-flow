@@ -1564,6 +1564,55 @@ test("flow doctor reviews open reflections with routing and briefs a fresh note"
 	assert.match(n.content[0].text, /fix routing: docs flow/);
 });
 
+test("flow doctor and reflect list fold open GitHub issues in — linked rows tag, the rest list as upstream", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	writeFileSync(
+		path.join(repo, ".dev-flow", "reflections.md"),
+		"# dev-flow reflections\n\n## playbook\n\n- [ ] test command is stale — x 2026-01-01\n\n## plugin\n\n- [ ] an entirely foreign complaint about release gating — y 2026-01-01\n",
+	);
+	execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/owner/repo.git"]);
+	// a stubbed gh: the fold must be testable hermetically — no network, no auth, no CI flake
+	const bin = mkdtempSync(path.join(tmpdir(), "ghbin-"));
+	const gh = path.join(bin, "gh");
+	writeFileSync(gh, "#!/bin/sh\nprintf '%s' '[{\"number\":120,\"title\":\"test command is stale\",\"body\":\"\"},{\"number\":121,\"title\":\"release gating blocks patch flows\",\"body\":\"\"}]'\n");
+	chmodSync(gh, 0o755);
+	const savedPath = process.env.PATH;
+	process.env.PATH = `${bin}:${savedPath}`;
+	try {
+		const d = await flow(["doctor"]);
+		assert.match(d.content[0].text, /test command is stale[^\n]*⟷ gh#120/, "the matching local row carries the upstream tag");
+		assert.match(d.content[0].text, /already upstream \(gh#120\)/);
+		assert.match(d.content[0].text, /upstream on owner\/repo — 2 open/, "the fold block names its source and count");
+		assert.match(d.content[0].text, /gh#121 release gating blocks patch flows/, "unmatched issues list as upstream rows");
+		const l = await flow(["reflect", "list"]);
+		assert.match(l.content[0].text, /1\. \[playbook\] test command is stale[^\n]*⟷ gh#120/);
+		assert.match(l.content[0].text, /gh#121/, "reflect list folds too");
+	} finally {
+		process.env.PATH = savedPath;
+	}
+});
+
+test("DEV_FLOW_NO_ISSUES is the kill switch — doctor says so instead of guessing", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	writeFileSync(path.join(repo, ".dev-flow", "reflections.md"), "# dev-flow reflections\n\n## playbook\n\n- [ ] an item — x 2026-01-01\n");
+	execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/owner/repo.git"]);
+	process.env.DEV_FLOW_NO_ISSUES = "1";
+	try {
+		const d = await flow(["doctor"]);
+		assert.match(d.content[0].text, /upstream issues: skipped \(disabled \(DEV_FLOW_NO_ISSUES\)\)/);
+	} finally {
+		delete process.env.DEV_FLOW_NO_ISSUES;
+	}
+});
+
 test("pre-release stage: verify lands there, release gate has teeth, finish asks Finish?", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

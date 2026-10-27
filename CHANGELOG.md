@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-10-27
+
+### Added
+
+- **Open GitHub issues fold into the reflection review.** `.dev-flow/reflections.md` is gitignored and per-machine, while external reports arrive on GitHub — the two drifted unseen: the same problem could sit in both lists in different words, and nothing stopped it being fixed twice (the dogfood checkout: 4 local reflections, 7 open issues, the one overlap visible only to someone diffing both lists by hand). The fold is a read-time view, never an import — each item keeps exactly one home and is resolved where it lives. With a GitHub remote, `flow doctor` and `flow reflect list` fetch `gh issue list --state open` (10 s timeout, a 5-minute cache per repo, gates and per-turn status lines stay local and offline): a local row an open issue already covers carries `⟷ gh#120` — matched by an explicit `#N` reference, a normalized title, or the `— reflection from …` body tail (backticks and dash kinds can't defeat a match); unmatched issues list below as `gh#N` rows with a route; a near-miss gets `~ gh#121 may duplicate local item 3` and is never auto-merged — the operator decides. The bare `flow reflect` protocol gained the matching rule: open issues count as already filed, an issue filed from a local item ends its body with `— reflection from <slug> <date>` (the fold's match key) and the item checks off `— filed: gh#NNN`. No GitHub remote stays silent; missing or failing `gh` prints one skip line with the reason instead of guessing; `DEV_FLOW_NO_ISSUES=1` is the operator kill switch — and what keeps the tests hermetic (smoke stub a `gh` on PATH, never the network).
+
 ## [0.64.6] - 2026-10-26
 
 ### Changed
