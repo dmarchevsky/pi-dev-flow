@@ -153,6 +153,14 @@ guess the printed line explains (`flow reflect list` numbers the queue, `flow re
 --plugin` re-files one). The open count surfaces in
 `flow status` and in the agent's stage context (`↻ 2 reflection(s) open`).
 
+With a GitHub remote, `flow doctor` and `flow reflect list` also **fold in the open GitHub issues**
+— external submissions land on GitHub while the queue lives in `reflections.md`, so both surfaces
+show one deduplicated view: a local item an open issue already covers carries `⟷ gh#120`, the rest
+list below as upstream rows, and a near-duplicate is flagged (`~ gh#NNN may duplicate`) but never
+auto-merged. The fold is display-only — upstream items close on GitHub, local items check off in
+the file, never both. No GitHub remote shows nothing; missing or failing `gh` is one skip line, and
+`DEV_FLOW_NO_ISSUES=1` turns the fold off.
+
 They never gate anything, and the fix is never the agent's call alone. You ask it to go through them
 — usually with `flow doctor`, which reviews each open item and routes it: a playbook item becomes a
 small docs flow that edits `project.md` through the flow (so the change is committed and reviewed like

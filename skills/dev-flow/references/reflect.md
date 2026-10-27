@@ -46,6 +46,14 @@ and stage context; the operator decides:
   items off in `.dev-flow/reflections.md` (your queue, gitignored, yours to
   edit; not `project.md`) with `- [x]` and a `— folded: <what>` or
   `— fixed: <what>` note.
+- **Open GitHub issues fold into the view** when the repo has a GitHub remote: `flow doctor` and
+  `flow reflect list` list them under the local queue (read-time fold — issues are never imported,
+  each item keeps one home). A local row an open issue already covers carries `⟷ gh#NNN` — fold it
+  by checking the row off `— filed: gh#NNN` and resolving on GitHub. Unmatched upstream rows get a
+  route, but their resolution is on GitHub (close there, never in reflections.md). A
+  `~ gh#NNN may duplicate` hint is your verdict to make, never an auto-merge. When you file an
+  issue for a local item, end its body with `— reflection from <slug> <date>` so future folds
+  match it. No GitHub remote = silent; missing/offline `gh` or `DEV_FLOW_NO_ISSUES=1` = one skip line.
 - `## plugin` items, on the operator's go: search upstream first —
   `gh issue list --repo <dev-flow repo> --state all --search "<keywords>"` —
   an issue the author already answered (fixed or won't-fix) is reported back,
