@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.65.1] - 2026-10-27
+
+### Changed
+
+- **No plugin code change — a dogfood playbook fold.** The tracked playbook (`.dev-flow/project.md`) records two operational rules the reflection queue had caught: release merges read `gh pr merge <n> --merge` (PR number first — a positional after the style flag is read as the PR selector), and version bumps edit the version fields of `package.json` and `package-lock.json` in place instead of `npm install`-ing the lock (npm rewrites it to package.json's tab indentation, turning a bump into a ~5000-line diff).
+
 ## [0.65.0] - 2026-10-27
 
 ### Added
