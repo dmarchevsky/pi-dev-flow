@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.67.0] - 2026-10-27
+
+- **`flow_stage`: a heavy stage's work runs in a disposable worker session.** A big implement no longer spends the driving session's whole context: `flow_stage` spawns a fresh coding-tools-only sub-session that reads the plan, works the worktree and commits, then returns one bounded `STAGE REPORT` (done / files / notes / blockers). The worker never holds the flow — gates, checkpoint answers and the claim stay with the driving session, which reruns tier-1 checks after the worker and still faces the normal verify gate. A worker that skips the report block or crashes is surfaced, not trusted; every worker transcript persists under `.dev-flow/<slug>/stage-sessions/` for audit. See [docs/stage-agent.md](docs/stage-agent.md).
+
 ## [0.66.0] - 2026-10-27
 
 ### Changed
