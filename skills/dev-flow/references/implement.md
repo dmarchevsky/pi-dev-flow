@@ -9,6 +9,20 @@ or the injection line) — writes elsewhere are blocked; other sessions'
 worktrees are theirs (attribution guards judge every path by its owning
 feature).
 
+**Delegating the stage's work.** When the implement work will cost far more
+context than the rest of the flow needs (big multi-file features), run it in
+a disposable worker session with `flow_stage` (`stage: "implement"`). The
+worker gets a fresh context holding the plan, live git and `flow status
+--json` — it keeps nothing from this conversation, so put every operator
+answer, decision, warning and the exact next action into `note`. The worker
+may edit and commit in the worktree but holds no flow tool: gates,
+checkpoints and the claim stay with you. When it returns, digest its stage
+report (done/files/notes/blockers — a handoff, never a verification), rerun
+`flow check` (its edits invalidated tier-1 records), and close the remaining
+loose ends yourself. A missing report block or a crashed worker means the
+worktree is mid-stage: read the transcript path the result names. Do not
+delegate a stage you are about to finish anyway; one worker per session.
+
 1. Implement per the approved plan with project conventions and the **stage
    guidance injected at stage start** (tier-3 prose — your playbook's
    `prose.implement`, or dev-flow's built-in senior-discipline guidance when

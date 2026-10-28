@@ -99,6 +99,10 @@ import {
 	stageReference,
 	SKILL_CORE_START,
 	SKILL_CORE_END,
+	buildStageBrief,
+	isDelegableStage,
+	parseStageReport,
+	renderStageReport,
 } from "../src/core.ts";
 
 const cfg = structuredClone(DEFAULTS);
@@ -1317,4 +1321,43 @@ test("pre-reference: the changelog writer reviews the branch, not its commits", 
 	assert.match(ref, /git diff/, "reading the branch diff is an explicit step");
 	assert.match(ref, /One entry per net change, never\s+one per commit/, "iteration commits collapse into one entry");
 	assert.match(ref, /fold-safe/, "consolidating one's own entry is stated as fold-proof-safe");
+});
+
+// ------------------------------------------------------- stage worker contract (flow_stage)
+
+test("isDelegableStage: only the heavy middle stages delegate", () => {
+	assert.ok(isDelegableStage("implement") && isDelegableStage("pre-release"), "implement and pre-release work delegates");
+	for (const s of ["plan", "release", "done", "nonsense"]) assert.ok(!isDelegableStage(s as never), `${s} stays with the driving session`);
+});
+
+test("parseStageReport digests the contract block", () => {
+	const text = "prose before\n\n**STAGE REPORT**\ndone:\n- wired the tool\nfiles:\n- src/core.ts — report contract\nnotes:\n- operator asked for bounded output\nblockers:\n- none\n";
+	const r = parseStageReport(text);
+	assert.equal(r.missing, false);
+	assert.deepEqual(r.done, ["wired the tool"]);
+	assert.deepEqual(r.files, ["src/core.ts — report contract"]);
+	assert.deepEqual(r.notes, ["operator asked for bounded output"]);
+	assert.deepEqual(r.blockers, [], "a blockers:none line is not a blocker");
+});
+
+test("parseStageReport without the block is a finding, not a throw", () => {
+	const r = parseStageReport("I finished everything, it all works.\n");
+	assert.equal(r.missing, true);
+	assert.match(r.rawTail, /finished everything/);
+});
+
+test("renderStageReport flags a missing block and respects the cap", () => {
+	assert.match(renderStageReport(parseStageReport("tail text")), /WITHOUT the STAGE REPORT/, "a skipped contract is loud");
+	const big = parseStageReport("STAGE REPORT\ndone:\n- " + "y".repeat(500) + "\n");
+	const small = renderStageReport(big, 100);
+	assert.ok(small.length < 220 && small.includes("truncated"), `digest stays bounded: ${small.length}`);
+});
+
+test("buildStageBrief carries the on-disk truth and the handoff note", () => {
+	const b = buildStageBrief({ slug: "s", stage: "implement", workDir: "/wt", planFile: "/r/.dev-flow/s/plan/plan.md", referenceText: "PLAYBOOK-TEXT", statusJson: '{"stage":"implement"}', gitSummary: "## feat/s", note: "operator said Z" });
+	for (const must of ["PLAYBOOK-TEXT", '{"stage":"implement"}', "## feat/s", "/wt", "operator said Z", "STAGE REPORT"])
+		assert.ok(b.includes(must), `brief must carry ${must}`);
+	const bare = buildStageBrief({ slug: "s", stage: "pre-release", workDir: "/wt", planFile: "/p", referenceText: "", statusJson: "{}", gitSummary: "" });
+	assert.ok(bare.includes("(none — the plan"), "an empty note says so out loud");
+	assert.ok(bare.includes("(this stage has no playbook reference)"), "a missing reference degrades visibly");
 });

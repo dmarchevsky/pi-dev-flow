@@ -244,5 +244,6 @@ shipped feature checks off the item it was picked from.
 | [docs/gates.md](docs/gates.md) | every gate and flag, what makes each refuse |
 | [docs/guardrails.md](docs/guardrails.md) | everything enforced, and the deliberate limits |
 | [docs/concurrency.md](docs/concurrency.md) | several agents, one repo: bindings, claims, attribution |
+| [docs/stage-agent.md](docs/stage-agent.md) | `flow_stage`: run a heavy stage in a disposable worker session |
 | [docs/headless.md](docs/headless.md) | driving a session from a bot/UI/queue: `NEEDS-OPERATOR`, `--json` surfaces |
 | [docs/development.md](docs/development.md) | hacking on dev-flow itself: tests, self-hosting, `/reload` |

@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import devFlow, { compactionTakeover, testSeams } from "../extensions/dev-flow.ts";
+import devFlow, { compactionTakeover, stageAgentFactory, testSeams } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -2278,4 +2278,78 @@ test("the stage injection names the one playbook file the stage needs", async ()
 	const inj = (await pi.handlers.before_agent_start[0]({}, session("sess-ref"))) as { message: { content: string } };
 	assert.match(inj.message.content, /Stage playbook: read .*references\/plan\.md before gate work/, "the plan stage names plan.md outright, absolute");
 	assert.ok(existsSync(inj.message.content.match(/Stage playbook: read (\S+) before gate work/)![1]), "the named file is a real path, not a wish");
+});
+
+// ------------------------------------------------------- flow_stage: a stage's work in a disposable worker
+
+test("flow_stage: refusals stand, a stubbed worker's report comes back through the tool", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "staged"]);
+	mkdirSync(path.join(repo, ".dev-flow", "staged", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "staged", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const stage = (c: unknown, p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, c as never) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown>; isError?: boolean }>;
+
+	const refusedUndelegable = await stage(ctx, { stage: "release" });
+	assert.ok(refusedUndelegable.isError && /not delegable/.test(refusedUndelegable.content[0].text), "plan/release/finish never delegate");
+	const refusedWrongStage = await stage(ctx, { stage: "pre-release" });
+	assert.ok(refusedWrongStage.isError && /at stage "implement"/.test(refusedWrongStage.content[0].text), "a worker runs the stage you are in");
+	const ghost = { ...makeCtx(repo), sessionManager: { getSessionId: () => "ghost-sid" } };
+	const refusedUnbound = await stage(ghost, { stage: "implement" });
+	assert.ok(refusedUnbound.isError && /not bound/.test(refusedUnbound.content[0].text), "the worker is spawned by a bound session — an unbound one gets no illusion");
+
+	const real = stageAgentFactory.create;
+	try {
+		stageAgentFactory.create = (async () => ({
+			session: {
+				subscribe: () => () => {},
+				prompt: async () => {},
+				abort: async () => {},
+				dispose: () => {},
+				getLastAssistantText: () => "did the work\nSTAGE REPORT\ndone:\n- stubbed worker finished\nfiles:\n- README.md — touched\nnotes:\n- keep the note\nblockers:\n- none\n",
+				sessionManager: { getSessionFile: () => path.join(repo, "fake-transcript.jsonl") },
+			},
+		})) as never;
+		{
+			const ok = await stage(ctx, { stage: "implement", note: "operator wants X" });
+			assert.match(ok.content[0].text, /stubbed worker finished/);
+			assert.match(ok.content[0].text, /tier-1 rerun after worker/);
+			assert.match(ok.content[0].text, /worker transcript:/);
+			assert.ok(!ok.isError, "a clean run is not an error");
+			assert.ok(existsSync(path.join(repo, ".dev-flow", "staged", "stage-sessions")), "worker transcripts live under the feature dir");
+		}
+
+		let releaseRun: (() => void) | undefined;
+		let promptStarted!: () => void;
+		const started = new Promise<void>((res) => (promptStarted = res));
+		stageAgentFactory.create = (async () => ({
+			session: {
+				subscribe: () => () => {},
+				prompt: () => new Promise<void>((res) => { promptStarted(); releaseRun = res; }),
+				abort: async () => {},
+				dispose: () => {},
+				getLastAssistantText: () => "STAGE REPORT\ndone:\n- x\n",
+				sessionManager: { getSessionFile: () => undefined },
+			},
+		})) as never;
+		const running = stage(ctx, { stage: "implement" });
+		const busy2 = await stage(ctx, { stage: "implement" });
+		assert.ok(busy2.isError && /already running/.test(busy2.content[0].text), "one worker per session at a time");
+		await started;
+		releaseRun?.();
+		await running;
+
+		stageAgentFactory.create = (async () => ({
+			session: { subscribe: () => () => {}, prompt: async () => {}, abort: async () => {}, dispose: () => {}, getLastAssistantText: () => "I think we are done here", sessionManager: { getSessionFile: () => undefined } },
+		})) as never;
+		const missing = await stage(ctx, { stage: "implement" });
+		assert.match(missing.content[0].text, /WITHOUT the STAGE REPORT/, "a skipped contract is surfaced, not swallowed");
+		assert.equal(missing.details?.reportMissing, true);
+	} finally {
+		stageAgentFactory.create = real;
+	}
 });

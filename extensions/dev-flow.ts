@@ -24,7 +24,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
-import { compact, defineTool, isToolCallEventType, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { compact, createAgentSession, defineTool, isToolCallEventType, SessionManager, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	ALLOW_REWRITE,
@@ -33,11 +33,14 @@ import {
 	appendReflection,
 	appendRoadmapItem,
 	bashFlowGuard,
+	buildStageBrief,
 	checkFingerprint,
 	changelogVersionsBetween,
 	normalizeReleaseBody,
 	pendingEntryLines,
 	pickReleaseNotes,
+	parseStageReport,
+	renderStageReport,
 	checklistHash,
 	checklistPending,
 	checkoutTarget,
@@ -57,6 +60,8 @@ import {
 	gateHelpJson,
 	gitInvocation,
 	githubSlug,
+	DELEGABLE_STAGES,
+	isDelegableStage,
 	guardBash,
 	guardPath,
 	healthProbe,
@@ -121,6 +126,7 @@ import {
 	type StageCheck,
 	type PushRef,
 	type SessionClaim,
+	type DelegableStage,
 } from "../src/core.ts";
 import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
 import { dedupeReflections, linkedTag, parseGhIssues, similarNote, type FoldResult, type GhIssue } from "../src/fold.ts";
@@ -392,6 +398,18 @@ function skillCore(): string | null {
 
 /** Seam for the takeover's summarize call (pi's own compact()); tests replace `.run` — mutable object stands in for ESM mocking. */
 export const compactionTakeover: { run: typeof compact } = { run: compact };
+
+/** Seam for spawning a stage worker (the SDK's createAgentSession) — the smoke suite replaces
+ *  `.create` with a stub: the worker contract stays testable without spending a model. */
+export const stageAgentFactory: { create: typeof createAgentSession } = { create: createAgentSession };
+
+/** Sessions with a stage worker in flight (one per session): two of the session's own workers on one
+ *  feature would clobber one worktree — the parent is confused before that gets anywhere. */
+const stageWorkers = new Set<string>();
+
+/** Cap on one stage worker's run. A gate may wait 15 min on a deploy; a stage is bigger than a gate
+ *  but not unbounded — past the cap the worker is interrupted and its report marked mid-stage. */
+const STAGE_WORKER_MAX_MS = 45 * 60_000;
 
 /** Marks the before_agent_start pass that already wrote this run's [dev-flow] line — see the claim in that handler. */
 const CONTEXT_EMITTED = Symbol.for("pi-dev-flow.context-emitted");
@@ -2088,6 +2106,102 @@ export default function devFlow(pi: ExtensionAPI) {
 		},
 	});
 	pi.registerTool(flowTool);
+
+	// ---- stage worker (flow_stage): a stage's heavy work in a disposable sub-session ----------
+	// The child stays UNBOUND on purpose: writeGuard attributes worktree writes to the owning
+	// feature's stage and bashFlowGuard stops only default-branch git ops, so an unbound worker may
+	// edit and commit on the feature branch, while every state-gate verb refuses it (unbound, and
+	// the parent holds the live claim) — and its tool list holds no flow tool at all. The claim,
+	// every gate and every checkpoint stay with the driving session; the worker owes one report.
+	const stageWorkerTool = defineTool({
+		name: "flow_stage",
+		label: "Stage worker",
+		description:
+			"Delegate the current stage's heavy work to a disposable dev-flow worker session with a fresh context (implement | pre-release). Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. The worker edits and commits in the worktree but cannot run gates or talk to the operator. When it returns: read its stage report, run flow check yourself, then ask the checkpoint — the report is a handoff, not a verification.",
+		promptSnippet: 'flow_stage(stage: "implement"|"pre-release", note) — do the stage\'s work in a fresh disposable worker session; gates and checkpoints stay with you',
+		parameters: Type.Object({
+			stage: Type.String({ description: "Stage to delegate the work for — must match the bound feature's current stage" }),
+			note: Type.Optional(Type.String({ description: "The worker keeps nothing from this conversation: pass operator answers, decisions, warnings and the exact next action here." })),
+		}),
+		execute: async (_id, params, signal, onUpdate, ctx) => {
+			const stageArg = String(params.stage ?? "");
+			const err = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
+			if (!isDelegableStage(stageArg)) return err(`flow_stage delegates the work of: ${DELEGABLE_STAGES.join(" or ")} — "${stageArg}" is not delegable (plan is the operator dialogue; release/finish carry the checkpoint words)`);
+			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
+			const st = boundFeature(ctx.cwd, sessionKey(ctx));
+			if (!st) return err("this session is not bound to a feature — flow start <slug> or flow use <slug> first");
+			if (st.stage !== stageArg) return err(`feature ${st.slug} is at stage "${st.stage}", not "${stageArg}" — flow_stage runs the work of the stage you are in`);
+			const key = sessionKey(ctx);
+			if (stageWorkers.has(key)) return err(`a stage worker for ${st.slug} is already running in this session — one worker per session (interrupt the running call to stop it)`);
+			stageWorkers.add(key);
+			const work = gateCwd(ctx.cwd, st);
+			let child: AgentSession | undefined;
+			let crash: string | null = null;
+			let timedOut = false;
+			const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+			try {
+				const statusJsonText = (await runFlow(["status", "--json"], ctx.cwd, uiFrom(ctx), sessFor(ctx))).text;
+				const git = await sh("git status --porcelain -b", work);
+				const refRel = stageReference(st.stage);
+				let refText = "";
+				if (refRel) { try { refText = readFileSync(path.join(SKILL_DIR, refRel), "utf8"); } catch { refText = ""; } }
+				const brief = buildStageBrief({
+					slug: st.slug,
+					stage: st.stage as DelegableStage,
+					workDir: work,
+					planFile: path.join(featDir(ctx.cwd, st.slug), "plan", "plan.md"),
+					referenceText: refText,
+					statusJson: statusJsonText,
+					gitSummary: git.ok ? git.out.trim() : "(git status failed)",
+					note: typeof params.note === "string" ? params.note : undefined,
+				});
+				const sessDir = path.join(featDir(ctx.cwd, st.slug), "stage-sessions");
+				mkdirSync(sessDir, { recursive: true });
+				// coding tools only: what a worker cannot reach is a flow it cannot touch
+				const created = await stageAgentFactory.create({ cwd: work, model: ctx.model, tools: ["read", "bash", "edit", "write"], sessionManager: SessionManager.create(work, sessDir) });
+				child = created.session;
+				const unsub = child.subscribe((ev: unknown) => {
+					const e = ev as { type?: string; toolName?: string; message?: { role?: string; usage?: Record<string, number> & { cost?: Record<string, number> } } };
+					if (e.type === "tool_execution_start") onUpdate?.({ content: [{ type: "text", text: `stage worker running (${st.slug} · ${st.stage}) — tool: ${e.toolName ?? "?"}` }], details: undefined });
+					if (e.type === "message_end" && e.message?.role === "assistant" && e.message.usage) {
+						const u = e.message.usage;
+						for (const f of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) usage[f] += Number(u[f] ?? 0);
+						if (u.cost) for (const f of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) usage.cost[f] += Number(u.cost[f] ?? 0);
+					}
+				});
+				const timer = setTimeout(() => { timedOut = true; void Promise.resolve(child?.abort()).catch(() => {}); }, STAGE_WORKER_MAX_MS);
+				signal?.addEventListener("abort", () => void Promise.resolve(child?.abort()).catch(() => {}));
+				try {
+					await child.prompt(brief);
+				} catch (e) {
+					crash = e instanceof Error ? e.message : String(e);
+				} finally {
+					clearTimeout(timer);
+					unsub();
+				}
+				const transcript = child.sessionManager.getSessionFile() ?? sessDir;
+				const report = parseStageReport(child.getLastAssistantText() ?? "");
+				// the worker dirtied tier-1 records through the same hooks any edit dirties them — the
+				// driving session re-greens after the stage: the check runs on its binding, verdict rides along.
+				const check = await runFlow(["check"], ctx.cwd, uiFrom(ctx), sessFor(ctx));
+				const parts = [renderStageReport(report)];
+				if (timedOut) parts.push(`worker was interrupted at the ${Math.round(STAGE_WORKER_MAX_MS / 60000)}-minute cap — treat the report as mid-stage`);
+				if (crash) parts.push(`worker run ended with an error: ${crash}`);
+				parts.push(`tier-1 rerun after worker: ${check.text.replace(/\s+/g, " ").trim()}`);
+				parts.push(`worker transcript: ${transcript}`);
+				return {
+					content: [{ type: "text" as const, text: parts.join("\n\n") }],
+					details: { slug: st.slug, stage: st.stage, done: report.done, files: report.files, notes: report.notes, blockers: report.blockers, reportMissing: report.missing, timedOut, error: crash, transcript },
+					usage,
+					isError: !!crash || timedOut,
+				};
+			} finally {
+				stageWorkers.delete(key);
+				try { child?.dispose(); } catch { /* dispose stays idempotent; teardown noise must not bury the report */ }
+			}
+		},
+	});
+	pi.registerTool(stageWorkerTool);
 
 	// Agent-run gates refresh at turn_end (tool ctx lacks setStatus; turn_end catches them).
 	pi.on("session_start", async (_event, ctx) => {
