@@ -22,8 +22,9 @@ the stage you are in. Everything else stays with the driving session:
   the normal `verify` gate.
 
 `plan` is the operator dialogue and `release`/`finish` carry the checkpoint
-words — both stay in-session by design. One worker per session at a time;
-`flow verify` cannot be delegated.
+words — both stay in-session by design. One worker per session at a time
+(`flow_stage { op: "status" }` reads the live one); sequential re-delegation is
+legal and often right. `flow verify` cannot be delegated.
 
 ## Why an unbound worker is safe here
 
@@ -52,12 +53,46 @@ It closes with a `STAGE REPORT` block — `done` / `files` / `notes` /
 `blockers` — and the parent digests exactly that (bounded). A worker that skips
 the block is surfaced loudly (`reportMissing`), never silently trusted.
 
+The brief also carries a standing order: **commit each completed unit of work
+as you go** (one module, one file-group). If a run is ever cut, that costs one
+unit — never a worktree.
+
+## You can watch it work
+
+A worker is a real pi session in pi's standard session directory, named
+`⏳ stage worker · <stage> · <slug>` while it runs and `✓`/`✗ …` when it ends:
+it shows up in the pi-web sidebar and the `/resume` picker with the transcript
+rendering live as turns land (the ⏳ means live — resuming it forks it;
+browsing is safe). `pi export <file>` turns any finished transcript into
+readable HTML; the tool result names the file and the export command.
+
+For hosts with no live partial rendering there are two more surfaces:
+
+- the driving session's **footer** beats `⏳ stage worker mm:ss · <tool> · <slug>`
+  while a worker runs (cleared when it ends);
+- every tool call appends a line to `.dev-flow/<slug>/stage-live.log` —
+  tail-able, and `flow_stage { op: "status" }` prints its last lines plus elapsed
+  time, budget, the worktree state and recent commits, on any host, no model call.
+
+## The budget, and the soft landing
+
+One run gets `budgetMin` minutes (default 45, clamped 5–120). At 75% of the
+budget the worker is not killed — it is **steered**: “stop starting new units,
+finish the edit you are in, commit everything done, close with the STAGE
+REPORT”. A worker that obeys lands its work and reports honestly (the result
+says so). The hard cut at the full budget is the backstop for a worker that
+ignores the steer or wedges; a hard-cut run is marked mid-stage and is an error.
+
+Either way, **a dirty worktree is never handed back**: the tool snapshots it
+(tracked *and* untracked) with a throwaway index — no WIP commit on the branch,
+no touching the real index — and names the `.dev-flow/<slug>/stage-sessions/*.diff`
+file to read before deciding what to keep.
+
 ## Transcripts
 
-Each run persists under `.dev-flow/<slug>/stage-sessions/` (gitignored, like
-all flow-owned state): a crashed or mid-stage worker is inspectable by the
-path the tool result names, not lost. A run that exceeds the in-tool cap is
-interrupted and its report marked mid-stage.
+Session JSONL lives where pi keeps sessions (standard dir, discoverable by the
+picker and `pi export`); snapshots live under `.dev-flow/<slug>/stage-sessions/`
+(gitignored, like all flow-owned state).
 
 ## Deliberate limits (v1)
 

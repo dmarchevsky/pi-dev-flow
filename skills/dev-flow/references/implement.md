@@ -20,8 +20,15 @@ checkpoints and the claim stay with you. When it returns, digest its stage
 report (done/files/notes/blockers — a handoff, never a verification), rerun
 `flow check` (its edits invalidated tier-1 records), and close the remaining
 loose ends yourself. A missing report block or a crashed worker means the
-worktree is mid-stage: read the transcript path the result names. Do not
-delegate a stage you are about to finish anyway; one worker per session.
+worktree is mid-stage: read the transcript path and (if it names one) the
+snapshot `.diff` the result gives. Delegate a real slice, not the tail: do not
+delegate a stage you are about to finish anyway. One worker per session at a
+time — but **sequential re-delegation is legal and often right**: a second
+worker whose `note` says what the first one proved is how a big stage is
+sliced. While one runs, the footer beats progress, the worker is visible as a
+named session in the picker, and `flow_stage { op: "status" }` answers “how’s it
+going?” without a model call. Size `budgetMin` to the slice (default 45): at 75%
+the worker is steered to commit and report rather than cut off.
 
 1. Implement per the approved plan with project conventions and the **stage
    guidance injected at stage start** (tier-3 prose — your playbook's
