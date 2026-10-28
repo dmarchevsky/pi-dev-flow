@@ -2001,7 +2001,7 @@ export function buildStageBrief(i: StageBriefInput): string {
 Boundaries (the guard enforces these; do not work around them):
 - No gate commands, no flow verbs, no questions to the operator — the driving session runs every gate and asks every checkpoint. You owe the work and the report at the end.
 - .dev-flow state files (state.json, claim.json, project.md) are read-only.
-- Commit to the current feature branch when the tree is tidy. Never push, never merge, never touch the default branch, never write outside ${i.workDir}.
+- Commit to the current feature branch EACH TIME a unit of work is complete (one module, one file-group, one screen) — if you are interrupted, that must cost one unit, never a dirty worktree. Never push, never merge, never touch the default branch, never write outside ${i.workDir}.
 
 Start by reading the plan — ${i.planFile} — and whatever it points to.
 
@@ -2019,4 +2019,47 @@ ${i.note?.trim() || "(none — the plan and the status above are your whole brie
 
 When you are done — finished OR blocked — stop doing work and close with the report.
 ${STAGE_REPORT_CONTRACT}`;
+}
+
+/** Stage-worker budget bounds, in minutes. The default is deliberately generous (a gate may wait
+ *  15 min on one deploy; a stage is a whole stage); `budgetMin` is the per-call, operator-visible
+ *  override. A playbook knob would move the default project-side — deliberately a later flow. */
+export const STAGE_BUDGET_DEFAULT_MIN = 45;
+export const STAGE_BUDGET_MIN_MIN = 5;
+export const STAGE_BUDGET_MAX_MIN = 120;
+export function clampStageBudgetMin(raw?: unknown): number {
+	const n = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : STAGE_BUDGET_DEFAULT_MIN;
+	return Math.min(STAGE_BUDGET_MAX_MIN, Math.max(STAGE_BUDGET_MIN_MIN, n));
+}
+
+/** `mm:ss` for heartbeat, live-log and status lines. */
+export function stageElapsedLabel(ms: number): string {
+	const s = Math.max(0, Math.floor(ms / 1000));
+	return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** One-summarization of a tool call's args for the live line: bash shows the command, edit/write the
+ *  path, anything else compact JSON — always capped. */
+export function summarizeToolArgs(args: unknown): string {
+	const a = args as Record<string, unknown> | undefined;
+	let s = "";
+	if (a && typeof a === "object") {
+		if (typeof a.command === "string") s = a.command;
+		else if (typeof a.path === "string") s = a.path;
+		else { try { s = JSON.stringify(a); } catch { s = ""; } }
+	}
+	s = s.replace(/\s+/g, " ").trim();
+	return s.length > 60 ? `${s.slice(0, 57)}…` : s;
+}
+
+/** One appended line of `.dev-flow/<slug>/stage-live.log` — the tail-able activity floor that works
+ *  on hosts where no tool partial ever renders. */
+export function stageLiveLine(elapsedMs: number, toolName: string, argsSummary: string): string {
+	return `[+${stageElapsedLabel(elapsedMs)}] ${toolName}${argsSummary ? ` — ${argsSummary}` : ""}`;
+}
+
+/** The soft-landing order steered into a worker at 75% of its budget: commit what is done, report
+ *  the truth, stop starting new units. Beats an abort by one clean commit. */
+export function stageInterruptSteer(budgetMin: number): string {
+	return `Budget spent (${budgetMin} min) — stop planning new work now. Finish only the edit you are mid-way through, commit everything that is done to the feature branch (a "wip(stage): …" commit is fine and expected), then close with the STAGE REPORT block: done lists what is committed, notes says what was never started and what may not compile, blockers says "interrupted at budget". Do not start new units.`;
 }
