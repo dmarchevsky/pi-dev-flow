@@ -2157,8 +2157,9 @@ export default function devFlow(pi: ExtensionAPI) {
 				});
 				const sessDir = path.join(featDir(ctx.cwd, st.slug), "stage-sessions");
 				mkdirSync(sessDir, { recursive: true });
-				// coding tools only: what a worker cannot reach is a flow it cannot touch
-				const created = await stageAgentFactory.create({ cwd: work, model: ctx.model, tools: ["read", "bash", "edit", "write"], sessionManager: SessionManager.create(work, sessDir) });
+				// coding tools only: what a worker cannot reach is a flow it cannot touch — the allowlist picks
+				// the defaults, excludeTools is the belt on the extension tools (allowlist semantics for those are ambiguous)
+				const created = await stageAgentFactory.create({ cwd: work, model: ctx.model, tools: ["read", "bash", "edit", "write"], excludeTools: ["flow", "flow_stage"], sessionManager: SessionManager.create(work, sessDir) });
 				child = created.session;
 				const unsub = child.subscribe((ev: unknown) => {
 					const e = ev as { type?: string; toolName?: string; message?: { role?: string; usage?: Record<string, number> & { cost?: Record<string, number> } } };
