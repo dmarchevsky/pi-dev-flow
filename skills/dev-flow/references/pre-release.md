@@ -6,6 +6,11 @@
 
 Implemented, tested, running locally; prepare the release entirely in the
 worktree — main-repo git state stays off-limits until this gate hands over.
+Prep that is mostly review and judgment (the review itself, changelog wording,
+the version decision) stays in-session; `flow_stage` (`stage: "pre-release"`)
+can take heavy mechanical work on the same terms as the implement stage —
+operator words travel in `note`, gates and checkpoints stay with you, rerun
+`flow check` after the worker returns (see implement.md).
 **Versioning:** the `versioning.file` manifest is the single source of truth
 and tags are `versioning.pattern` rendered from it — one number everywhere. If
 `versioning.file` is unset, stop and clarify the scheme with the user; never

@@ -1896,3 +1896,127 @@ export function applyAnswer(partial: Record<string, unknown>, key: string, value
 	}
 }
 
+
+// ------------------------------------------------------- stage worker (flow_stage)
+
+/** Stages whose *work* `flow_stage` may delegate to a disposable sub-session. plan is the
+ *  operator dialogue; release/finish carry the Release?/Finish? words — only the heavy middle
+ *  stages are delegated, and gates are never delegated: the driving session keeps every gate,
+ *  every checkpoint and the claim, so gate integrity never depends on a worker behaving. */
+export const DELEGABLE_STAGES = ["implement", "pre-release"] as const;
+export type DelegableStage = (typeof DELEGABLE_STAGES)[number];
+export function isDelegableStage(s: string): s is DelegableStage {
+	return (DELEGABLE_STAGES as readonly string[]).includes(s);
+}
+
+/** Sentinel line that ends a stage worker's final message — the parent digests exactly this,
+ *  not the whole run, so one stage's hundred tool calls cost the driving session one bounded block. */
+export const STAGE_REPORT_HEAD = "STAGE REPORT";
+
+/** The sections of the report block. The preserve-list mirrors flowCompactInstructions' demands:
+ *  a worker's nuance lives nowhere else, so what is not written here is lost on purpose. */
+export const STAGE_REPORT_CONTRACT = `Write, as the very last lines of your final message, exactly this block (empty sections say \`none\`):
+${STAGE_REPORT_HEAD}
+done:
+- <what you actually did, one line per item>
+files:
+- <path> — <what changed there>
+notes:
+- <operator answers/decisions not yet recorded by a gate · reasons for uncommitted changes · the exact next action>
+blockers:
+- <what would fail Verified? right now> (or: none)`;
+
+export interface StageReport {
+	done: string[];
+	files: string[];
+	notes: string[];
+	blockers: string[];
+	/** true when the worker never emitted the block — the caller must treat the raw tail as suspect. */
+	missing: boolean;
+	/** bounded tail of the worker's final message (kept for the digest when missing, else for reference). */
+	rawTail: string;
+}
+
+/** Digest a stage worker's final message into the report contract. Lenient by design: a worker
+ *  that skipped the block yields `missing: true` plus its tail, never a throw at the end of a long stage. */
+export function parseStageReport(text: string): StageReport {
+	const lines = (text ?? "").split("\n");
+	let start = -1;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (/^\s*[*_#>\s]*STAGE\s+REPORT[*_\s]*$/i.test(lines[i])) { start = i; break; }
+	}
+	const rep: StageReport = {
+		done: [], files: [], notes: [], blockers: [],
+		missing: start < 0,
+		rawTail: lines.slice(-15).join("\n").slice(-600),
+	};
+	if (start < 0) return rep;
+	type Section = "done" | "files" | "notes" | "blockers";
+	let section: Section | null = null;
+	for (const line of lines.slice(start + 1)) {
+		const h = /^(done|files|notes|blockers)\s*[::]\s*$/i.exec(line.trim());
+		if (h) { section = h[1].toLowerCase() as Section; continue; }
+		const b = /^\s*[-*]\s+(.+)$/.exec(line);
+		if (b && section) rep[section].push(b[1].trim());
+	}
+	rep.blockers = rep.blockers.filter((b) => !/^(none|no blockers?|n\/a|nothing)[-.\s]*$/i.test(b));
+	return rep;
+}
+
+/** Bounded, parent-facing digest of a worker run. `cap` exists so one delegation cannot spend
+ *  the context it just saved; the full transcript stays on disk, named in the caller's output. */
+export function renderStageReport(r: StageReport, cap = 4000): string {
+	const parts: string[] = [];
+	if (r.missing) parts.push("worker ended WITHOUT the STAGE REPORT block — digesting its raw tail, verify before trusting it:", "```", r.rawTail, "```");
+	for (const s of ["done", "files", "notes"] as const)
+		if (r[s].length) parts.push(`${s}:`, ...r[s].map((x) => `- ${x}`));
+	if (r.blockers.length) parts.push("BLOCKERS:", ...r.blockers.map((x) => `- ${x}`));
+	if (!parts.length) parts.push("(report block was empty)");
+	const out = parts.join("\n");
+	return out.length <= cap ? out : `${out.slice(0, cap)}\n…(digest truncated — full worker transcript on disk)`;
+}
+
+export interface StageBriefInput {
+	slug: string;
+	stage: DelegableStage;
+	/** absolute path of the feature worktree — the worker's whole world. */
+	workDir: string;
+	/** absolute path of plan/plan.md in the main checkout (the worktree does not carry it). */
+	planFile: string;
+	/** the stage playbook reference contents ("" when the stage has none). */
+	referenceText: string;
+	/** truth as the driving session saw it: `flow status --json` output. */
+	statusJson: string;
+	/** `git status --porcelain -b` taken in the worktree before the worker starts. */
+	gitSummary: string;
+	/** what the parent session passes on: operator answers, decisions, warnings, the next action. */
+	note?: string;
+}
+
+/** The worker's complete brief: role, boundaries, on-disk truth, stage playbook, handoff note,
+ *  and the closing contract. Pure — the wiring reads the files and runs the git/status calls. */
+export function buildStageBrief(i: StageBriefInput): string {
+	return `You are a dev-flow stage worker: you do the ${i.stage} work for feature "${i.slug}" and then report back. The flow itself belongs to a DIFFERENT session (the driving session): it owns the gates, the operator's checkpoint answers, and the claim. Work only inside ${i.workDir} (the feature worktree, on its branch).
+
+Boundaries (the guard enforces these; do not work around them):
+- No gate commands, no flow verbs, no questions to the operator — the driving session runs every gate and asks every checkpoint. You owe the work and the report at the end.
+- .dev-flow state files (state.json, claim.json, project.md) are read-only.
+- Commit to the current feature branch when the tree is tidy. Never push, never merge, never touch the default branch, never write outside ${i.workDir}.
+
+Start by reading the plan — ${i.planFile} — and whatever it points to.
+
+Flow truth (\`flow status --json\` from the driving session):
+${i.statusJson}
+
+Worktree state (\`git status --porcelain -b\`):
+${i.gitSummary || "(clean)"}
+
+The stage playbook — what this stage owes when it exits (the gates you cannot see):
+${i.referenceText || "(this stage has no playbook reference)"}
+
+Handoff note from the driving session (operator answers, decisions, warnings, the exact next action):
+${i.note?.trim() || "(none — the plan and the status above are your whole brief)"}
+
+When you are done — finished OR blocked — stop doing work and close with the report.
+${STAGE_REPORT_CONTRACT}`;
+}
