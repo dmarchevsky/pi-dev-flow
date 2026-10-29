@@ -103,6 +103,7 @@ import {
 	clampStageBudgetMin,
 	isDelegableStage,
 	parseStageReport,
+	stageCardLines,
 	stageElapsedLabel,
 	stageInterruptSteer,
 	stageLiveLine,
@@ -1508,8 +1509,23 @@ test("live lines carry the worker's output, bounded", () => {
 	assert.deepEqual(liveTail(["a", "", "b", ""], 8), ["a", "b"], "blank lines never push real activity off the card");
 });
 
-test("the usage line says what a run cost", () => {
-	const u = { input: 1200, output: 300, cacheRead: 45_000, cacheWrite: 0, totalTokens: 46_500, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.42 } };
+test("one worker card frame: header, bounded tail, verdict, cost", () => {
+	const tail = Array.from({ length: 11 }, (_, i) => `[+00:0${i}] bash — cmd${i}`);
+	const v = { kind: "stage worker · implement", slug: "carded", elapsedMs: 65_000, budgetMin: 45, tail, usage: "3 turns · \u21911k \u2193200 \u00b7 ctx 5k \u00b7 $0.1000", state: "running" as const };
+	const collapsed = stageCardLines(v);
+	assert.match(collapsed[0], /^\u23f3 stage worker \u00b7 implement \u00b7 carded \u00b7 01:05\/45m$/, "header: what, where, clock against budget");
+	assert.equal(collapsed[1], "\u2026 3 earlier items", "the collapsed card counts what it dropped");
+	assert.equal(collapsed.length, 1 + 1 + 8 + 1, "header + ellipsis + 8 tail + usage \u2014 the card never spills");
+	const done = stageCardLines({ ...v, state: "done", verdict: "pass" as const, transcript: "/tmp/t.jsonl" });
+	assert.match(done[0], /^\u2713/);
+	assert.ok(done.includes("verdict: PASS"), "the verdict line is what the gate asks for");
+	assert.ok(!done.some((l) => l.startsWith("transcript:")), "collapsed hides the path");
+	const wide = stageCardLines({ ...v, state: "failed" as const, transcript: "/tmp/t.jsonl" }, true);
+	assert.match(wide[0], /^\u2717/, "a failed run's frame says so");
+	assert.equal(wide.length, 1 + 11 + 1 + 1, "expanded widens the tail and names the transcript");
+});
+
+test("the usage line says what a run cost", () => {	const u = { input: 1200, output: 300, cacheRead: 45_000, cacheWrite: 0, totalTokens: 46_500, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.42 } };
 	assert.equal(stageUsageLine(u, 7), "7 turns · ↑1.2k ↓300 · ctx 46.5k · $0.4200");
 	assert.match(stageUsageLine({ ...u, input: 0, output: 0, cacheRead: 0, cost: { ...u.cost, total: 0 } }), /↑0 ↓0/);
 });

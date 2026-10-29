@@ -21,10 +21,12 @@ interface Stub {
 	entries: { type: string; customType?: string; data?: unknown }[];
 	/** The session display name as last set through pi.setSessionName (undefined = still unnamed). */
 	sessionName?: string;
+	/** pi.events stand-in: every emit is recorded so a test can assert the worker lifecycle events. */
+	events: { emitted: { name: string; data: Record<string, unknown> }[] };
 }
 
 function makePi(): Stub & ((...a: never[]) => void) {
-	const stub = { cmds: {}, tools: {}, handlers: {}, entries: [] } as Stub;
+	const stub = { cmds: {}, tools: {}, handlers: {}, entries: [], events: { emitted: [] } } as Stub;
 	let cmdCtx: { notices?: string[]; sent?: { triggerTurn?: boolean }[] } | undefined; // last command's ctx — sendMessage output lands in its notices
 	const api = {
 		registerCommand: (n: string, o: unknown) => {
@@ -47,6 +49,9 @@ function makePi(): Stub & ((...a: never[]) => void) {
 		appendEntry: (customType: string, data?: unknown) => {
 			stub.entries.push({ type: "custom", customType, data });
 		},
+		// pi.events stand-in: the worker lifecycle events are a visibility surface, so a test must be able
+		// to see them (the tool's own emit is wrapped in a catch — a missing bus never fails a run)
+		events: { emit: (name: string, data: Record<string, unknown>) => stub.events.emitted.push({ name, data }) },
 		getSessionName: () => stub.sessionName,
 		setSessionName: (name: string) => {
 			stub.sessionName = name;
@@ -120,6 +125,35 @@ function commitWt(repo: string, slug: string, msg = "work") {
 	const wt = path.join(repo, ".dev-flow", slug, "worktree");
 	execFileSync("git", ["-C", wt, "add", "-A"]);
 	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", msg]);
+}
+
+/** A worker stub that closes with a VERIFY REPORT verdict — the shape every verify run returns. */
+function verifyWorkerStub(text = "checked the diff against the plan\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\nevidence:\n- npm test — green\n") {
+	return (async () => ({
+		session: {
+			subscribe: () => () => {},
+			prompt: async () => {},
+			steer: () => {},
+			abort: async () => {},
+			dispose: () => {},
+			getLastAssistantText: () => text,
+			sessionManager: { getSessionFile: () => "/tmp/fake-verify-transcript.jsonl" },
+		},
+		rename: () => {},
+	})) as never;
+}
+
+/** The verify worker every feature now owes before Verified? — the gate refuses without its PASS, so a
+ *  test that walks past verify needs one. Stubbed at the same seam as the implement worker: the stamp
+ *  travels the real tool path, so the gate is exercised rather than patched around. */
+async function verifyPass(pi: unknown, ctx: unknown, text?: string) {
+	const real = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = verifyWorkerStub(text);
+	try {
+		return await (pi as { tools: { flow_stage: { execute: (...a: unknown[]) => Promise<unknown> } } }).tools.flow_stage.execute("id", { op: "verify" }, undefined, undefined, ctx);
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
 }
 
 test("init → start → guards → gate ordering, end to end", async () => {
@@ -302,11 +336,14 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	await flow(["init"]);
 	await toImplement("ran", "test = node --version\ndev = touch dev-up\n");
 	// the commands run before the operator is asked, so even the walk-out path must report them
+	await verifyPass(pi, ctx);
 	const early = await flow(["verify"]);
 	assert.ok(early.isError, "no UI and no --confirmed: verification still needs the operator");
 	assert.match(early.content[0].text, /dev ran \(touch dev-up\)/);
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); .*dev ran \(touch dev-up\)/, "a commit after the check made the record stale — the gate reruns it and says so");
 	await toImplement("nodev", "test = node --version\n");
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /dev: none configured/);
 });
 
@@ -327,11 +364,13 @@ test("verify runs the checks it gates on instead of asking for them (#84)", asyn
 	};
 	await flow(["init"]);
 	await toImplement("selfrun", "test = node --version\n");
+	await verifyPass(pi, ctx);
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /entering pre-release stage/, "the gate ran its own checks");
 	assert.match(ok.content[0].text, /checks ran at the gate \(test\)/, "and says which ones it ran");
 	assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "selfrun", "state.json"), "utf8")).checks.test.ok, "the PASS is recorded, not only printed");
 	await toImplement("selffail", "test = exit 3\n");
+	await verifyPass(pi, ctx);
 	const bad = await flow(["verify", "--confirmed"]);
 	assert.ok(bad.isError && /a check run at the gate failed/.test(bad.content[0].text), "a failing check still refuses the gate");
 	assert.match(bad.content[0].text, /test: FAIL \(exit 3\)/, "with the run output instead of a pointer");
@@ -357,9 +396,11 @@ test("a worktree change after flow check makes the green stale — the gate reru
 	assert.ok(!(await flow(["check"])).isError, "test green: flag.txt says ok");
 	// a bash-shaped write — the harness writes directly, exactly as sed -i would: no edit-tool hook fires
 	writeFileSync(path.join(wt, "flag.txt"), "gone\n");
+	await verifyPass(pi, ctx);
 	const v = await flow(["verify", "--confirmed"]);
 	assert.ok(v.isError && /a check run at the gate failed/.test(v.content[0].text), "a stale green cannot carry the gate: the check reruns and catches the change");
 	writeFileSync(path.join(wt, "flag.txt"), "ok\n");
+	await verifyPass(pi, ctx);
 	const v2 = await flow(["verify", "--confirmed"]);
 	assert.match(v2.content[0].text, /entering pre-release stage/, "back in agreement the gate passes");
 	assert.match(v2.content[0].text, /stale record\(s\) rerun after a worktree change: test/, "and says what it reran and why");
@@ -377,13 +418,103 @@ test("verify refuses a branch with nothing committed, and names what a passing v
 	await flow(["approve", "--confirmed"]);
 	writeFileSync(path.join(repo, ".dev-flow", "uncommitted", "worktree", "f.txt"), "the whole change, uncommitted\n");
 	await flow(["check"]);
+	await verifyPass(pi, ctx);
 	const refused = await flow(["verify"]);
 	assert.ok(refused.isError && /nothing committed on the feature branch/.test(refused.content[0].text), "an uncommitted branch cannot be verified");
 	assert.match(refused.content[0].text, /commits: 0 ahead of main, 1 uncommitted path\(s\)/, "the refusal says what the branch holds");
 	assert.ok(!/build ran|dev ran/.test(refused.content[0].text), "the commit proof is judged before the gate spends minutes deploying");
 	commitWt(repo, "uncommitted");
+	await verifyPass(pi, ctx);
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 0 uncommitted path\(s\)/, "the operator sees the committed state they are approving");
+});
+
+test("the verify gate owes its PASS to a verify worker over the current tree", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown>; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "stamped"]);
+	mkdirSync(path.join(repo, ".dev-flow", "stamped", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "stamped", "plan", "plan.md"), "# plan\n");
+	// the checker is not available while the plan is still the conversation
+	const tooEarly = await stage({ op: "verify" });
+	assert.ok(tooEarly.isError && /implement/.test(tooEarly.content[0].text), "op verify belongs to the implement stage");
+	await flow(["approve", "--confirmed"]);
+	writeFileSync(path.join(repo, ".dev-flow", "stamped", "worktree", "f.txt"), "work\n");
+	await flow(["check"]);
+	commitWt(repo, "stamped");
+	// everything else is green — only the independent checker never spoke
+	const noStamp = await flow(["verify"]);
+	assert.ok(noStamp.isError && /no verify-worker PASS/.test(noStamp.content[0].text), "the gate refuses before a verify worker has read this tree");
+	// a FAIL verdict does not carry the gate, and the result names the debt
+	const real = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = verifyWorkerStub("checked the diff\nVERIFY REPORT\nverdict: fail\nfindings:\n- f.txt is bare\nevidence:\n- read it\n");
+	const failed = await stage({ op: "verify" });
+	stageWorkerSpawn.run = real;
+	assert.equal(failed.details?.verdict, "fail");
+	assert.equal(failed.details?.stamped, false, "a FAIL is never stamped");
+	assert.match(failed.content[0].text, /this one returned FAIL/);
+	assert.match(failed.content[0].text, /tier-1 untouched/, "a check-only worker does not spend the suite twice");
+	assert.ok((await flow(["verify"])).isError, "a FAIL does not carry the gate");
+	// the PASS stamps the settled tree — and any move of that tree drops it like a tier-1 record
+	const passed = await verifyPass(pi, ctx);
+	assert.match((passed as { content: [{ text: string }] }).content[0].text, /PASS stamped/);
+	writeFileSync(path.join(repo, ".dev-flow", "stamped", "worktree", "g.txt"), "one more edit\n");
+	const stale = await flow(["verify"]);
+	assert.ok(stale.isError && /a PASS was recorded, but the tree moved since/.test(stale.content[0].text), "an edit after the PASS voids it — precise friction, not a sticky lock");
+	await verifyPass(pi, ctx);
+	const ok = await flow(["verify", "--confirmed"]);
+	assert.match(ok.content[0].text, /verify worker PASS over this tree/);
+	// reflect stays out of reach until the release is recorded — pre-release is not release
+	const reflectEarly = await stage({ op: "reflect" });
+	assert.ok(reflectEarly.isError && /release/.test(reflectEarly.content[0].text), "op reflect belongs to the release stage");
+	// the lifecycle bus and the transcript index: both are what later viewers and the reflect worker read
+	const emitted = pi.events.emitted.map((e) => e.name);
+	assert.ok(emitted.filter((n) => n === "dev-flow:worker-started").length >= 3, "every worker run announced itself");
+	assert.ok(emitted.filter((n) => n === "dev-flow:worker-completed").length >= 3, "every worker run closed itself out");
+	const tLog = readFileSync(path.join(repo, ".dev-flow", "stamped", "stage-sessions", "transcripts.log"), "utf8");
+	assert.equal(tLog.trim().split("\n").length, 3, "one index line per finished worker");
+	assert.match(tLog, /worker transcript \(verify\): .*fake-verify-transcript\.jsonl/, "the index names the op and the transcript");
+});
+
+test("a verify worker that edits the tree voids its own verdict", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown>; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "voidit"]);
+	mkdirSync(path.join(repo, ".dev-flow", "voidit", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "voidit", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	writeFileSync(path.join(repo, ".dev-flow", "voidit", "worktree", "f.txt"), "work\n");
+	await flow(["check"]);
+	commitWt(repo, "voidit");
+	const real = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = (async () => ({
+		session: {
+			subscribe: () => () => {},
+			prompt: async () => { writeFileSync(path.join(repo, ".dev-flow", "voidit", "worktree", "sneaky.patch"), "a reviewer that fixes is not a reviewer\n"); },
+			steer: () => {}, abort: async () => {}, dispose: () => {},
+			getLastAssistantText: () => "found a nit and fixed it\nVERIFY REPORT\nverdict: pass\nfindings:\n- fixed f.txt\n",
+			sessionManager: { getSessionFile: () => undefined },
+		},
+		rename: () => {},
+	}) as never);
+	let voided: Awaited<ReturnType<typeof stage>>;
+	try {
+		voided = await stage({ op: "verify" });
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+	assert.ok(voided.isError && /VERDICT VOID/.test(voided.content[0].text), "a reviewer that moved the tree invalidates its own report");
+	assert.equal(voided.details?.stamped, false, "the voided PASS never reaches the state");
+	assert.ok(voided.details?.snapshot, "the tree the reviewer left is snapshotted, not silently kept");
+	assert.ok((await flow(["verify"])).isError, "the voided verdict carries nothing");
 });
 
 test("verify re-probes health after the dev deploy — a stale pre-deploy PASS cannot carry the gate", async () => {
@@ -406,11 +537,13 @@ test("verify re-probes health after the dev deploy — a stale pre-deploy PASS c
 	// the probe passes before the deploy and fails after it: precisely the hole the post-deploy probe closes
 	// healthWait = 0: this case is about the stale PASS, not the wait — keep it a single shot
 	await toImplement("stale", "test = node --version\ndev = touch deploy-up\nhealth = test ! -e deploy-up\nhealthWait = 0\n");
+	await verifyPass(pi, ctx);
 	const failed = await flow(["verify", "--confirmed"]);
 	assert.ok(failed.isError, "a deploy the probe rejects cannot be verified");
 	assert.match(failed.content[0].text, /post-deploy probe FAILED \(test ! -e deploy-up\)/);
 	assert.equal(stage("stale"), "implement", "a failed probe leaves the flow in implement");
 	await toImplement("probed", "test = node --version\ndev = touch dev-up\nhealth = node --version\n");
+	await verifyPass(pi, ctx);
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /dev ran \(touch dev-up\); health: PASS \(node --version\)/);
 	assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "probed", "state.json"), "utf8")).checks.health.ok, "the post-deploy PASS is what lands in state");
@@ -433,11 +566,13 @@ test("without a dev deploy, verify live-probes the app — a killed server canno
 	commitWt(repo, "deadapp"); // commit before the check so the gate's fingerprint stays stable: the live probe, not a stale-rerun, is the proof
 	await flow(["check"]); // the app is up: health goes green
 	writeFileSync(dead, ""); // the agent kills the test server before Verified? — the green record survives it
+	await verifyPass(pi, ctx);
 	const refused = await flow(["verify", "--confirmed"]);
 	assert.ok(refused.isError && /live probe FAILED/.test(refused.content[0].text), `the live app must answer, not the record: ${refused.content[0].text}`);
 	assert.match(refused.content[0].text, /has to be running before verify/, "the refusal says what to do");
 	assert.equal(stage("deadapp"), "implement", "a dead app leaves the flow in implement");
 	rmSync(dead); // server started again — start it and rerun, exactly as the refusal says
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /health: live re-probe PASS/);
 });
 
@@ -463,9 +598,11 @@ test("the health probe waits for a service that lags its deploy; healthWait 0 ke
 	};
 	await flow(["init"]);
 	await toImplement("bootlag", bootLag("20")); // a wide budget: this case proves the wait is used, not that it expires
+	await verifyPass(pi, ctx);
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /health: PASS \(.*, 3 attempts\)/, `the gate waited and says how it tried: ${ok.content[0].text}`);
 	await toImplement("single", bootLag("0"));
+	await verifyPass(pi, ctx);
 	const fast = await flow(["verify", "--confirmed"]);
 	assert.ok(fast.isError, "an opt-out of the wait fails as fast as it used to");
 	assert.match(fast.content[0].text, /gave up after 1 attempt\(s\)/);
@@ -483,6 +620,7 @@ test("docs mode runs no project command: approve skips setup, verify skips build
 	assert.match(ap.content[0].text, /setup skipped \(docs mode/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "docflow", "worktree", "setup-ran")), "a docs flow must not run the project's setup");
 	commitWt(repo, "docflow");
+	await verifyPass(pi, ctx);
 	const v = await flow(["verify", "--confirmed"]);
 	assert.match(v.content[0].text, /docs mode: project commands skipped/);
 	assert.match(v.content[0].text, /entering pre-release/);
@@ -504,6 +642,7 @@ test("flow check runs no tier-1 for a docs flow: an unbuilt checkout is not a fa
 	assert.match(c.content[0].text, /docs mode: project commands skipped/, "docs mode runs no tier-1 check");
 	assert.ok(!c.isError, "and says so without failing the flow");
 	commitWt(repo, "readmeonly");
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "verify needs no check record from a docs flow");
 	// that the same commands still run for a normal flow is covered by the check/verify tests above
 });
@@ -839,6 +978,7 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved \(confirmed by operator instruction\)/);
 	await flow(["check"]);
 	commitWt(repo, "ck");
+	await verifyPass(pi, ctx);
 	const v = await flow(["verify", "--confirmed"]);
 	assert.match(v.content[0].text, /verified \(confirmed by operator instruction\) — entering pre-release/);
 	assert.equal(dialogs, 0, "operator answered in chat — gates must not ask again");
@@ -875,6 +1015,7 @@ test("release with a stale session build: warn and ask, never block; the operato
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "stale");
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
 	// pretend this session loaded a long-ago build: the release gate must ask, not refuse outright
 	try {
@@ -916,6 +1057,7 @@ test("release-done skew warning is self-contained: version pair and second regis
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "skew");
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
 	// the release gate runs on a build nobody doubts (no stale stamp); the skew surfaces only at release-done
 	try {
@@ -986,6 +1128,7 @@ test("release tail: a dirty worktree fails the release gate; finish refuses and 
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "dirt");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	writeFileSync(path.join(repo, ".dev-flow", "dirt", "worktree", "loose.txt"), "uncommitted\n");
 	const rel = await flow(["release", "--confirmed"]);
@@ -1015,6 +1158,7 @@ test("guard attribution: the claim on disk binds a session the in-memory map nev
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "ga");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	await flow(["release", "--confirmed"]); // ga is at stage release, bound in memory under key cwd:<repo>
 	// a second unfinished feature so the repo stays ambiguous for anyone unbound…
@@ -1101,6 +1245,7 @@ test("flow finish fast-forwards a main checkout that trails origin", async () =>
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "ff");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	const rel = await flow(["release", "--confirmed"]);
 	assert.match(rel.content[0].text, /release approved/, rel.content[0].text);
@@ -1160,6 +1305,7 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "fin");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	const early = await flow(["finish"]);
 	assert.ok(early.isError && early.content[0].text.includes("release-done"), "finish refuses until the release is recorded");
@@ -1190,6 +1336,7 @@ test("release gate (#97): the entry is prepared on the branch and pending lines 
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "fold");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	const wt = path.join(repo, ".dev-flow", "fold", "worktree");
 	const prep = (changelog: string | null, ver = "1.1.0") => {
@@ -1223,6 +1370,7 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 		await flow(["approve", "--confirmed"]);
 		await flow(["check"]);
 		commitWt(repo, slug);
+		await verifyPass(pi, ctx);
 		await flow(["verify", "--confirmed"]);
 		const wt = path.join(repo, ".dev-flow", slug, "worktree");
 		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`); // pre-release bump lives on the branch
@@ -1274,6 +1422,7 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "teeth");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	const wt = path.join(repo, ".dev-flow", "teeth", "worktree");
 	writeFileSync(path.join(wt, "package.json"), '{"name":"t","version":"9.9.9"}'); // the bump lives on the branch
@@ -1307,6 +1456,7 @@ test("a release gate refuses to guess when origin cannot be asked (offline)", as
 	writeFileSync(path.join(repo, ".dev-flow", "offline", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	commitWt(repo, "offline");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	const wt = path.join(repo, ".dev-flow", "offline", "worktree");
 	writeFileSync(path.join(wt, "package.json"), '{"name":"t","version":"1.2.3"}');
@@ -1397,6 +1547,7 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/);
 	await flow(["check"]);
 	commitWt(repo, "chore");
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
 	await flow(["release", "--confirmed"]);
 	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/, "release-done is check-only — asks the operator nothing");
@@ -1414,6 +1565,7 @@ test("docs feature: no plan file, no tier-1 checks, full release end to end", as
 	assert.match((await flow(["start", "readme-typo", "--docs", "--confirmed"])).content[0].text, /docs/, "docs mode announced at start");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/, "docs approves with no plan file written");
 	commitWt(repo, "readme-typo");
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "docs verify passes with no flow check run");
 	await flow(["release", "--confirmed"]);
 	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/);
@@ -1671,6 +1823,7 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	assert.equal(stage(), "implement");
 	await flow(["check"]);
 	commitWt(repo, "rel");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	assert.equal(stage(), "pre-release", "verify now lands in pre-release");
 	// a guarded prep edit in the worktree invalidates the checks — and since gh#131 the release gate
@@ -1780,6 +1933,7 @@ test("finish deletes merged feature branches on origin and keeps unverifiable on
 		await flow(["approve", "--confirmed"]);
 		await flow(["check"]);
 		commitWt(repo, slug);
+		await verifyPass(pi, ctx);
 		await flow(["verify", "--confirmed"]);
 		await flow(["release", "--confirmed"]);
 		await flow(["release-done", "--confirmed"]);
@@ -1847,11 +2001,13 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	// a failing check still blocks verify — yolo pre-confirms questions, not checks
 	await flow(["check"]);
 	commitWt(repo, "yo");
+	await verifyPass(pi, ctx);
 	const v = await flow(["verify"]);
 	assert.ok(v.isError && /a check run at the gate failed/.test(v.content[0].text), "yolo never bypasses tier-1 checks — the gate reruns what is not green and refuses on it (#84)");
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
 	await flow(["check"]);
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify"])).content[0].text, /verified \(yolo: pre-confirmed\) — entering pre-release/);
 	await flow(["release"]);
 	await flow(["release-done"]);
@@ -1874,8 +2030,10 @@ test("yolo at any gate: verify --yolo answers that question and pre-confirms the
 	await flow(["check"]);
 	commitWt(repo, "late");
 	// yolo is the operator's word — never self-granted: --confirmed is the anchor
+	await verifyPass(pi, ctx);
 	const bare = await flow(["verify", "--yolo"]);
 	assert.ok(bare.isError && /operator's word/.test(bare.content[0].text), "--yolo without --confirmed is refused");
+	await verifyPass(pi, ctx);
 	assert.match((await flow(["verify", "--yolo", "--confirmed"])).content[0].text, /entering pre-release/);
 	// every later gate now runs with no flags and no dialogs — the flow completes on its own
 	await flow(["release"]);
@@ -1896,6 +2054,7 @@ test("unversioned release: --no-version ships merge + changelog and skips the bu
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "nv");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	// default stays versioned: no manifest in the worktree → the gate refuses
 	const versioned = await flow(["release", "--confirmed"]);
@@ -1929,6 +2088,7 @@ test("release-done publishes the version the release gate stamped, and refuses t
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
 		await flow(["approve", "--confirmed"]);
 		commitWt(repo, slug);
+		await verifyPass(pi, ctx);
 		await flow(["verify", "--confirmed"]);
 		const wt = path.join(repo, ".dev-flow", slug, "worktree");
 		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`); // the bump lives on the branch
@@ -1990,6 +2150,7 @@ test("release-done proves the forge release exists instead of trusting the attem
 		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
 		await flow(["approve", "--confirmed"]);
 		commitWt(repo, slug);
+		await verifyPass(pi, ctx);
 		await flow(["verify", "--confirmed"]);
 		const wt = path.join(repo, ".dev-flow", slug, "worktree");
 		writeFileSync(path.join(wt, "package.json"), `{"name":"t","version":"${ver}"}`);
@@ -2230,6 +2391,7 @@ test("release-done refuses to record a release whose merge shape contradicts the
 	await flow(["approve", "--confirmed"]);
 	await flow(["check"]);
 	commitWt(repo, "sq");
+	await verifyPass(pi, ctx);
 	await flow(["verify", "--confirmed"]);
 	await flow(["release", "--confirmed"]);
 	const wt = path.join(repo, ".dev-flow", "sq", "worktree");
@@ -2367,7 +2529,7 @@ test("flow_stage: refusals stand, a stubbed worker's report comes back through t
 			assert.ok(uiStatuses.some((x) => /\u23f3 stage worker/.test(x ?? "")), "the footer beat fired");
 			assert.equal(uiStatuses.at(-1), undefined, "the footer status is cleared when the worker ends");
 			const liveLog = readFileSync(path.join(repo, ".dev-flow", "staged", "stage-live.log"), "utf8");
-			assert.match(liveLog, /\[\+00:00\] worker \u2014 started \(implement, budget 45 min\)/, "the live log opens with the run");
+			assert.match(liveLog, /\[\+00:00\] worker \u2014 run started \(implement, budget 45 min\)/, "the live log opens with the run and names its op");
 			assert.match(liveLog, /bash \u2014 npm test/, "tool activity lands in the live log");
 		}
 
@@ -2394,12 +2556,19 @@ test("flow_stage: refusals stand, a stubbed worker's report comes back through t
 		stageWorkerSpawn.run = mkStub({ hang: true, emit: true });
 		const running = stage(ctx, { stage: "implement" });
 		await lastStub.started;
-		const busy2 = await stage(ctx, { stage: "implement" });
-		assert.ok(busy2.isError && /already running/.test(busy2.content[0].text), "one worker per session at a time");
-		const status = await stage(ctx, { op: "status" });
-		assert.match(status.content[0].text, /stage worker running: .* of 45 min budget/);
-		assert.match(status.content[0].text, /bash \u2014 npm test/, "status shows the live tail");
-		assert.match(status.content[0].text, /worktree now:/);
+				const busy2 = await stage(ctx, { stage: "implement" });
+				assert.ok(busy2.isError && /already running/.test(busy2.content[0].text), "one worker per session at a time");
+				// the run is registered before its spawn resolves, so an early op:"status" honestly shows no
+				// tail yet (true of a real multi-second spawn too) — wait until the stub's first activity lands,
+				// which is exactly the live-tail path this assertion exists to prove.
+				let status = await stage(ctx, { op: "status" });
+				for (let i = 0; i < 200 && !/bash \u2014 npm test/.test(status.content[0].text); i++) {
+					await new Promise((r) => setTimeout(r, 20));
+					status = await stage(ctx, { op: "status" });
+				}
+				assert.match(status.content[0].text, /stage worker running: .* of 45 min budget/);
+				assert.match(status.content[0].text, /bash \u2014 npm test/, "status shows the live tail");
+				assert.match(status.content[0].text, /worktree now:/);
 		lastStub.release();
 		await running;
 		const idle = await stage(ctx, { op: "status" });

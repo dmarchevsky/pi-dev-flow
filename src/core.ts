@@ -2192,6 +2192,9 @@ export function verifyStampMissing(state: FlowState): boolean {
  *  the operator's question must never be asked on a tree nothing independent has looked at. */
 export const VERIFY_STAMP_REFUSAL = `no verify-worker PASS on this tree — run flow_stage { op: "verify" } and get its verdict: pass before asking Verified? (the PASS belongs to the tree it was read on: any worktree edit drops it like any tier-1 record; a docs flow is exempt)`;
 
+/** The durable worker index inside .dev-flow/<slug>/stage-sessions/ — one line per finished worker. */
+export const TRANSCRIPTS_FILE = "transcripts.log";
+
 /** `worker transcript: …` line appended to .dev-flow/<slug>/stage-sessions/transcripts.log — the
  *  durable index the reflect worker reads (until now a transcript path lived only in the parent's
  *  tool result, i.e. only as long as that session's context). */
@@ -2219,7 +2222,6 @@ const LIVE_LINE_CAP = 110;
 
 /** One line of a worker's assistant prose, for the live tail: last non-empty line only (a worker
  *  narrating a plan would otherwise drown its own tool activity). */
-
 export function stageLiveAssistantLine(elapsedMs: number, text: string): string {
 	const lines = (text ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
 	if (!lines.length) return "";
@@ -2233,9 +2235,10 @@ export function stageLiveResultLine(elapsedMs: number, toolName: string, ok: boo
 	return stageLiveLine(elapsedMs, `${ok ? "✓" : "✗"} ${toolName}`, liveClip(summary));
 }
 
-function liveClip(s: string): string {
+
+export function liveClip(s: string, cap = LIVE_LINE_CAP): string {
 	const one = (s ?? "").replace(/\s+/g, " ").trim();
-	return one.length > LIVE_LINE_CAP ? `${one.slice(0, LIVE_LINE_CAP - 1)}…` : one;
+	return one.length > cap ? `${one.slice(0, cap - 1)}…` : one;
 }
 
 /** The bounded tail: `… M earlier items` then the last `max` lines (empty lines never counted —
@@ -2244,6 +2247,38 @@ export function liveTail(lines: string[], max = LIVE_TAIL_ITEMS): string[] {
 	const kept = lines.filter(Boolean);
 	if (kept.length <= max) return kept;
 	return [`… ${kept.length - max} earlier items`, ...kept.slice(-max)];
+}
+
+
+/** Everything the live tool card needs to draw one frame. The card is the guaranteed visibility
+ *  surface (it renders in the driver's own transcript on every host), so it is built from plain
+ *  strings here and wrapped into components by the extension — the same lines reach a host that only
+ *  shows the update's text (pi-web) and the no-UI fallback `op: "status"`. */
+export interface StageCardView {
+	kind: string;
+	slug: string;
+	elapsedMs: number;
+	budgetMin: number;
+	softFired?: boolean;
+	tail?: string[];
+	usage?: string;
+	state?: "running" | "done" | "failed";
+	verdict?: "pass" | "fail" | null;
+	note?: string;
+	transcript?: string;
+}
+
+/** One frame of the worker card: header (what · where · clock against budget), the bounded live tail,
+ *  the verdict once there is one, and what it cost. Expanded widens the tail and names the transcript. */
+export function stageCardLines(v: StageCardView, expanded = false): string[] {
+	const glyph = v.state === "failed" ? "✗" : v.state === "done" ? "✓" : "⏳";
+	const out = [`${glyph} ${v.kind} · ${v.slug} · ${stageElapsedLabel(v.elapsedMs)}/${v.budgetMin}m${v.softFired ? " · closing out" : ""}`];
+	if (v.note) out.push(`note: ${liveClip(v.note, 80)}`);
+	out.push(...liveTail(v.tail ?? [], expanded ? LIVE_TAIL_ITEMS * 4 : LIVE_TAIL_ITEMS));
+	if (v.verdict) out.push(`verdict: ${v.verdict.toUpperCase()}`);
+	if (v.usage) out.push(v.usage);
+	if (expanded && v.transcript) out.push(`transcript: ${v.transcript}`);
+	return out;
 }
 
 /** What the tool accumulated from a worker's assistant usage records. */
@@ -2345,7 +2380,8 @@ export function parseReflectFindings(text: string): ReflectFindings {
 		if (!m) continue;
 		const body = (m[2] ?? m[4]).replace(/[*`\s]+$/, "").trim();
 		if (!body || /^(none|n\/a|nothing)[-.\s]*$/i.test(body)) continue;
-		const kind = (m[1] ?? m[3]).toLowerCase();		if (kind === "playbook") out.playbook.push(body);
+		const kind = (m[1] ?? m[3]).toLowerCase();
+		if (kind === "playbook") out.playbook.push(body);
 		else if (kind === "plugin") out.plugin.push(body);
 		else out.other.push(body);
 	}
