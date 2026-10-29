@@ -4,6 +4,11 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.68.0] - 2026-10-28
+
+- **`flow_stage` workers are visible while they run — and they land on their feet (gh#142).** The 45 minutes of silence followed by a mid-edit cliff are gone. The worker is now a real, named pi session — `⏳ stage worker · implement · <slug>` in pi's standard session dir, shown live in the pi/pi-web picker, renamed `✓`/`✗` when it ends; the result names the transcript and its `pi export` command, so no raw-JSONL archaeology remains. The driving session's footer beats `⏳ mm:ss · <tool> · <slug>` while the worker runs, every worker tool call appends one line to `.dev-flow/<slug>/stage-live.log`, and `flow_stage { op: "status" }` answers elapsed, budget, live tail, worktree state and recent commits with no model call — the floor for headless hosts. The budget is per-call (`budgetMin`, 5–120, default 45), and at 75% of it the worker is no longer killed but **steered to a soft landing**: finish the edit in hand, commit everything done (a `wip(stage):` commit is expected), close with the STAGE REPORT — the hard cut is only the backstop for a worker that ignores the steer. Whatever the exit, a dirty worktree is never handed back: it is snapshotted (tracked *and* untracked, via a throwaway index — no WIP commit on the branch) to a `.diff` the result names. The brief now mandates a commit per completed unit, so a cut costs one unit, never a worktree.
+
+
 ## [0.67.0] - 2026-10-27
 
 - **`flow_stage`: a heavy stage's work runs in a disposable worker session.** A big implement no longer spends the driving session's whole context: `flow_stage` spawns a fresh coding-tools-only sub-session that reads the plan, works the worktree and commits, then returns one bounded `STAGE REPORT` (done / files / notes / blockers). The worker never holds the flow — gates, checkpoint answers and the claim stay with the driving session, which reruns tier-1 checks after the worker and still faces the normal verify gate. A worker that skips the report block or crashes is surfaced, not trusted; every worker transcript persists under `.dev-flow/<slug>/stage-sessions/` for audit. See [docs/stage-agent.md](docs/stage-agent.md).
