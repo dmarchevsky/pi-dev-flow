@@ -50,15 +50,9 @@ Ground rules:
     `flow release --no-version --confirmed` — the merge still owes a changelog
     entry under `Unreleased`, which the next versioned release folds under its
     version heading (default is versioned: bump + tag).
-- **Pre-plan before you bind (not a stage).** An unbound session writes
-  nothing — no `plan.md`, no mockup, no scaffold, no source. A feature request
-  lands as: read the code the request touches (reads are always free), bring
-  back findings, the real unknowns, and open questions, sketch a **direction**
-  and propose a mode (with its one-line why), and **ask the operator to start
-  the flow**. Only on their word does `flow start <slug>` bind it (the
-  operator grants any `--patch`/`--docs` mode there). The plan file itself is
-  written only once the flow is at the plan stage — see
-  `references/plan.md`; until then the direction lives in chat.
+- **Pre-plan before binding:** an unbound session writes **nothing** — bring
+  findings, questions and a proposed direction + slug/mode, and **ask the
+  operator to start** (protocol: `references/start.md`).
 - **One session = exactly one feature** (flow + branch + worktree); parallel
   sessions, one feature each, are the model. A session binds **explicitly and
   only**: `flow start <slug>` binds its own feature (main checkout must be on
@@ -95,7 +89,7 @@ session's stage injection names the file to read now, and this is the map.
 
 | Read | For |
 | --- | --- |
-| `references/start.md` | `flow init` (no `.dev-flow/` yet), mode grants (`--patch`, `--docs`), playbook ownership |
+| `references/start.md` | pre-plan (unbound: no writes, ask to start), `flow init` (no `.dev-flow/` yet), mode grants (`--patch`, `--docs`), playbook ownership |
 | `references/plan.md` | plan stage — research, clarify, plan file, mockups, Approve? |
 | `references/implement.md` | implement stage — worktree, commits, checks, tier-2 list, Verified? |
 | `references/pre-release.md` | pre-release — `/flow-review`, docs, changelog + bump, Release? |

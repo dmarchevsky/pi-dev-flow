@@ -54,7 +54,8 @@ test("the dev-flow skill keeps its always-on core inside the budget", () => {
 	assert.ok(open >= 0 && close > open, "the core must sit between its markers — that span is what every session gets injected");
 	const core = md.slice(open + "<!-- dev-flow:core:start -->".length, close).trim();
 	// 4500 since the Stage reports contract joined the always-on rules (~900 chars, docs/playbook.md holds the long form)
-	assert.ok(core.length <= 4500, `the core costs every session ~${Math.round(core.length / 4)} tokens; stage detail belongs in references/ (now ${core.length} chars)`);
+	// 4700 since the pre-plan rule joined them (~230 chars): the always-on no-write-before-bind discipline for unbound sessions
+	assert.ok(core.length <= 4700, `the core costs every session ~${Math.round(core.length / 4)} tokens; stage detail belongs in references/ (now ${core.length} chars)`);
 	for (const rule of ["flow tool is the only invocation", "Approve?", "flow abort"])
 		assert.ok(core.includes(rule), `the core has to carry "${rule}" — it is what a session gets wrong without it`);
 });
