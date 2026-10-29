@@ -8,7 +8,11 @@ Cleared for main-repo git (merge/tag/push on the default branch is allowed only
 here) — this stage publishes; the preparation happened in pre-release. Run in
 the worktree unless noted:
 
-1. Commit everything, push the feature branch, open the PR, wait for the merge
+1. Commit everything, push the feature branch, open the PR, and **merge only once
+   CI is green**: `gh pr checks <n> --watch` (or your forge's equivalent) first — a
+   locally-green branch can still fail checks that only CI runs (the host may lack the
+   tool entirely), and the merge is what turns the default branch red (gh#134). Then
+   wait for the merge
    (`gh pr merge <n> --merge` or ask the user) — with the **playbook's merge style spelled out**
    (`gh pr merge <n> --squash` under `merge = squash`), and **the PR number before the flag**: a bare
    `gh pr merge --merge main` makes gh read `main` as the PR selector ("no pull requests found for

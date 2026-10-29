@@ -145,6 +145,8 @@ needs to know which one the release contains. Three things read the key:
   confirmation; a local `git merge --squash` only ever confirms, because merging main into a branch is
   ordinary work. Spell the PR number **before** the flag: `gh pr merge --merge main` reads `main` as the
   PR selector ("no pull requests found for main") and never merges anything.
+- **whatever the style, merge only once CI is green** (`gh pr checks <n> --watch`): the local gate cannot run
+  CI-only jobs — a tool the host lacks turns a locally-green branch into a red default branch (gh#134).
 - **`release-done` proves what actually landed** matched the policy (branch ancestry plus what the forge
   reports), and `flow finish` says whether commits missing from the default branch are expected (squash,
   rebase) or a violation (merge — where `yolo` does not answer for you). A shape dev-flow cannot see —

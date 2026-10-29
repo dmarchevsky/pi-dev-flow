@@ -973,12 +973,13 @@ test("guard: a scratch file outside the checkout is stage-free while the worktre
 	assert.equal(await write(path.join(tmpdir(), "nested", "x.py")), undefined, "including a scratch directory the agent makes for itself");
 });
 
-test("release tail: finish refuses to remove a dirty worktree", async () => {
+test("release tail: a dirty worktree fails the release gate; finish refuses and names paths too (gh#131)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo); // keep the main checkout clean — finish's first wall is the main-checkout dirty check
 	await flow(["start", "dirt"]);
 	mkdirSync(path.join(repo, ".dev-flow", "dirt", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "dirt", "plan", "plan.md"), "# plan\n");
@@ -987,11 +988,17 @@ test("release tail: finish refuses to remove a dirty worktree", async () => {
 	commitWt(repo, "dirt");
 	await flow(["verify", "--confirmed"]);
 	writeFileSync(path.join(repo, ".dev-flow", "dirt", "worktree", "loose.txt"), "uncommitted\n");
-	await flow(["release", "--confirmed"]);
+	const rel = await flow(["release", "--confirmed"]);
+	assert.ok(rel.isError && rel.content[0].text.includes("loose.txt"), `release refuses while the worktree holds uncommitted paths — a merge ships the branch, not the working tree: ${rel.content[0].text}`);
+	commitWt(repo, "dirt", "keep loose");
+	const ok = await flow(["release", "--confirmed"]);
+	assert.match(ok.content[0].text, /release approved/);
+	assert.match(ok.content[0].text, /0 uncommitted path\(s\)/, "the approved line says what the merge carries, like verify's does");
 	const rd = await flow(["release-done", "--confirmed"]);
-	assert.match(rd.content[0].text, /release recorded as complete/, "release-done records the release even when the worktree is dirty");
+	assert.match(rd.content[0].text, /release recorded as complete/);
+	writeFileSync(path.join(repo, ".dev-flow", "dirt", "worktree", "late.txt"), "forgot this\n");
 	const fin = await flow(["finish", "--confirmed"]);
-	assert.ok(fin.isError && fin.content[0].text.includes("uncommitted"), "finish reports why it refuses");
+	assert.ok(fin.isError && fin.content[0].text.includes("late.txt"), `finish reports the paths it refuses on, not just the count: ${fin.content[0].text}`);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "dirt", "state.json")), "feature stays until the operator sorts it out");
 });
 
@@ -1325,7 +1332,15 @@ test("abort at plan stage drops the feature; approved features keep recoverable 
 	const ab = await flow(["abort", "keeper"]);
 	assert.match(ab.content[0].text, /state stays at .dev-flow\/keeper/);
 	assert.match(ab.content[0].text, /git worktree remove/);
+	assert.match(ab.content[0].text, /marked aborted/, "the echo names the marker that keeps the doctor quiet");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "keeper", "state.json")), "real work stays recoverable");
+	const keeperSt = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "keeper", "state.json"), "utf8"));
+	assert.ok(keeperSt.aborted, "the abandoned state carries the stamp");
+	// the operator does exactly what the abort echo prints — doctor must then leave the ghost alone (gh#138)
+	execFileSync("git", ["-C", repo, "worktree", "remove", "--force", path.join(repo, ".dev-flow", "keeper", "worktree")]);
+	execFileSync("git", ["-C", repo, "branch", "-D", keeperSt.branch]);
+	const doc = await flow(["doctor"]);
+	assert.ok(!doc.content[0].text.includes("keeper"), `doctor must not re-report the abandoned slug as drift: ${doc.content[0].text}`);
 });
 
 test("flow abort honors another live session's claim — the lock covers the verb that deletes", async () => {
@@ -1658,14 +1673,18 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	commitWt(repo, "rel");
 	await flow(["verify", "--confirmed"]);
 	assert.equal(stage(), "pre-release", "verify now lands in pre-release");
-	// a guarded prep edit in the worktree must invalidate the checks again — the release gate re-demands them
+	// a guarded prep edit in the worktree invalidates the checks — and since gh#131 the release gate
+	// refuses the uncommitted state outright first: a merge ships the branch, not the working tree
 	const guard = pi.handlers.tool_call[0];
 	assert.equal(await guard({ toolName: "write", input: { path: path.join(repo, ".dev-flow", "rel", "worktree", "CHANGELOG.md") } }, ctx), undefined);
 	writeFileSync(path.join(repo, ".dev-flow", "rel", "worktree", "CHANGELOG.md"), "## 0.0.1\n");
 	const early = await flow(["release", "--confirmed"]);
-	assert.ok(early.isError && /check "test" has not passed/.test(early.content[0].text), "release gate demands re-greened checks after prep edits");
+	assert.ok(early.isError && early.content[0].text.includes("CHANGELOG.md") && /uncommitted path/.test(early.content[0].text), "release refuses while the prep edit sits uncommitted: " + early.content[0].text);
 	execFileSync("git", ["-C", path.join(repo, ".dev-flow", "rel", "worktree"), "add", "-A"]);
 	execFileSync("git", ["-C", path.join(repo, ".dev-flow", "rel", "worktree"), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "changelog"]);
+	// the commit moved the tree the green was taken against — the release gate re-demands the checks
+	const stale = await flow(["release", "--confirmed"]);
+	assert.ok(stale.isError && /has not passed|stale/.test(stale.content[0].text), "release gate demands re-greened checks after the prep commit: " + stale.content[0].text);
 	await flow(["check"]);
 	const noOp = await flow(["release"]);
 	assert.ok(noOp.isError && /needs the operator/.test(noOp.content[0].text), "Release? needs an operator answer");
@@ -1886,6 +1905,7 @@ test("unversioned release: --no-version ships merge + changelog and skips the bu
 	assert.ok(cold.isError && /unchanged on this branch/.test(cold.content[0].text), "an unversioned release must change the changelog");
 	const wt = path.join(repo, ".dev-flow", "nv", "worktree");
 	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- nv ships\n");
+	commitWt(repo, "nv", "changelog: nv ships"); // the line must be on the branch — release refuses an uncommitted worktree (gh#131)
 	const r = await flow(["release", "--no-version", "--confirmed"]);
 	assert.match(r.content[0].text, /unversioned: no bump or tag; your changelog entry rides under Unreleased/);
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "nv", "state.json"), "utf8"));

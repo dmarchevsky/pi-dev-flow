@@ -597,7 +597,9 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 		for (const b of brRaw.out.split("\n").map((x) => x.replace(/^[*+]?\s+/, "").trim()).filter(Boolean)) {
 			if (!ownedBr.has(b)) out.push(`orphan branch ${b} — no unfinished feature owns it (git branch -D ${b})`);
 		}
-	for (const f of feats) if (f.worktree && !existsSync(path.resolve(root, f.worktree))) out.push(`feature ${f.slug} (${f.stage}) has no worktree at ${f.worktree}`);
+	// an aborted feature is a designed state, not drift: the abort echo tells the operator to remove
+	// the worktree by hand, and the stamp keeps that cleanup from being re-reported forever (gh#138)
+	for (const f of feats) if (f.worktree && !f.aborted && !existsSync(path.resolve(root, f.worktree))) out.push(`feature ${f.slug} (${f.stage}) has no worktree at ${f.worktree}`);
 	// the playbook belongs in git — an untracked project.md is invisible to teammates and lost on machine changes
 	if (existsSync(path.join(root, ".dev-flow", "project.md")) && !(await sh("git ls-files --error-unmatch -- .dev-flow/project.md", root)).ok)
 		out.push('.dev-flow/project.md is not tracked in git — track it: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force: a root .gitignore may exclude .dev-flow/ wholesale; the env prefix is for the installed hook — dev-flow allows a main commit whose only change is the playbook)');
@@ -1068,6 +1070,15 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (yoloWord) return { text: yoloWord, isError: true };
 	// prep evidence is read from the worktree: the bump and changelog entry exist on the branch before the PR merges
 	const wtCwd = gateCwd(root, state!);
+	// gh#131: a merge ships the branch, not the working tree — an uncommitted fix at this gate is a fix
+	// that never ships. verify shows the operator uncommitted paths; release proves them away. A git
+	// that cannot answer is a measurement failure, never a refusal — same stance as the merge-base probes.
+	const dirtyWt = await sh("git status --porcelain", wtCwd);
+	if (dirtyWt.ok && dirtyWt.out.trim()) {
+		const n = dirtyWt.out.split("\n").filter((l) => l.trim()).length;
+		return { text: `release gate FAILED:\n- ${n} uncommitted path(s) in ${state!.worktree} — a merge ships the branch, not your working tree: commit or discard them, then re-run\n${tail(dirtyWt.out)}`, isError: true };
+	}
+	const branchProof = await branchState(wtCwd, cfg.defaultBranch);
 	const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
 		? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
 		: null;
@@ -1166,7 +1177,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
 	clearPendingAsk(state!);
 	writeState(root, state!);
-	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${nextHint(state!, cfg)}` };
+	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${nextHint(state!, cfg)}` };
 }
 
 async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
@@ -1368,7 +1379,8 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 		const status = await sh(`git -C ${sq(wt)} status --porcelain`, root);
 		const unmerged = await sh(`git -C ${sq(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${sq(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 		const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
-		if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
+		// the refusal names the paths, not just the count — same proof verify and release print (gh#131)
+		if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}${status.out.trim() ? `:\n${tail(status.out)}` : ""}`, isError: true };
 		if (assess.unmerged.length) {
 			const policy = cfg.release.merge;
 			// "not on the default branch" is only a violation when the ancestry is measurable: with no origin,
@@ -1965,7 +1977,8 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 		rmSync(featDir(root, target), { recursive: true, force: true });
 		return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
 	}
-	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
+	if (st?.worktree) { st.aborted = now(); writeState(root, st); } // the doctor skips the removed worktree for stamped states (gh#138)
+	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.aborted ? " (marked aborted — the doctor leaves it alone once you clean the worktree up)" : "") + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
 }
 
 
