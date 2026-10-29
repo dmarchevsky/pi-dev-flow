@@ -1325,7 +1325,15 @@ test("abort at plan stage drops the feature; approved features keep recoverable 
 	const ab = await flow(["abort", "keeper"]);
 	assert.match(ab.content[0].text, /state stays at .dev-flow\/keeper/);
 	assert.match(ab.content[0].text, /git worktree remove/);
+	assert.match(ab.content[0].text, /marked aborted/, "the echo names the marker that keeps the doctor quiet");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "keeper", "state.json")), "real work stays recoverable");
+	const keeperSt = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "keeper", "state.json"), "utf8"));
+	assert.ok(keeperSt.aborted, "the abandoned state carries the stamp");
+	// the operator does exactly what the abort echo prints — doctor must then leave the ghost alone (gh#138)
+	execFileSync("git", ["-C", repo, "worktree", "remove", "--force", path.join(repo, ".dev-flow", "keeper", "worktree")]);
+	execFileSync("git", ["-C", repo, "branch", "-D", keeperSt.branch]);
+	const doc = await flow(["doctor"]);
+	assert.ok(!doc.content[0].text.includes("keeper"), `doctor must not re-report the abandoned slug as drift: ${doc.content[0].text}`);
 });
 
 test("flow abort honors another live session's claim — the lock covers the verb that deletes", async () => {

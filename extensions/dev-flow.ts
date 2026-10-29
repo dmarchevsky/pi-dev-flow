@@ -597,7 +597,9 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 		for (const b of brRaw.out.split("\n").map((x) => x.replace(/^[*+]?\s+/, "").trim()).filter(Boolean)) {
 			if (!ownedBr.has(b)) out.push(`orphan branch ${b} — no unfinished feature owns it (git branch -D ${b})`);
 		}
-	for (const f of feats) if (f.worktree && !existsSync(path.resolve(root, f.worktree))) out.push(`feature ${f.slug} (${f.stage}) has no worktree at ${f.worktree}`);
+	// an aborted feature is a designed state, not drift: the abort echo tells the operator to remove
+	// the worktree by hand, and the stamp keeps that cleanup from being re-reported forever (gh#138)
+	for (const f of feats) if (f.worktree && !f.aborted && !existsSync(path.resolve(root, f.worktree))) out.push(`feature ${f.slug} (${f.stage}) has no worktree at ${f.worktree}`);
 	// the playbook belongs in git — an untracked project.md is invisible to teammates and lost on machine changes
 	if (existsSync(path.join(root, ".dev-flow", "project.md")) && !(await sh("git ls-files --error-unmatch -- .dev-flow/project.md", root)).ok)
 		out.push('.dev-flow/project.md is not tracked in git — track it: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force: a root .gitignore may exclude .dev-flow/ wholesale; the env prefix is for the installed hook — dev-flow allows a main commit whose only change is the playbook)');
@@ -1965,7 +1967,8 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 		rmSync(featDir(root, target), { recursive: true, force: true });
 		return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
 	}
-	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
+	if (st?.worktree) { st.aborted = now(); writeState(root, st); } // the doctor skips the removed worktree for stamped states (gh#138)
+	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.aborted ? " (marked aborted — the doctor leaves it alone once you clean the worktree up)" : "") + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
 }
 
 
