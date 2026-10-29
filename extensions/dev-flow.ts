@@ -1070,6 +1070,15 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (yoloWord) return { text: yoloWord, isError: true };
 	// prep evidence is read from the worktree: the bump and changelog entry exist on the branch before the PR merges
 	const wtCwd = gateCwd(root, state!);
+	// gh#131: a merge ships the branch, not the working tree — an uncommitted fix at this gate is a fix
+	// that never ships. verify shows the operator uncommitted paths; release proves them away. A git
+	// that cannot answer is a measurement failure, never a refusal — same stance as the merge-base probes.
+	const dirtyWt = await sh("git status --porcelain", wtCwd);
+	if (dirtyWt.ok && dirtyWt.out.trim()) {
+		const n = dirtyWt.out.split("\n").filter((l) => l.trim()).length;
+		return { text: `release gate FAILED:\n- ${n} uncommitted path(s) in ${state!.worktree} — a merge ships the branch, not your working tree: commit or discard them, then re-run\n${tail(dirtyWt.out)}`, isError: true };
+	}
+	const branchProof = await branchState(wtCwd, cfg.defaultBranch);
 	const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
 		? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
 		: null;
@@ -1168,7 +1177,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
 	clearPendingAsk(state!);
 	writeState(root, state!);
-	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${nextHint(state!, cfg)}` };
+	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${nextHint(state!, cfg)}` };
 }
 
 async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
@@ -1370,7 +1379,8 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 		const status = await sh(`git -C ${sq(wt)} status --porcelain`, root);
 		const unmerged = await sh(`git -C ${sq(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${sq(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
 		const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
-		if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}`, isError: true };
+		// the refusal names the paths, not just the count — same proof verify and release print (gh#131)
+		if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}${status.out.trim() ? `:\n${tail(status.out)}` : ""}`, isError: true };
 		if (assess.unmerged.length) {
 			const policy = cfg.release.merge;
 			// "not on the default branch" is only a violation when the ancestry is measurable: with no origin,

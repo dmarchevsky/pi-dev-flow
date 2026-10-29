@@ -973,12 +973,13 @@ test("guard: a scratch file outside the checkout is stage-free while the worktre
 	assert.equal(await write(path.join(tmpdir(), "nested", "x.py")), undefined, "including a scratch directory the agent makes for itself");
 });
 
-test("release tail: finish refuses to remove a dirty worktree", async () => {
+test("release tail: a dirty worktree fails the release gate; finish refuses and names paths too (gh#131)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo); // keep the main checkout clean — finish's first wall is the main-checkout dirty check
 	await flow(["start", "dirt"]);
 	mkdirSync(path.join(repo, ".dev-flow", "dirt", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "dirt", "plan", "plan.md"), "# plan\n");
@@ -987,11 +988,17 @@ test("release tail: finish refuses to remove a dirty worktree", async () => {
 	commitWt(repo, "dirt");
 	await flow(["verify", "--confirmed"]);
 	writeFileSync(path.join(repo, ".dev-flow", "dirt", "worktree", "loose.txt"), "uncommitted\n");
-	await flow(["release", "--confirmed"]);
+	const rel = await flow(["release", "--confirmed"]);
+	assert.ok(rel.isError && rel.content[0].text.includes("loose.txt"), `release refuses while the worktree holds uncommitted paths — a merge ships the branch, not the working tree: ${rel.content[0].text}`);
+	commitWt(repo, "dirt", "keep loose");
+	const ok = await flow(["release", "--confirmed"]);
+	assert.match(ok.content[0].text, /release approved/);
+	assert.match(ok.content[0].text, /0 uncommitted path\(s\)/, "the approved line says what the merge carries, like verify's does");
 	const rd = await flow(["release-done", "--confirmed"]);
-	assert.match(rd.content[0].text, /release recorded as complete/, "release-done records the release even when the worktree is dirty");
+	assert.match(rd.content[0].text, /release recorded as complete/);
+	writeFileSync(path.join(repo, ".dev-flow", "dirt", "worktree", "late.txt"), "forgot this\n");
 	const fin = await flow(["finish", "--confirmed"]);
-	assert.ok(fin.isError && fin.content[0].text.includes("uncommitted"), "finish reports why it refuses");
+	assert.ok(fin.isError && fin.content[0].text.includes("late.txt"), `finish reports the paths it refuses on, not just the count: ${fin.content[0].text}`);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "dirt", "state.json")), "feature stays until the operator sorts it out");
 });
 
