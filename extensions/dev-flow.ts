@@ -2745,7 +2745,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		const state = boundFeature(ctx.cwd, key);
 		if (!state || state.stage === "done") {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
-			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
+			let content = "[dev-flow] no flow bound. Every request goes through flow. New work — pre-plan first (see the skill): analyze read-only, bring findings + questions + a direction with a proposed slug/mode to the operator, and flow start <slug> only once they say start; unfinished feature: flow use <slug>.";
 			const cb = claimBlocker(ctx.cwd, key);
 			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (pid ${cb.claim.pid}) — flow use ${cb.state.slug} takes it over explicitly.`;
 			const curBr = await currentBranch(ctx.cwd);

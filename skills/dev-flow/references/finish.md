@@ -5,9 +5,13 @@
 ## Stage: finish
 
 **Reflect before you finish** — `flow finish` deletes `.dev-flow/<slug>/` and
-the session context goes with it. Run the end-of-session reflection (bare
-`flow reflect` protocol under *Reflect*) now and park real issues with
-`flow reflect`; then:
+the session context goes with it. **Delegate the review**: `flow_stage { op:
+"reflect" }` (legal after `release-done`) hands the whole finished flow — this
+session's transcript plus every worker transcript, the plan, live status — to a
+fresh reviewer that returns `[playbook]`/`[plugin]`-tagged findings as an
+outside view. Park real issues with `flow reflect` (the bare `flow reflect`
+self-protocol under *Reflect* is the fallback only when delegation is
+impossible); then:
 
 - issues parked → ask **Fold? Fix? Drop?** and stop: fold = write the items
   into `.dev-flow/reflections.md` (your queue), fix = route them now via

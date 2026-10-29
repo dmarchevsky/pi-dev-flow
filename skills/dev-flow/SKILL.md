@@ -50,6 +50,15 @@ Ground rules:
     `flow release --no-version --confirmed` — the merge still owes a changelog
     entry under `Unreleased`, which the next versioned release folds under its
     version heading (default is versioned: bump + tag).
+- **Pre-plan before you bind (not a stage).** An unbound session writes
+  nothing — no `plan.md`, no mockup, no scaffold, no source. A feature request
+  lands as: read the code the request touches (reads are always free), bring
+  back findings, the real unknowns, and open questions, sketch a **direction**
+  and propose a mode (with its one-line why), and **ask the operator to start
+  the flow**. Only on their word does `flow start <slug>` bind it (the
+  operator grants any `--patch`/`--docs` mode there). The plan file itself is
+  written only once the flow is at the plan stage — see
+  `references/plan.md`; until then the direction lives in chat.
 - **One session = exactly one feature** (flow + branch + worktree); parallel
   sessions, one feature each, are the model. A session binds **explicitly and
   only**: `flow start <slug>` binds its own feature (main checkout must be on
