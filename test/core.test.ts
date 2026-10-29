@@ -107,9 +107,26 @@ import {
 	stageInterruptSteer,
 	stageLiveLine,
 	summarizeToolArgs,
-	renderStageReport,
-} from "../src/core.ts";
 
+	renderStageReport,
+	buildReflectBrief,
+	buildVerifyBrief,
+	liveTail,
+	parseReflectFindings,
+	parseVerifyReport,
+	parseWorkerTranscripts,
+	recordVerifyPass,
+	stageLiveAssistantLine,
+	stageLiveResultLine,
+	stageUsageLine,
+	verifyStampMissing,
+	VERIFY_STAMP,
+	workerOpError,
+
+	workerTranscriptLine,
+	renderVerifyReport,
+	WORKER_OP_BUDGET_MIN,	WORKER_OP_TOOLS,
+} from "../src/core.ts";
 const cfg = structuredClone(DEFAULTS);
 
 test("buildConfig fills defaults and merges partial overrides", () => {
@@ -1407,4 +1424,127 @@ test("the budget steer orders a commit-then-report close-out", () => {
 test("the brief makes per-unit commits a boundary", () => {
 	const b = buildStageBrief({ slug: "s", stage: "implement", workDir: "/wt", planFile: "/p", referenceText: "", statusJson: "{}", gitSummary: "" });
 	assert.match(b, /EACH TIME a unit of work is complete/, "a cut must cost one unit, not a worktree");
+});
+
+// ------------------------------------------------------- worker ops: verify / reflect / live card
+
+test("worker op legality: verify belongs to implement, reflect to a recorded release", () => {
+	const at = (stage: string, approvals: Record<string, string> = {}) => ({ stage: stage as never, approvals });
+	assert.equal(workerOpError("verify", at("implement")), null, "verify proves the implement work before Verified?");
+	assert.match(workerOpError("verify", at("plan"))!, /only while the feature is at implement/, "no verifier for an unapproved plan");
+	assert.match(workerOpError("verify", at("pre-release"))!, /stage is "pre-release"/, "and none after the stage moved on");
+	assert.equal(workerOpError("reflect", at("release", { release: "now" })), null, "the finish review runs once the release is recorded");
+	assert.match(workerOpError("reflect", at("release"))!, /no release recorded/, "before release-done it has nothing to review");
+	assert.match(workerOpError("reflect", at("implement"))!, /after release-done/, "mid-flow reflection stays the driver's own protocol");
+	assert.equal(workerOpError("run", at("implement")), null, "run keeps its own (stage-match) legality, untouched here");
+	assert.equal(workerOpError("status", at("plan")), null, "reading a live run needs no stage at all");
+});
+
+test("worker budgets and toolsets: reviews are shorter and hold no pen", () => {
+	assert.equal(WORKER_OP_BUDGET_MIN.run, 45, "the implement slice keeps the stage default");
+	assert.equal(WORKER_OP_BUDGET_MIN.verify, 30, "operator decision: a review run defaults to 30");
+	assert.equal(WORKER_OP_BUDGET_MIN.reflect, 30);
+	assert.deepEqual([...WORKER_OP_TOOLS.verify], ["read", "bash"], "a checker that can edit is a second implementer");
+	assert.deepEqual([...WORKER_OP_TOOLS.reflect], ["read", "bash"]);
+	assert.ok(WORKER_OP_TOOLS.run.includes("edit"), "the implement worker still builds");
+});
+
+test("parseVerifyReport reads the verdict, and reads a hedge as no verdict", () => {
+	const pass = parseVerifyReport("checked everything\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\nevidence:\n- npm test — 251 pass\n");
+	assert.equal(pass.verdict, "pass");
+	assert.equal(pass.missing, false);
+	assert.equal(pass.findings.length, 0, "\"none\" is an empty section, not a finding");
+	assert.deepEqual(pass.evidence, ["npm test — 251 pass"]);
+	const fail = parseVerifyReport("VERIFY REPORT\nverdict: fail\nfindings:\n- plan D3 wants the gate to refuse, src/core.ts:10 accepts\n");
+	assert.equal(fail.verdict, "fail");
+	assert.equal(fail.findings.length, 1);
+	assert.equal(parseVerifyReport("VERIFY REPORT\nverdict: probably fine\n").verdict, null, "a hedge never passes");
+	assert.equal(parseVerifyReport("I checked it, looks great!").missing, true);
+	assert.match(renderVerifyReport(parseVerifyReport("nope")), /WITHOUT the VERIFY REPORT/, "a skipped contract is loud, never trusted");
+	assert.match(renderVerifyReport(parseVerifyReport("VERIFY REPORT\nverdict: maybe\n")), /no readable verdict/);
+	assert.match(renderVerifyReport(parseVerifyReport("VERIFY REPORT\nverdict: fail\nfindings:\n- " + "y".repeat(500) + "\n"), 200), /digest truncated/);
+});
+
+test("the verify PASS stamp rides the tier-1 invalidation path, not a parallel one", () => {
+	const s = { ...newState("f", false), stage: "implement" as const };
+	assert.equal(verifyStampMissing(s), true, "nothing recorded means the gate asks nobody");
+	recordVerifyPass(s, "now", "fp1");
+	assert.equal(s.checks[VERIFY_STAMP]?.ok, true);
+	assert.equal(verifyStampMissing(s), false);
+	// a worktree edit clears every check record (the edit hook's job); the PASS must not survive it
+	s.checks = {};
+	assert.equal(verifyStampMissing(s), true, "one edit, one re-run — precise, never sticky");
+	recordVerifyPass(s, "now", "fp1");
+	freshenChecks(s, "fp2");
+	assert.equal(verifyStampMissing(s), true, "and a tree that moved through bash drops it the same way");
+	recordVerifyPass(s, "now", null);
+	assert.equal(verifyStampMissing(s), false, "git could not answer: an unprovable stamp is never proven stale");
+	assert.equal(verifyStampMissing({ ...newState("d", false, false, true), stage: "implement" as const }), false, "docs mode is exempt like tier-1");
+});
+
+test("transcripts.log lines append and parse back into (op, path)", () => {
+	const line = workerTranscriptLine("2026-01-01T00:00:00Z", "verify", "/tmp/sess.jsonl");
+	assert.match(line, /worker transcript \(verify\): \/tmp\/sess\.jsonl/);
+	const log = `noise hand-written line\n${line}\n${workerTranscriptLine("2026-01-01T01:00:00Z", "run", "/tmp/other.jsonl")}\n`;
+	const parsed = parseWorkerTranscripts(log);
+	assert.equal(parsed.length, 2, "unrecognised lines are skipped, the log is append-only");
+	assert.deepEqual(parsed[0], { at: "2026-01-01T00:00:00Z", op: "verify", path: "/tmp/sess.jsonl" });
+	assert.equal(parsed[1].op, "run");
+	assert.equal(parseWorkerTranscripts("").length, 0);
+});
+
+test("live lines carry the worker's output, bounded", () => {
+
+	assert.equal(stageLiveAssistantLine(5_000, "planning now\nrunning the suite"), "[+00:05] ✎ running the suite", "the last line is the news, no tool-call decoration");	assert.equal(stageLiveAssistantLine(0, "   \n\n"), "", "an empty narration costs no line");
+	assert.equal(stageLiveResultLine(5_000, "bash", true, "251 pass\n0 fail"), "[+00:05] ✓ bash — 251 pass 0 fail");
+	assert.equal(stageLiveResultLine(5_000, "bash", false, "exit 1"), "[+00:05] ✗ bash — exit 1");
+	const long = stageLiveAssistantLine(0, "x".repeat(500));
+	assert.ok(long.length <= 130, `a single live line stays one line: ${long.length}`);
+	const lines = Array.from({ length: 11 }, (_, i) => `line ${i}`);
+	const tail = liveTail(lines, 8);
+	assert.equal(tail[0], "… 3 earlier items", "R6: the collapsed view counts what it dropped instead of showing it");
+	assert.deepEqual(tail.slice(1), lines.slice(-8));
+	assert.deepEqual(liveTail(["a", "b"], 8), ["a", "b"], "short runs show everything and say nothing about it");
+	assert.deepEqual(liveTail(["a", "", "b", ""], 8), ["a", "b"], "blank lines never push real activity off the card");
+});
+
+test("the usage line says what a run cost", () => {
+	const u = { input: 1200, output: 300, cacheRead: 45_000, cacheWrite: 0, totalTokens: 46_500, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.42 } };
+	assert.equal(stageUsageLine(u, 7), "7 turns · ↑1.2k ↓300 · ctx 46.5k · $0.4200");
+	assert.match(stageUsageLine({ ...u, input: 0, output: 0, cacheRead: 0, cost: { ...u.cost, total: 0 } }), /↑0 ↓0/);
+});
+
+test("the verify brief orders a check, not a fix", () => {
+	const b = buildVerifyBrief({ slug: "s", workDir: "/wt", planFile: "/p/plan.md", statusJson: "{}", gitSummary: "", diffStat: "2 files changed", defaultBranch: "main", checks: [{ name: "test", cmd: "npm test" }], note: "operator approved D3 as a hard gate" });
+	assert.match(b, /CHECK, DON'T FIX/);
+	assert.match(b, /git status --porcelain/, "the brief warns the tree identity is proved afterwards");
+	assert.match(b, /git diff main…HEAD/);
+	assert.match(b, /npm test/, "tier-1 commands travel in the brief");
+	assert.match(b, /hard gate/, "the note rides along like every other worker");
+	assert.match(b, /VERIFY REPORT\nverdict: pass \| fail/);
+});
+
+test("the reflect brief hands the reviewer the whole flow", () => {
+	const b = buildReflectBrief({
+		slug: "s",
+		planFile: "/p/plan.md",
+		statusJson: "{}",
+		driverSession: "/drv.jsonl",
+		transcripts: [{ at: "t1", op: "implement", path: "/w1.jsonl" }, { at: "t2", op: "verify", path: "/nonexistent-zz.jsonl" }],
+		openReflections: ["- [ ] gate X is confusing"],
+	});
+	assert.ok(b.includes("/drv.jsonl"), "the driver's own transcript is input #1");
+	assert.ok(b.includes("/w1.jsonl"));
+	assert.match(b, /nonexistent-zz\.jsonl.*file is gone/, "a stale transcript path is named, never silently dropped");
+	assert.match(b, /gate X is confusing/, "dedupe against the open queue is part of the brief");
+	assert.match(b, /\[playbook\] .*dev-flow itself/s, "the tagging contract is spelled out");
+});
+
+test("reflect findings split by tag, prose counts as nothing", () => {
+	const r = parseReflectFindings("chat chat\n- **[playbook]** checklist item 3 is stale — evidence: it asks for chromium, none is configured\n`[plugin]` verify gate message is too quiet — evidence: silent refusal\n[neither] the repo README lies\n[playbook] none\n");
+	assert.equal(r.playbook.length, 1);
+	assert.equal(r.plugin.length, 1);
+	assert.equal(r.other.length, 1);
+	assert.equal(r.missing, false);
+	assert.equal(parseReflectFindings("everything was fine, no findings").missing, true, "prose is not findings — the driver must say so");
 });
