@@ -1673,14 +1673,18 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	commitWt(repo, "rel");
 	await flow(["verify", "--confirmed"]);
 	assert.equal(stage(), "pre-release", "verify now lands in pre-release");
-	// a guarded prep edit in the worktree must invalidate the checks again — the release gate re-demands them
+	// a guarded prep edit in the worktree invalidates the checks — and since gh#131 the release gate
+	// refuses the uncommitted state outright first: a merge ships the branch, not the working tree
 	const guard = pi.handlers.tool_call[0];
 	assert.equal(await guard({ toolName: "write", input: { path: path.join(repo, ".dev-flow", "rel", "worktree", "CHANGELOG.md") } }, ctx), undefined);
 	writeFileSync(path.join(repo, ".dev-flow", "rel", "worktree", "CHANGELOG.md"), "## 0.0.1\n");
 	const early = await flow(["release", "--confirmed"]);
-	assert.ok(early.isError && /check "test" has not passed/.test(early.content[0].text), "release gate demands re-greened checks after prep edits");
+	assert.ok(early.isError && early.content[0].text.includes("CHANGELOG.md") && /uncommitted path/.test(early.content[0].text), "release refuses while the prep edit sits uncommitted: " + early.content[0].text);
 	execFileSync("git", ["-C", path.join(repo, ".dev-flow", "rel", "worktree"), "add", "-A"]);
 	execFileSync("git", ["-C", path.join(repo, ".dev-flow", "rel", "worktree"), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "changelog"]);
+	// the commit moved the tree the green was taken against — the release gate re-demands the checks
+	const stale = await flow(["release", "--confirmed"]);
+	assert.ok(stale.isError && /has not passed|stale/.test(stale.content[0].text), "release gate demands re-greened checks after the prep commit: " + stale.content[0].text);
 	await flow(["check"]);
 	const noOp = await flow(["release"]);
 	assert.ok(noOp.isError && /needs the operator/.test(noOp.content[0].text), "Release? needs an operator answer");
@@ -1901,6 +1905,7 @@ test("unversioned release: --no-version ships merge + changelog and skips the bu
 	assert.ok(cold.isError && /unchanged on this branch/.test(cold.content[0].text), "an unversioned release must change the changelog");
 	const wt = path.join(repo, ".dev-flow", "nv", "worktree");
 	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- nv ships\n");
+	commitWt(repo, "nv", "changelog: nv ships"); // the line must be on the branch — release refuses an uncommitted worktree (gh#131)
 	const r = await flow(["release", "--no-version", "--confirmed"]);
 	assert.match(r.content[0].text, /unversioned: no bump or tag; your changelog entry rides under Unreleased/);
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "nv", "state.json"), "utf8"));
