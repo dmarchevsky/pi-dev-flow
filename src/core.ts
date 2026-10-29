@@ -1811,8 +1811,8 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return state.approvals.release
 				? "release recorded — commit and push the release chores in the main checkout (prefix the commit with DEV_FLOW_ALLOW_MAIN=1 — the installed pre-commit hook otherwise blocks main commits), ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
 				: state.noVersion
-					? `publish: commit and push the branch, open and merge the PR${mergeHintFor(cfg)} — unversioned release: no manifest bump, no tag, your changelog entry rides under Unreleased; then run flow release-done (no further question)`
-					: `publish: commit and push the branch, open and merge the PR${mergeHintFor(cfg)}, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)`;
+					? `publish: commit and push the branch, open the PR, merge only once CI is green (gh pr checks <n> --watch — a locally-green branch can still fail CI-only jobs)${mergeHintFor(cfg)} — unversioned release: no manifest bump, no tag, your changelog entry rides under Unreleased; then run flow release-done (no further question)`
+					: `publish: commit and push the branch, open the PR, merge only once CI is green (gh pr checks <n> --watch — a locally-green branch can still fail CI-only jobs)${mergeHintFor(cfg)}, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)`;
 		default:
 			return "feature finished";
 	}
