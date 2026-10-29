@@ -66,4 +66,6 @@ test("every stage has a playbook file and the map names it", () => {
 	for (const s of SKILL_STAGES) assert.match(md, new RegExp(`references/${s}\\.md`), `the stage map in SKILL.md never points at ${s}.md`);
 	// the state machine has no finish stage, so nothing would ever name finish.md if release.md did not
 	assert.match(readFileSync(path.join(SKILL_DIR, "references", "release.md"), "utf8"), /finish\.md/, "release must hand over to finish");
+	// gh#134: the release recipe must send the agent to green CI before merging — local gates cannot run CI-only jobs
+	assert.match(readFileSync(path.join(SKILL_DIR, "references", "release.md"), "utf8"), /gh pr checks <n> --watch/, "merge only once CI is green — say so where the merge command is printed");
 });
