@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import devFlow, { compactionTakeover, stageAgentFactory, testSeams } from "../extensions/dev-flow.ts";
+import devFlow, { compactionTakeover, stageTimingOverride, stageWorkerSpawn, testSeams } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -84,9 +84,12 @@ function initPlaybook(repo: string): void {
 	writeFileSync(path.join(repo, ".dev-flow", "project.md"), "# dev-flow\n\n## release\n\n```flow\nmerge = any\n```\n");
 }
 
+/** Every ctx shares one footer-status recorder: the stage-worker heartbeat test reads it. */
+export const uiStatuses: (string | undefined)[] = [];
+
 function makeCtx(cwd: string, hasUI = false) {
 	const notices: string[] = [];
-	return { cwd, hasUI, notices, sent: [] as { triggerTurn?: boolean }[], ui: { notify: (m: string) => notices.push(m), confirm: async () => true } };
+	return { cwd, hasUI, notices, sent: [] as { triggerTurn?: boolean }[], ui: { notify: (m: string) => notices.push(m), confirm: async () => true, setStatus: (_k: string, v: string | undefined) => { uiStatuses.push(v); } } };
 }
 
 test("bare reflect from the command bar wakes the model; other commands stay display-only", async () => {
@@ -2285,7 +2288,7 @@ test("the stage injection names the one playbook file the stage needs", async ()
 test("flow_stage: refusals stand, a stubbed worker's report comes back through the tool", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const ctx = makeCtx(repo);
+	const ctx = makeCtx(repo, true);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	await flow(["start", "staged"]);
@@ -2302,54 +2305,97 @@ test("flow_stage: refusals stand, a stubbed worker's report comes back through t
 	const refusedUnbound = await stage(ghost, { stage: "implement" });
 	assert.ok(refusedUnbound.isError && /not bound/.test(refusedUnbound.content[0].text), "the worker is spawned by a bound session — an unbound one gets no illusion");
 
-	const real = stageAgentFactory.create;
-	try {
-		stageAgentFactory.create = (async () => ({
+	const real = stageWorkerSpawn.run;
+	const renames: string[] = [];
+	const steers: string[] = [];
+	const mkStub = (opts: { hang?: boolean; emit?: boolean; text?: string }) => (async (o: { name: string }) => {
+		renames.push(o.name);
+		let toolListener: ((ev: unknown) => void) | undefined;
+		let release: (() => void) | undefined;
+		let started: (() => void) | undefined;
+		const startedP = new Promise<void>((res) => (started = res));
+		lastStub = { get started() { return startedP; }, release: () => release?.(), emit: (ev: unknown) => toolListener?.(ev) };
+		return {
 			session: {
-				subscribe: () => () => {},
-				prompt: async () => {},
-				abort: async () => {},
+				subscribe: (l: (ev: unknown) => void) => { toolListener = l; return () => {}; },
+				prompt: async () => {
+					if (opts.emit) toolListener?.({ type: "tool_execution_start", toolName: "bash", args: { command: "npm test" } });
+					if (opts.hang) { started?.(); return new Promise<void>((res) => (release = res)); }
+				},
+				steer: (t: string) => { steers.push(t); },
+				abort: async () => { release?.(); },
 				dispose: () => {},
-				getLastAssistantText: () => "did the work\nSTAGE REPORT\ndone:\n- stubbed worker finished\nfiles:\n- README.md — touched\nnotes:\n- keep the note\nblockers:\n- none\n",
+				getLastAssistantText: () => opts.text ?? "did the work\nSTAGE REPORT\ndone:\n- stubbed worker finished\nfiles:\n- README.md — touched\nnotes:\n- keep the note\nblockers:\n- none\n",
 				sessionManager: { getSessionFile: () => path.join(repo, "fake-transcript.jsonl") },
 			},
-		})) as never;
+			rename: (n: string) => { renames.push(n); },
+		};
+	}) as never;
+	let lastStub!: { started: Promise<void>; release: () => void; emit: (ev: unknown) => void };
+	try {
+		stageWorkerSpawn.run = mkStub({ emit: true });
 		{
 			const ok = await stage(ctx, { stage: "implement", note: "operator wants X" });
 			assert.match(ok.content[0].text, /stubbed worker finished/);
 			assert.match(ok.content[0].text, /tier-1 rerun after worker/);
-			assert.match(ok.content[0].text, /worker transcript:/);
+			assert.match(ok.content[0].text, /worker transcript: /);
+			assert.match(ok.content[0].text, /pi export /, "the result tells the parent how to render the transcript readably");
 			assert.ok(!ok.isError, "a clean run is not an error");
-			assert.ok(existsSync(path.join(repo, ".dev-flow", "staged", "stage-sessions")), "worker transcripts live under the feature dir");
+			assert.equal(ok.details?.snapshot, null, "a clean tree needs no snapshot");
+			assert.equal(renames[0], "\u23f3 stage worker \u00b7 implement \u00b7 staged", "the live session is named for the picker");
+			assert.match(renames[renames.length - 1], /^\u2713 stage worker \u00b7 implement \u00b7 staged/, "a finished worker renames its session");
+			assert.ok(uiStatuses.some((x) => /\u23f3 stage worker/.test(x ?? "")), "the footer beat fired");
+			assert.equal(uiStatuses.at(-1), undefined, "the footer status is cleared when the worker ends");
+			const liveLog = readFileSync(path.join(repo, ".dev-flow", "staged", "stage-live.log"), "utf8");
+			assert.match(liveLog, /\[\+00:00\] worker \u2014 started \(implement, budget 45 min\)/, "the live log opens with the run");
+			assert.match(liveLog, /bash \u2014 npm test/, "tool activity lands in the live log");
 		}
 
-		let releaseRun: (() => void) | undefined;
-		let promptStarted!: () => void;
-		const started = new Promise<void>((res) => (promptStarted = res));
-		stageAgentFactory.create = (async () => ({
-			session: {
-				subscribe: () => () => {},
-				prompt: () => new Promise<void>((res) => { promptStarted(); releaseRun = res; }),
-				abort: async () => {},
-				dispose: () => {},
-				getLastAssistantText: () => "STAGE REPORT\ndone:\n- x\n",
-				sessionManager: { getSessionFile: () => undefined },
-			},
-		})) as never;
+		// grace then cliff: the steer lands before the hard cut, and a dirty tree is snapshotted
+		stageTimingOverride.softMs = 40;
+		stageTimingOverride.hardMs = 160;
+		writeFileSync(path.join(repo, ".dev-flow", "staged", "worktree", "worker-swept-up.txt"), "uncommitted worker work\n");
+		stageWorkerSpawn.run = mkStub({ hang: true, text: "STAGE REPORT\ndone:\n- ran out of budget\n" });
+		const cut = await stage(ctx, { stage: "implement" });
+		assert.equal(steers.length, 1, "the worker was steered once at grace");
+		assert.match(steers[0], /Budget spent \(45 min\)/);
+		assert.match(steers[0], /wip\(stage\)/, "the steer names the commit convention it expects");
+		assert.equal(cut.details?.softFired, true);
+		assert.ok(cut.isError && /hard-interrupted at the 45-minute cap/.test(cut.content[0].text), "a worker that needed the hard cut is an error");
+		const snap = String(cut.details?.snapshot ?? "");
+		assert.ok(snap && existsSync(snap), "the dirty tree was snapshotted");
+		assert.match(readFileSync(snap, "utf8"), /worker-swept-up\.txt/, "the snapshot captures untracked files too");
+		assert.match(renames[renames.length - 1], /^\u2717/, "a cut worker renames its session with a mark");
+		rmSync(path.join(repo, ".dev-flow", "staged", "worktree", "worker-swept-up.txt"), { force: true });
+
+		// while one runs: busy stays busy; op:"status" reads the live run
+		stageTimingOverride.softMs = 600_000;
+		stageTimingOverride.hardMs = 600_000;
+		stageWorkerSpawn.run = mkStub({ hang: true, emit: true });
 		const running = stage(ctx, { stage: "implement" });
+		await lastStub.started;
 		const busy2 = await stage(ctx, { stage: "implement" });
 		assert.ok(busy2.isError && /already running/.test(busy2.content[0].text), "one worker per session at a time");
-		await started;
-		releaseRun?.();
+		const status = await stage(ctx, { op: "status" });
+		assert.match(status.content[0].text, /stage worker running: .* of 45 min budget/);
+		assert.match(status.content[0].text, /bash \u2014 npm test/, "status shows the live tail");
+		assert.match(status.content[0].text, /worktree now:/);
+		lastStub.release();
 		await running;
+		const idle = await stage(ctx, { op: "status" });
+		assert.match(idle.content[0].text, /no stage worker is running/);
 
-		stageAgentFactory.create = (async () => ({
-			session: { subscribe: () => () => {}, prompt: async () => {}, abort: async () => {}, dispose: () => {}, getLastAssistantText: () => "I think we are done here", sessionManager: { getSessionFile: () => undefined } },
+		stageWorkerSpawn.run = (async () => ({
+			session: { subscribe: () => () => {}, prompt: async () => {}, steer: () => {}, abort: async () => {}, dispose: () => {}, getLastAssistantText: () => "I think we are done here", sessionManager: { getSessionFile: () => undefined } },
+			rename: () => {},
 		})) as never;
 		const missing = await stage(ctx, { stage: "implement" });
 		assert.match(missing.content[0].text, /WITHOUT the STAGE REPORT/, "a skipped contract is surfaced, not swallowed");
 		assert.equal(missing.details?.reportMissing, true);
 	} finally {
-		stageAgentFactory.create = real;
+		stageWorkerSpawn.run = real;
+		stageTimingOverride.softMs = undefined;
+		stageTimingOverride.hardMs = undefined;
 	}
 });
+

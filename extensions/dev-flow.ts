@@ -20,11 +20,11 @@
  * Inactive (fully pass-through) in repos without a .dev-flow/ directory.
  */
 import { exec } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
-import { compact, createAgentSession, defineTool, isToolCallEventType, SessionManager, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { compact, createAgentSession, DefaultResourceLoader, defineTool, getAgentDir, isToolCallEventType, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	ALLOW_REWRITE,
@@ -45,6 +45,7 @@ import {
 	checklistPending,
 	checkoutTarget,
 	claimBlocks,
+	clampStageBudgetMin,
 	classifyMergeHistory,
 	cmpVersions,
 	cleanupAssess,
@@ -109,6 +110,10 @@ import {
 	shouldSelfCompact,
 	shouldTakeOverCompaction,
 	stageGuidance,
+	stageElapsedLabel,
+	stageInterruptSteer,
+	stageLiveLine,
+	summarizeToolArgs,
 	stateTamper,
 	statusFor,
 	statusJson,
@@ -399,17 +404,43 @@ function skillCore(): string | null {
 /** Seam for the takeover's summarize call (pi's own compact()); tests replace `.run` — mutable object stands in for ESM mocking. */
 export const compactionTakeover: { run: typeof compact } = { run: compact };
 
-/** Seam for spawning a stage worker (the SDK's createAgentSession) — the smoke suite replaces
- *  `.create` with a stub: the worker contract stays testable without spending a model. */
-export const stageAgentFactory: { create: typeof createAgentSession } = { create: createAgentSession };
+/** Seam that spawns the stage worker as a disposable REAL pi session — the smoke suite replaces
+ *  `.run` with a stub, so the worker contract stays testable without spending a model and tests
+ *  never touch the real session directory. The real spawn uses the DEFAULT session location (the
+ *  picker and `pi export` find it for free) and names the session through an inline extension —
+ *  `setSessionName` only exists on a session's own extension API — handing back a rename channel
+ *  the driver uses for the ⏳ → ✓/✗ lifecycle. */
+export interface StageWorkerHandle { session: AgentSession; rename: (name: string) => void }
+export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string }) => Promise<StageWorkerHandle> } = {
+	run: async ({ work, model, name }) => {
+		let rename: (name: string) => void = () => {};
+		const loader = new DefaultResourceLoader({
+			cwd: work,
+			agentDir: getAgentDir(),
+			extensionFactories: [{
+				name: "dev-flow-stage-naming",
+				hidden: true,
+				factory: (childPi: ExtensionAPI) => {
+					childPi.on("session_start", () => { try { childPi.setSessionName(name); } catch { /* naming is visibility, not function */ } });
+					rename = (n: string) => { try { childPi.setSessionName(n); } catch { /* ditto */ } };
+				},
+			}],
+		});
+		await loader.reload();
+		const { session } = await createAgentSession({ cwd: work, model: model as never, tools: ["read", "bash", "edit", "write"], excludeTools: ["flow", "flow_stage"], resourceLoader: loader });
+		// coding tools only: what a worker cannot reach is a flow it cannot touch — the allowlist picks
+		// the defaults, excludeTools is the belt on the extension tools (allowlist semantics for those are ambiguous)
+		return { session, rename: (n) => rename(n) };
+	},
+};
 
-/** Sessions with a stage worker in flight (one per session): two of the session's own workers on one
- *  feature would clobber one worktree — the parent is confused before that gets anywhere. */
-const stageWorkers = new Set<string>();
+/** Test-only timer override so the smoke suite drives the soft-steer and the hard cut in ms. */
+export const stageTimingOverride: { softMs?: number; hardMs?: number } = {};
 
-/** Cap on one stage worker's run. A gate may wait 15 min on a deploy; a stage is bigger than a gate
- *  but not unbounded — past the cap the worker is interrupted and its report marked mid-stage. */
-const STAGE_WORKER_MAX_MS = 45 * 60_000;
+/** What a live worker run knows about itself — the one-worker-per-session guard and the ledger the
+ *  `op: "status"` verb reads. `lastLines` mirrors the live log (bounded). */
+interface StageRun { startedAt: number; budgetMin: number; softFired: boolean; work: string; lastLines: string[] }
+const stageRuns = new Map<string, StageRun>();
 
 /** Marks the before_agent_start pass that already wrote this run's [dev-flow] line — see the claim in that handler. */
 const CONTEXT_EMITTED = Symbol.for("pi-dev-flow.context-emitted");
@@ -2117,29 +2148,53 @@ export default function devFlow(pi: ExtensionAPI) {
 		name: "flow_stage",
 		label: "Stage worker",
 		description:
-			"Delegate the current stage's heavy work to a disposable dev-flow worker session with a fresh context (implement | pre-release). Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. The worker edits and commits in the worktree but cannot run gates or talk to the operator. When it returns: read its stage report, run flow check yourself, then ask the checkpoint — the report is a handoff, not a verification.",
-		promptSnippet: 'flow_stage(stage: "implement"|"pre-release", note) — do the stage\'s work in a fresh disposable worker session; gates and checkpoints stay with you',
+			"Delegate the current stage's heavy work to a disposable dev-flow worker session with a fresh context (implement | pre-release). Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. The worker edits and commits in the worktree but cannot run gates or talk to the operator; it appears as a live named session (pi export renders it). At 75% of its budget (budgetMin, default 45) the worker is steered to commit and report instead of being cut. While it runs, flow_stage with op \"status\" answers how the worker is doing. When it returns: read its stage report, run flow check yourself, then ask the checkpoint — the report is a handoff, not a verification.",
+		promptSnippet: 'flow_stage(stage: "implement"|"pre-release", note, budgetMin?) — do the stage\'s work in a fresh worker session; op: "status" reads the live run; gates and checkpoints stay with you',
 		parameters: Type.Object({
-			stage: Type.String({ description: "Stage to delegate the work for — must match the bound feature's current stage" }),
+			op: Type.Optional(Type.String({ description: '"run" (default) delegates the stage work; "status" reports the live worker run in this session' })),
+			stage: Type.Optional(Type.String({ description: "Stage to delegate the work for — must match the bound feature's current stage" })),
 			note: Type.Optional(Type.String({ description: "The worker keeps nothing from this conversation: pass operator answers, decisions, warnings and the exact next action here." })),
+			budgetMin: Type.Optional(Type.Number({ description: "Worker budget in minutes (5-120, default 45). At 75% the worker is steered to commit and report; past the budget it is interrupted and the tree snapshotted." })),
 		}),
 		execute: async (_id, params, signal, onUpdate, ctx) => {
-			const stageArg = String(params.stage ?? "");
 			const err = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
-			if (!isDelegableStage(stageArg)) return err(`flow_stage delegates the work of: ${DELEGABLE_STAGES.join(" or ")} — "${stageArg}" is not delegable (plan is the operator dialogue; release/finish carry the checkpoint words)`);
+			if (String(params.op ?? "run") === "status") {
+				const run = stageRuns.get(sessionKey(ctx));
+				if (!run) return { content: [{ type: "text", text: "no stage worker is running in this session" }], details: { running: false } };
+				const elapsed = Date.now() - run.startedAt;
+				const dirtyNow = await sh("git status --porcelain", run.work);
+				const logNow = await sh("git log --oneline -5", run.work);
+				const text = [
+					`stage worker running: ${stageElapsedLabel(elapsed)} elapsed of ${run.budgetMin} min budget${run.softFired ? " — in grace: committing and reporting" : ""}`,
+					...run.lastLines.slice(-10),
+					`worktree now: ${dirtyNow.ok && dirtyNow.out.trim() ? `${dirtyNow.out.trim().split("\n").length} uncommitted path(s)` : "clean"}`,
+					`recent commits:\n${logNow.ok && logNow.out.trim() ? logNow.out : "(none)"}`,
+				].join("\n");
+				return { content: [{ type: "text", text }], details: { running: true, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired } };
+			}
+			const stageArg = String(params.stage ?? "");
+			if (!isDelegableStage(stageArg)) return err(`flow_stage delegates the work of: ${DELEGABLE_STAGES.join(" or ")} — "${stageArg}" is not delegable (plan is the operator dialogue; release/finish carry the checkpoint words; op "status" needs no stage)`);
 			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
 			const st = boundFeature(ctx.cwd, sessionKey(ctx));
 			if (!st) return err("this session is not bound to a feature — flow start <slug> or flow use <slug> first");
 			if (st.stage !== stageArg) return err(`feature ${st.slug} is at stage "${st.stage}", not "${stageArg}" — flow_stage runs the work of the stage you are in`);
 			const key = sessionKey(ctx);
-			if (stageWorkers.has(key)) return err(`a stage worker for ${st.slug} is already running in this session — one worker per session (interrupt the running call to stop it)`);
-			stageWorkers.add(key);
-			const work = gateCwd(ctx.cwd, st);
+			if (stageRuns.has(key)) return err(`a stage worker for ${st.slug} is already running in this session — one worker per session; flow_stage {op: "status"} reads the live one`);
+			const budgetMin = clampStageBudgetMin(params.budgetMin);
+			const budgetMs = budgetMin * 60_000;
+			const softMs = stageTimingOverride.softMs ?? Math.round(budgetMs * 0.75);
+			const hardMs = stageTimingOverride.hardMs ?? budgetMs;
+			const run: StageRun = { startedAt: Date.now(), budgetMin, softFired: false, work: gateCwd(ctx.cwd, st), lastLines: [] };
+			stageRuns.set(key, run);
+			const work = run.work;
+			const logFile = path.join(featDir(ctx.cwd, st.slug), "stage-live.log");
 			let child: AgentSession | undefined;
 			let crash: string | null = null;
 			let timedOut = false;
 			const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 			try {
+				writeFileSync(logFile, `${stageLiveLine(0, "worker", `started (${st.stage}, budget ${budgetMin} min)`)}\n`);
+				const beat = (toolName: string) => { if (ctx.hasUI) ctx.ui.setStatus("dev-flow-stage", `⏳ stage worker ${stageElapsedLabel(Date.now() - run.startedAt)} · ${toolName} · ${st.slug}`); };
 				const statusJsonText = (await runFlow(["status", "--json"], ctx.cwd, uiFrom(ctx), sessFor(ctx))).text;
 				const git = await sh("git status --porcelain -b", work);
 				const refRel = stageReference(st.stage);
@@ -2155,49 +2210,83 @@ export default function devFlow(pi: ExtensionAPI) {
 					gitSummary: git.ok ? git.out.trim() : "(git status failed)",
 					note: typeof params.note === "string" ? params.note : undefined,
 				});
-				const sessDir = path.join(featDir(ctx.cwd, st.slug), "stage-sessions");
-				mkdirSync(sessDir, { recursive: true });
-				// coding tools only: what a worker cannot reach is a flow it cannot touch — the allowlist picks
-				// the defaults, excludeTools is the belt on the extension tools (allowlist semantics for those are ambiguous)
-				const created = await stageAgentFactory.create({ cwd: work, model: ctx.model, tools: ["read", "bash", "edit", "write"], excludeTools: ["flow", "flow_stage"], sessionManager: SessionManager.create(work, sessDir) });
-				child = created.session;
+				// the worker is a REAL pi session in the default location — the pi/pi-web picker renders it
+			// live from the append-only transcript (⏳ = resumable later; resuming a live one forks it,
+			// browsing is read-only by construction); `pi export <file>` makes it readable HTML
+			const worker = await stageWorkerSpawn.run({ work, model: ctx.model, name: `⏳ stage worker · ${st.stage} · ${st.slug}` });
+			child = worker.session;
+				let lastBeat = 0;
 				const unsub = child.subscribe((ev: unknown) => {
-					const e = ev as { type?: string; toolName?: string; message?: { role?: string; usage?: Record<string, number> & { cost?: Record<string, number> } } };
-					if (e.type === "tool_execution_start") onUpdate?.({ content: [{ type: "text", text: `stage worker running (${st.slug} · ${st.stage}) — tool: ${e.toolName ?? "?"}` }], details: undefined });
+					const e = ev as { type?: string; toolName?: string; args?: unknown; message?: { role?: string; usage?: Record<string, number> & { cost?: Record<string, number> } } };
+					if (e.type === "tool_execution_start") {
+						const line = stageLiveLine(Date.now() - run.startedAt, e.toolName ?? "?", summarizeToolArgs(e.args));
+						run.lastLines.push(line);
+						if (run.lastLines.length > 50) run.lastLines.shift();
+						try { appendFileSync(logFile, `${line}\n`); } catch { /* the log mirrors activity, the transcript is the record */ }
+						onUpdate?.({ content: [{ type: "text", text: `stage worker ${stageElapsedLabel(Date.now() - run.startedAt)} · ${e.toolName ?? "?"}` }], details: undefined });
+						const now = Date.now();
+						if (now - lastBeat > 5000) { lastBeat = now; beat(e.toolName ?? "?"); }
+					}
 					if (e.type === "message_end" && e.message?.role === "assistant" && e.message.usage) {
 						const u = e.message.usage;
 						for (const f of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) usage[f] += Number(u[f] ?? 0);
 						if (u.cost) for (const f of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) usage.cost[f] += Number(u.cost[f] ?? 0);
 					}
 				});
-				const timer = setTimeout(() => { timedOut = true; void Promise.resolve(child?.abort()).catch(() => {}); }, STAGE_WORKER_MAX_MS);
-				signal?.addEventListener("abort", () => void Promise.resolve(child?.abort()).catch(() => {}));
+				const abortChild = () => void Promise.resolve(child?.abort()).catch(() => {});
+				// grace before the cliff: at 75% the worker is told to commit and report — an honest handoff
+				// beats an abort; the hard timer stays the backstop for a worker that ignores the steer
+				const softTimer = setTimeout(() => {
+					run.softFired = true;
+					try { void Promise.resolve(child?.steer(stageInterruptSteer(budgetMin))).catch(() => {}); } catch { /* hard cut follows */ }
+				}, softMs);
+				const hardTimer = setTimeout(() => { timedOut = true; abortChild(); }, hardMs);
+				signal?.addEventListener("abort", abortChild);
 				try {
 					await child.prompt(brief);
 				} catch (e) {
 					crash = e instanceof Error ? e.message : String(e);
 				} finally {
-					clearTimeout(timer);
+					clearTimeout(softTimer);
+					clearTimeout(hardTimer);
 					unsub();
 				}
-				const transcript = child.sessionManager.getSessionFile() ?? sessDir;
+				const clean = !crash && !timedOut;
+				worker.rename(`${clean ? "✓" : "✗"} stage worker · ${st.stage} · ${st.slug}`);
+				const transcript = child.sessionManager.getSessionFile() ?? "";
 				const report = parseStageReport(child.getLastAssistantText() ?? "");
+				// never hand back an unrecoverable state: a dirty tree is snapshotted (tracked AND untracked,
+				// via a throwaway index — no real-index or worktree mutation, no WIP commit on the branch)
+				let snapshot: string | null = null;
+				const dirty = await sh("git status --porcelain", work);
+				if (dirty.ok && dirty.out.trim()) {
+					const snapDir = path.join(featDir(ctx.cwd, st.slug), "stage-sessions");
+					mkdirSync(snapDir, { recursive: true });
+					const stamp = Date.now();
+					const diffFile = path.join(snapDir, `${st.stage}-${stamp}.diff`);
+					const idx = path.join(snapDir, `.snap-index-${stamp}`);
+					const snapRun = await sh(`GIT_INDEX_FILE=${sq(idx)} git read-tree HEAD && GIT_INDEX_FILE=${sq(idx)} git add -A && T=$(GIT_INDEX_FILE=${sq(idx)} git write-tree) && git diff HEAD "$T" > ${sq(diffFile)}; rm -f ${sq(idx)}`, work);
+					if (snapRun.ok && existsSync(diffFile)) snapshot = diffFile;
+				}
 				// the worker dirtied tier-1 records through the same hooks any edit dirties them — the
 				// driving session re-greens after the stage: the check runs on its binding, verdict rides along.
 				const check = await runFlow(["check"], ctx.cwd, uiFrom(ctx), sessFor(ctx));
 				const parts = [renderStageReport(report)];
-				if (timedOut) parts.push(`worker was interrupted at the ${Math.round(STAGE_WORKER_MAX_MS / 60000)}-minute cap — treat the report as mid-stage`);
+				if (run.softFired) parts.push(`worker was steered to close out at its ${budgetMin}-min budget${timedOut ? " and still needed the hard cut — treat the report as mid-stage" : " — committed and reported by choice"}`);
+				if (timedOut) parts.push(`worker was hard-interrupted at the ${budgetMin}-minute cap — treat the report as mid-stage`);
 				if (crash) parts.push(`worker run ended with an error: ${crash}`);
+				if (snapshot) parts.push(`uncommitted worktree snapshotted (tracked + untracked): ${snapshot} — read it before deciding what to keep`);
 				parts.push(`tier-1 rerun after worker: ${check.text.replace(/\s+/g, " ").trim()}`);
-				parts.push(`worker transcript: ${transcript}`);
+				parts.push(`worker transcript: ${transcript || "(session file unknown)"}${transcript ? `\nreadable as HTML: pi export ${transcript}` : ""}`);
 				return {
 					content: [{ type: "text" as const, text: parts.join("\n\n") }],
-					details: { slug: st.slug, stage: st.stage, done: report.done, files: report.files, notes: report.notes, blockers: report.blockers, reportMissing: report.missing, timedOut, error: crash, transcript },
+					details: { slug: st.slug, stage: st.stage, done: report.done, files: report.files, notes: report.notes, blockers: report.blockers, reportMissing: report.missing, timedOut, softFired: run.softFired, budgetMin, elapsedMs: Date.now() - run.startedAt, error: crash, transcript, snapshot },
 					usage,
 					isError: !!crash || timedOut,
 				};
 			} finally {
-				stageWorkers.delete(key);
+				stageRuns.delete(key);
+				if (ctx.hasUI) ctx.ui.setStatus("dev-flow-stage", undefined);
 				try { child?.dispose(); } catch { /* dispose stays idempotent; teardown noise must not bury the report */ }
 			}
 		},

@@ -100,8 +100,13 @@ import {
 	SKILL_CORE_START,
 	SKILL_CORE_END,
 	buildStageBrief,
+	clampStageBudgetMin,
 	isDelegableStage,
 	parseStageReport,
+	stageElapsedLabel,
+	stageInterruptSteer,
+	stageLiveLine,
+	summarizeToolArgs,
 	renderStageReport,
 } from "../src/core.ts";
 
@@ -1360,4 +1365,46 @@ test("buildStageBrief carries the on-disk truth and the handoff note", () => {
 	const bare = buildStageBrief({ slug: "s", stage: "pre-release", workDir: "/wt", planFile: "/p", referenceText: "", statusJson: "{}", gitSummary: "" });
 	assert.ok(bare.includes("(none — the plan"), "an empty note says so out loud");
 	assert.ok(bare.includes("(this stage has no playbook reference)"), "a missing reference degrades visibly");
+});
+
+// ---------------------------------------- stage progress & graceful stop (flow_stage, gh#142)
+
+test("stage budget clamps to the sane band", () => {
+	assert.equal(clampStageBudgetMin(), 45, "no argument: the default budget");
+	assert.equal(clampStageBudgetMin(undefined), 45);
+	assert.equal(clampStageBudgetMin(90), 90, "an in-band override stands");
+	assert.equal(clampStageBudgetMin(1), 5, "never a minute of chaos");
+	assert.equal(clampStageBudgetMin(999), 120, "never an all-afternoon cap");
+});
+
+test("stageElapsedLabel renders mm:ss", () => {
+	assert.equal(stageElapsedLabel(0), "00:00");
+	assert.equal(stageElapsedLabel(65_000), "01:05");
+	assert.equal(stageElapsedLabel(3_600_000), "60:00", "past an hour the minutes just keep counting");
+	assert.equal(stageElapsedLabel(-5), "00:00");
+});
+
+test("summarizeToolArgs picks the informative field and caps it", () => {
+	assert.equal(summarizeToolArgs({ command: "npm test" }), "npm test", "bash shows the command");
+	assert.equal(summarizeToolArgs({ path: "src/core.ts", edits: [] }), "src/core.ts", "edit shows the path");
+	assert.match(summarizeToolArgs({ weird: [1, 2] }), /^\{"weird"/, "anything else is compact JSON");
+	const long = summarizeToolArgs({ command: "x".repeat(200) });
+	assert.ok(long.length === 58 && long.endsWith("…"), `capped at 60 columns: ${long.length}`);
+	assert.equal(summarizeToolArgs(undefined), "");
+});
+
+test("stageLiveLine is one bounded, elapsed-stamped line", () => {
+	assert.equal(stageLiveLine(65_000, "bash", "npm test"), "[+01:05] bash — npm test");
+	assert.equal(stageLiveLine(0, "worker", ""), "[+00:00] worker");
+});
+
+test("the budget steer orders a commit-then-report close-out", () => {
+	const s = stageInterruptSteer(45);
+	for (const must of ["45 min", "commit", "STAGE REPORT", "interrupted at budget"])
+		assert.ok(s.includes(must), `the steer must say ${must}`);
+});
+
+test("the brief makes per-unit commits a boundary", () => {
+	const b = buildStageBrief({ slug: "s", stage: "implement", workDir: "/wt", planFile: "/p", referenceText: "", statusJson: "{}", gitSummary: "" });
+	assert.match(b, /EACH TIME a unit of work is complete/, "a cut must cost one unit, not a worktree");
 });
