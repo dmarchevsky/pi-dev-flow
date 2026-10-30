@@ -504,6 +504,7 @@ test("a verify worker that edits the tree voids its own verdict", async () => {
 	await flow(["check"]);
 	commitWt(repo, "voidit");
 	const real = stageWorkerSpawn.run;
+	const voiditRenames: string[] = [];
 	stageWorkerSpawn.run = (async () => ({
 		session: {
 			subscribe: () => () => {},
@@ -512,7 +513,7 @@ test("a verify worker that edits the tree voids its own verdict", async () => {
 			getLastAssistantText: () => "found a nit and fixed it\nVERIFY REPORT\nverdict: pass\nfindings:\n- fixed f.txt\n",
 			sessionManager: { getSessionFile: () => undefined },
 		},
-		rename: () => {},
+		rename: (n: string) => { voiditRenames.push(n); },
 	}) as never);
 	let voided: Awaited<ReturnType<typeof stage>>;
 	try {
@@ -524,6 +525,7 @@ test("a verify worker that edits the tree voids its own verdict", async () => {
 	assert.equal(voided.details?.stamped, false, "the voided PASS never reaches the state");
 	assert.ok(voided.details?.snapshot, "the tree the reviewer left is snapshotted, not silently kept");
 	assert.ok((await flow(["verify"])).isError, "the voided verdict carries nothing");
+	assert.match(voiditRenames[voiditRenames.length - 1], /\u2713 \ud83d\udd0d \u00b7 verdict VOID/, "a voided PASS must not rename its session to a plain \u2713 PASS \u2014 the row says the verdict was voided");
 });
 
 test("a verify worker that rewrites the plan it is judging voids its own verdict", async () => {

@@ -2493,7 +2493,19 @@ export default function devFlow(pi: ExtensionAPI) {
 				const report = op === "run" ? parseStageReport(child.getLastAssistantText() ?? "") : null;
 				const verify = op === "verify" ? parseVerifyReport(child.getLastAssistantText() ?? "") : null;
 				const findings = op === "reflect" ? parseReflectFindings(child.getLastAssistantText() ?? "") : null;
-				// the outcome goes INTO the final name — a picker row like `✓ 🔍 · stamp attack · PASS` or
+				// A check-only worker must leave the tree exactly as it found it: the verdict is a claim
+				// about THIS tree, so a reviewer that touched anything voids its own report. Computed before
+				// the rename and the stamp so both readers agree on one verdict of "did the ground move".
+				// (The gate's own uncommitted-path policy stays unchanged — a tree already dirty is not the
+				// worker's fault; only movement counts.)
+				const statusAfter = await sh("git status --porcelain", work);
+				const headAfter = await sh("git rev-parse HEAD", work);
+				const refAfter = await sh("git symbolic-ref -q HEAD || true", work);
+				// four legs, because each alone has a clean-tree bypass: porcelain misses ref moves,
+				// rev-parse misses `checkout -b` at the same SHA, symbolic-ref misses a detached move,
+				// and all three miss the plan the verdict was written against living outside the worktree
+				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out) || (refBefore.ok && refAfter.ok && refAfter.out !== refBefore.out) || planFingerprint(planDir) !== planBefore);
+				// the outcome goes INTO the final name — a picker row like `✓ 🔍 · PASS · stamp attack` or
 				// `✓ 🔨 #2 · 3 commits · wire ops` answers "how did it end?" without opening the session
 				let outcome: string | null = null;
 				if (clean) {
@@ -2502,23 +2514,12 @@ export default function devFlow(pi: ExtensionAPI) {
 						const n = c.ok ? c.out.trim() : "0";
 						if (n !== "0") outcome = `${n} commit${n === "1" ? "" : "s"}`;
 					}
-					if (verify?.verdict) outcome = verify.verdict.toUpperCase();
+					if (verify?.verdict) outcome = moved ? "verdict VOID" : verify.verdict.toUpperCase();
 					if (findings && !findings.missing) outcome = `${findings.playbook.length + findings.plugin.length + findings.other.length} findings`;
 				} else {
 					outcome = timedOut ? "hard-cut" : "crashed";
 				}
 				worker.rename(workerName(clean ? "✓" : "✗", glyph, seq, label, outcome));
-				// A check-only worker must leave the tree exactly as it found it: the verdict is a claim
-				// about THIS tree, so a reviewer that touched anything voids its own report. (The gate's own
-				// uncommitted-path policy stays unchanged — a tree that was already dirty is not the worker's
-				// fault; only movement counts.)
-				const statusAfter = await sh("git status --porcelain", work);
-				const headAfter = await sh("git rev-parse HEAD", work);
-				const refAfter = await sh("git symbolic-ref -q HEAD || true", work);
-				// four legs, because each alone has a clean-tree bypass: porcelain misses ref moves,
-				// rev-parse misses `checkout -b` at the same SHA, symbolic-ref misses a detached move,
-				// and all three miss the plan the verdict was written against living outside the worktree
-				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out) || (refBefore.ok && refAfter.ok && refAfter.out !== refBefore.out) || planFingerprint(planDir) !== planBefore);
 				// never hand back an unrecoverable state: a dirty tree is snapshotted (tracked AND untracked,
 				// via a throwaway index — no real-index or worktree mutation, no WIP commit on the branch)
 				let snapshot: string | null = null;
