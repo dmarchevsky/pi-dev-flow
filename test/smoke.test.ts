@@ -651,6 +651,11 @@ test("the flow_stage card renders: call line, bounded result box, report on expa
 	assert.ok(expanded.children.some((c) => c.text.includes("the report body")), "expansion appends the report body");
 	assert.ok(expanded.children.some((c) => c.text.includes("transcript:")));
 	assert.equal((tool.renderResult({ details: {}, content: [] }, { expanded: false }, theme) as { text: string }).text, "(no output)", "an empty result renders a placeholder, not a crash");
+	// the guaranteed surface must not under-report a FAIL (round-3 finding): verdict colors are live
+	const ctheme = { fg: (c: string, s: string) => `${c}|${s}`, bold: (s: string) => s };
+	const colored = tool.renderResult({ details: { card: ["verdict: FAIL", "✗ test failed", "verdict: PASS"] }, content: [] }, { expanded: false }, ctheme) as { children: { text: string }[] };
+	assert.ok(colored.children[0].text.startsWith("error|"), "verdict: FAIL renders red");
+	assert.ok(colored.children[1].text.startsWith("error|") && colored.children[2].text.startsWith("success|"));
 });
 
 test("a verify worker that moves HEAD voids its own verdict", async () => {

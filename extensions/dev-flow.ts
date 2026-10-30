@@ -1821,18 +1821,22 @@ async function gateStatus(o: GateCtx): Promise<RunResult> {
 	const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
 	const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
 	// status (and --json, which feeds worker briefs) must never advertise a PASS the gates would refuse:
-	// reap dead stamps before any reader sees the checks line
+	// reap dead stamps in the copies being rendered — and persist only THIS session's own feature, since
+	// a foreign state.json belongs to its own session (a listing must not write another session's file).
+	const states = new Map<string, FlowState>();
 	for (const s of slugs) {
 		const stV = readState(root, s);
-		if (stV && await voidStaleVerifyStamp(root, stV)) writeState(root, stV);
+		if (!stV) continue;
+		if (await voidStaleVerifyStamp(root, stV) && s === sess.slug) writeState(root, stV);
+		states.set(s, stV);
 	}
 	if (flag("json")) {
-		const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
+		const sts = slugs.map((s) => states.get(s)).filter((s): s is FlowState => s !== undefined);
 		return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
 	}
 	if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
 	const lines = slugs.flatMap((s) => {
-		const st = readState(root, s);
+		const st = states.get(s);
 		if (!st) return [];
 		return [
 			`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""}${st.yolo ? " [yolo]" : ""}${st.noVersion ? " [no-version]" : ""}${st.pendingAsk ? ` 💬 ${st.pendingAsk}` : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""}`,
@@ -2296,7 +2300,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const box = new Container();
 			for (const line of lines) {
 				const text = options.expanded ? line : liveClip(line, 120);
-				box.addChild(new Text(line.startsWith("✗") ? theme.fg("error", text) : line.startsWith("✓") || line.startsWith("verdict: PASS") ? theme.fg("success", text) : theme.fg("muted", text), 0, 0));
+				box.addChild(new Text(line.startsWith("✗") || line.startsWith("verdict: FAIL") ? theme.fg("error", text) : line.startsWith("✓") || line.startsWith("verdict: PASS") ? theme.fg("success", text) : theme.fg("muted", text), 0, 0));
 			}
 			if (options.expanded) {
 				box.addChild(new Text(theme.fg("dim", "─── report ───"), 0, 0));

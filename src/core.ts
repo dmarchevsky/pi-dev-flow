@@ -2192,21 +2192,23 @@ export function planFingerprint(dir: string): string {
 	// absent and empty must not collide — an accidentally deleted plan dir is a different ground than an emptied one
 	h.update(existsSync(dir) ? "present\0" : "absent\0");
 	const walk = (d: string, rel: string) => {
+		// the entry kind rides as a control char after the name — a text marker ("@link") would collide
+		// with a real file literally named that, control chars in a name are the pathological remainder
 		for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
 			const p = path.join(d, e.name);
 			if (e.isDirectory()) {
-				h.update(`${rel}${e.name}/\0`);
+				h.update(`${rel}${e.name}\x01`);
 				walk(p, `${rel}${e.name}/`);
 			} else if (e.isSymbolicLink()) {
 				// a symlinked plan hides its content behind the entry — hash the link AND what it resolves to
-				h.update(`${rel}${e.name}@link\0`).update(readlinkSync(p));
+				h.update(`${rel}${e.name}\x02`).update(readlinkSync(p));
 				try {
 					h.update(readFileSync(p));
 				} catch {
 					/* dangling link: the target string is all there is */
 				}
-			} else if (e.isFile()) h.update(`${rel}${e.name}\0`).update(readFileSync(p));
-			else h.update(`${rel}${e.name}?special\0`);
+			} else if (e.isFile()) h.update(`${rel}${e.name}\x00`).update(readFileSync(p));
+			else h.update(`${rel}${e.name}\x03`);
 		}
 	};
 	if (existsSync(dir)) walk(dir, "");

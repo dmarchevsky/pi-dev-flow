@@ -1501,6 +1501,15 @@ test("planFingerprint tracks the plan dir byte-for-byte", () => {
 		assert.notEqual(planFingerprint(dir), hl, "a symlinked plan still hashes what it resolves to");
 		rmSync(path.join(dir, "plan.md"));
 		rmSync(other, { recursive: true, force: true });
+		// a plain file must not hash like a symlink of the base name (marker-collision class, round 3)
+		writeFileSync(path.join(dir, "plan.md@link"), "X");
+		const fake = planFingerprint(dir);
+		const mirror = mkdtempSync(path.join(tmpdir(), "fp-plan3-"));
+		writeFileSync(path.join(mirror, "t"), "X");
+		symlinkSync(path.join(mirror, "t"), path.join(dir, "plan.md"));
+		assert.notEqual(planFingerprint(dir), fake, "a symlink never collides with a same-name-prefixed file");
+		rmSync(path.join(dir, "plan.md"));
+		rmSync(mirror, { recursive: true, force: true });
 		writeFileSync(path.join(dir, "plan.md"), "b");
 		assert.notEqual(planFingerprint(dir), h1, "content moves the hash");
 		writeFileSync(path.join(dir, "plan.md"), "a");
