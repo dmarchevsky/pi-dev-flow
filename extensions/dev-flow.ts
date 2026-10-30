@@ -480,7 +480,9 @@ interface StageRun {
 	slug: string;
 	usage: StageUsage;
 	turns: number;
-}const stageRuns = new Map<string, StageRun>();
+}
+
+const stageRuns = new Map<string, StageRun>();
 
 /** Marks the before_agent_start pass that already wrote this run's [dev-flow] line — see the claim in that handler. */
 const CONTEXT_EMITTED = Symbol.for("pi-dev-flow.context-emitted");
@@ -2259,7 +2261,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const box = new Container();
 			for (const line of lines) {
 				const text = options.expanded ? line : liveClip(line, 120);
-				box.addChild(new Text(line.startsWith("✗") ? theme.fg("error", text) : line.startsWith("✓") || line.startsWith("PASS") ? theme.fg("success", text) : theme.fg("muted", text), 0, 0));
+				box.addChild(new Text(line.startsWith("✗") ? theme.fg("error", text) : line.startsWith("✓") || line.startsWith("verdict: PASS") ? theme.fg("success", text) : theme.fg("muted", text), 0, 0));
 			}
 			if (options.expanded) {
 				box.addChild(new Text(theme.fg("dim", "─── report ───"), 0, 0));
@@ -2359,8 +2361,11 @@ export default function devFlow(pi: ExtensionAPI) {
 					brief = buildStageBrief({ slug: st.slug, stage: st.stage as DelegableStage, workDir: work, planFile, referenceText: refText, statusJson: statusJsonText, gitSummary: git.ok ? git.out.trim() : "(git status failed)", note });
 				}
 				// the tree identity a verify verdict belongs to, before anything runs: the same comparison
-				// the tier-1 fingerprint makes, done here because a reviewer must not be the one who edited
+				// the tier-1 fingerprint makes, done here because a reviewer must not be the one who edited.
+				// HEAD is captured too: a reviewer that commits or moves a ref leaves `git status` clean while
+				// reading a different tree, so a porcelain-only diff would stamp a PASS for a HEAD it never saw.
 				const statusBefore = await sh("git status --porcelain", work);
+				const headBefore = await sh("git rev-parse HEAD", work);
 				// the worker is a REAL pi session in the default location — the pi/pi-web picker renders it
 				// live from the append-only transcript (⏳ = resumable later; resuming a live one forks it,
 				// browsing is read-only by construction); `pi export <file>` makes it readable HTML
@@ -2437,7 +2442,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				// uncommitted-path policy stays unchanged — a tree that was already dirty is not the worker's
 				// fault; only movement counts.)
 				const statusAfter = await sh("git status --porcelain", work);
-				const moved = op !== "run" && statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out;
+				const headAfter = await sh("git rev-parse HEAD", work);
+				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out));
 				// never hand back an unrecoverable state: a dirty tree is snapshotted (tracked AND untracked,
 				// via a throwaway index — no real-index or worktree mutation, no WIP commit on the branch)
 				let snapshot: string | null = null;

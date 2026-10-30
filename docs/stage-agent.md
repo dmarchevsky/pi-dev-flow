@@ -4,7 +4,8 @@ A big `implement` costs more context than the rest of the flow will ever need:
 the driving session carries those hundred tool calls into every later gate and
 checkpoint. `flow_stage` runs that work in a fresh, disposable session
 instead, and hands back one bounded report. The conversation that talks to you
-stays lean. Three ops share one mechanism: `run` (a stage's work), `verify` (an
+stays lean — which is why non-trivial implement work is **delegated by default**,
+not inlined (see `references/implement.md`). Three ops share one mechanism: `run` (a stage's work), `verify` (an
 independent, check-only reviewer of the implement work) and `reflect` (an
 independent review of the whole finished flow at release). Only the brief, the
 toolset, the budget default and the closing contract differ — the safety story

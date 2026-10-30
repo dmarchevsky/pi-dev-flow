@@ -517,6 +517,59 @@ test("a verify worker that edits the tree voids its own verdict", async () => {
 	assert.ok((await flow(["verify"])).isError, "the voided verdict carries nothing");
 });
 
+test("the flow_stage card renders: call line, bounded result box, report on expand", () => {
+	const pi = makePi();
+	// a live registration is what the extension installed — render fns ship on the tool object
+	const tool = pi.tools.flow_stage as unknown as { renderCall: (a: Record<string, unknown>, th: unknown) => { text: string }; renderResult: (r: unknown, o: { expanded: boolean }, th: unknown) => { children?: { text: string }[]; text?: string } };
+	const theme = { fg: (_c: string, s: string) => s, bold: (s: string) => s };
+	assert.match(tool.renderCall({ op: "verify", note: "n".repeat(200) }, theme).text, /^flow_stage verify /, "the call line names the op and clips the note");
+	assert.match(tool.renderCall({ stage: "implement" }, theme).text, /flow_stage run implement/);
+	const card = ["✓ stage worker · implement · s · 01:05/45m", "verdict: PASS", "x".repeat(300)];
+	const collapsed = tool.renderResult({ details: { card }, content: [{ type: "text", text: "body" }] }, { expanded: false }, theme) as { children: { text: string }[] };
+	assert.equal(collapsed.children.length, card.length, "collapsed shows one line per card line");
+	assert.ok(collapsed.children[2].text.length <= 130, "collapsed clips wide lines");
+	const expanded = tool.renderResult({ details: { card, cardFull: [...card, "transcript: /t.jsonl"] }, content: [{ type: "text", text: "the report body" }] }, { expanded: true }, theme) as { children: { text: string }[] };
+	assert.ok(expanded.children.some((c) => c.text.includes("the report body")), "expansion appends the report body");
+	assert.ok(expanded.children.some((c) => c.text.includes("transcript:")));
+	assert.equal((tool.renderResult({ details: {}, content: [] }, { expanded: false }, theme) as { text: string }).text, "(no output)", "an empty result renders a placeholder, not a crash");
+});
+
+test("a verify worker that moves HEAD voids its own verdict", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown>; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "headmoved"]);
+	mkdirSync(path.join(repo, ".dev-flow", "headmoved", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "headmoved", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "headmoved");
+	const wt = path.join(repo, ".dev-flow", "headmoved", "worktree");
+	const real = stageWorkerSpawn.run;
+	// committing mid-run leaves `git status` clean but moves HEAD — only the rev-parse diff sees it
+	stageWorkerSpawn.run = (async () => ({
+		session: {
+			subscribe: () => () => {},
+			prompt: async () => { execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "reviewer must not commit"]); },
+			steer: () => {}, abort: async () => {}, dispose: () => {},
+			getLastAssistantText: () => "all good\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\n",
+			sessionManager: { getSessionFile: () => undefined },
+		},
+		rename: () => {},
+	}) as never);
+	let moved: Awaited<ReturnType<typeof stage>>;
+	try {
+		moved = await stage({ op: "verify" });
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+	assert.ok(moved.isError && /VERDICT VOID/.test(moved.content[0].text), "a HEAD the reviewer moved voids the PASS");
+	assert.equal(moved.details?.stamped, false);
+	assert.ok((await flow(["verify"])).isError, "the moved-tree PASS carries nothing");
+});
+
 test("verify re-probes health after the dev deploy — a stale pre-deploy PASS cannot carry the gate", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

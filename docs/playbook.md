@@ -9,6 +9,11 @@ in a repo that ignores the folder is a deliberate one-off:
 env prefix is for dev-flow's `pre-commit` hook, which allows a main commit whose only change is the
 playbook.
 
+Inside, each `.dev-flow/<slug>/` folder holds one feature's whole world — its state, its `plan/`,
+its worktree. The plan lives in the *folder*, not the worktree, on purpose: a plan must exist (and
+stay amendable through implement) before the worktree exists at all — the worktree is created only
+when `approve` runs.
+
 It is **committed to git**; you edit it (the agent is blocked from writing the main-checkout copy
 and may edit it only inside a docs/patch flow's worktree, or apply it through `flow init --write`
 on your word, which validates). Content is organized per stage
