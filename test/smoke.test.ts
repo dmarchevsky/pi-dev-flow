@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import devFlow, { compactionTakeover, stageTimingOverride, stageWorkerSpawn, testSeams } from "../extensions/dev-flow.ts";
+import devFlow, { compactionTakeover, sessionRowsScan, stageTimingOverride, stageWorkerSpawn, testSeams } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -2813,3 +2813,99 @@ test("flow_stage: refusals stand, a stubbed worker's report comes back through t
 	}
 });
 
+
+/** A ctx whose session is file-backed the way pi's is — the lineage reads both endpoints off the
+ *  live manager, and a test must not touch the operator's real session directory. */
+function withSession(ctx: Record<string, unknown>, file: string, dir: string) {
+	ctx.sessionManager = { getSessionId: () => "lineage-session", getSessionFile: () => file, getSessionDir: () => dir };
+	return ctx;
+}
+
+/** init → start → plan → approve, so a worker op is legal. */
+async function toImplement(pi: ReturnType<typeof makePi>, ctx: unknown, slug: string) {
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", slug]);
+	mkdirSync(path.join(String((ctx as { cwd: string }).cwd), ".dev-flow", slug, "plan"), { recursive: true });
+	writeFileSync(path.join(String((ctx as { cwd: string }).cwd), ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	return flow;
+}
+
+test("a stage worker is stamped with its driver's lineage: header link plus the driver's session bucket", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = withSession(makeCtx(repo), path.join(repo, "sessions", "driver.jsonl"), path.join(repo, "sessions"));
+	await toImplement(pi, ctx, "lineage");
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+
+	const seen: { parent?: string; dir?: string }[] = [];
+	const real = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = (async (o: { parent?: string; dir?: string }) => {
+		seen.push({ parent: o.parent, dir: o.dir });
+		return { session: { subscribe: () => () => {}, prompt: async () => {}, steer: () => {}, abort: async () => {}, dispose: () => {}, getLastAssistantText: () => "ok", sessionManager: { getSessionFile: () => path.join(repo, "sessions", "worker.jsonl") } }, rename: () => {} };
+	}) as never;
+	try {
+		const res = await stage({ op: "verify", label: "stamp attack" });
+		assert.equal(seen.length, 1, "the seam saw the spawn");
+		assert.equal(seen[0].parent, path.join(repo, "sessions", "driver.jsonl"), "the worker's header links to the driver's own session file, so pi's picker nests it");
+		assert.equal(seen[0].dir, path.join(repo, "sessions"), "and its transcript goes into the driver's bucket, so Current Folder shows the family without switching scope");
+		assert.match(res.content[0].text, /lineage: nested under .*driver\.jsonl/, "the result says where the worker will be found in the picker");
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+});
+
+test("lineage is skipped silently on a host with no file-backed session", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // makeCtx carries no sessionManager at all — like an unbacked host
+	await toImplement(pi, ctx, "unbacked");
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+
+	const seen: { parent?: string; dir?: string }[] = [];
+	const real = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = (async (o: { parent?: string; dir?: string }) => {
+		seen.push({ parent: o.parent, dir: o.dir });
+		return { session: { subscribe: () => () => {}, prompt: async () => {}, steer: () => {}, abort: async () => {}, dispose: () => {}, getLastAssistantText: () => "ok", sessionManager: { getSessionFile: () => undefined } }, rename: () => {} };
+	}) as never;
+	try {
+		const res = await stage({ op: "verify" });
+		assert.equal(seen[0].parent, undefined, "no parent link: there is no driver file to point at");
+		assert.equal(seen[0].dir, undefined, "and no bucket override: the worker keeps pi's default session location");
+		assert.doesNotMatch(res.content[0].text, /lineage:/, "and the result promises no nesting it could not stamp");
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+});
+
+test("op status prints the family pi's picker already threads", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const driver = path.join(repo, "sessions", "driver.jsonl");
+	const ctx = withSession(makeCtx(repo), driver, path.join(repo, "sessions"));
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown> }>;
+
+	const realScan = sessionRowsScan.run;
+	try {
+		sessionRowsScan.run = async () => [
+			{ path: path.join(repo, "sessions", "w2.jsonl"), parent: driver, name: "✓ 🔍 · PASS · stamp attack", messageCount: 7, modified: new Date("2026-10-30T12:00:00Z") },
+			{ path: path.join(repo, "sessions", "w1.jsonl"), parent: driver, name: "✗ 🔨 #1 · hard-cut", messageCount: 31, modified: new Date("2026-10-30T11:00:00Z") },
+			{ path: path.join(repo, "sessions", "unrelated.jsonl"), name: "an ordinary session", messageCount: 4, modified: new Date("2026-10-30T13:00:00Z") },
+		];
+		const idle = await stage({ op: "status" });
+		assert.match(idle.content[0].text, /no stage worker is running in this session/, "the live answer is unchanged");
+		assert.match(idle.content[0].text, /workers this session spawned:/, "and the family is the answer to the other question status gets");
+		assert.match(idle.content[0].text, /PASS · stamp attack/);
+		assert.match(idle.content[0].text, /hard-cut/);
+		assert.doesNotMatch(idle.content[0].text, /ordinary session/, "only this session's children");
+		assert.equal(idle.details?.workers, 2, "the count is on details for a host that renders structurally");
+
+		sessionRowsScan.run = async () => [];
+		const none = await stage({ op: "status" });
+		assert.match(none.content[0].text, /\(none yet\)/, "an empty family says so instead of printing nothing");
+		assert.equal(none.details?.workers, 0);
+	} finally {
+		sessionRowsScan.run = realScan;
+	}
+});
