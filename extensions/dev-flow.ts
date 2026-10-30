@@ -124,6 +124,7 @@ import {
 	VERIFY_STAMP,
 	VERIFY_STAMP_REFUSAL,
 	WORKER_OP_BUDGET_MIN,
+	WORKER_OP_GLYPH,
 	WORKER_OP_TOOLS,
 	type StageUsage,
 	type WorkerOp,
@@ -141,6 +142,8 @@ import {
 	verifyStampMissing,
 	workerOpError,
 	workerTranscriptLine,
+	workerName,
+	sanitizeWorkerLabel,
 	stateTamper,
 	statusFor,
 	statusJson,
@@ -477,7 +480,7 @@ interface StageRun {
 	work: string;
 	lastLines: string[];
 	op: WorkerOp;
-	/** "stage worker · implement" / "verify worker" — how the card and the session name the run. */
+	/** "🔨 implement" / "🔍 verify" (+ ` · label`) — how the card and the beats name the run; session names use workerName instead. */
 	kind: string;
 	slug: string;
 	usage: StageUsage;
@@ -2277,7 +2280,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		name: "flow_stage",
 		label: "Stage worker",
 		description:
-			'Delegate to a disposable dev-flow worker session with a fresh context. op "run" (default) does the current stage\'s work (implement | pre-release) and edits + commits on the feature branch; op "verify" is an independent read-only checker of the implement work (read + bash, standing order "check, don\'t fix", closes with a VERIFY REPORT verdict — flow verify refuses until a PASS exists over the current tree); op "reflect" reviews the finished flow — the driver transcript plus every worker transcript — at the release stage after release-done. Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. A worker holds no flow tool: gates, checkpoints and the claim stay with you. At 75% of its budget (budgetMin: default 45 for run, 30 for verify/reflect) the worker is steered to commit and report instead of being cut. The tool card streams the live tail (current tool, last assistant line, ✓/✗ results, elapsed/budget, usage) and op "status" mirrors it on any host. When a worker returns: read its report, run flow check yourself, then ask the checkpoint — a stage report is a handoff, never a verification.',
+			'Delegate to a disposable dev-flow worker session with a fresh context. op "run" (default) does the current stage\'s work (implement | pre-release) and edits + commits on the feature branch; op "verify" is an independent read-only checker of the implement work (read + bash, standing order "check, don\'t fix", closes with a VERIFY REPORT verdict — flow verify refuses until a PASS exists over the current tree); op "reflect" reviews the finished flow — the driver transcript plus every worker transcript — at the release stage after release-done. Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. Give each delegation a short `label` (a few words of purpose) — session names then read `⏳ 🔍 · <label>` while running and `✓ 🔍 · <label> · PASS` (or `✗ … · hard-cut`, `✓ 🔨 #2 · 3 commits · <label>`) when done, so the picker is never a column of identical rows. A worker holds no flow tool: gates, checkpoints and the claim stay with you. At 75% of its budget (budgetMin: default 45 for run, 30 for verify/reflect) the worker is steered to commit and report instead of being cut. The tool card streams the live tail (current tool, last assistant line, ✓/✗ results, elapsed/budget, usage) and op "status" mirrors it on any host. When a worker returns: read its report, run flow check yourself, then ask the checkpoint — a stage report is a handoff, never a verification.',
 		promptSnippet:
 			'flow_stage(op: "run"|"verify"|"reflect", note, budgetMin?) — delegate stage work, an independent read-only check, or the finish review to a fresh worker session; op: "status" reads the live run; gates and checkpoints stay with you',
 		parameters: Type.Object({
@@ -2285,6 +2288,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			stage: Type.Optional(Type.String({ description: 'With op "run": the stage to delegate the work for — must match the bound feature\'s current stage. "verify" and "reflect" belong to a fixed stage and ignore this.' })),
 			note: Type.Optional(Type.String({ description: "The worker keeps nothing from this conversation: pass operator answers, decisions, warnings and the exact next action here." })),
 			budgetMin: Type.Optional(Type.Number({ description: "Worker budget in minutes (5-120; default 45 for run, 30 for verify/reflect). At 75% the worker is steered to commit and report; past the budget it is interrupted and the tree snapshotted." })),
+			label: Type.Optional(Type.String({ description: 'Short purpose for this delegation (≤\u007e32 chars) shown in the session name and card, so a re-delegation reads `🔨 #2 · <purpose>` instead of a clone row. Sanitized and clipped.' })),
 		}),
 		// The card is the guaranteed worker-visibility surface: it renders inside the driver's own
 		// transcript, in TUI and in pi-web alike, because every line also travels as the update's text.
@@ -2346,7 +2350,12 @@ export default function devFlow(pi: ExtensionAPI) {
 			const budgetMs = budgetMin * 60_000;
 			const softMs = stageTimingOverride.softMs ?? Math.round(budgetMs * 0.75);
 			const hardMs = stageTimingOverride.hardMs ?? budgetMs;
-			const kind = op === "run" ? `stage worker · ${st.stage}` : `${op} worker`;
+			const glyph = WORKER_OP_GLYPH[op];
+			const label = typeof params.label === "string" ? sanitizeWorkerLabel(params.label) : "";
+			// the card/beats keep the descriptive kind (the card line has no other stage context); the
+			// session NAMES are compact — glyph, ordinal, purpose (see workerName)
+			const kind = op === "run" ? `${glyph} ${st.stage}` : `${glyph} ${op}`;
+			const kindCard = label ? `${kind} · ${label}` : kind;
 			const work = gateCwd(ctx.cwd, st);
 			const run: StageRun = {
 				startedAt: Date.now(), budgetMin, softFired: false, work, lastLines: [],
@@ -2362,13 +2371,17 @@ export default function devFlow(pi: ExtensionAPI) {
 			/** The card frame for this instant — one place so the streamed text, the TUI card and
 			 *  op:"status" can never disagree about what the worker is doing. */
 			const cardView = (state: "running" | "done" | "failed", extra: { verdict?: "pass" | "fail" | null; transcript?: string } = {}) =>
-				stageCardLines({ kind, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state, ...extra });
+				stageCardLines({ kind: kindCard, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state, ...extra });
 			const emit = (event: string, data: Record<string, unknown>) => {
 				try { pi.events.emit(event, { slug: st.slug, op, stage: st.stage, ...data }); } catch { /* the bus is visibility, never function */ }
 			};
 			try {
 				writeFileSync(logFile, `${stageLiveLine(0, "worker", `${op} started (${st.stage}, budget ${budgetMin} min)`)}\n`);
-				const beat = (toolName: string) => { if (ctx.hasUI) ctx.ui.setStatus("dev-flow-stage", `⏳ ${kind} · ${st.slug} ${stageElapsedLabel(Date.now() - run.startedAt)} · ${toolName}`); };
+				const beat = (toolName: string) => { if (ctx.hasUI) ctx.ui.setStatus("dev-flow-stage", `⏳ ${kindCard} · ${st.slug} ${stageElapsedLabel(Date.now() - run.startedAt)} · ${toolName}`); };
+				// ordinal among this feature's same-op workers, read from the durable index — re-delegations
+				// read #2, #3 in the list instead of identical rows (only run gets a seq; a verify is known
+				// by its verdict, a reflect is one per flow)
+				const seq = op === "run" ? (existsSync(transcriptLog) ? parseWorkerTranscripts(readFileSync(transcriptLog, "utf8")).filter((x) => x.op === op).length : 0) + 1 : null;
 				const statusJsonText = (await runFlow(["status", "--json"], ctx.cwd, uiFrom(ctx), sessFor(ctx))).text;
 				const git = await sh("git status --porcelain -b", work);
 				const note = typeof params.note === "string" ? params.note : undefined;
@@ -2413,7 +2426,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				// the worker is a REAL pi session in the default location — the pi/pi-web picker renders it
 				// live from the append-only transcript (⏳ = resumable later; resuming a live one forks it,
 				// browsing is read-only by construction); `pi export <file>` makes it readable HTML
-				const worker = await stageWorkerSpawn.run({ work, model: ctx.model, name: `⏳ ${kind} · ${st.slug}`, tools: [...WORKER_OP_TOOLS[op]] });
+				const worker = await stageWorkerSpawn.run({ work, model: ctx.model, name: workerName("⏳", glyph, seq, label), tools: [...WORKER_OP_TOOLS[op]] });
 				child = worker.session;
 				emit("dev-flow:worker-started", { budgetMin, startedAt: new Date().toISOString() });
 				let lastBeat = 0;
@@ -2468,7 +2481,6 @@ export default function devFlow(pi: ExtensionAPI) {
 					unsub();
 				}
 				const clean = !crash && !timedOut;
-				worker.rename(`${clean ? "✓" : "✗"} ${kind} · ${st.slug}`);
 				const transcript = child.sessionManager.getSessionFile() ?? "";
 				// the durable worker index: until now a transcript path lived only in this call's result,
 				// i.e. only as long as the driver kept it in context — the reflect worker needs the list
@@ -2481,6 +2493,21 @@ export default function devFlow(pi: ExtensionAPI) {
 				const report = op === "run" ? parseStageReport(child.getLastAssistantText() ?? "") : null;
 				const verify = op === "verify" ? parseVerifyReport(child.getLastAssistantText() ?? "") : null;
 				const findings = op === "reflect" ? parseReflectFindings(child.getLastAssistantText() ?? "") : null;
+				// the outcome goes INTO the final name — a picker row like `✓ 🔍 · stamp attack · PASS` or
+				// `✓ 🔨 #2 · 3 commits · wire ops` answers "how did it end?" without opening the session
+				let outcome: string | null = null;
+				if (clean) {
+					if (op === "run" && headBefore.ok) {
+						const c = await sh(`git rev-list --count ${sq(headBefore.out)}..HEAD`, work);
+						const n = c.ok ? c.out.trim() : "0";
+						if (n !== "0") outcome = `${n} commit${n === "1" ? "" : "s"}`;
+					}
+					if (verify?.verdict) outcome = verify.verdict.toUpperCase();
+					if (findings && !findings.missing) outcome = `${findings.playbook.length + findings.plugin.length + findings.other.length} findings`;
+				} else {
+					outcome = timedOut ? "hard-cut" : "crashed";
+				}
+				worker.rename(workerName(clean ? "✓" : "✗", glyph, seq, label, outcome));
 				// A check-only worker must leave the tree exactly as it found it: the verdict is a claim
 				// about THIS tree, so a reviewer that touched anything voids its own report. (The gate's own
 				// uncommitted-path policy stays unchanged — a tree that was already dirty is not the worker's

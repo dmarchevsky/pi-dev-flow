@@ -597,6 +597,52 @@ test("a fresh verify FAIL drops an earlier PASS over the same tree", async () =>
 	assert.ok((await flow(["verify"])).isError, "the gate no longer asks Verified? on a tree its newest checker rejected");
 });
 
+test("worker session names announce role, purpose and outcome end to end", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "naming"]);
+	mkdirSync(path.join(repo, ".dev-flow", "naming", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "naming", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "naming");
+	const wt = path.join(repo, ".dev-flow", "naming", "worktree");
+	const spawnNames: string[] = [];
+	const renames: string[] = [];
+	const real = stageWorkerSpawn.run;
+	const fake = (text: () => string, work?: () => void) => (async (a: { name: string }) => {
+		spawnNames.push(a.name);
+		return {
+			session: {
+				subscribe: () => () => {},
+				prompt: async () => { work?.(); },
+				steer: () => {}, abort: async () => {}, dispose: () => {},
+				getLastAssistantText: text,
+				sessionManager: { getSessionFile: () => undefined },
+			},
+			rename: (n: string) => { renames.push(n); },
+		} as never;
+	}) as never;
+	try {
+		stageWorkerSpawn.run = fake(() => "ok\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\n");
+		await stage({ op: "verify", label: "stamp attack\n\tround" });
+		assert.equal(spawnNames[0], "⏳ 🔍 · stamp attack round", "live name: role glyph + purpose, sanitized");
+		assert.equal(renames[0], "✓ 🔍 · PASS · stamp attack round", "final name carries the verdict — no need to open the row");
+		stageWorkerSpawn.run = fake(
+			() => "done:\n- x\n",
+			() => execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "worker work"]),
+		);
+		await stage({ op: "run", stage: "implement", label: "empty commit" });
+		assert.equal(spawnNames[1], "⏳ 🔨 #1 · empty commit", "run workers carry an ordinal (first of their kind here)");
+		assert.equal(renames[1], "✓ 🔨 #1 · 1 commit · empty commit", "a run names its commit count");
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+});
+
 test("a verify worker that moves the branch pointer voids its own verdict", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -2701,9 +2747,9 @@ test("flow_stage: refusals stand, a stubbed worker's report comes back through t
 			assert.match(ok.content[0].text, /pi export /, "the result tells the parent how to render the transcript readably");
 			assert.ok(!ok.isError, "a clean run is not an error");
 			assert.equal(ok.details?.snapshot, null, "a clean tree needs no snapshot");
-			assert.equal(renames[0], "\u23f3 stage worker \u00b7 implement \u00b7 staged", "the live session is named for the picker");
-			assert.match(renames[renames.length - 1], /^\u2713 stage worker \u00b7 implement \u00b7 staged/, "a finished worker renames its session");
-			assert.ok(uiStatuses.some((x) => /\u23f3 stage worker/.test(x ?? "")), "the footer beat fired");
+			assert.equal(renames[0], "\u23f3 \ud83d\udd28 #1", "the live session is named for the picker: role glyph + ordinal (label-less here)");
+			assert.match(renames[renames.length - 1], /^\u2713 \ud83d\udd28 #1/, "a finished worker renames its session");
+			assert.ok(uiStatuses.some((x) => /\u23f3 \ud83d\udd28 implement/.test(x ?? "")), "the footer beat fired");
 			assert.equal(uiStatuses.at(-1), undefined, "the footer status is cleared when the worker ends");
 			const liveLog = readFileSync(path.join(repo, ".dev-flow", "staged", "stage-live.log"), "utf8");
 			assert.match(liveLog, /\[\+00:00\] worker \u2014 run started \(implement, budget 45 min\)/, "the live log opens with the run and names its op");

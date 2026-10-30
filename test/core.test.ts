@@ -117,6 +117,8 @@ import {
 	parseVerifyReport,
 	parseWorkerTranscripts,
 	planFingerprint,
+	workerName,
+	sanitizeWorkerLabel,
 	recordVerifyPass,
 	stageLiveAssistantLine,
 	stageLiveResultLine,
@@ -1482,6 +1484,18 @@ test("the verify PASS stamp rides the tier-1 invalidation path, not a parallel o
 	recordVerifyPass(s, "now", null);
 	assert.equal(verifyStampMissing(s), false, "git could not answer: an unprovable stamp is never proven stale");
 	assert.equal(verifyStampMissing({ ...newState("d", false, false, true), stage: "implement" as const }), false, "docs mode is exempt like tier-1");
+});
+
+test("worker session names carry role, ordinal, purpose and outcome", () => {
+	assert.equal(workerName("⏳", "🔍", null, "stamp attack"), "⏳ 🔍 · stamp attack");
+	assert.equal(workerName("✓", "🔨", 2, "wire ops", "3 commits"), "✓ 🔨 #2 · 3 commits · wire ops");
+	assert.equal(workerName("✓", "🔍", null, "", "PASS"), "✓ 🔍 · PASS");
+	assert.equal(workerName("✗", "🔨", 3, "", "hard-cut"), "✗ 🔨 #3 · hard-cut");
+	assert.equal(workerName("⏳", "🔨", 1, ""), "⏳ 🔨 #1", "a label-less run is still separated by ordinal");
+	assert.equal(sanitizeWorkerLabel("  wire\n verify\u0007 ops   "), "wire verify ops", "control chars and whitespace collapse");
+	assert.equal(sanitizeWorkerLabel("twenty chars twelve " + "x".repeat(40)), "twenty chars twelve", "clips on the word boundary when one sits past half the budget");
+	assert.equal(sanitizeWorkerLabel("a " + "x".repeat(60)).length, 32, "an early-only boundary keeps the full 32-char clip");
+	assert.equal(sanitizeWorkerLabel("\u0001\u0002"), "", "nothing meaningful left reads empty");
 });
 
 test("planFingerprint tracks the plan dir byte-for-byte", () => {

@@ -2184,6 +2184,28 @@ export function recordVerifyPass(state: FlowState, at: string, fp: string | null
 	state.checks[VERIFY_STAMP] = { ok: true, at, ...(fp ? { wt: fp } : {}) };
 }
 
+/** How each op's session announces itself in the picker — the stage-line glyph vocabulary reused for
+ *  worker names, so a row reads as a role at a glance instead of N identical "stage worker" lines. */
+export const WORKER_OP_GLYPH: Record<WorkerOp, string> = { run: "🔨", verify: "🔍", reflect: "🏁", status: "👁" };
+
+/** A driver-supplied purpose, made safe for a session name: control chars gone, whitespace collapsed,
+ *  clamped to ~32 chars on a word boundary. "" when nothing meaningful is left. */
+export function sanitizeWorkerLabel(raw: string): string {
+	const s = raw.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
+	if (s.length <= 32) return s;
+	const cut = s.slice(0, 32);
+	const at = cut.lastIndexOf(" ");
+	return (at >= 16 ? cut.slice(0, at) : cut).trim();
+}
+
+/** Session-name grammar: live `⏳ 🔨 #2 · wire ops`, done `✓ 🔨 #2 · 3 commits · wire ops`,
+ *  `✓ 🔍 · stamp attack · PASS`, `✗ 🔨 #3 · hard-cut`. The final rename answers "how did it end?"
+ *  without opening the row; the ordinal separates re-delegations when no label was given. */
+export function workerName(mark: string, glyph: string, seq: number | null, label: string, outcome?: string | null): string {
+	const core = `${glyph}${seq ? ` #${seq}` : ""}${outcome ? ` · ${outcome}` : ""}${label ? ` · ${label}` : ""}`;
+	return `${mark} ${core}`;
+}
+
 /** Content hash of a feature's plan/ dir (sorted relpath + bytes; "" stable when absent). The verify
  *  verdict was written AGAINST the plan, so a mid-stage plan edit must void the PASS exactly like a
  *  worktree edit — the stamp fingerprint hashes the worktree TOGETHER WITH this. */

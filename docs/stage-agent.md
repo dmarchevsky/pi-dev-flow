@@ -95,16 +95,20 @@ driver's transcript wherever the host renders streamed tool updates (the TUI
 does; expansion adds the fuller stream, the report and the transcript path).
 Around it, three mirrors:
 
-- a worker is a real pi session in pi's standard session directory, named
-  `⏳ stage worker · <stage> · <slug>` while it runs and `✓`/`✗ …` when it ends:
-  it appears in the `/resume` picker, and its transcript grows live on disk,
-  readable at any moment — whether a viewer tails a session still running is
-  the viewer's choice, the card above is what the flow promises. Every finished
-  worker appends its transcript path to
+- a worker is a real pi session in pi's standard session directory, named by
+  role glyph, ordinal and purpose — `⏳ 🔨 #2 · wire ops` while it runs, renamed
+  at the end with its outcome: `✓ 🔨 #2 · 3 commits · wire ops`, a verify `✓ 🔍 ·
+  PASS · stamp attack`, a cut-off worker `✗ 🔨 #3 · hard-cut`; the verdict never
+  depends on opening the row (a `label` on the call supplies the purpose; with
+  none, a `run` is still separated by its ordinal). It appears in the `/resume`
+  picker, and its
+  transcript grows live on disk, readable at any moment — whether a viewer
+  tails a session still running is the viewer's choice, the card above is what
+  the flow promises. Every finished worker appends its transcript path to
   `.dev-flow/<slug>/stage-sessions/transcripts.log` — the durable index the
   reflect worker reads;
-- the driving session's **footer** beats `⏳ stage worker mm:ss · <tool> · <slug>`
-  while a worker runs (cleared when it ends);
+- the driving session's **footer** beats `⏳ 🔨 implement · <label> · <slug>
+  mm:ss · <tool>` while a worker runs (cleared when it ends);
 - every line appends to `.dev-flow/<slug>/stage-live.log` — tail-able, and
   `flow_stage { op: "status" }` prints the same tail plus elapsed time, budget,
   the worktree state and recent commits, on any host, no model call.
