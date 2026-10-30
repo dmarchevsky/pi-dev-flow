@@ -47,13 +47,20 @@ binding of its own:
   may edit and commit on the feature branch exactly while the flow allows it,
   and nothing else; `verify` and `reflect` workers hold no edit/write tool at
   all, and a check-only worker that moves the tree through `bash` anyway
-  **voids its own verdict**: the tool compares `git status` before and after, a
-  moved tree is snapshotted and the stamp never lands;
+  **voids its own verdict**: the tool compares `git status`, `git rev-parse
+  HEAD` and the branch pointer before and after (each leg alone has a
+  clean-tree bypass), a moved tree is snapshotted and the stamp never lands —
+  and the PASS itself is stamped against a worktree+plan fingerprint, so even a
+  later edit to the plan it was written against demotes it;
 - default-branch discipline (no commit/merge/push on main) is enforced on every
   session's git calls alike;
-- `.dev-flow/state.json` and `claim.json` stay flow-owned — a worker cannot
-  forge a stage or a claim, and it runs no gates because its toolset holds
-  coding tools only.
+- `.dev-flow/state.json` and `claim.json` stay flow-owned — the guard denies
+  workers the edit/write tools for them and `stateTamper` refuses the direct
+  bash shapes, and the worker runs no gates because its toolset holds coding
+  tools only. Honest scope, same line guardrails.md draws: these are strong
+  guardrails for what an agent types, **not a sandbox** — a determined wrapper
+  reaching around them is a hardening decision, not a control this feature
+  claims.
 
 ## The handoff
 

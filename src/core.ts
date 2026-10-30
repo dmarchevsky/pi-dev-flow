@@ -480,6 +480,9 @@ export function freshenChecks(state: FlowState, fp: string | null, keep: (name: 
 	if (!fp) return [];
 	const stale: string[] = [];
 	for (const [name, rec] of Object.entries(state.checks)) {
+		// the verify stamp answers to a WIDER fingerprint (worktree + plan/), so plain worktree
+		// comparison must never speak for it — the verify gate voids it against that fingerprint.
+		if (name === VERIFY_STAMP) continue;
 		if (rec.wt && rec.wt !== fp && !keep(name)) {
 			delete state.checks[name];
 			stale.push(name);
@@ -2181,6 +2184,21 @@ export function recordVerifyPass(state: FlowState, at: string, fp: string | null
 	state.checks[VERIFY_STAMP] = { ok: true, at, ...(fp ? { wt: fp } : {}) };
 }
 
+/** Content hash of a feature's plan/ dir (sorted relpath + bytes; "" stable when absent). The verify
+ *  verdict was written AGAINST the plan, so a mid-stage plan edit must void the PASS exactly like a
+ *  worktree edit — the stamp fingerprint hashes the worktree TOGETHER WITH this. */
+export function planFingerprint(dir: string): string {
+	const h = createHash("sha256");
+	const walk = (d: string, rel: string) => {
+		for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
+			if (e.isDirectory()) walk(path.join(d, e.name), `${rel}${e.name}/`);
+			else if (e.isFile()) h.update(`${rel}${e.name}\0`).update(readFileSync(path.join(d, e.name)));
+		}
+	};
+	if (existsSync(dir)) walk(dir, "");
+	return h.digest("hex").slice(0, 16);
+}
+
 /** A PASS the verify gate may accept? docs-mode flows are exempt exactly like tier-1 checks: a docs
  *  flow runs no project command, so there is nothing for a checker to check beyond the operator. */
 export function verifyStampMissing(state: FlowState): boolean {
@@ -2327,7 +2345,7 @@ export function buildVerifyBrief(i: VerifyBriefInput): string {
 Work only inside ${i.workDir} (the feature worktree, on its branch).
 
 Standing order — CHECK, DON'T FIX:
-- You have read and bash only. Do not edit, write, format, commit, stash, or clean anything. The tool compares \`git status --porcelain\` before and after your run: if the tree moved at all, your verdict is VOID and the run is reported as a violation.
+- You have read and bash only. Do not edit, write, format, commit, stash, or clean anything. The tool compares \`git status --porcelain\`, \`git rev-parse HEAD\` and \`git symbolic-ref HEAD\` before and after your run: if the tree, HEAD or the branch pointer moved at all, your verdict is VOID and the run is reported as a violation.
 - Running commands is allowed and expected (tests, build, the health probe, starting a throwaway process to read its output) — as long as nothing you run leaves the tree dirty. A command that rewrites tracked files is off-limits; say so in evidence instead.
 - Never run a flow gate or a flow verb, never ask the operator anything.
 

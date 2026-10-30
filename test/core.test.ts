@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -116,6 +116,7 @@ import {
 	parseReflectFindings,
 	parseVerifyReport,
 	parseWorkerTranscripts,
+	planFingerprint,
 	recordVerifyPass,
 	stageLiveAssistantLine,
 	stageLiveResultLine,
@@ -1477,10 +1478,30 @@ test("the verify PASS stamp rides the tier-1 invalidation path, not a parallel o
 	assert.equal(verifyStampMissing(s), true, "one edit, one re-run — precise, never sticky");
 	recordVerifyPass(s, "now", "fp1");
 	freshenChecks(s, "fp2");
-	assert.equal(verifyStampMissing(s), true, "and a tree that moved through bash drops it the same way");
+	assert.equal(verifyStampMissing(s), false, "the stamp answers to its own wider fingerprint (worktree + plan), so a plain worktree refresh must not speak for it — the verify gate voids it against the real stamp fingerprint");
 	recordVerifyPass(s, "now", null);
 	assert.equal(verifyStampMissing(s), false, "git could not answer: an unprovable stamp is never proven stale");
 	assert.equal(verifyStampMissing({ ...newState("d", false, false, true), stage: "implement" as const }), false, "docs mode is exempt like tier-1");
+});
+
+test("planFingerprint tracks the plan dir byte-for-byte", () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "fp-plan-"));
+	try {
+		assert.equal(planFingerprint(dir), planFingerprint(dir), "absent/empty dir is stable");
+		writeFileSync(path.join(dir, "plan.md"), "a");
+		const h1 = planFingerprint(dir);
+		assert.equal(planFingerprint(dir), h1, "same bytes, same hash");
+		writeFileSync(path.join(dir, "plan.md"), "b");
+		assert.notEqual(planFingerprint(dir), h1, "content moves the hash");
+		writeFileSync(path.join(dir, "plan.md"), "a");
+		mkdirSync(path.join(dir, "mockups"));
+		writeFileSync(path.join(dir, "mockups", "m.png"), "x");
+		const h2 = planFingerprint(dir);
+		writeFileSync(path.join(dir, "mockups", "m.png"), "y");
+		assert.notEqual(planFingerprint(dir), h2, "nested bytes count too — a swapped mockup moves the verdict's ground");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("transcripts.log lines append and parse back into (op, path)", () => {

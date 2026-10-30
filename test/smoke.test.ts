@@ -464,7 +464,13 @@ test("the verify gate owes its PASS to a verify worker over the current tree", a
 	assert.match((passed as { content: [{ text: string }] }).content[0].text, /PASS stamped/);
 	writeFileSync(path.join(repo, ".dev-flow", "stamped", "worktree", "g.txt"), "one more edit\n");
 	const stale = await flow(["verify"]);
-	assert.ok(stale.isError && /a PASS was recorded, but the tree moved since/.test(stale.content[0].text), "an edit after the PASS voids it — precise friction, not a sticky lock");
+	assert.ok(stale.isError && /a PASS was recorded, but the tree or its plan moved since/.test(stale.content[0].text), "an edit after the PASS voids it — precise friction, not a sticky lock");
+	await verifyPass(pi, ctx);
+	// the plan is an INPUT to the verdict — a mid-stage addition demotes the PASS like a code edit does
+	const planFile = path.join(repo, ".dev-flow", "stamped", "plan", "plan.md");
+	writeFileSync(planFile, `${readFileSync(planFile, "utf8")}\n**Added mid-stage:** one more requirement\n`);
+	const planMoved = await flow(["verify"]);
+	assert.ok(planMoved.isError && /the tree or its plan moved since/.test(planMoved.content[0].text), "moving the plan the verdict was written against voids it");
 	await verifyPass(pi, ctx);
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /verify worker PASS over this tree/);
@@ -473,10 +479,10 @@ test("the verify gate owes its PASS to a verify worker over the current tree", a
 	assert.ok(reflectEarly.isError && /release/.test(reflectEarly.content[0].text), "op reflect belongs to the release stage");
 	// the lifecycle bus and the transcript index: both are what later viewers and the reflect worker read
 	const emitted = pi.events.emitted.map((e) => e.name);
-	assert.ok(emitted.filter((n) => n === "dev-flow:worker-started").length >= 3, "every worker run announced itself");
-	assert.ok(emitted.filter((n) => n === "dev-flow:worker-completed").length >= 3, "every worker run closed itself out");
+	assert.ok(emitted.filter((n) => n === "dev-flow:worker-started").length >= 4, "every worker run announced itself");
+	assert.ok(emitted.filter((n) => n === "dev-flow:worker-completed").length >= 4, "every worker run closed itself out");
 	const tLog = readFileSync(path.join(repo, ".dev-flow", "stamped", "stage-sessions", "transcripts.log"), "utf8");
-	assert.equal(tLog.trim().split("\n").length, 3, "one index line per finished worker");
+	assert.equal(tLog.trim().split("\n").length, 4, "one index line per finished worker");
 	assert.match(tLog, /worker transcript \(verify\): .*fake-verify-transcript\.jsonl/, "the index names the op and the transcript");
 });
 
@@ -515,6 +521,45 @@ test("a verify worker that edits the tree voids its own verdict", async () => {
 	assert.equal(voided.details?.stamped, false, "the voided PASS never reaches the state");
 	assert.ok(voided.details?.snapshot, "the tree the reviewer left is snapshotted, not silently kept");
 	assert.ok((await flow(["verify"])).isError, "the voided verdict carries nothing");
+});
+
+test("a verify worker that moves the branch pointer voids its own verdict", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown>; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "sideptr"]);
+	mkdirSync(path.join(repo, ".dev-flow", "sideptr", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "sideptr", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "sideptr");
+	const wt = path.join(repo, ".dev-flow", "sideptr", "worktree");
+	const br = execFileSync("git", ["-C", wt, "rev-parse", "--abbrev-ref", "HEAD"]).toString().trim();
+	const real = stageWorkerSpawn.run;
+	// `checkout -b` at the same SHA leaves status AND rev-parse identical — only the ref leg sees it
+	stageWorkerSpawn.run = (async () => ({
+		session: {
+			subscribe: () => () => {},
+			prompt: async () => { execFileSync("git", ["-C", wt, "checkout", "-q", "-b", "review-side"]); },
+			steer: () => {}, abort: async () => {}, dispose: () => {},
+			getLastAssistantText: () => "all good\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\n",
+			sessionManager: { getSessionFile: () => undefined },
+		},
+		rename: () => {},
+	}) as never);
+	let refMoved: Awaited<ReturnType<typeof stage>>;
+	try {
+		refMoved = await stage({ op: "verify" });
+	} finally {
+		stageWorkerSpawn.run = real;
+		execFileSync("git", ["-C", wt, "checkout", "-q", br]);
+		execFileSync("git", ["-C", wt, "branch", "-q", "-D", "review-side"]);
+	}
+	assert.ok(refMoved.isError && /VERDICT VOID/.test(refMoved.content[0].text), "a branch pointer the reviewer moved voids the PASS");
+	assert.equal(refMoved.details?.stamped, false);
+	assert.ok((await flow(["verify"])).isError, "the moved-pointer PASS carries nothing");
 });
 
 test("the flow_stage card renders: call line, bounded result box, report on expand", () => {

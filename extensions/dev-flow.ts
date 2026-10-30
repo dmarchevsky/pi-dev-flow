@@ -20,6 +20,7 @@
  * Inactive (fully pass-through) in repos without a .dev-flow/ directory.
  */
 import { exec } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -134,6 +135,7 @@ import {
 	parseReflectFindings,
 	parseVerifyReport,
 	parseWorkerTranscripts,
+	planFingerprint,
 	recordVerifyPass,
 	renderVerifyReport,
 	verifyStampMissing,
@@ -721,6 +723,26 @@ async function worktreeFingerprint(cwd: string): Promise<string | null> {
 	return checkFingerprint(`${st.out}\n${diff.out}`, head.out);
 }
 
+/** The fingerprint a verify PASS belongs to: the worktree's, hashed TOGETHER WITH the feature's plan/
+ *  dir — the checker read the plan too, so a mid-stage plan edit voids its verdict exactly like a code
+ *  edit. null = git could not answer (same fingerprintless-stamp rule as tier-1 records). */
+async function verifyStampFingerprint(root: string, st: FlowState): Promise<string | null> {
+	const base = await worktreeFingerprint(gateCwd(root, st));
+	if (!base) return null;
+	return createHash("sha256").update(`${base}\n${planFingerprint(path.join(root, ".dev-flow", st.slug, "plan"))}`).digest("hex").slice(0, 16);
+}
+
+/** Drop a PASS whose worktree-or-plan fingerprint no longer matches; true if one was dropped. Every
+ *  reader of the stamp (the verify gate, and the check/status views that must not keep advertising a
+ *  dead PASS) runs this before trusting the record. */
+async function voidStaleVerifyStamp(root: string, st: FlowState): Promise<boolean> {
+	if (!st.checks[VERIFY_STAMP]) return false;
+	const vfp = await verifyStampFingerprint(root, st);
+	if (!vfp || st.checks[VERIFY_STAMP]!.wt === vfp) return false;
+	delete st.checks[VERIFY_STAMP];
+	return true;
+}
+
 /** Stamp freshly recorded checks with the tree they ran against — taken AFTER the run, so a check
  *  that rewrites tracked files (a formatter, codegen) does not mark itself stale the moment it passes. */
 async function stampChecks(root: string, state: FlowState, names: string[]): Promise<void> {
@@ -1006,8 +1028,12 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	// A green record belongs to the tree it ran against. A worktree change made through bash (sed,
 	// a formatter, codegen) fires no edit-tool invalidation — the fingerprint is what notices the
 	// tree moved, and the dropped records become pending so the gate itself reruns them (#84 path).
-	const staleAtGate = freshenChecks(state!, await worktreeFingerprint(gateCwd(root, state!)), (n) => n === "health" && healthRerunsAfterDeploy(cfg));
-	if (staleAtGate.length) writeState(root, state!);
+	const fpAtGate = await worktreeFingerprint(gateCwd(root, state!));
+	const staleAtGate = freshenChecks(state!, fpAtGate, (n) => n === "health" && healthRerunsAfterDeploy(cfg));
+	// The stamp is judged by its own wider fingerprint (see verifyStampFingerprint): a change to the
+	// plan the verdict was written against demotes it exactly like a worktree change would.
+	const stampVoided = await voidStaleVerifyStamp(root, state!);
+	if (staleAtGate.length || stampVoided) writeState(root, state!);
 	// An independent checker has to have looked at THIS tree before the operator is asked to approve it:
 	// the verify worker's PASS is a precondition of the gate, refused before any command runs so a long
 	// suite is never spent on a run that cannot pass. The stamp lives in state.checks, so a worktree edit
@@ -1015,7 +1041,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	// precise friction rather than a sticky lock. docs mode is exempt (nothing there to check).
 	if (verifyStampMissing(state!)) {
 		writeState(root, state!);
-		return { text: `verify gate FAILED:\n- ${VERIFY_STAMP_REFUSAL}${staleAtGate.includes(VERIFY_STAMP) ? " (a PASS was recorded, but the tree moved since — that is why it no longer counts)" : ""}\n${branchLine}`, isError: true };
+		return { text: `verify gate FAILED:\n- ${VERIFY_STAMP_REFUSAL}${staleAtGate.includes(VERIFY_STAMP) || stampVoided ? " (a PASS was recorded, but the tree or its plan moved since — that is why it no longer counts)" : ""}\n${branchLine}`, isError: true };
 	}
 	const pending = pendingChecks(state!, cfg);
 	const gateRun = pending.length ? await runChecks(root, state!, cfg, pending) : null;
@@ -1173,6 +1199,8 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged, changelogBase, noFoldCheck: flag("no-fold-check") };
 	// same freshness rule as verify: a green predating a worktree write may not stand for the tree this gate blesses
 	if (freshenChecks(state!, await worktreeFingerprint(wtCwd)).length) writeState(root, state!);
+	// a PASS whose worktree-or-plan moved is dead here too, so check/status never advertise one
+	if (await voidStaleVerifyStamp(root, state!)) writeState(root, state!);
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 	const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 	if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
@@ -2366,6 +2394,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				// reading a different tree, so a porcelain-only diff would stamp a PASS for a HEAD it never saw.
 				const statusBefore = await sh("git status --porcelain", work);
 				const headBefore = await sh("git rev-parse HEAD", work);
+				const refBefore = await sh("git symbolic-ref -q HEAD || true", work);
 				// the worker is a REAL pi session in the default location — the pi/pi-web picker renders it
 				// live from the append-only transcript (⏳ = resumable later; resuming a live one forks it,
 				// browsing is read-only by construction); `pi export <file>` makes it readable HTML
@@ -2443,7 +2472,10 @@ export default function devFlow(pi: ExtensionAPI) {
 				// fault; only movement counts.)
 				const statusAfter = await sh("git status --porcelain", work);
 				const headAfter = await sh("git rev-parse HEAD", work);
-				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out));
+				const refAfter = await sh("git symbolic-ref -q HEAD || true", work);
+				// three legs, because each alone has a clean-tree bypass: porcelain misses ref moves,
+				// rev-parse misses `checkout -b` at the same SHA, symbolic-ref misses a detached move
+				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out) || (refBefore.ok && refAfter.ok && refAfter.out !== refBefore.out));
 				// never hand back an unrecoverable state: a dirty tree is snapshotted (tracked AND untracked,
 				// via a throwaway index — no real-index or worktree mutation, no WIP commit on the branch)
 				let snapshot: string | null = null;
@@ -2468,7 +2500,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				if (verify?.verdict === "pass" && clean && !moved) {
 					const fresh = readState(ctx.cwd, st.slug);
 					if (fresh) {
-						recordVerifyPass(fresh, now(), await worktreeFingerprint(work));
+						recordVerifyPass(fresh, now(), await verifyStampFingerprint(ctx.cwd, fresh));
 						writeState(ctx.cwd, fresh);
 						stamped = true;
 					}
