@@ -1199,7 +1199,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged, changelogBase, noFoldCheck: flag("no-fold-check") };
 	// same freshness rule as verify: a green predating a worktree write may not stand for the tree this gate blesses
 	if (freshenChecks(state!, await worktreeFingerprint(wtCwd)).length) writeState(root, state!);
-	// a PASS whose worktree-or-plan moved is dead here too, so check/status never advertise one
+	// a PASS whose worktree-or-plan moved is dead here too — no gate may act on a verdict it cannot prove current
 	if (await voidStaleVerifyStamp(root, state!)) writeState(root, state!);
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 	const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
@@ -1820,6 +1820,12 @@ async function gateStatus(o: GateCtx): Promise<RunResult> {
 	const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
 	const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
 	const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
+	// status (and --json, which feeds worker briefs) must never advertise a PASS the gates would refuse:
+	// reap dead stamps before any reader sees the checks line
+	for (const s of slugs) {
+		const stV = readState(root, s);
+		if (stV && await voidStaleVerifyStamp(root, stV)) writeState(root, stV);
+	}
 	if (flag("json")) {
 		const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
 		return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
@@ -2003,6 +2009,7 @@ async function gateCheck(o: GateCtx): Promise<RunResult> {
 	// flow now gets no test run at all; the mechanical fix is a diff-scope guard at verify if it ever bites
 	if (state!.docs) return { text: "docs mode: project commands skipped — a docs flow runs no tier-1 checks (CI on the tag and the artifact proof still do)" };
 	if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
+	if (await voidStaleVerifyStamp(root, state!)) writeState(root, state!);
 	const ran = await runChecks(root, state!, cfg, cfg.checkList);
 	return { text: `tier-1 checks:\n${ran.lines.join("\n")}`, isError: ran.failed };
 }
@@ -2395,6 +2402,10 @@ export default function devFlow(pi: ExtensionAPI) {
 				const statusBefore = await sh("git status --porcelain", work);
 				const headBefore = await sh("git rev-parse HEAD", work);
 				const refBefore = await sh("git symbolic-ref -q HEAD || true", work);
+				// the plan is an input the reviewer reads from OUTSIDE the worktree — it belongs in the
+				// before/after proof too, or a reviewer could rewrite the ground it is judging mid-run
+				const planDir = path.join(ctx.cwd, ".dev-flow", st.slug, "plan");
+				const planBefore = planFingerprint(planDir);
 				// the worker is a REAL pi session in the default location — the pi/pi-web picker renders it
 				// live from the append-only transcript (⏳ = resumable later; resuming a live one forks it,
 				// browsing is read-only by construction); `pi export <file>` makes it readable HTML
@@ -2473,9 +2484,10 @@ export default function devFlow(pi: ExtensionAPI) {
 				const statusAfter = await sh("git status --porcelain", work);
 				const headAfter = await sh("git rev-parse HEAD", work);
 				const refAfter = await sh("git symbolic-ref -q HEAD || true", work);
-				// three legs, because each alone has a clean-tree bypass: porcelain misses ref moves,
-				// rev-parse misses `checkout -b` at the same SHA, symbolic-ref misses a detached move
-				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out) || (refBefore.ok && refAfter.ok && refAfter.out !== refBefore.out));
+				// four legs, because each alone has a clean-tree bypass: porcelain misses ref moves,
+				// rev-parse misses `checkout -b` at the same SHA, symbolic-ref misses a detached move,
+				// and all three miss the plan the verdict was written against living outside the worktree
+				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out) || (refBefore.ok && refAfter.ok && refAfter.out !== refBefore.out) || planFingerprint(planDir) !== planBefore);
 				// never hand back an unrecoverable state: a dirty tree is snapshotted (tracked AND untracked,
 				// via a throwaway index — no real-index or worktree mutation, no WIP commit on the branch)
 				let snapshot: string | null = null;
@@ -2497,6 +2509,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				// the PASS is stamped AFTER the rerun so it belongs to the settled tree, and only over a tree
 				// the reviewer actually left untouched — this stamp is what flow verify demands at the gate
 				let stamped = false;
+				let cleared = false;
 				if (verify?.verdict === "pass" && clean && !moved) {
 					const fresh = readState(ctx.cwd, st.slug);
 					if (fresh) {
@@ -2504,13 +2517,23 @@ export default function devFlow(pi: ExtensionAPI) {
 						writeState(ctx.cwd, fresh);
 						stamped = true;
 					}
+				} else if (verify?.verdict === "fail" && !moved) {
+					// a FAIL over an unmoved tree contradicts any earlier PASS — the gate may not ask
+					// Verified? against a tree its newest checker rejected
+					const fresh = readState(ctx.cwd, st.slug);
+					if (fresh?.checks[VERIFY_STAMP]) {
+						delete fresh.checks[VERIFY_STAMP];
+						writeState(ctx.cwd, fresh);
+						cleared = true;
+					}
 				}
 				const parts: string[] = [];
 				if (report) parts.push(renderStageReport(report));
 				if (verify) {
 					parts.push(renderVerifyReport(verify));
 					if (stamped) parts.push(`PASS stamped on this tree — flow verify will accept it until the tree moves (any edit drops it like a tier-1 record, then a fresh verify worker is owed).`);
-					else if (moved) parts.push(`VERDICT VOID: the verify worker changed the tree (\`git status\` differs from before its run) — a reviewer that edits invalidates its own report.${snapshot ? ` Snapshot: ${snapshot}` : ""}`);
+					if (cleared) parts.push("an earlier PASS over this tree was DROPPED — this FAIL contradicts it; fix the findings, then a fresh verify worker is owed.");
+					else if (moved) parts.push(`VERDICT VOID: the verify worker moved the tree, HEAD, branch pointer or plan (the before/after proof differs from before its run) — a reviewer that edits invalidates its own report.${snapshot ? ` Snapshot: ${snapshot}` : ""}`);
 					else if (!clean) parts.push("no verdict recorded from a crashed or interrupted run — rerun the verify worker.");
 					else parts.push(`the verify gate will refuse Verified? until a verify worker returns verdict: pass over the current tree${verify.verdict === "fail" ? " (this one returned FAIL — fix the findings, then rerun)" : ""}.`);
 				}
@@ -2542,7 +2565,7 @@ export default function devFlow(pi: ExtensionAPI) {
 					details: {
 						op, slug: st.slug, stage: st.stage, card, cardFull: stageCardLines({ kind, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state: failed ? "failed" : "done", verdict: verify?.verdict ?? null, transcript }, true),
 						done: report?.done, files: report?.files, notes: report?.notes, blockers: report?.blockers, reportMissing: report?.missing ?? findings?.missing ?? false,
-						verdict: verify?.verdict ?? null, stamped, verdictVoided: moved, timedOut, softFired: run.softFired, budgetMin, elapsedMs: Date.now() - run.startedAt, error: crash, transcript, snapshot,
+						verdict: verify?.verdict ?? null, stamped, clearedStamp: cleared, verdictVoided: moved, timedOut, softFired: run.softFired, budgetMin, elapsedMs: Date.now() - run.startedAt, error: crash, transcript, snapshot,
 					},
 					usage: run.usage,
 					isError: failed,

@@ -1491,6 +1491,16 @@ test("planFingerprint tracks the plan dir byte-for-byte", () => {
 		writeFileSync(path.join(dir, "plan.md"), "a");
 		const h1 = planFingerprint(dir);
 		assert.equal(planFingerprint(dir), h1, "same bytes, same hash");
+		assert.notEqual(planFingerprint(dir), planFingerprint(path.join(dir, "missing")), "present-but-empty ≠ absent");
+		const other = mkdtempSync(path.join(tmpdir(), "fp-plan2-"));
+		writeFileSync(path.join(other, "target.md"), "external a");
+		rmSync(path.join(dir, "plan.md"));
+		symlinkSync(path.join(other, "target.md"), path.join(dir, "plan.md"));
+		const hl = planFingerprint(dir);
+		writeFileSync(path.join(other, "target.md"), "external b");
+		assert.notEqual(planFingerprint(dir), hl, "a symlinked plan still hashes what it resolves to");
+		rmSync(path.join(dir, "plan.md"));
+		rmSync(other, { recursive: true, force: true });
 		writeFileSync(path.join(dir, "plan.md"), "b");
 		assert.notEqual(planFingerprint(dir), h1, "content moves the hash");
 		writeFileSync(path.join(dir, "plan.md"), "a");

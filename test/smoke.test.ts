@@ -465,6 +465,9 @@ test("the verify gate owes its PASS to a verify worker over the current tree", a
 	writeFileSync(path.join(repo, ".dev-flow", "stamped", "worktree", "g.txt"), "one more edit\n");
 	const stale = await flow(["verify"]);
 	assert.ok(stale.isError && /a PASS was recorded, but the tree or its plan moved since/.test(stale.content[0].text), "an edit after the PASS voids it — precise friction, not a sticky lock");
+	// and no reader may keep advertising the dead stamp — status --json feeds worker briefs
+	const sj = JSON.parse((await flow(["status", "--json"])).content[0].text) as { features: { slug: string; checks: Record<string, boolean> }[] };
+	assert.ok(!("verify" in (sj.features.find((f) => f.slug === "stamped")?.checks ?? {})), "flow status --json reaps the dead PASS instead of showing it green");
 	await verifyPass(pi, ctx);
 	// the plan is an INPUT to the verdict — a mid-stage addition demotes the PASS like a code edit does
 	const planFile = path.join(repo, ".dev-flow", "stamped", "plan", "plan.md");
@@ -521,6 +524,77 @@ test("a verify worker that edits the tree voids its own verdict", async () => {
 	assert.equal(voided.details?.stamped, false, "the voided PASS never reaches the state");
 	assert.ok(voided.details?.snapshot, "the tree the reviewer left is snapshotted, not silently kept");
 	assert.ok((await flow(["verify"])).isError, "the voided verdict carries nothing");
+});
+
+test("a verify worker that rewrites the plan it is judging voids its own verdict", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown>; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "planmove"]);
+	mkdirSync(path.join(repo, ".dev-flow", "planmove", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "planmove", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "planmove");
+	const real = stageWorkerSpawn.run;
+	// the plan lives OUTSIDE the worktree — the proof needs the plan leg or this bypasses all three git legs
+	stageWorkerSpawn.run = (async () => ({
+		session: {
+			subscribe: () => () => {},
+			prompt: async () => { writeFileSync(path.join(repo, ".dev-flow", "planmove", "plan", "plan.md"), "# plan\nthe reviewer rewrites the ground\n"); },
+			steer: () => {}, abort: async () => {}, dispose: () => {},
+			getLastAssistantText: () => "all good\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\n",
+			sessionManager: { getSessionFile: () => undefined },
+		},
+		rename: () => {},
+	}) as never);
+	let planMoved: Awaited<ReturnType<typeof stage>>;
+	try {
+		planMoved = await stage({ op: "verify" });
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+	assert.ok(planMoved.isError && /plan/.test(planMoved.content[0].text) && /VERDICT VOID/.test(planMoved.content[0].text), "rewriting the plan moves the verdict's ground and voids the PASS");
+	assert.equal(planMoved.details?.stamped, false);
+	assert.ok((await flow(["verify"])).isError, "the moved-plan PASS carries nothing");
+});
+
+test("a fresh verify FAIL drops an earlier PASS over the same tree", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown>; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "failclear"]);
+	mkdirSync(path.join(repo, ".dev-flow", "failclear", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "failclear", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "failclear");
+	await verifyPass(pi, ctx);
+	const real = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = (async () => ({
+		session: {
+			subscribe: () => () => {},
+			prompt: async () => {},
+			steer: () => {}, abort: async () => {}, dispose: () => {},
+			getLastAssistantText: () => "no.\nVERIFY REPORT\nverdict: fail\nfindings:\n- [blocking] the stamp survives a contradicting check\nevidence:\n- read the stamp path\n",
+			sessionManager: { getSessionFile: () => undefined },
+		},
+		rename: () => {},
+	}) as never);
+	let failing: Awaited<ReturnType<typeof stage>>;
+	try {
+		failing = await stage({ op: "verify" });
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+	assert.equal(failing.details?.verdict, "fail");
+	assert.equal(failing.details?.clearedStamp, true, "the FAIL contradicts and deletes the earlier PASS");
+	assert.match(failing.content[0].text, /earlier PASS over this tree was DROPPED/);
+	assert.ok((await flow(["verify"])).isError, "the gate no longer asks Verified? on a tree its newest checker rejected");
 });
 
 test("a verify worker that moves the branch pointer voids its own verdict", async () => {

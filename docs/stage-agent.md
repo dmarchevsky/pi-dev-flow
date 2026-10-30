@@ -47,9 +47,11 @@ binding of its own:
   may edit and commit on the feature branch exactly while the flow allows it,
   and nothing else; `verify` and `reflect` workers hold no edit/write tool at
   all, and a check-only worker that moves the tree through `bash` anyway
-  **voids its own verdict**: the tool compares `git status`, `git rev-parse
-  HEAD` and the branch pointer before and after (each leg alone has a
-  clean-tree bypass), a moved tree is snapshotted and the stamp never lands —
+  **voids its own verdict**: the tool diffs `git status`, `git rev-parse HEAD`,
+  the branch pointer and a hash of the feature's plan dir before and after
+  (each leg alone has a clean-tree bypass; the proof sees the tracked tree —
+  the same documented shortcut as every other fingerprint here), a moved tree
+  is snapshotted and the stamp never lands —
   and the PASS itself is stamped against a worktree+plan fingerprint, so even a
   later edit to the plan it was written against demotes it;
 - default-branch discipline (no commit/merge/push on main) is enforced on every
@@ -88,15 +90,17 @@ unit — never a worktree.
 
 The **tool card is the guaranteed surface**: every worker line (current tool +
 args, last assistant line, ✓/✗ tool results, clock against budget, usage)
-travels as the tool's own streamed update, so the live tail renders inside the
-driver's transcript identically in the TUI and in pi-web; expansion adds the
-fuller stream, the report and the transcript path. Around it, three mirrors:
+travels as the tool's own streamed update, so the live tail rides inside the
+driver's transcript wherever the host renders streamed tool updates (the TUI
+does; expansion adds the fuller stream, the report and the transcript path).
+Around it, three mirrors:
 
 - a worker is a real pi session in pi's standard session directory, named
   `⏳ stage worker · <stage> · <slug>` while it runs and `✓`/`✗ …` when it ends:
-  it shows up in the pi-web sidebar and the `/resume` picker with the transcript
-  rendering live as turns land (the ⏳ means live — resuming it forks it;
-  browsing is safe). Every finished worker appends its transcript path to
+  it appears in the `/resume` picker, and its transcript grows live on disk,
+  readable at any moment — whether a viewer tails a session still running is
+  the viewer's choice, the card above is what the flow promises. Every finished
+  worker appends its transcript path to
   `.dev-flow/<slug>/stage-sessions/transcripts.log` — the durable index the
   reflect worker reads;
 - the driving session's **footer** beats `⏳ stage worker mm:ss · <tool> · <slug>`
