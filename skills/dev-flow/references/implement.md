@@ -9,12 +9,16 @@ or the injection line) — writes elsewhere are blocked; other sessions'
 worktrees are theirs (attribution guards judge every path by its owning
 feature).
 
-**Delegating the stage's work.** When the implement work will cost far more
-context than the rest of the flow needs (big multi-file features), run it in
-a disposable worker session with `flow_stage` (`stage: "implement"`). The
+**Delegating the stage's work.** Non-trivial implement is **delegated by default**: run it in
+a disposable worker session with `flow_stage` (`stage: "implement"`) — this session keeps its
+context for the gates and the checkpoint; stay inline only for a tail you can finish in a
+handful of file edits. The
 worker gets a fresh context holding the plan, live git and `flow status
 --json` — it keeps nothing from this conversation, so put every operator
-answer, decision, warning and the exact next action into `note`. The worker
+answer, decision, warning and the exact next action into `note`, and a short
+`label` — a few words of purpose — so the picker reads `⏳ 🔨 #2 · wire ops` and,
+when it ends, `✓ 🔨 #2 · 3 commits · wire ops` (a verify: `✓ 🔍 · PASS · <label>`)
+instead of a column of identical rows. The worker
 may edit and commit in the worktree but holds no flow tool: gates,
 checkpoints and the claim stay with you. When it returns, digest its stage
 report (done/files/notes/blockers — a handoff, never a verification), rerun
@@ -25,9 +29,11 @@ snapshot `.diff` the result gives. Delegate a real slice, not the tail: do not
 delegate a stage you are about to finish anyway. One worker per session at a
 time — but **sequential re-delegation is legal and often right**: a second
 worker whose `note` says what the first one proved is how a big stage is
-sliced. While one runs, the footer beats progress, the worker is visible as a
+sliced. While one runs, the **tool card streams the worker's live output into
+your transcript** (current tool, last assistant line, ✓/✗ results, clock against budget,
+usage); the footer beats progress, the worker is visible as a
 named session in the picker, and `flow_stage { op: "status" }` answers “how’s it
-going?” without a model call. Size `budgetMin` to the slice (default 45): at 75%
+going?” without a model call on any host (the tail also mirrors to `stage-live.log`). Size `budgetMin` to the slice (default 45; verify/reflect default 30): at 75%
 the worker is steered to commit and report rather than cut off.
 
 1. Implement per the approved plan with project conventions and the **stage
@@ -48,7 +54,15 @@ the worker is steered to commit and report rather than cut off.
    the tier-2 confirmation — rerun before verify.
 4. UI flag set? An actual browser visual pass (screenshot or the project's
    automated pass) — not just a typecheck.
-5. Done means **running and healthy with pre-existing data**, not "compiles":
+5. **The independent checker speaks before the operator does:** `flow_stage { op: "verify" }`
+   runs a read-only reviewer (toolset read + bash, standing order *check, don't fix*) over the
+   plan and the branch diff; it closes with a `VERIFY REPORT` verdict. Its **PASS is a
+   precondition of `flow verify`** and belongs to the tree it read: any edit after it — yours or
+   a delegated fixer's — drops it like a tier-1 record, so fix → a **fresh** verify worker;
+   a verdict from an interrupted or tree-touching worker never stamps (a reviewer that edits
+   voids its own report). FAIL means: fix (or delegate), then rerun a fresh one — the report is
+   a handoff, the gate's own rerun is the proof.
+6. Done means **running and healthy with pre-existing data**, not "compiles":
    `commands.seedData` (if set) puts real data in place, the app starts with
    the `run` command, and the health check passes — `flow check` covers it
    (seedData runs before health) and `flow verify` probes **the deployed app
@@ -63,7 +77,7 @@ the worker is steered to commit and report rather than cut off.
    `health` itself and refuses while nothing is answering). Checkpoint report: stage line **🔨 implement ·
    `<slug>`** — commits `N ahead, M uncommitted` · tier-1 · tier-2 · deploy/
    health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = iterate and re-verify; that loop is
-   free.
+   free — but every fix re-owes the verify worker's PASS.
 
 `flow verify` re-runs build, runs the `dev` deploy when configured (the
 operator reviews the running app; the gate **prints what it ran** —

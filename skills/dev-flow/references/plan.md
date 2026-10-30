@@ -17,6 +17,10 @@
    name is itself the gate's proof: **plan.md** — a preliminary direction
    belongs *inside* plan.md (marked draft), never a separate
    `pre-plan`/`direction.md` file: the approve gate requires plan.md by name.
+   The flow folder is the plan's permanent home — the worktree only exists
+   after approval, while the plan must exist (and stay amendable during
+   implement) from before it; that is why plan.md lives in
+   `.dev-flow/<slug>/plan/`, not in the worktree.
    First check
    `git log origin/<default>..<default> --oneline`: local-only default-branch
    commits fall out of the worktree's base (push them or re-plan).

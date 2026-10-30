@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -103,13 +103,34 @@ import {
 	clampStageBudgetMin,
 	isDelegableStage,
 	parseStageReport,
+	stageCardLines,
 	stageElapsedLabel,
 	stageInterruptSteer,
 	stageLiveLine,
 	summarizeToolArgs,
-	renderStageReport,
-} from "../src/core.ts";
 
+	renderStageReport,
+	buildReflectBrief,
+	buildVerifyBrief,
+	liveTail,
+	parseReflectFindings,
+	parseVerifyReport,
+	parseWorkerTranscripts,
+	planFingerprint,
+	workerName,
+	sanitizeWorkerLabel,
+	recordVerifyPass,
+	stageLiveAssistantLine,
+	stageLiveResultLine,
+	stageUsageLine,
+	verifyStampMissing,
+	VERIFY_STAMP,
+	workerOpError,
+
+	workerTranscriptLine,
+	renderVerifyReport,
+	WORKER_OP_BUDGET_MIN,	WORKER_OP_TOOLS,
+} from "../src/core.ts";
 const cfg = structuredClone(DEFAULTS);
 
 test("buildConfig fills defaults and merges partial overrides", () => {
@@ -1407,4 +1428,193 @@ test("the budget steer orders a commit-then-report close-out", () => {
 test("the brief makes per-unit commits a boundary", () => {
 	const b = buildStageBrief({ slug: "s", stage: "implement", workDir: "/wt", planFile: "/p", referenceText: "", statusJson: "{}", gitSummary: "" });
 	assert.match(b, /EACH TIME a unit of work is complete/, "a cut must cost one unit, not a worktree");
+});
+
+// ------------------------------------------------------- worker ops: verify / reflect / live card
+
+test("worker op legality: verify belongs to implement, reflect to a recorded release", () => {
+	const at = (stage: string, approvals: Record<string, string> = {}) => ({ stage: stage as never, approvals });
+	assert.equal(workerOpError("verify", at("implement")), null, "verify proves the implement work before Verified?");
+	assert.match(workerOpError("verify", at("plan"))!, /only while the feature is at implement/, "no verifier for an unapproved plan");
+	assert.match(workerOpError("verify", at("pre-release"))!, /stage is "pre-release"/, "and none after the stage moved on");
+	assert.equal(workerOpError("reflect", at("release", { release: "now" })), null, "the finish review runs once the release is recorded");
+	assert.match(workerOpError("reflect", at("release"))!, /no release recorded/, "before release-done it has nothing to review");
+	assert.match(workerOpError("reflect", at("implement"))!, /after release-done/, "mid-flow reflection stays the driver's own protocol");
+	assert.equal(workerOpError("run", at("implement")), null, "run keeps its own (stage-match) legality, untouched here");
+	assert.equal(workerOpError("status", at("plan")), null, "reading a live run needs no stage at all");
+});
+
+test("worker budgets and toolsets: reviews are shorter and hold no pen", () => {
+	assert.equal(WORKER_OP_BUDGET_MIN.run, 45, "the implement slice keeps the stage default");
+	assert.equal(WORKER_OP_BUDGET_MIN.verify, 30, "operator decision: a review run defaults to 30");
+	assert.equal(WORKER_OP_BUDGET_MIN.reflect, 30);
+	assert.deepEqual([...WORKER_OP_TOOLS.verify], ["read", "bash"], "a checker that can edit is a second implementer");
+	assert.deepEqual([...WORKER_OP_TOOLS.reflect], ["read", "bash"]);
+	assert.ok(WORKER_OP_TOOLS.run.includes("edit"), "the implement worker still builds");
+});
+
+test("parseVerifyReport reads the verdict, and reads a hedge as no verdict", () => {
+	const pass = parseVerifyReport("checked everything\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\nevidence:\n- npm test — 251 pass\n");
+	assert.equal(pass.verdict, "pass");
+	assert.equal(pass.missing, false);
+	assert.equal(pass.findings.length, 0, "\"none\" is an empty section, not a finding");
+	assert.deepEqual(pass.evidence, ["npm test — 251 pass"]);
+	const fail = parseVerifyReport("VERIFY REPORT\nverdict: fail\nfindings:\n- plan D3 wants the gate to refuse, src/core.ts:10 accepts\n");
+	assert.equal(fail.verdict, "fail");
+	assert.equal(fail.findings.length, 1);
+	assert.equal(parseVerifyReport("VERIFY REPORT\nverdict: probably fine\n").verdict, null, "a hedge never passes");
+	assert.equal(parseVerifyReport("I checked it, looks great!").missing, true);
+	assert.match(renderVerifyReport(parseVerifyReport("nope")), /WITHOUT the VERIFY REPORT/, "a skipped contract is loud, never trusted");
+	assert.match(renderVerifyReport(parseVerifyReport("VERIFY REPORT\nverdict: maybe\n")), /no readable verdict/);
+	assert.match(renderVerifyReport(parseVerifyReport("VERIFY REPORT\nverdict: fail\nfindings:\n- " + "y".repeat(500) + "\n"), 200), /digest truncated/);
+});
+
+test("the verify PASS stamp rides the tier-1 invalidation path, not a parallel one", () => {
+	const s = { ...newState("f", false), stage: "implement" as const };
+	assert.equal(verifyStampMissing(s), true, "nothing recorded means the gate asks nobody");
+	recordVerifyPass(s, "now", "fp1");
+	assert.equal(s.checks[VERIFY_STAMP]?.ok, true);
+	assert.equal(verifyStampMissing(s), false);
+	// a worktree edit clears every check record (the edit hook's job); the PASS must not survive it
+	s.checks = {};
+	assert.equal(verifyStampMissing(s), true, "one edit, one re-run — precise, never sticky");
+	recordVerifyPass(s, "now", "fp1");
+	freshenChecks(s, "fp2");
+	assert.equal(verifyStampMissing(s), false, "the stamp answers to its own wider fingerprint (worktree + plan), so a plain worktree refresh must not speak for it — the verify gate voids it against the real stamp fingerprint");
+	recordVerifyPass(s, "now", null);
+	assert.equal(verifyStampMissing(s), false, "git could not answer: an unprovable stamp is never proven stale");
+	assert.equal(verifyStampMissing({ ...newState("d", false, false, true), stage: "implement" as const }), false, "docs mode is exempt like tier-1");
+});
+
+test("worker session names carry role, ordinal, purpose and outcome", () => {
+	assert.equal(workerName("⏳", "🔍", null, "stamp attack"), "⏳ 🔍 · stamp attack");
+	assert.equal(workerName("✓", "🔨", 2, "wire ops", "3 commits"), "✓ 🔨 #2 · 3 commits · wire ops");
+	assert.equal(workerName("✓", "🔍", null, "", "PASS"), "✓ 🔍 · PASS");
+	assert.equal(workerName("✗", "🔨", 3, "", "hard-cut"), "✗ 🔨 #3 · hard-cut");
+	assert.equal(workerName("⏳", "🔨", 1, ""), "⏳ 🔨 #1", "a label-less run is still separated by ordinal");
+	assert.equal(sanitizeWorkerLabel("  wire\n verify\u0007 ops   "), "wire verify ops", "control chars and whitespace collapse");
+	assert.equal(sanitizeWorkerLabel("twenty chars twelve " + "x".repeat(40)), "twenty chars twelve", "clips on the word boundary when one sits past half the budget");
+	assert.equal(sanitizeWorkerLabel("a " + "x".repeat(60)).length, 32, "an early-only boundary keeps the full 32-char clip");
+	assert.equal(sanitizeWorkerLabel("\u0001\u0002"), "", "nothing meaningful left reads empty");
+});
+
+test("planFingerprint tracks the plan dir byte-for-byte", () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "fp-plan-"));
+	try {
+		assert.equal(planFingerprint(dir), planFingerprint(dir), "absent/empty dir is stable");
+		writeFileSync(path.join(dir, "plan.md"), "a");
+		const h1 = planFingerprint(dir);
+		assert.equal(planFingerprint(dir), h1, "same bytes, same hash");
+		assert.notEqual(planFingerprint(dir), planFingerprint(path.join(dir, "missing")), "present-but-empty ≠ absent");
+		const other = mkdtempSync(path.join(tmpdir(), "fp-plan2-"));
+		writeFileSync(path.join(other, "target.md"), "external a");
+		rmSync(path.join(dir, "plan.md"));
+		symlinkSync(path.join(other, "target.md"), path.join(dir, "plan.md"));
+		const hl = planFingerprint(dir);
+		writeFileSync(path.join(other, "target.md"), "external b");
+		assert.notEqual(planFingerprint(dir), hl, "a symlinked plan still hashes what it resolves to");
+		rmSync(path.join(dir, "plan.md"));
+		rmSync(other, { recursive: true, force: true });
+		// a plain file must not hash like a symlink of the base name (marker-collision class, round 3)
+		writeFileSync(path.join(dir, "plan.md@link"), "X");
+		const fake = planFingerprint(dir);
+		const mirror = mkdtempSync(path.join(tmpdir(), "fp-plan3-"));
+		writeFileSync(path.join(mirror, "t"), "X");
+		symlinkSync(path.join(mirror, "t"), path.join(dir, "plan.md"));
+		assert.notEqual(planFingerprint(dir), fake, "a symlink never collides with a same-name-prefixed file");
+		rmSync(path.join(dir, "plan.md"));
+		rmSync(mirror, { recursive: true, force: true });
+		writeFileSync(path.join(dir, "plan.md"), "b");
+		assert.notEqual(planFingerprint(dir), h1, "content moves the hash");
+		writeFileSync(path.join(dir, "plan.md"), "a");
+		mkdirSync(path.join(dir, "mockups"));
+		writeFileSync(path.join(dir, "mockups", "m.png"), "x");
+		const h2 = planFingerprint(dir);
+		writeFileSync(path.join(dir, "mockups", "m.png"), "y");
+		assert.notEqual(planFingerprint(dir), h2, "nested bytes count too — a swapped mockup moves the verdict's ground");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("transcripts.log lines append and parse back into (op, path)", () => {
+	const line = workerTranscriptLine("2026-01-01T00:00:00Z", "verify", "/tmp/sess.jsonl");
+	assert.match(line, /worker transcript \(verify\): \/tmp\/sess\.jsonl/);
+	const log = `noise hand-written line\n${line}\n${workerTranscriptLine("2026-01-01T01:00:00Z", "run", "/tmp/other.jsonl")}\n`;
+	const parsed = parseWorkerTranscripts(log);
+	assert.equal(parsed.length, 2, "unrecognised lines are skipped, the log is append-only");
+	assert.deepEqual(parsed[0], { at: "2026-01-01T00:00:00Z", op: "verify", path: "/tmp/sess.jsonl" });
+	assert.equal(parsed[1].op, "run");
+	assert.equal(parseWorkerTranscripts("").length, 0);
+});
+
+test("live lines carry the worker's output, bounded", () => {
+
+	assert.equal(stageLiveAssistantLine(5_000, "planning now\nrunning the suite"), "[+00:05] ✎ running the suite", "the last line is the news, no tool-call decoration");	assert.equal(stageLiveAssistantLine(0, "   \n\n"), "", "an empty narration costs no line");
+	assert.equal(stageLiveResultLine(5_000, "bash", true, "251 pass\n0 fail"), "[+00:05] ✓ bash — 251 pass 0 fail");
+	assert.equal(stageLiveResultLine(5_000, "bash", false, "exit 1"), "[+00:05] ✗ bash — exit 1");
+	const long = stageLiveAssistantLine(0, "x".repeat(500));
+	assert.ok(long.length <= 130, `a single live line stays one line: ${long.length}`);
+	const lines = Array.from({ length: 11 }, (_, i) => `line ${i}`);
+	const tail = liveTail(lines, 8);
+	assert.equal(tail[0], "… 3 earlier items", "R6: the collapsed view counts what it dropped instead of showing it");
+	assert.deepEqual(tail.slice(1), lines.slice(-8));
+	assert.deepEqual(liveTail(["a", "b"], 8), ["a", "b"], "short runs show everything and say nothing about it");
+	assert.deepEqual(liveTail(["a", "", "b", ""], 8), ["a", "b"], "blank lines never push real activity off the card");
+});
+
+test("one worker card frame: header, bounded tail, verdict, cost", () => {
+	const tail = Array.from({ length: 11 }, (_, i) => `[+00:0${i}] bash — cmd${i}`);
+	const v = { kind: "stage worker · implement", slug: "carded", elapsedMs: 65_000, budgetMin: 45, tail, usage: "3 turns · \u21911k \u2193200 \u00b7 ctx 5k \u00b7 $0.1000", state: "running" as const };
+	const collapsed = stageCardLines(v);
+	assert.match(collapsed[0], /^\u23f3 stage worker \u00b7 implement \u00b7 carded \u00b7 01:05\/45m$/, "header: what, where, clock against budget");
+	assert.equal(collapsed[1], "\u2026 3 earlier items", "the collapsed card counts what it dropped");
+	assert.equal(collapsed.length, 1 + 1 + 8 + 1, "header + ellipsis + 8 tail + usage \u2014 the card never spills");
+	const done = stageCardLines({ ...v, state: "done", verdict: "pass" as const, transcript: "/tmp/t.jsonl" });
+	assert.match(done[0], /^\u2713/);
+	assert.ok(done.includes("verdict: PASS"), "the verdict line is what the gate asks for");
+	assert.ok(!done.some((l) => l.startsWith("transcript:")), "collapsed hides the path");
+	const wide = stageCardLines({ ...v, state: "failed" as const, transcript: "/tmp/t.jsonl" }, true);
+	assert.match(wide[0], /^\u2717/, "a failed run's frame says so");
+	assert.equal(wide.length, 1 + 11 + 1 + 1, "expanded widens the tail and names the transcript");
+});
+
+test("the usage line says what a run cost", () => {	const u = { input: 1200, output: 300, cacheRead: 45_000, cacheWrite: 0, totalTokens: 46_500, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.42 } };
+	assert.equal(stageUsageLine(u, 7), "7 turns · ↑1.2k ↓300 · ctx 46.5k · $0.4200");
+	assert.match(stageUsageLine({ ...u, input: 0, output: 0, cacheRead: 0, cost: { ...u.cost, total: 0 } }), /↑0 ↓0/);
+});
+
+test("the verify brief orders a check, not a fix", () => {
+	const b = buildVerifyBrief({ slug: "s", workDir: "/wt", planFile: "/p/plan.md", statusJson: "{}", gitSummary: "", diffStat: "2 files changed", defaultBranch: "main", checks: [{ name: "test", cmd: "npm test" }], note: "operator approved D3 as a hard gate" });
+	assert.match(b, /CHECK, DON'T FIX/);
+	assert.match(b, /git status --porcelain/, "the brief warns the tree identity is proved afterwards");
+	assert.match(b, /git diff main…HEAD/);
+	assert.match(b, /npm test/, "tier-1 commands travel in the brief");
+	assert.match(b, /hard gate/, "the note rides along like every other worker");
+	assert.match(b, /VERIFY REPORT\nverdict: pass \| fail/);
+});
+
+test("the reflect brief hands the reviewer the whole flow", () => {
+	const b = buildReflectBrief({
+		slug: "s",
+		planFile: "/p/plan.md",
+		statusJson: "{}",
+		driverSession: "/drv.jsonl",
+		transcripts: [{ at: "t1", op: "implement", path: "/w1.jsonl" }, { at: "t2", op: "verify", path: "/nonexistent-zz.jsonl" }],
+		openReflections: ["- [ ] gate X is confusing"],
+	});
+	assert.ok(b.includes("/drv.jsonl"), "the driver's own transcript is input #1");
+	assert.ok(b.includes("/w1.jsonl"));
+	assert.match(b, /nonexistent-zz\.jsonl.*file is gone/, "a stale transcript path is named, never silently dropped");
+	assert.match(b, /gate X is confusing/, "dedupe against the open queue is part of the brief");
+	assert.match(b, /\[playbook\] .*dev-flow itself/s, "the tagging contract is spelled out");
+});
+
+test("reflect findings split by tag, prose counts as nothing", () => {
+	const r = parseReflectFindings("chat chat\n- **[playbook]** checklist item 3 is stale — evidence: it asks for chromium, none is configured\n`[plugin]` verify gate message is too quiet — evidence: silent refusal\n[neither] the repo README lies\n[playbook] none\n");
+	assert.equal(r.playbook.length, 1);
+	assert.equal(r.plugin.length, 1);
+	assert.equal(r.other.length, 1);
+	assert.equal(r.missing, false);
+	assert.equal(parseReflectFindings("everything was fine, no findings").missing, true, "prose is not findings — the driver must say so");
 });

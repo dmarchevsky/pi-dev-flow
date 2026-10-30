@@ -20,10 +20,12 @@
  * Inactive (fully pass-through) in repos without a .dev-flow/ directory.
  */
 import { exec } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
+import { Container, Text } from "@earendil-works/pi-tui";
 import { compact, createAgentSession, DefaultResourceLoader, defineTool, getAgentDir, isToolCallEventType, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -109,11 +111,39 @@ import {
 	roadmapTidy,
 	shouldSelfCompact,
 	shouldTakeOverCompaction,
-	stageGuidance,
+	TRANSCRIPTS_FILE,
+	stageCardLines,
 	stageElapsedLabel,
+	stageGuidance,
 	stageInterruptSteer,
+	stageLiveAssistantLine,
 	stageLiveLine,
+	stageLiveResultLine,
+	stageUsageLine,
 	summarizeToolArgs,
+	VERIFY_STAMP,
+	VERIFY_STAMP_REFUSAL,
+	WORKER_OP_BUDGET_MIN,
+	WORKER_OP_GLYPH,
+	WORKER_OP_TOOLS,
+	type StageUsage,
+	type WorkerOp,
+	buildReflectBrief,
+	buildVerifyBrief,
+	isWorkerOp,
+	liveClip,
+	liveTail,
+	parseReflectFindings,
+	parseVerifyReport,
+	parseWorkerTranscripts,
+	planFingerprint,
+	recordVerifyPass,
+	renderVerifyReport,
+	verifyStampMissing,
+	workerOpError,
+	workerTranscriptLine,
+	workerName,
+	sanitizeWorkerLabel,
 	stateTamper,
 	statusFor,
 	statusJson,
@@ -410,9 +440,10 @@ export const compactionTakeover: { run: typeof compact } = { run: compact };
  *  picker and `pi export` find it for free) and names the session through an inline extension —
  *  `setSessionName` only exists on a session's own extension API — handing back a rename channel
  *  the driver uses for the ⏳ → ✓/✗ lifecycle. */
+
 export interface StageWorkerHandle { session: AgentSession; rename: (name: string) => void }
-export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string }) => Promise<StageWorkerHandle> } = {
-	run: async ({ work, model, name }) => {
+export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string; tools: string[] }) => Promise<StageWorkerHandle> } = {
+	run: async ({ work, model, name, tools }) => {
 		let rename: (name: string) => void = () => {};
 		const loader = new DefaultResourceLoader({
 			cwd: work,
@@ -427,9 +458,10 @@ export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: 
 			}],
 		});
 		await loader.reload();
-		const { session } = await createAgentSession({ cwd: work, model: model as never, tools: ["read", "bash", "edit", "write"], excludeTools: ["flow", "flow_stage"], resourceLoader: loader });
-		// coding tools only: what a worker cannot reach is a flow it cannot touch — the allowlist picks
-		// the defaults, excludeTools is the belt on the extension tools (allowlist semantics for those are ambiguous)
+		const { session } = await createAgentSession({ cwd: work, model: model as never, tools, excludeTools: ["flow", "flow_stage"], resourceLoader: loader });
+		// the op's toolset decides what the worker can touch at all: an implement worker gets the coding
+		// tools, a reviewer gets read + bash only (a checker with an edit tool is a second implementer).
+		// excludeTools is the belt on the extension tools — a worker never holds a gate or a second flow_stage.
 		return { session, rename: (n) => rename(n) };
 	},
 };
@@ -437,9 +469,24 @@ export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: 
 /** Test-only timer override so the smoke suite drives the soft-steer and the hard cut in ms. */
 export const stageTimingOverride: { softMs?: number; hardMs?: number } = {};
 
+
 /** What a live worker run knows about itself — the one-worker-per-session guard and the ledger the
- *  `op: "status"` verb reads. `lastLines` mirrors the live log (bounded). */
-interface StageRun { startedAt: number; budgetMin: number; softFired: boolean; work: string; lastLines: string[] }
+ *  `op: "status"` verb reads. `lastLines` mirrors the live log (bounded); usage and turns accumulate
+ *  per run so the card and the result can say what the worker cost. */
+interface StageRun {
+	startedAt: number;
+	budgetMin: number;
+	softFired: boolean;
+	work: string;
+	lastLines: string[];
+	op: WorkerOp;
+	/** "🔨 implement" / "🔍 verify" (+ ` · label`) — how the card and the beats name the run; session names use workerName instead. */
+	kind: string;
+	slug: string;
+	usage: StageUsage;
+	turns: number;
+}
+
 const stageRuns = new Map<string, StageRun>();
 
 /** Marks the before_agent_start pass that already wrote this run's [dev-flow] line — see the claim in that handler. */
@@ -677,6 +724,26 @@ async function worktreeFingerprint(cwd: string): Promise<string | null> {
 	const head = await sh("git rev-parse HEAD", cwd);
 	if (!diff.ok || !head.ok) return null;
 	return checkFingerprint(`${st.out}\n${diff.out}`, head.out);
+}
+
+/** The fingerprint a verify PASS belongs to: the worktree's, hashed TOGETHER WITH the feature's plan/
+ *  dir — the checker read the plan too, so a mid-stage plan edit voids its verdict exactly like a code
+ *  edit. null = git could not answer (same fingerprintless-stamp rule as tier-1 records). */
+async function verifyStampFingerprint(root: string, st: FlowState): Promise<string | null> {
+	const base = await worktreeFingerprint(gateCwd(root, st));
+	if (!base) return null;
+	return createHash("sha256").update(`${base}\n${planFingerprint(path.join(root, ".dev-flow", st.slug, "plan"))}`).digest("hex").slice(0, 16);
+}
+
+/** Drop a PASS whose worktree-or-plan fingerprint no longer matches; true if one was dropped. Every
+ *  reader of the stamp (the verify gate, and the check/status views that must not keep advertising a
+ *  dead PASS) runs this before trusting the record. */
+async function voidStaleVerifyStamp(root: string, st: FlowState): Promise<boolean> {
+	if (!st.checks[VERIFY_STAMP]) return false;
+	const vfp = await verifyStampFingerprint(root, st);
+	if (!vfp || st.checks[VERIFY_STAMP]!.wt === vfp) return false;
+	delete st.checks[VERIFY_STAMP];
+	return true;
 }
 
 /** Stamp freshly recorded checks with the tree they ran against — taken AFTER the run, so a check
@@ -964,8 +1031,21 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	// A green record belongs to the tree it ran against. A worktree change made through bash (sed,
 	// a formatter, codegen) fires no edit-tool invalidation — the fingerprint is what notices the
 	// tree moved, and the dropped records become pending so the gate itself reruns them (#84 path).
-	const staleAtGate = freshenChecks(state!, await worktreeFingerprint(gateCwd(root, state!)), (n) => n === "health" && healthRerunsAfterDeploy(cfg));
-	if (staleAtGate.length) writeState(root, state!);
+	const fpAtGate = await worktreeFingerprint(gateCwd(root, state!));
+	const staleAtGate = freshenChecks(state!, fpAtGate, (n) => n === "health" && healthRerunsAfterDeploy(cfg));
+	// The stamp is judged by its own wider fingerprint (see verifyStampFingerprint): a change to the
+	// plan the verdict was written against demotes it exactly like a worktree change would.
+	const stampVoided = await voidStaleVerifyStamp(root, state!);
+	if (staleAtGate.length || stampVoided) writeState(root, state!);
+	// An independent checker has to have looked at THIS tree before the operator is asked to approve it:
+	// the verify worker's PASS is a precondition of the gate, refused before any command runs so a long
+	// suite is never spent on a run that cannot pass. The stamp lives in state.checks, so a worktree edit
+	// or a moved fingerprint drops it exactly like a tier-1 record — one fresh verify worker per change,
+	// precise friction rather than a sticky lock. docs mode is exempt (nothing there to check).
+	if (verifyStampMissing(state!)) {
+		writeState(root, state!);
+		return { text: `verify gate FAILED:\n- ${VERIFY_STAMP_REFUSAL}${staleAtGate.includes(VERIFY_STAMP) || stampVoided ? " (a PASS was recorded, but the tree or its plan moved since — that is why it no longer counts)" : ""}\n${branchLine}`, isError: true };
+	}
 	const pending = pendingChecks(state!, cfg);
 	const gateRun = pending.length ? await runChecks(root, state!, cfg, pending) : null;
 	if (gateRun?.failed) return { text: `verify gate FAILED — a check run at the gate failed:\n${gateRun.lines.join("\n")}\n${branchLine}`, isError: true };
@@ -981,6 +1061,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		// docs mode's contract: no tier-1 work happens, so a docs flow neither builds, deploys nor probes (#43 #49)
 		did.push("docs mode: project commands skipped (build/dev/health)");
 	} else {
+		did.push(`verify worker PASS over this tree (${state!.checks[VERIFY_STAMP]?.at ?? "recorded"})`);
 		if (cfg.commands.build) {
 			const res = await sh(cfg.commands.build, gateCwd(root, state!));
 			state!.checks.build = { ok: res.ok, at: now() };
@@ -1121,6 +1202,8 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged, changelogBase, noFoldCheck: flag("no-fold-check") };
 	// same freshness rule as verify: a green predating a worktree write may not stand for the tree this gate blesses
 	if (freshenChecks(state!, await worktreeFingerprint(wtCwd)).length) writeState(root, state!);
+	// a PASS whose worktree-or-plan moved is dead here too — no gate may act on a verdict it cannot prove current
+	if (await voidStaleVerifyStamp(root, state!)) writeState(root, state!);
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 	const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 	if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
@@ -1740,13 +1823,23 @@ async function gateStatus(o: GateCtx): Promise<RunResult> {
 	const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
 	const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
 	const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
+	// status (and --json, which feeds worker briefs) must never advertise a PASS the gates would refuse:
+	// reap dead stamps in the copies being rendered — and persist only THIS session's own feature, since
+	// a foreign state.json belongs to its own session (a listing must not write another session's file).
+	const states = new Map<string, FlowState>();
+	for (const s of slugs) {
+		const stV = readState(root, s);
+		if (!stV) continue;
+		if (await voidStaleVerifyStamp(root, stV) && s === sess.slug) writeState(root, stV);
+		states.set(s, stV);
+	}
 	if (flag("json")) {
-		const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
+		const sts = slugs.map((s) => states.get(s)).filter((s): s is FlowState => s !== undefined);
 		return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
 	}
 	if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
 	const lines = slugs.flatMap((s) => {
-		const st = readState(root, s);
+		const st = states.get(s);
 		if (!st) return [];
 		return [
 			`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""}${st.yolo ? " [yolo]" : ""}${st.noVersion ? " [no-version]" : ""}${st.pendingAsk ? ` 💬 ${st.pendingAsk}` : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""}`,
@@ -1923,6 +2016,7 @@ async function gateCheck(o: GateCtx): Promise<RunResult> {
 	// flow now gets no test run at all; the mechanical fix is a diff-scope guard at verify if it ever bites
 	if (state!.docs) return { text: "docs mode: project commands skipped — a docs flow runs no tier-1 checks (CI on the tag and the artifact proof still do)" };
 	if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
+	if (await voidStaleVerifyStamp(root, state!)) writeState(root, state!);
 	const ran = await runChecks(root, state!, cfg, cfg.checkList);
 	return { text: `tier-1 checks:\n${ran.lines.join("\n")}`, isError: ran.failed };
 }
@@ -2151,27 +2245,79 @@ export default function devFlow(pi: ExtensionAPI) {
 	});
 	pi.registerTool(flowTool);
 
-	// ---- stage worker (flow_stage): a stage's heavy work in a disposable sub-session ----------
+	/** The text a worker's finished tool call carried (first text part, else an error string) — the live
+	 *  ✓/✗ line is built from it, so a worker that gets an error back shows it, not just the tool name. */
+	function resultText(result: unknown): string {
+		const r = result as { content?: unknown; text?: string; errorMessage?: string } | undefined;
+		const parts = Array.isArray(r?.content) ? (r!.content as { type?: string; text?: string }[]) : [];
+		return parts.find((p) => p?.type === "text")?.text ?? r?.text ?? r?.errorMessage ?? "";
+	}
+
+	/** The assistant prose of a worker turn — text parts only, thinking and tool calls have their own lines. */
+	function assistantText(content: unknown): string {
+		if (typeof content === "string") return content;
+		if (!Array.isArray(content)) return "";
+		return (content as { type?: string; text?: string }[]).filter((p) => p?.type === "text").map((p) => p.text ?? "").join("\n");
+	}
+
+	/** Last non-empty line: the end of a tool dump is the verdict-bearing part ("251 pass", "exit 1",
+	 *  the error), its head is almost never the news. */
+	function lastLineOf(text: string): string {
+		return (text ?? "").split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+	}
+
+	// ---- stage worker (flow_stage): one stage's work, its check and its review in a disposable sub-session --
 	// The child stays UNBOUND on purpose: writeGuard attributes worktree writes to the owning
-	// feature's stage and bashFlowGuard stops only default-branch git ops, so an unbound worker may
-	// edit and commit on the feature branch, while every state-gate verb refuses it (unbound, and
-	// the parent holds the live claim) — and its tool list holds no flow tool at all. The claim,
-	// every gate and every checkpoint stay with the driving session; the worker owes one report.
+	// feature's stage and bashFlowGuard stops only default-branch git ops, so an implement worker may
+	// edit and commit on the feature branch, while every state-gate verb refuses it (unbound, and the
+	// parent holds the live claim) — and its tool list holds no flow tool at all. The claim, every gate
+	// and every checkpoint stay with the driving session; the worker owes one report.
+	// Three ops share this one mechanism on purpose: `run` (a stage's work), `verify` (an independent
+	// read-only checker whose PASS the verify gate demands) and `reflect` (an independent review of the
+	// whole finished flow). Only the brief, the toolset, the budget default and the closing contract
+	// differ — the unbound-worker safety story is identical, and a second mechanism would drift.
 	const stageWorkerTool = defineTool({
 		name: "flow_stage",
 		label: "Stage worker",
 		description:
-			"Delegate the current stage's heavy work to a disposable dev-flow worker session with a fresh context (implement | pre-release). Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. The worker edits and commits in the worktree but cannot run gates or talk to the operator; it appears as a live named session (pi export renders it). At 75% of its budget (budgetMin, default 45) the worker is steered to commit and report instead of being cut. While it runs, flow_stage with op \"status\" answers how the worker is doing. When it returns: read its stage report, run flow check yourself, then ask the checkpoint — the report is a handoff, not a verification.",
-		promptSnippet: 'flow_stage(stage: "implement"|"pre-release", note, budgetMin?) — do the stage\'s work in a fresh worker session; op: "status" reads the live run; gates and checkpoints stay with you',
+			'Delegate to a disposable dev-flow worker session with a fresh context. op "run" (default) does the current stage\'s work (implement | pre-release) and edits + commits on the feature branch; op "verify" is an independent read-only checker of the implement work (read + bash, standing order "check, don\'t fix", closes with a VERIFY REPORT verdict — flow verify refuses until a PASS exists over the current tree); op "reflect" reviews the finished flow — the driver transcript plus every worker transcript — at the release stage after release-done. Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. Give each delegation a short `label` (a few words of purpose) — session names then read `⏳ 🔍 · <label>` while running and `✓ 🔍 · <label> · PASS` (or `✗ … · hard-cut`, `✓ 🔨 #2 · 3 commits · <label>`) when done, so the picker is never a column of identical rows. A worker holds no flow tool: gates, checkpoints and the claim stay with you. At 75% of its budget (budgetMin: default 45 for run, 30 for verify/reflect) the worker is steered to commit and report instead of being cut. The tool card streams the live tail (current tool, last assistant line, ✓/✗ results, elapsed/budget, usage) and op "status" mirrors it on any host. When a worker returns: read its report, run flow check yourself, then ask the checkpoint — a stage report is a handoff, never a verification.',
+		promptSnippet:
+			'flow_stage(op: "run"|"verify"|"reflect", note, budgetMin?) — delegate stage work, an independent read-only check, or the finish review to a fresh worker session; op: "status" reads the live run; gates and checkpoints stay with you',
 		parameters: Type.Object({
-			op: Type.Optional(Type.String({ description: '"run" (default) delegates the stage work; "status" reports the live worker run in this session' })),
-			stage: Type.Optional(Type.String({ description: "Stage to delegate the work for — must match the bound feature's current stage" })),
+			op: Type.Optional(Type.String({ description: '"run" (default) delegates the stage work; "verify" = independent check-only review of the implement work (legal only while the feature is at implement); "reflect" = independent review of the finished flow (legal at release, after release-done); "status" reports the live worker run in this session' })),
+			stage: Type.Optional(Type.String({ description: 'With op "run": the stage to delegate the work for — must match the bound feature\'s current stage. "verify" and "reflect" belong to a fixed stage and ignore this.' })),
 			note: Type.Optional(Type.String({ description: "The worker keeps nothing from this conversation: pass operator answers, decisions, warnings and the exact next action here." })),
-			budgetMin: Type.Optional(Type.Number({ description: "Worker budget in minutes (5-120, default 45). At 75% the worker is steered to commit and report; past the budget it is interrupted and the tree snapshotted." })),
+			budgetMin: Type.Optional(Type.Number({ description: "Worker budget in minutes (5-120; default 45 for run, 30 for verify/reflect). At 75% the worker is steered to commit and report; past the budget it is interrupted and the tree snapshotted." })),
+			label: Type.Optional(Type.String({ description: 'Short purpose for this delegation (≤\u007e32 chars) shown in the session name and card, so a re-delegation reads `🔨 #2 · <purpose>` instead of a clone row. Sanitized and clipped.' })),
 		}),
+		// The card is the guaranteed worker-visibility surface: it renders inside the driver's own
+		// transcript, in TUI and in pi-web alike, because every line also travels as the update's text.
+		renderCall: (args, theme) => {
+			const op = String(args.op ?? "run");
+			const what = op === "run" ? `run ${args.stage ?? "?"}` : op;
+			return new Text(theme.fg("toolTitle", `flow_stage ${what}`) + (args.note ? ` ${theme.fg("muted", liveClip(String(args.note), 70))}` : ""), 0, 0);
+		},
+		renderResult: (result, options, theme) => {
+			const d = result.details as { card?: string[]; cardFull?: string[]; verdict?: string | null } | undefined;
+			const lines = (options.expanded ? d?.cardFull ?? d?.card : d?.card) ?? [];
+			if (!lines.length) return new Text((result.content ?? []).map((c) => ("text" in c ? c.text : "")).join("\n") || "(no output)", 0, 0);
+			const box = new Container();
+			for (const line of lines) {
+				const text = options.expanded ? line : liveClip(line, 120);
+				box.addChild(new Text(line.startsWith("✗") || line.startsWith("verdict: FAIL") ? theme.fg("error", text) : line.startsWith("✓") || line.startsWith("verdict: PASS") ? theme.fg("success", text) : theme.fg("muted", text), 0, 0));
+			}
+			if (options.expanded) {
+				box.addChild(new Text(theme.fg("dim", "─── report ───"), 0, 0));
+				box.addChild(new Text((result.content ?? []).map((c) => ("text" in c ? c.text : "")).join("\n"), 0, 0));
+			}
+			return box;
+		},
 		execute: async (_id, params, signal, onUpdate, ctx) => {
 			const err = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
-			if (String(params.op ?? "run") === "status") {
+			const opRaw = String(params.op ?? "run").trim().toLowerCase();
+			if (!isWorkerOp(opRaw)) return err(`unknown op "${opRaw}" — flow_stage ops: run (delegate the stage work), verify (independent check), reflect (finish review), status (the live run)`);
+			const op: WorkerOp = opRaw;
+			if (op === "status") {
 				const run = stageRuns.get(sessionKey(ctx));
 				if (!run) return { content: [{ type: "text", text: "no stage worker is running in this session" }], details: { running: false } };
 				const elapsed = Date.now() - run.startedAt;
@@ -2179,71 +2325,141 @@ export default function devFlow(pi: ExtensionAPI) {
 				const logNow = await sh("git log --oneline -5", run.work);
 				const text = [
 					`stage worker running: ${stageElapsedLabel(elapsed)} elapsed of ${run.budgetMin} min budget${run.softFired ? " — in grace: committing and reporting" : ""}`,
-					...run.lastLines.slice(-10),
+					...liveTail(run.lastLines),
+					stageUsageLine(run.usage, run.turns),
 					`worktree now: ${dirtyNow.ok && dirtyNow.out.trim() ? `${dirtyNow.out.trim().split("\n").length} uncommitted path(s)` : "clean"}`,
 					`recent commits:\n${logNow.ok && logNow.out.trim() ? logNow.out : "(none)"}`,
 				].join("\n");
-				return { content: [{ type: "text", text }], details: { running: true, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired } };
+				return { content: [{ type: "text", text }], details: { running: true, op: run.op, slug: run.slug, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired, usage: run.usage, turns: run.turns } };
 			}
-			const stageArg = String(params.stage ?? "");
-			if (!isDelegableStage(stageArg)) return err(`flow_stage delegates the work of: ${DELEGABLE_STAGES.join(" or ")} — "${stageArg}" is not delegable (plan is the operator dialogue; release/finish carry the checkpoint words; op "status" needs no stage)`);
 			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
 			const st = boundFeature(ctx.cwd, sessionKey(ctx));
 			if (!st) return err("this session is not bound to a feature — flow start <slug> or flow use <slug> first");
-			if (st.stage !== stageArg) return err(`feature ${st.slug} is at stage "${st.stage}", not "${stageArg}" — flow_stage runs the work of the stage you are in`);
+			const stageArg = String(params.stage ?? "");
+			if (op === "run") {
+				if (!isDelegableStage(stageArg)) return err(`flow_stage delegates the work of: ${DELEGABLE_STAGES.join(" or ")} — "${stageArg}" is not delegable (plan is the operator dialogue; release/finish carry the checkpoint words; op "status" needs no stage)`);
+				if (st.stage !== stageArg) return err(`feature ${st.slug} is at stage "${st.stage}", not "${stageArg}" — flow_stage runs the work of the stage you are in`);
+			} else {
+				const why = workerOpError(op, st);
+				if (why) return err(why);
+				if (stageArg && stageArg !== st.stage) return err(`op "${op}" belongs to the stage the flow is in ("${st.stage}"), not "${stageArg}" — the op names its own stage`);
+			}
 			const key = sessionKey(ctx);
 			if (stageRuns.has(key)) return err(`a stage worker for ${st.slug} is already running in this session — one worker per session; flow_stage {op: "status"} reads the live one`);
-			const budgetMin = clampStageBudgetMin(params.budgetMin);
+			const budgetMin = clampStageBudgetMin(params.budgetMin ?? WORKER_OP_BUDGET_MIN[op]);
 			const budgetMs = budgetMin * 60_000;
 			const softMs = stageTimingOverride.softMs ?? Math.round(budgetMs * 0.75);
 			const hardMs = stageTimingOverride.hardMs ?? budgetMs;
-			const run: StageRun = { startedAt: Date.now(), budgetMin, softFired: false, work: gateCwd(ctx.cwd, st), lastLines: [] };
+			const glyph = WORKER_OP_GLYPH[op];
+			const label = typeof params.label === "string" ? sanitizeWorkerLabel(params.label) : "";
+			// the card/beats keep the descriptive kind (the card line has no other stage context); the
+			// session NAMES are compact — glyph, ordinal, purpose (see workerName)
+			const kind = op === "run" ? `${glyph} ${st.stage}` : `${glyph} ${op}`;
+			const kindCard = label ? `${kind} · ${label}` : kind;
+			const work = gateCwd(ctx.cwd, st);
+			const run: StageRun = {
+				startedAt: Date.now(), budgetMin, softFired: false, work, lastLines: [],
+				op, kind, slug: st.slug, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, turns: 0,
+			};
 			stageRuns.set(key, run);
-			const work = run.work;
+			const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 			const logFile = path.join(featDir(ctx.cwd, st.slug), "stage-live.log");
+			const transcriptLog = path.join(featDir(ctx.cwd, st.slug), "stage-sessions", TRANSCRIPTS_FILE);
 			let child: AgentSession | undefined;
 			let crash: string | null = null;
 			let timedOut = false;
-			const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+			/** The card frame for this instant — one place so the streamed text, the TUI card and
+			 *  op:"status" can never disagree about what the worker is doing. */
+			const cardView = (state: "running" | "done" | "failed", extra: { verdict?: "pass" | "fail" | null; transcript?: string } = {}) =>
+				stageCardLines({ kind: kindCard, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state, ...extra });
+			const emit = (event: string, data: Record<string, unknown>) => {
+				try { pi.events.emit(event, { slug: st.slug, op, stage: st.stage, ...data }); } catch { /* the bus is visibility, never function */ }
+			};
 			try {
-				writeFileSync(logFile, `${stageLiveLine(0, "worker", `started (${st.stage}, budget ${budgetMin} min)`)}\n`);
-				const beat = (toolName: string) => { if (ctx.hasUI) ctx.ui.setStatus("dev-flow-stage", `⏳ stage worker ${stageElapsedLabel(Date.now() - run.startedAt)} · ${toolName} · ${st.slug}`); };
+				writeFileSync(logFile, `${stageLiveLine(0, "worker", `${op} started (${st.stage}, budget ${budgetMin} min)`)}\n`);
+				const beat = (toolName: string) => { if (ctx.hasUI) ctx.ui.setStatus("dev-flow-stage", `⏳ ${kindCard} · ${st.slug} ${stageElapsedLabel(Date.now() - run.startedAt)} · ${toolName}`); };
+				// ordinal among this feature's same-op workers, read from the durable index — re-delegations
+				// read #2, #3 in the list instead of identical rows (only run gets a seq; a verify is known
+				// by its verdict, a reflect is one per flow)
+				const seq = op === "run" ? (existsSync(transcriptLog) ? parseWorkerTranscripts(readFileSync(transcriptLog, "utf8")).filter((x) => x.op === op).length : 0) + 1 : null;
 				const statusJsonText = (await runFlow(["status", "--json"], ctx.cwd, uiFrom(ctx), sessFor(ctx))).text;
 				const git = await sh("git status --porcelain -b", work);
-				const refRel = stageReference(st.stage);
-				let refText = "";
-				if (refRel) { try { refText = readFileSync(path.join(SKILL_DIR, refRel), "utf8"); } catch { refText = ""; } }
-				const brief = buildStageBrief({
-					slug: st.slug,
-					stage: st.stage as DelegableStage,
-					workDir: work,
-					planFile: path.join(featDir(ctx.cwd, st.slug), "plan", "plan.md"),
-					referenceText: refText,
-					statusJson: statusJsonText,
-					gitSummary: git.ok ? git.out.trim() : "(git status failed)",
-					note: typeof params.note === "string" ? params.note : undefined,
-				});
+				const note = typeof params.note === "string" ? params.note : undefined;
+				const planFile = path.join(featDir(ctx.cwd, st.slug), "plan", "plan.md");
+				let brief: string;
+				if (op === "verify") {
+					// the reviewer reads the full diff itself; the stat is only the shape of what it is in for
+					const stat = await sh(`git diff --shortstat ${sq(`origin/${cfg.defaultBranch}`)}...HEAD 2>/dev/null || git diff --shortstat ${sq(cfg.defaultBranch)}...HEAD`, work);
+					const tier1 = [...cfg.checkList];
+					if (cfg.commands.test && !tier1.some((c) => c.name === "test")) tier1.push({ name: "test", cmd: cfg.commands.test });
+					brief = buildVerifyBrief({
+						slug: st.slug, workDir: work, planFile, statusJson: statusJsonText,
+						gitSummary: git.ok ? git.out.trim() : "(git status failed)",
+						diffStat: stat.ok ? stat.out.trim() : "(no diff stat)",
+						defaultBranch: cfg.defaultBranch, checks: tier1, note,
+					});
+				} else if (op === "reflect") {
+					const transcripts = existsSync(transcriptLog) ? parseWorkerTranscripts(readFileSync(transcriptLog, "utf8")) : [];
+					let driverSession: string | null = null;
+					try { driverSession = ctx.sessionManager.getSessionFile() ?? null; } catch { /* a host without a file-backed session says so in the brief */ }
+					brief = buildReflectBrief({
+						slug: st.slug, planFile, statusJson: statusJsonText, driverSession, transcripts,
+						openReflections: readReflections(ctx.cwd).map((r) => r.line), note,
+					});
+				} else {
+					const refRel = stageReference(st.stage);
+					let refText = "";
+					if (refRel) { try { refText = readFileSync(path.join(SKILL_DIR, refRel), "utf8"); } catch { refText = ""; } }
+					brief = buildStageBrief({ slug: st.slug, stage: st.stage as DelegableStage, workDir: work, planFile, referenceText: refText, statusJson: statusJsonText, gitSummary: git.ok ? git.out.trim() : "(git status failed)", note });
+				}
+				// the tree identity a verify verdict belongs to, before anything runs: the same comparison
+				// the tier-1 fingerprint makes, done here because a reviewer must not be the one who edited.
+				// HEAD is captured too: a reviewer that commits or moves a ref leaves `git status` clean while
+				// reading a different tree, so a porcelain-only diff would stamp a PASS for a HEAD it never saw.
+				const statusBefore = await sh("git status --porcelain", work);
+				const headBefore = await sh("git rev-parse HEAD", work);
+				const refBefore = await sh("git symbolic-ref -q HEAD || true", work);
+				// the plan is an input the reviewer reads from OUTSIDE the worktree — it belongs in the
+				// before/after proof too, or a reviewer could rewrite the ground it is judging mid-run
+				const planDir = path.join(ctx.cwd, ".dev-flow", st.slug, "plan");
+				const planBefore = planFingerprint(planDir);
 				// the worker is a REAL pi session in the default location — the pi/pi-web picker renders it
-			// live from the append-only transcript (⏳ = resumable later; resuming a live one forks it,
-			// browsing is read-only by construction); `pi export <file>` makes it readable HTML
-			const worker = await stageWorkerSpawn.run({ work, model: ctx.model, name: `⏳ stage worker · ${st.stage} · ${st.slug}` });
-			child = worker.session;
+				// live from the append-only transcript (⏳ = resumable later; resuming a live one forks it,
+				// browsing is read-only by construction); `pi export <file>` makes it readable HTML
+				const worker = await stageWorkerSpawn.run({ work, model: ctx.model, name: workerName("⏳", glyph, seq, label), tools: [...WORKER_OP_TOOLS[op]] });
+				child = worker.session;
+				emit("dev-flow:worker-started", { budgetMin, startedAt: new Date().toISOString() });
 				let lastBeat = 0;
+				/** One live line: ledger, durable log, and the streamed card — same text on every host. */
+				const pushLine = (line: string) => {
+					if (!line) return;
+					run.lastLines.push(line);
+					if (run.lastLines.length > 50) run.lastLines.shift();
+					try { appendFileSync(logFile, `${line}\n`); } catch { /* the log mirrors activity, the transcript is the record */ }
+					const card = cardView("running");
+					onUpdate?.({ content: [{ type: "text", text: card.join("\n") }], details: { running: true, op, slug: st.slug, stage: st.stage, card, cardFull: stageCardLines({ kind, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state: "running" }, true) } });
+				};
 				const unsub = child.subscribe((ev: unknown) => {
-					const e = ev as { type?: string; toolName?: string; args?: unknown; message?: { role?: string; usage?: Record<string, number> & { cost?: Record<string, number> } } };
+					const e = ev as { type?: string; toolName?: string; args?: unknown; isError?: boolean; result?: unknown; message?: { role?: string; content?: unknown; usage?: Record<string, number> & { cost?: Record<string, number> } } };
+					const elapsed = () => Date.now() - run.startedAt;
 					if (e.type === "tool_execution_start") {
-						const line = stageLiveLine(Date.now() - run.startedAt, e.toolName ?? "?", summarizeToolArgs(e.args));
-						run.lastLines.push(line);
-						if (run.lastLines.length > 50) run.lastLines.shift();
-						try { appendFileSync(logFile, `${line}\n`); } catch { /* the log mirrors activity, the transcript is the record */ }
-						onUpdate?.({ content: [{ type: "text", text: `stage worker ${stageElapsedLabel(Date.now() - run.startedAt)} · ${e.toolName ?? "?"}` }], details: undefined });
+						pushLine(stageLiveLine(elapsed(), e.toolName ?? "?", summarizeToolArgs(e.args)));
 						const now = Date.now();
 						if (now - lastBeat > 5000) { lastBeat = now; beat(e.toolName ?? "?"); }
 					}
-					if (e.type === "message_end" && e.message?.role === "assistant" && e.message.usage) {
+					if (e.type === "tool_execution_end") {
+						// the last line of the result is the verdict-bearing one ("251 pass", "exit 1",
+						// the error) — the head of a tool dump is almost never the news
+						pushLine(stageLiveResultLine(elapsed(), e.toolName ?? "?", !e.isError, lastLineOf(resultText(e.result))));
+					}
+					if (e.type === "message_end" && e.message?.role === "assistant") {
+						run.turns++;
 						const u = e.message.usage;
-						for (const f of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) usage[f] += Number(u[f] ?? 0);
-						if (u.cost) for (const f of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) usage.cost[f] += Number(u.cost[f] ?? 0);
+						if (u) {
+							for (const f of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) run.usage[f] += Number(u[f] ?? 0);
+							if (u.cost) for (const f of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) run.usage.cost[f] += Number(u.cost[f] ?? 0);
+						}
+						pushLine(stageLiveAssistantLine(elapsed(), assistantText(e.message.content)));
 					}
 				});
 				const abortChild = () => void Promise.resolve(child?.abort()).catch(() => {});
@@ -2265,9 +2481,45 @@ export default function devFlow(pi: ExtensionAPI) {
 					unsub();
 				}
 				const clean = !crash && !timedOut;
-				worker.rename(`${clean ? "✓" : "✗"} stage worker · ${st.stage} · ${st.slug}`);
 				const transcript = child.sessionManager.getSessionFile() ?? "";
-				const report = parseStageReport(child.getLastAssistantText() ?? "");
+				// the durable worker index: until now a transcript path lived only in this call's result,
+				// i.e. only as long as the driver kept it in context — the reflect worker needs the list
+				if (transcript) {
+					try {
+						mkdirSync(path.dirname(transcriptLog), { recursive: true });
+						appendFileSync(transcriptLog, `${workerTranscriptLine(now(), op, transcript)}\n`);
+					} catch { /* an index that failed to append is never a reason to lose the run */ }
+				}
+				const report = op === "run" ? parseStageReport(child.getLastAssistantText() ?? "") : null;
+				const verify = op === "verify" ? parseVerifyReport(child.getLastAssistantText() ?? "") : null;
+				const findings = op === "reflect" ? parseReflectFindings(child.getLastAssistantText() ?? "") : null;
+				// A check-only worker must leave the tree exactly as it found it: the verdict is a claim
+				// about THIS tree, so a reviewer that touched anything voids its own report. Computed before
+				// the rename and the stamp so both readers agree on one verdict of "did the ground move".
+				// (The gate's own uncommitted-path policy stays unchanged — a tree already dirty is not the
+				// worker's fault; only movement counts.)
+				const statusAfter = await sh("git status --porcelain", work);
+				const headAfter = await sh("git rev-parse HEAD", work);
+				const refAfter = await sh("git symbolic-ref -q HEAD || true", work);
+				// four legs, because each alone has a clean-tree bypass: porcelain misses ref moves,
+				// rev-parse misses `checkout -b` at the same SHA, symbolic-ref misses a detached move,
+				// and all three miss the plan the verdict was written against living outside the worktree
+				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out) || (refBefore.ok && refAfter.ok && refAfter.out !== refBefore.out) || planFingerprint(planDir) !== planBefore);
+				// the outcome goes INTO the final name — a picker row like `✓ 🔍 · PASS · stamp attack` or
+				// `✓ 🔨 #2 · 3 commits · wire ops` answers "how did it end?" without opening the session
+				let outcome: string | null = null;
+				if (clean) {
+					if (op === "run" && headBefore.ok) {
+						const c = await sh(`git rev-list --count ${sq(headBefore.out)}..HEAD`, work);
+						const n = c.ok ? c.out.trim() : "0";
+						if (n !== "0") outcome = `${n} commit${n === "1" ? "" : "s"}`;
+					}
+					if (verify?.verdict) outcome = moved ? "verdict VOID" : verify.verdict.toUpperCase();
+					if (findings && !findings.missing) outcome = `${findings.playbook.length + findings.plugin.length + findings.other.length} findings`;
+				} else {
+					outcome = timedOut ? "hard-cut" : "crashed";
+				}
+				worker.rename(workerName(clean ? "✓" : "✗", glyph, seq, label, outcome));
 				// never hand back an unrecoverable state: a dirty tree is snapshotted (tracked AND untracked,
 				// via a throwaway index — no real-index or worktree mutation, no WIP commit on the branch)
 				let snapshot: string | null = null;
@@ -2276,26 +2528,79 @@ export default function devFlow(pi: ExtensionAPI) {
 					const snapDir = path.join(featDir(ctx.cwd, st.slug), "stage-sessions");
 					mkdirSync(snapDir, { recursive: true });
 					const stamp = Date.now();
-					const diffFile = path.join(snapDir, `${st.stage}-${stamp}.diff`);
+					const diffFile = path.join(snapDir, `${op}-${stamp}.diff`);
 					const idx = path.join(snapDir, `.snap-index-${stamp}`);
 					const snapRun = await sh(`GIT_INDEX_FILE=${sq(idx)} git read-tree HEAD && GIT_INDEX_FILE=${sq(idx)} git add -A && T=$(GIT_INDEX_FILE=${sq(idx)} git write-tree) && git diff HEAD "$T" > ${sq(diffFile)}; rm -f ${sq(idx)}`, work);
 					if (snapRun.ok && existsSync(diffFile)) snapshot = diffFile;
 				}
-				// the worker dirtied tier-1 records through the same hooks any edit dirties them — the
-				// driving session re-greens after the stage: the check runs on its binding, verdict rides along.
-				const check = await runFlow(["check"], ctx.cwd, uiFrom(ctx), sessFor(ctx));
-				const parts = [renderStageReport(report)];
+				// An implement worker dirtied tier-1 records through the same hooks any edit dirties them, so
+				// the check reruns here: it runs on the driver's binding and its verdict rides along in the
+				// digest. A check-only op touched nothing (proved below), so its records still stand — and
+				// re-running a whole suite here would spend it twice and hide the gate's own re-run.
+				const check = op === "run" ? await runFlow(["check"], ctx.cwd, uiFrom(ctx), sessFor(ctx)) : null;
+				// the PASS is stamped AFTER the rerun so it belongs to the settled tree, and only over a tree
+				// the reviewer actually left untouched — this stamp is what flow verify demands at the gate
+				let stamped = false;
+				let cleared = false;
+				if (verify?.verdict === "pass" && clean && !moved) {
+					const fresh = readState(ctx.cwd, st.slug);
+					if (fresh) {
+						recordVerifyPass(fresh, now(), await verifyStampFingerprint(ctx.cwd, fresh));
+						writeState(ctx.cwd, fresh);
+						stamped = true;
+					}
+				} else if (verify?.verdict === "fail" && !moved) {
+					// a FAIL over an unmoved tree contradicts any earlier PASS — the gate may not ask
+					// Verified? against a tree its newest checker rejected
+					const fresh = readState(ctx.cwd, st.slug);
+					if (fresh?.checks[VERIFY_STAMP]) {
+						delete fresh.checks[VERIFY_STAMP];
+						writeState(ctx.cwd, fresh);
+						cleared = true;
+					}
+				}
+				const parts: string[] = [];
+				if (report) parts.push(renderStageReport(report));
+				if (verify) {
+					parts.push(renderVerifyReport(verify));
+					if (stamped) parts.push(`PASS stamped on this tree — flow verify will accept it until the tree moves (any edit drops it like a tier-1 record, then a fresh verify worker is owed).`);
+					if (cleared) parts.push("an earlier PASS over this tree was DROPPED — this FAIL contradicts it; fix the findings, then a fresh verify worker is owed.");
+					else if (moved) parts.push(`VERDICT VOID: the verify worker moved the tree, HEAD, branch pointer or plan (the before/after proof differs from before its run) — a reviewer that edits invalidates its own report.${snapshot ? ` Snapshot: ${snapshot}` : ""}`);
+					else if (!clean) parts.push("no verdict recorded from a crashed or interrupted run — rerun the verify worker.");
+					else parts.push(`the verify gate will refuse Verified? until a verify worker returns verdict: pass over the current tree${verify.verdict === "fail" ? " (this one returned FAIL — fix the findings, then rerun)" : ""}.`);
+				}
+				if (findings) {
+					if (findings.missing) parts.push("reflect worker ended WITHOUT tagged findings — nothing parsed as [playbook]/[plugin]; its tail is below, read it before concluding the review found nothing:", "```", findings.rawTail, "```");
+					else {
+						parts.push(
+							`playbook findings (${findings.playbook.length}):`, ...(findings.playbook.length ? findings.playbook.map((x) => `[playbook] ${x}`) : ["- none"]),
+							`plugin findings (${findings.plugin.length}):`, ...(findings.plugin.length ? findings.plugin.map((x) => `[plugin] ${x}`) : ["- none"]),
+							...(findings.other.length ? ["other:", ...findings.other.map((x) => `[neither] ${x}`)] : []),
+							"put the findings to the operator (Fold? Fix? Drop?) — queue what they fold with flow reflect --playbook|--plugin; the worker queued nothing.",
+						);
+					}
+				}
 				if (run.softFired) parts.push(`worker was steered to close out at its ${budgetMin}-min budget${timedOut ? " and still needed the hard cut — treat the report as mid-stage" : " — committed and reported by choice"}`);
 				if (timedOut) parts.push(`worker was hard-interrupted at the ${budgetMin}-minute cap — treat the report as mid-stage`);
 				if (crash) parts.push(`worker run ended with an error: ${crash}`);
-				if (snapshot) parts.push(`uncommitted worktree snapshotted (tracked + untracked): ${snapshot} — read it before deciding what to keep`);
-				parts.push(`tier-1 rerun after worker: ${check.text.replace(/\s+/g, " ").trim()}`);
-				parts.push(`worker transcript: ${transcript || "(session file unknown)"}${transcript ? `\nreadable as HTML: pi export ${transcript}` : ""}`);
+				if (snapshot && !verify) parts.push(`uncommitted worktree snapshotted (tracked + untracked): ${snapshot} — read it before deciding what to keep`);
+				parts.push(check ? `tier-1 rerun after worker: ${check.text.replace(/\s+/g, " ").trim()}` : "tier-1 untouched: a check-only worker leaves the tree (and the records) as it found them — flow check / flow verify rerun what the tree still owes.");
+				parts.push(`worker transcript: ${transcript || "(session file unknown)"}${transcript ? `\nreadable as HTML: pi export ${transcript}` : ""}\nindexed in: ${transcriptLog}`);
+				const failed = !!crash || timedOut || moved;
+				emit(failed ? "dev-flow:worker-failed" : "dev-flow:worker-completed", {
+					elapsedMs: Date.now() - run.startedAt, usage: run.usage, turns: run.turns, budgetMin, softFired: run.softFired, timedOut, crash,
+					verdict: verify?.verdict ?? null, reportMissing: report?.missing ?? findings?.missing ?? false, transcript, snapshot,
+				});
+				const card = cardView(failed ? "failed" : "done", { verdict: verify?.verdict ?? null, transcript });
 				return {
 					content: [{ type: "text" as const, text: parts.join("\n\n") }],
-					details: { slug: st.slug, stage: st.stage, done: report.done, files: report.files, notes: report.notes, blockers: report.blockers, reportMissing: report.missing, timedOut, softFired: run.softFired, budgetMin, elapsedMs: Date.now() - run.startedAt, error: crash, transcript, snapshot },
-					usage,
-					isError: !!crash || timedOut,
+					details: {
+						op, slug: st.slug, stage: st.stage, card, cardFull: stageCardLines({ kind, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state: failed ? "failed" : "done", verdict: verify?.verdict ?? null, transcript }, true),
+						done: report?.done, files: report?.files, notes: report?.notes, blockers: report?.blockers, reportMissing: report?.missing ?? findings?.missing ?? false,
+						verdict: verify?.verdict ?? null, stamped, clearedStamp: cleared, verdictVoided: moved, timedOut, softFired: run.softFired, budgetMin, elapsedMs: Date.now() - run.startedAt, error: crash, transcript, snapshot,
+					},
+					usage: run.usage,
+					isError: failed,
 				};
 			} finally {
 				stageRuns.delete(key);
@@ -2533,7 +2838,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		const state = boundFeature(ctx.cwd, key);
 		if (!state || state.stage === "done") {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
-			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
+			let content = "[dev-flow] no flow bound. Every request goes through flow. New work — pre-plan first (see the skill): analyze read-only, bring findings + questions + a direction with a proposed slug/mode to the operator, and flow start <slug> only once they say start; unfinished feature: flow use <slug>.";
 			const cb = claimBlocker(ctx.cwd, key);
 			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (pid ${cb.claim.pid}) — flow use ${cb.state.slug} takes it over explicitly.`;
 			const curBr = await currentBranch(ctx.cwd);

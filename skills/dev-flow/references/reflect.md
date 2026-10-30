@@ -26,7 +26,12 @@ and stage context; the operator decides:
   count with this verb when the pile grows; offer the tidy to the operator then.
 - **Bare `flow reflect` is the end-of-session reflection** — it runs as part
   of every finish (before the slug folder is deleted — see Stage: finish) and
-  whenever the operator asks. It prints the
+  whenever the operator asks. The default way to run that review at finish is
+  delegated: `flow_stage { op: "reflect" }` (release stage, after
+  `release-done`) gives the whole flow — driver transcript + every worker
+  transcript + plan + status — to an independent session that returns tagged
+  findings you put to the operator (Fold? Fix? Drop?); the self-protocol below
+  is the fallback when delegation is impossible. It prints the
   protocol: review the full session log (messages, tool calls, results);
   re-check each open item against the current playbook and newer dev-flow
   versions (`npm view pi-dev-flow version` vs the running version, or

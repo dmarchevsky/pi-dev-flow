@@ -4,6 +4,12 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.69.0] - 2026-10-30
+
+- **Workers, so the conversation that talks to you stays lean.** `flow_stage` now delegates to disposable worker sessions with a fresh context, and the skill makes delegation the default for non-trivial implement work: the driver keeps the claim, the gates and the checkpoints, and receives one bounded stage report. A **verify worker** (`op: "verify"`) is an independent, check-only checker of the implement work — and its PASS is now a hard precondition of `flow verify`: the stamp belongs to the exact tree it read (worktree *and* the plan dir it judged against), so any edit anywhere — including a mid-stage plan amendment — drops it like a tier-1 record; a fresh FAIL deletes a contradicted PASS; a reviewer that moves the tree through bash anyway (file, HEAD, branch pointer or plan) voids its own verdict and gets snapshotted. A **reflect worker** (`op: "reflect"`) reviews the finished flow — driver transcript plus every worker transcript, durably indexed in `stage-sessions/transcripts.log` — returning tagged findings to route through Fold?/Fix?/Drop?.
+- **Workers are visible while they work.** The tool card streams the live tail (current tool, last assistant line, ✓/✗ results, elapsed against budget, usage); the picker shows a live session named by role, ordinal and purpose — `⏳ 🔍 · stamp attack`, `⏳ 🔨 #2 · wire ops` — renamed at the end with its outcome: `✓ 🔍 · PASS · stamp attack`, `✓ 🔨 #2 · 3 commits · wire ops`, `✗ 🔨 #3 · hard-cut`. A footer beat ticks while a worker runs, `stage-live.log` is tail-able, `flow_stage { op: "status" }` prints the same on any host, and `dev-flow:worker-*` events put every run on the bus for other extensions.
+- **Pre-plan discipline:** an unbound session may plan freely but writes nothing — `plan.md` belongs to the flow folder and is only written after `flow start` binds the slug, so discussing an idea can never leave edits behind.
+
 ## [0.68.1] - 2026-10-28
 
 - **`flow abort` leaves no ghost (gh#138).** Aborting a feature whose worktree exists now stamps `aborted` on the kept state, and the doctor's git-consistency sweep skips stamped states — doing the cleanup the abort echo prints (`git worktree remove`, `git branch -D`) no longer becomes a `has no worktree` finding that every later `flow doctor` repeats.
