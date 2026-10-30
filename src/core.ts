@@ -2322,6 +2322,8 @@ export interface StageCardView {
 	verdict?: "pass" | "fail" | null;
 	note?: string;
 	transcript?: string;
+	/** settled card only: the flow's other workers, already rendered by `workerFamily`. */
+	family?: string[];
 }
 
 /** One frame of the worker card: header (what · where · clock against budget), the bounded live tail,
@@ -2334,7 +2336,64 @@ export function stageCardLines(v: StageCardView, expanded = false): string[] {
 	if (v.verdict) out.push(`verdict: ${v.verdict.toUpperCase()}`);
 	if (v.usage) out.push(v.usage);
 	if (expanded && v.transcript) out.push(`transcript: ${v.transcript}`);
+	// the family only on the settled card: listing a session directory is IO, and a live frame
+	// redraws on every worker tool call — a running run must not pay for a directory read
+	if (expanded && v.family?.length) out.push("workers this session spawned:", ...v.family);
 	return out;
+}
+
+/** One worker session as pi's own session listing describes it. dev-flow keeps no lineage index
+ *  of its own: the `parentSession` link in a session header *is* the record, and pi's picker threads
+ *  on it. The extension reads pi's types and maps them onto this pi-free shape so the logic here
+ *  stays unit-testable. */
+export interface WorkerSessionRow {
+	/** the worker's session file */
+	path: string;
+	/** the parent link as pi recorded it (`parentSession`); absent = not somebody's child */
+	parent?: string | null;
+	/** the picker display name — it carries the ⏳/✓/✗ and the outcome the driver stamps on it */
+	name?: string;
+	messageCount?: number;
+	/** file mtime, however the host hands it over (pi gives a Date; tests give a number) */
+	modified?: Date | number | string;
+}
+
+/** How many workers one render lists before it folds the older ones. */
+export const WORKER_FAMILY_ITEMS = 12;
+
+/** The same session file written two ways is still one session (separators, trailing slash, and on
+ *  Windows the case of the drive letter). pi's own picker canonicalizes the same idea. */
+function sessionKey(p: string): string {
+	const k = path.resolve(p).replace(/[\\/]+$/, "");
+	return process.platform === "win32" ? k.toLowerCase() : k;
+}
+
+function sessionTime(row: WorkerSessionRow): number {
+	const raw = row.modified instanceof Date ? row.modified.getTime() : typeof row.modified === "number" ? row.modified : row.modified ? Date.parse(row.modified) : 0;
+	return Number.isFinite(raw) ? raw : 0;
+}
+
+/**
+ * The family — every stage worker this session spawned, newest first, one line each.
+ *
+ * A stage worker is a real pi session whose header carries `parentSession` pointing at the driver's
+ * own file, so pi's picker nests it under the driver by itself (Threaded sort). This reads the same
+ * fact back for every surface that has no tree: the `flow_stage` card and `op: "status"`. Nothing is
+ * stored here, so a renamed worker (`✓ 🔍 · PASS · stamp attack`) reads back renamed, and workers a
+ * previous session already delegated show up next to this one's.
+ */
+export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null | undefined, max = WORKER_FAMILY_ITEMS): string[] {
+	if (!driverFile) return [];
+	const key = sessionKey(driverFile);
+	const mine = rows.filter((r) => r.parent && sessionKey(r.parent) === key).sort((a, b) => sessionTime(b) - sessionTime(a));
+	const shown = mine.slice(0, max);
+	const lines = shown.map((r) => {
+		const at = sessionTime(r);
+		const stamp = at ? new Date(at).toISOString().slice(0, 16).replace("T", " ") : "time unknown";
+		return `${r.name?.trim() || "(unnamed worker)"} · ${r.messageCount ?? 0} msgs · ${stamp} · ${r.path}`;
+	});
+	if (mine.length > shown.length) lines.push(`… ${mine.length - shown.length} earlier workers`);
+	return lines;
 }
 
 /** What the tool accumulated from a worker's assistant usage records. */

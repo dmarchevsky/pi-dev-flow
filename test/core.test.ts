@@ -128,6 +128,8 @@ import {
 	workerOpError,
 
 	workerTranscriptLine,
+	workerFamily,
+	WORKER_FAMILY_ITEMS,
 	renderVerifyReport,
 	WORKER_OP_BUDGET_MIN,	WORKER_OP_TOOLS,
 } from "../src/core.ts";
@@ -1617,4 +1619,37 @@ test("reflect findings split by tag, prose counts as nothing", () => {
 	assert.equal(r.other.length, 1);
 	assert.equal(r.missing, false);
 	assert.equal(parseReflectFindings("everything was fine, no findings").missing, true, "prose is not findings — the driver must say so");
+});
+
+test("workerFamily reads the parent link back as a family, newest first", () => {
+	const driver = "/sd/main-checkout/2026-10-30_driver.jsonl";
+	const rows = [
+		{ path: "/sd/w2.jsonl", parent: driver, name: "✓ 🔍 · PASS · stamp attack", messageCount: 7, modified: new Date("2026-10-30T12:00:00Z") },
+		{ path: "/sd/w1.jsonl", parent: driver, name: "✓ 🔨 #1 · 3 commits · wire ops", messageCount: 42, modified: new Date("2026-10-30T11:00:00Z") },
+		{ path: "/sd/fork.jsonl", parent: "/sd/some-other-session.jsonl", name: "a fork of something else", messageCount: 3, modified: new Date("2026-10-30T13:00:00Z") },
+		{ path: "/sd/plain.jsonl", name: "an ordinary session", messageCount: 9, modified: new Date("2026-10-30T14:00:00Z") },
+	];
+	const out = workerFamily(rows, driver);
+	assert.equal(out.length, 2, "only this session's children, not unrelated forks or plain sessions");
+	assert.match(out[0], /PASS · stamp attack/, "newest first");
+	assert.match(out[0], /7 msgs/, "message count rides along so an empty worker is visible");
+	assert.ok(out[0].includes("/sd/w2.jsonl"), "the transcript path is on the line — that is what pi export needs");
+	assert.doesNotMatch(out.join("\n"), /ordinary session|fork of something else/);
+});
+
+test("workerFamily tolerates a driver-less host, an unnamed worker, and a long family", () => {
+	assert.deepEqual(workerFamily([{ path: "/a.jsonl", parent: "/d.jsonl" }], null), [], "no driver file means no family to print, never a guess");
+	assert.deepEqual(workerFamily([], "/d.jsonl"), [], "an empty bucket is empty output — the caller prints the 'none yet' line");
+	assert.match(workerFamily([{ path: "/w.jsonl", parent: "/d.jsonl", modified: 0 }], "/d.jsonl")[0], /\(unnamed worker\)/, "a worker whose rename never landed still shows up");
+	const many = Array.from({ length: WORKER_FAMILY_ITEMS + 3 }, (_, i) => ({ path: `/w${i}.jsonl`, parent: "/d.jsonl", modified: i }));
+	const lines = workerFamily(many, "/d.jsonl");
+	assert.equal(lines.length, WORKER_FAMILY_ITEMS + 1, "a long family folds the older workers behind one counted line");
+	assert.match(lines.at(-1) ?? "", /3 earlier workers/);
+});
+
+test("workerFamily matches the parent link however the path is spelled", () => {
+	const rows = [{ path: "/sd/w.jsonl", parent: "/sd/dir/../w-parent.jsonl", messageCount: 1, modified: 5 }];
+	assert.equal(workerFamily(rows, "/sd/w-parent.jsonl").length, 1, "a link that resolves to the driver's file is the driver's child");
+	assert.equal(workerFamily([{ path: "/sd/w.jsonl", parent: "/sd/w-parent.jsonl/", modified: 1 }], "/sd/w-parent.jsonl").length, 1, "a trailing separator is the same file");
+	assert.equal(workerFamily([{ path: "/sd/w.jsonl", parent: "/sd/other.jsonl", modified: 1 }], "/sd/w-parent.jsonl").length, 0, "and a different file is not");
 });
