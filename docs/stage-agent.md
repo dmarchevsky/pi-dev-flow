@@ -100,7 +100,12 @@ Around it, three mirrors:
   the driver's own session bucket — so `pi --resume` nests it under the driver in
   its default **Current Folder** scope, in the Threaded sort, with no scope switch
   (pi #1108 built that link for exactly this: extensions may stamp it on sessions
-  they create on a user's behalf). On a host with no file-backed session the stamp
+  they create on a user's behalf). One layout exception: if you point pi at a
+  configured session directory (settings `sessionDir`, or `--session-dir`) that is
+  not the default for the folder you started it in, that scope filters by each
+  session's own cwd and a worker's cwd is its worktree — the family is still
+  threaded, one Tab away under **All**, and dev-flow's text view below lists it in
+  either layout. On a host with no file-backed session the stamp
   is skipped and the worker keeps pi's default location, unlinked. Named by role
   glyph, ordinal and purpose — `⏳ 🔨 #2 · wire ops` while it runs, renamed
   at the end with its outcome: `✓ 🔨 #2 · 3 commits · wire ops`, a verify `✓ 🔍 ·

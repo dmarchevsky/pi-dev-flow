@@ -38,6 +38,7 @@ import {
 	buildStageBrief,
 	checkFingerprint,
 	changelogVersionsBetween,
+	familyHeading,
 	normalizeReleaseBody,
 	sessionPathKey,
 	WORKER_FAMILY_ITEMS,
@@ -488,8 +489,10 @@ export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: 
  *  because a test must not scan the operator's real session directory. `listAll(dir)`, not
  *  `list(cwd, dir)`: pi's `list` drops rows whose header cwd is not `cwd` whenever it is handed a
  *  directory that is not that cwd's default — which is precisely a stage worker (header cwd = the
- *  worktree, file in the driver's bucket). `listAll(dir)` is also what the picker's Current Folder
- *  scope ends up seeing for a normal session, so the family list and the tree agree. */
+ *  worktree, file in the driver's bucket), and precisely the layout a configured `sessionDir`
+ *  creates. `listAll(dir)` is what the picker's Current Folder scope sees in the default layout, so
+ *  the family list and the tree agree there; under a configured session dir the text view stays
+ *  complete even where that scope hides the worker, which is the cheaper direction to err in. */
 export const sessionRowsScan: { run: (o: { cwd: string; dir?: string }) => Promise<WorkerSessionRow[]> } = {
 	run: async ({ dir }) => (await SessionManager.listAll(dir)).map((s) => ({ path: s.path, parent: s.parentSessionPath, name: s.name, messageCount: s.messageCount, modified: s.modified })),
 };
@@ -2415,8 +2418,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				const fam = inFlow ? await workerFamilyLines(ctx, run?.transcript, run ? BUCKET_FRESH_MS : 0) : null;
 				// the picker's rows when we have them; the ledger when the host gave us no file to be a parent of
 				const familyLines = fam ?? (boundState ? ledgerFamilyLines(path.join(featDir(ctx.cwd, boundState.slug), "stage-sessions", TRANSCRIPTS_FILE), run?.transcript) : null);
-				const familyHeading = `${run ? "other workers this session spawned" : "workers this session spawned"}${fam === null && boundState ? " (from the flow's ledger — this host has no session file to nest)" : ""}:`;
-				const familySection = inFlow ? [familyHeading, ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
+				const familySection = inFlow ? [familyHeading({ live: !!run, ledger: fam === null }), ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
 				if (!run) {
 					return { content: [{ type: "text", text: ["no stage worker is running in this session", ...familySection].join("\n") }], details: { running: false, ...(inFlow ? { workers: familyLines?.length ?? null } : {}) } };
 				}
@@ -2693,7 +2695,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				// the family belongs on the settled card and the result only: a live frame redraws on every
 				// worker tool call, and reading a session bucket is IO. This run is excluded — the card names
 				// its transcript already, and repeating it as a bare row reads like a different worker.
-				const fam = (await workerFamilyLines(ctx, transcript || undefined)) ?? ledgerFamilyLines(transcriptLog, transcript || undefined);
+				const famFromPicker = await workerFamilyLines(ctx, transcript || undefined);
+				const fam = famFromPicker ?? ledgerFamilyLines(transcriptLog, transcript || undefined);
 				emit(failed ? "dev-flow:worker-failed" : "dev-flow:worker-completed", {
 					elapsedMs: Date.now() - run.startedAt, usage: run.usage, turns: run.turns, budgetMin, softFired: run.softFired, timedOut, crash,
 					verdict: verify?.verdict ?? null, reportMissing: report?.missing ?? findings?.missing ?? false, transcript, snapshot,
@@ -2702,7 +2705,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text" as const, text: parts.join("\n\n") }],
 					details: {
-						op, slug: st.slug, stage: st.stage, card, cardFull: stageCardLines({ kind, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state: failed ? "failed" : "done", verdict: verify?.verdict ?? null, transcript, family: fam ?? undefined }, true),
+						op, slug: st.slug, stage: st.stage, card, cardFull: stageCardLines({ kind, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state: failed ? "failed" : "done", verdict: verify?.verdict ?? null, transcript, family: fam?.length ? fam : undefined, familyHeading: famFromPicker === null ? familyHeading({ ledger: true }) : undefined }, true),
 						done: report?.done, files: report?.files, notes: report?.notes, blockers: report?.blockers, reportMissing: report?.missing ?? findings?.missing ?? false,
 						verdict: verify?.verdict ?? null, stamped, clearedStamp: cleared, verdictVoided: moved, timedOut, softFired: run.softFired, budgetMin, elapsedMs: Date.now() - run.startedAt, error: crash, transcript, snapshot,
 					},

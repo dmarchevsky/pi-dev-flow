@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -3061,7 +3061,9 @@ test("the ledger fallback drops the run the card is reporting", async () => {
 	try {
 		stageWorkerSpawn.run = verifyWorkerStub(); // its transcript is /tmp/fake-verify-transcript.jsonl
 		const res = await pi.tools.flow_stage.execute("id", { op: "verify", label: "drop me" }, undefined, undefined, ctx) as { details?: Record<string, unknown> };
-		const tail = String(res.details?.cardFull ?? "").split("workers this session spawned:")[1] ?? "";
+		const cardFull = String(res.details?.cardFull ?? "");
+		assert.match(cardFull, /workers this session spawned \(from the flow's ledger/, "the card names its source the same way status does");
+		const tail = cardFull.split("workers this session spawned")[1] ?? "";
 		assert.match(tail, /run · 2026-10-30 11:02 · \/sd\/earlier\.jsonl/, "the ledger's other runs are still the family");
 		assert.ok(!tail.includes("fake-verify-transcript.jsonl"), "the run the card names above is not repeated in its own family list");
 	} finally {
@@ -3099,5 +3101,54 @@ test("a live run whose flow unbound mid-run prints no family and no orphan newli
 	} finally {
 		release();
 		stageWorkerSpawn.run = real;
+	}
+});
+
+test("the family is visible to the picker's own query, not just to dev-flow", async () => {
+	// The plan's proof for "Current Folder nests the family" is pi's own call, in the layout a normal
+	// session has: the driver's bucket IS the default for the checkout it ran in. Run with
+	// PI_CODING_AGENT_DIR pointed at a scratch dir (pi reads it lazily), then ask the question the
+	// picker asks — list(cwd) — and the question `pi --resume <id>` asks — findById(cwd, id).
+	const SessionManager = (await import("@earendil-works/pi-coding-agent")).SessionManager;
+	const prev = process.env.PI_CODING_AGENT_DIR;
+	const agent = mkdtempSync(path.join(tmpdir(), "picker-agent-"));
+	if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = agent;
+	process.env.PI_CODING_AGENT_DIR = agent;
+	try {
+		const main = mkdtempSync(path.join(tmpdir(), "picker-main-"));
+		const work = mkdtempSync(path.join(tmpdir(), "picker-work-"));
+		const talk = (sm: { appendMessage: (m: never) => unknown }, t: string) => sm.appendMessage({ role: "user", content: t, timestamp: Date.now() } as never);
+		const driver = SessionManager.create(main);
+		talk(driver, "drive");
+		assert.ok(driver.getSessionFile(), "a driver session with a message has a file");
+		const child = workerSessionManager(work, driver.getSessionFile(), driver.getSessionDir());
+		assert.ok(child, "the production composition built a manager");
+		talk(child, "stage");
+		child.appendSessionInfo("✓ 🔍 · PASS · stamp attack");
+		const workerFile = child.getSessionFile();
+		assert.ok(workerFile, "and the worker's file exists once it has been talked to");
+
+		const rows = await SessionManager.list(main); // Current Folder scope, verbatim
+		const row = rows.find((r: { path: string }) => r.path === workerFile);
+		assert.ok(row, `the picker's own listing shows the worker: got ${rows.length} row(s)`);
+		assert.equal(row.parentSessionPath, driver.getSessionFile(), "and it carries the link the tree threads on");
+		assert.equal(row.name, "✓ 🔍 · PASS · stamp attack", "renamed by the flow, visible to the picker");
+		assert.equal(await SessionManager.findById(main, child.getSessionId()), workerFile, "resuming the worker by id resolves from the driver's checkout");
+
+		// …and the one layout where that stops being true, pinned so that "why listAll?" is a fact in
+		// the suite and not folk law: when the session dir is NOT the default for the queried cwd, pi
+		// filters rows by their own header cwd — and a worker's header cwd is its worktree.
+		const elsewhere = mkdtempSync(path.join(tmpdir(), "picker-elsewhere-"));
+		copyFileSync(driver.getSessionFile()!, path.join(elsewhere, "driver.jsonl"));
+		copyFileSync(workerFile, path.join(elsewhere, "worker.jsonl"));
+		const scoped = await SessionManager.list(main, elsewhere);
+		assert.ok(!scoped.some((r: { path: string }) => r.path.endsWith("worker.jsonl")),
+			"list(cwd, nonDefaultDir) drops the worker: that filter is why the family scan uses listAll");
+		const all = await SessionManager.listAll(elsewhere);
+		assert.equal(all.length, 2, "listAll sees the whole family in either layout");
+		assert.ok(all.some((r: { parentSessionPath?: string }) => r.parentSessionPath), "with the link intact");
+
+	} finally {
+		if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
 	}
 });

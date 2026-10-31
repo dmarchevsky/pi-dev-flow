@@ -104,6 +104,7 @@ import {
 	isDelegableStage,
 	parseStageReport,
 	stageCardLines,
+	familyHeading,
 	stageElapsedLabel,
 	stageInterruptSteer,
 	stageLiveLine,
@@ -1682,4 +1683,12 @@ test("family timestamps are local wall-clock, not UTC", () => {
 	const line = workerFamily([{ path: "/w.jsonl", parent: "/d.jsonl", name: "w", messageCount: 1, modified: at }], "/d.jsonl")[0];
 	assert.match(line, /2026-10-30 23:45/, `expected local wall-clock in: ${line}`);
 	assert.doesNotMatch(line, /T\d{2}:\d{2}/, "no ISO/UTC shape snuck back in");
+});
+
+test("a ledger-sourced family names its source on the card, not only in status", () => {
+	const v = { kind: "\ud83d\udd0d verify", slug: "lineage", elapsedMs: 60_000, budgetMin: 30, state: "done" as const };
+	const ledger = stageCardLines({ ...v, family: ["run \u00b7 2026-10-30 11:02 \u00b7 /sd/w.jsonl"], familyHeading: familyHeading({ ledger: true }) }, true).join("\n");
+	assert.match(ledger, /workers this session spawned \(from the flow's ledger \u2014 this host has no session file to nest\):/);
+	assert.match(stageCardLines({ ...v, family: ["x"] }, true).join("\n"), /^workers this session spawned:$/m, "picker rows need no disclaimer");
+	assert.equal(familyHeading({ live: true }), "other workers this session spawned:");
 });
