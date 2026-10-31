@@ -2363,10 +2363,9 @@ export interface WorkerSessionRow {
 /** How many workers one render lists before it folds the older ones. */
 export const WORKER_FAMILY_ITEMS = 12;
 
-/** Family rendering options: `max` folds the older ones, `exclude` drops one transcript — the live
- *  or just-finished run, which the caller already shows as its own section or its own line. */
+/** Family rendering options: `exclude` drops one transcript — the live or just-finished run, which
+ *  the caller already shows as its own section or its own line. */
 export interface WorkerFamilyOptions {
-	max?: number;
 	exclude?: string;
 }
 
@@ -2399,7 +2398,7 @@ function sessionTime(row: WorkerSessionRow): number {
  */
 export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null | undefined, opts: WorkerFamilyOptions = {}): string[] {
 	if (!driverFile) return [];
-	const max = opts.max ?? WORKER_FAMILY_ITEMS;
+	const max = WORKER_FAMILY_ITEMS;
 	const drop = opts.exclude ? sessionPathKey(opts.exclude) : null;
 	const mine = rows
 		.filter((r) => r.parent && sessionPathKey(r.parent) === sessionPathKey(driverFile) && (!drop || sessionPathKey(r.path) !== drop))
@@ -2409,8 +2408,24 @@ export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null
 		const at = sessionTime(r);
 		return `${r.name?.trim() || "(unnamed worker)"} · ${r.messageCount ?? 0} msgs · ${at ? localStamp(at) : "time unknown"} · ${r.path}`;
 	});
-	if (mine.length > shown.length) lines.push(`… ${mine.length - shown.length} earlier workers`);
+	if (mine.length > shown.length) lines.push(familyFoldLine(mine.length - shown.length));
 	return lines;
+}
+
+/** The line that stands in for the workers too old to list. It is not a worker, so anything counting
+ *  the list has to know it — and both sources fold the same way, so the shape lives here. */
+export function familyFoldLine(dropped: number): string {
+	return `… ${dropped} earlier workers`;
+}
+
+export function isFamilyFoldLine(line: string): boolean {
+	return line.startsWith("… ");
+}
+
+/** How many workers a rendered family list stands for: the fold line is a count, not a worker. */
+export function workerFamilyCount(lines: string[] | null | undefined): number | null {
+	if (!lines) return null;
+	return lines.filter((l) => !isFamilyFoldLine(l)).length;
 }
 
 /** Local wall-clock `YYYY-MM-DD HH:mm` — the convention every dev-flow timestamp follows (a UTC

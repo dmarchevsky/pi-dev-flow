@@ -130,6 +130,8 @@ import {
 
 	workerTranscriptLine,
 	workerFamily,
+	workerFamilyCount,
+	isFamilyFoldLine,
 	WORKER_FAMILY_ITEMS,
 	renderVerifyReport,
 	WORKER_OP_BUDGET_MIN,	WORKER_OP_TOOLS,
@@ -1691,4 +1693,15 @@ test("a ledger-sourced family names its source on the card, not only in status",
 	assert.match(ledger, /workers this session spawned \(from the flow's ledger \u2014 this host has no session file to nest\):/);
 	assert.match(stageCardLines({ ...v, family: ["x"] }, true).join("\n"), /^workers this session spawned:$/m, "picker rows need no disclaimer");
 	assert.equal(familyHeading({ live: true }), "other workers this session spawned:");
+});
+
+test("a folded family counts the workers, not the fold line", () => {
+	const driver = "/d.jsonl";
+	const rows = Array.from({ length: 14 }, (_, i) => ({ path: `/sd/w${i}.jsonl`, parent: driver, name: `w${i}`, messageCount: 1, modified: i }));
+	const lines = workerFamily(rows, driver);
+	assert.ok(lines.some((l) => isFamilyFoldLine(l)), "the overflow folds into one counted line");
+	assert.equal(workerFamilyCount(lines), 12, "14 workers print 12 rows and a count of the rest, and report twelve — the fold line is not a worker");
+	assert.equal(workerFamilyCount(["x", "y"]), 2, "an unfolded list counts as it reads");
+	assert.equal(workerFamilyCount([]), 0);
+	assert.equal(workerFamilyCount(null), null, "no source is not zero workers");
 });

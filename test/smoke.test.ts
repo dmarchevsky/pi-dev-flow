@@ -3152,3 +3152,24 @@ test("the family is visible to the picker's own query, not just to dev-flow", as
 		if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
 	}
 });
+
+test("an empty ledger does not claim to have supplied anything", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // unbacked host, and no worker has ever run for this flow
+	await toImplement(pi, ctx, "emptyledger");
+	const res = await pi.tools.flow_stage.execute("id", { op: "status" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: Record<string, unknown> };
+	assert.match(res.content[0].text, /workers this session spawned:/, "the section is still there");
+	assert.doesNotMatch(res.content[0].text, /from the flow's ledger/, "and says nothing about a source that had no rows");
+	assert.match(res.content[0].text, /\(none yet\)/);
+	assert.equal(res.details?.workers, 0);
+
+	// the same host once the flow has outgrown the list: the ledger folds like the picker rows do,
+	// and the count stays the number of workers rather than the number of printed lines
+	const log = path.join(repo, ".dev-flow", "emptyledger", "stage-sessions", "transcripts.log");
+	mkdirSync(path.dirname(log), { recursive: true });
+	writeFileSync(log, Array.from({ length: 14 }, (_, i) => `[2026-10-30 1${i % 6}:0${i % 10}] worker transcript (run): /sd/w${i}.jsonl`).join("\n") + "\n");
+	const full = await pi.tools.flow_stage.execute("id", { op: "status" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: Record<string, unknown> };
+	assert.match(full.content[0].text, /\u2026 2 earlier workers/, "the overflow folds instead of vanishing");
+	assert.equal(full.details?.workers, 12, "and the count is the workers listed, not the lines printed");
+});

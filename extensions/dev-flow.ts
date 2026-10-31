@@ -38,10 +38,12 @@ import {
 	buildStageBrief,
 	checkFingerprint,
 	changelogVersionsBetween,
+		familyFoldLine,
 	familyHeading,
 	normalizeReleaseBody,
 	sessionPathKey,
 	WORKER_FAMILY_ITEMS,
+	workerFamilyCount,
 	pendingEntryLines,
 	pickReleaseNotes,
 	parseStageReport,
@@ -512,11 +514,9 @@ function lineageOf(ctx: ExtensionContext): { file: string | null; dir: string | 
 function ledgerFamilyLines(logPath: string, exclude?: string): string[] {
 	try {
 		const drop = exclude ? sessionPathKey(exclude) : null;
-		return parseWorkerTranscripts(readFileSync(logPath, "utf8"))
-			.filter((r) => !drop || sessionPathKey(r.path) !== drop)
-			.slice(-WORKER_FAMILY_ITEMS)
-			.reverse()
-			.map((r) => `${r.op} · ${r.at} · ${r.path}`);
+		const mine = parseWorkerTranscripts(readFileSync(logPath, "utf8")).filter((r) => !drop || sessionPathKey(r.path) !== drop);
+		const shown = mine.slice(-WORKER_FAMILY_ITEMS).reverse().map((r) => `${r.op} · ${r.at} · ${r.path}`);
+		return mine.length > shown.length ? [...shown, familyFoldLine(mine.length - shown.length)] : shown;
 	} catch { return []; }
 }
 
@@ -2418,9 +2418,9 @@ export default function devFlow(pi: ExtensionAPI) {
 				const fam = inFlow ? await workerFamilyLines(ctx, run?.transcript, run ? BUCKET_FRESH_MS : 0) : null;
 				// the picker's rows when we have them; the ledger when the host gave us no file to be a parent of
 				const familyLines = fam ?? (boundState ? ledgerFamilyLines(path.join(featDir(ctx.cwd, boundState.slug), "stage-sessions", TRANSCRIPTS_FILE), run?.transcript) : null);
-				const familySection = inFlow ? [familyHeading({ live: !!run, ledger: fam === null }), ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
+				const familySection = inFlow ? [familyHeading({ live: !!run, ledger: fam === null && !!familyLines?.length }), ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
 				if (!run) {
-					return { content: [{ type: "text", text: ["no stage worker is running in this session", ...familySection].join("\n") }], details: { running: false, ...(inFlow ? { workers: familyLines?.length ?? null } : {}) } };
+					return { content: [{ type: "text", text: ["no stage worker is running in this session", ...familySection].join("\n") }], details: { running: false, ...(inFlow ? { workers: workerFamilyCount(familyLines) } : {}) } };
 				}
 				const elapsed = Date.now() - run.startedAt;
 				const dirtyNow = await sh("git status --porcelain", run.work);
@@ -2433,7 +2433,7 @@ export default function devFlow(pi: ExtensionAPI) {
 					`recent commits:\n${logNow.ok && logNow.out.trim() ? logNow.out : "(none)"}`,
 					...(inFlow ? ["", ...familySection] : []),
 				].join("\n");
-				return { content: [{ type: "text", text }], details: { running: true, op: run.op, slug: run.slug, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired, usage: run.usage, turns: run.turns, workers: familyLines?.length ?? null } };
+				return { content: [{ type: "text", text }], details: { running: true, op: run.op, slug: run.slug, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired, usage: run.usage, turns: run.turns, workers: workerFamilyCount(familyLines) } };
 			}
 			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
 			const st = boundFeature(ctx.cwd, sessionKey(ctx));
