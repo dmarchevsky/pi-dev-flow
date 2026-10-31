@@ -104,6 +104,7 @@ import {
 	isDelegableStage,
 	parseStageReport,
 	stageCardLines,
+	familyHeading,
 	stageElapsedLabel,
 	stageInterruptSteer,
 	stageLiveLine,
@@ -128,6 +129,10 @@ import {
 	workerOpError,
 
 	workerTranscriptLine,
+	workerFamily,
+	workerFamilyCount,
+	isFamilyFoldLine,
+	WORKER_FAMILY_ITEMS,
 	renderVerifyReport,
 	WORKER_OP_BUDGET_MIN,	WORKER_OP_TOOLS,
 } from "../src/core.ts";
@@ -1617,4 +1622,86 @@ test("reflect findings split by tag, prose counts as nothing", () => {
 	assert.equal(r.other.length, 1);
 	assert.equal(r.missing, false);
 	assert.equal(parseReflectFindings("everything was fine, no findings").missing, true, "prose is not findings — the driver must say so");
+});
+
+test("workerFamily reads the parent link back as a family, newest first", () => {
+	const driver = "/sd/main-checkout/2026-10-30_driver.jsonl";
+	const rows = [
+		{ path: "/sd/w2.jsonl", parent: driver, name: "✓ 🔍 · PASS · stamp attack", messageCount: 7, modified: new Date("2026-10-30T12:00:00Z") },
+		{ path: "/sd/w1.jsonl", parent: driver, name: "✓ 🔨 #1 · 3 commits · wire ops", messageCount: 42, modified: new Date("2026-10-30T11:00:00Z") },
+		{ path: "/sd/fork.jsonl", parent: "/sd/some-other-session.jsonl", name: "a fork of something else", messageCount: 3, modified: new Date("2026-10-30T13:00:00Z") },
+		{ path: "/sd/plain.jsonl", name: "an ordinary session", messageCount: 9, modified: new Date("2026-10-30T14:00:00Z") },
+	];
+	const out = workerFamily(rows, driver);
+	assert.equal(out.length, 2, "only this session's children, not unrelated forks or plain sessions");
+	assert.match(out[0], /PASS · stamp attack/, "newest first");
+	assert.match(out[0], /7 msgs/, "message count rides along so an empty worker is visible");
+	assert.ok(out[0].includes("/sd/w2.jsonl"), "the transcript path is on the line — that is what pi export needs");
+	assert.doesNotMatch(out.join("\n"), /ordinary session|fork of something else/);
+});
+
+test("workerFamily tolerates a driver-less host, an unnamed worker, and a long family", () => {
+	assert.deepEqual(workerFamily([{ path: "/a.jsonl", parent: "/d.jsonl" }], null), [], "no driver file means no family to print, never a guess");
+	assert.deepEqual(workerFamily([], "/d.jsonl"), [], "an empty bucket is empty output — the caller prints the 'none yet' line");
+	assert.match(workerFamily([{ path: "/w.jsonl", parent: "/d.jsonl", modified: 0 }], "/d.jsonl")[0], /\(unnamed worker\)/, "a worker whose rename never landed still shows up");
+	const many = Array.from({ length: WORKER_FAMILY_ITEMS + 3 }, (_, i) => ({ path: `/w${i}.jsonl`, parent: "/d.jsonl", modified: i }));
+	const lines = workerFamily(many, "/d.jsonl");
+	assert.equal(lines.length, WORKER_FAMILY_ITEMS + 1, "a long family folds the older workers behind one counted line");
+	assert.match(lines.at(-1) ?? "", /3 earlier workers/);
+});
+
+test("workerFamily matches the parent link however the path is spelled", () => {
+	const rows = [{ path: "/sd/w.jsonl", parent: "/sd/dir/../w-parent.jsonl", messageCount: 1, modified: 5 }];
+	assert.equal(workerFamily(rows, "/sd/w-parent.jsonl").length, 1, "a link that resolves to the driver's file is the driver's child");
+	assert.equal(workerFamily([{ path: "/sd/w.jsonl", parent: "/sd/w-parent.jsonl/", modified: 1 }], "/sd/w-parent.jsonl").length, 1, "a trailing separator is the same file");
+	assert.equal(workerFamily([{ path: "/sd/w.jsonl", parent: "/sd/other.jsonl", modified: 1 }], "/sd/w-parent.jsonl").length, 0, "and a different file is not");
+});
+
+test("the settled card carries the family; the collapsed card does not", () => {
+	const base = { kind: "\ud83d\udd0d verify", slug: "lineage", elapsedMs: 60_000, budgetMin: 30 };
+	const family = ["\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 other work \u00b7 9 msgs \u00b7 2026-10-30 11:00 \u00b7 /sd/other.jsonl"];
+	const settled = stageCardLines({ ...base, state: "done", transcript: "/sd/mine.jsonl", family }, true).join("\n");
+	assert.match(settled, /workers this session spawned:/, "the expanded settled card carries the family");
+	assert.match(settled, /PASS \u00b7 other work/);
+	assert.doesNotMatch(stageCardLines({ ...base, state: "done", family }).join("\n"), /other work/, "the collapsed one-liner stays lean");
+});
+
+test("workerFamily can leave the caller's own run out of its own family list", () => {
+	const driver = "/sd/driver.jsonl";
+	const rows = [
+		{ path: "/sd/live.jsonl", parent: driver, name: "\u23f3 \ud83d\udd28 #2 \u00b7 wire ops", messageCount: 5, modified: 20 },
+		{ path: "/sd/older.jsonl", parent: driver, name: "\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 check", messageCount: 8, modified: 10 },
+	];
+	assert.equal(workerFamily(rows, driver).length, 2, "by default the live worker is listed like any other");
+	const others = workerFamily(rows, driver, { exclude: "/sd/live.jsonl" });
+	assert.equal(others.length, 1, "excluded is gone, so a heading that says other workers means it");
+	assert.match(others[0], /PASS \u00b7 check/);
+	assert.equal(workerFamily(rows, driver, { exclude: "/sd/dir/../live.jsonl" }).length, 1, "the exclusion compares files, not strings");
+});
+
+test("family timestamps are local wall-clock, not UTC", () => {
+	// the operator scans these next to their own clock; a UTC stamp reads as a session in the future
+	const at = new Date(2026, 9, 30, 23, 45).getTime(); // local by construction
+	const line = workerFamily([{ path: "/w.jsonl", parent: "/d.jsonl", name: "w", messageCount: 1, modified: at }], "/d.jsonl")[0];
+	assert.match(line, /2026-10-30 23:45/, `expected local wall-clock in: ${line}`);
+	assert.doesNotMatch(line, /T\d{2}:\d{2}/, "no ISO/UTC shape snuck back in");
+});
+
+test("a ledger-sourced family names its source on the card, not only in status", () => {
+	const v = { kind: "\ud83d\udd0d verify", slug: "lineage", elapsedMs: 60_000, budgetMin: 30, state: "done" as const };
+	const ledger = stageCardLines({ ...v, family: ["run \u00b7 2026-10-30 11:02 \u00b7 /sd/w.jsonl"], familyHeading: familyHeading({ ledger: true }) }, true).join("\n");
+	assert.match(ledger, /workers this session spawned \(from the flow's ledger \u2014 this host has no session file to nest\):/);
+	assert.match(stageCardLines({ ...v, family: ["x"] }, true).join("\n"), /^workers this session spawned:$/m, "picker rows need no disclaimer");
+	assert.equal(familyHeading({ live: true }), "other workers this session spawned:");
+});
+
+test("a folded family counts the workers, not the fold line", () => {
+	const driver = "/d.jsonl";
+	const rows = Array.from({ length: 14 }, (_, i) => ({ path: `/sd/w${i}.jsonl`, parent: driver, name: `w${i}`, messageCount: 1, modified: i }));
+	const lines = workerFamily(rows, driver);
+	assert.ok(lines.some((l) => isFamilyFoldLine(l)), "the overflow folds into one counted line");
+	assert.equal(workerFamilyCount(lines), 12, "14 workers print 12 rows and a count of the rest, and report twelve — the fold line is not a worker");
+	assert.equal(workerFamilyCount(["x", "y"]), 2, "an unfolded list counts as it reads");
+	assert.equal(workerFamilyCount([]), 0);
+	assert.equal(workerFamilyCount(null), null, "no source is not zero workers");
 });

@@ -2322,6 +2322,10 @@ export interface StageCardView {
 	verdict?: "pass" | "fail" | null;
 	note?: string;
 	transcript?: string;
+	/** settled card only: the flow's other workers, already rendered by `workerFamily`. */
+	family?: string[];
+	/** heading for `family` when the rows came from somewhere coarser than pi's listing. */
+	familyHeading?: string;
 }
 
 /** One frame of the worker card: header (what · where · clock against budget), the bounded live tail,
@@ -2334,7 +2338,103 @@ export function stageCardLines(v: StageCardView, expanded = false): string[] {
 	if (v.verdict) out.push(`verdict: ${v.verdict.toUpperCase()}`);
 	if (v.usage) out.push(v.usage);
 	if (expanded && v.transcript) out.push(`transcript: ${v.transcript}`);
+	// the family only on the settled card: listing a session directory is IO, and a live frame
+	// redraws on every worker tool call — a running run must not pay for a directory read
+	if (expanded && v.family?.length) out.push(v.familyHeading ?? familyHeading(), ...v.family);
 	return out;
+}
+
+/** One worker session as pi's own session listing describes it. dev-flow keeps no lineage index
+ *  of its own: the `parentSession` link in a session header *is* the record, and pi's picker threads
+ *  on it. The extension reads pi's types and maps them onto this pi-free shape so the logic here
+ *  stays unit-testable. */
+export interface WorkerSessionRow {
+	/** the worker's session file */
+	path: string;
+	/** the parent link as pi recorded it (`parentSession`); absent = not somebody's child */
+	parent?: string | null;
+	/** the picker display name — it carries the ⏳/✓/✗ and the outcome the driver stamps on it */
+	name?: string;
+	messageCount?: number;
+	/** file mtime, however the host hands it over (pi gives a Date; tests give a number) */
+	modified?: Date | number | string;
+}
+
+/** How many workers one render lists before it folds the older ones. */
+export const WORKER_FAMILY_ITEMS = 12;
+
+/** Family rendering options: `exclude` drops one transcript — the live or just-finished run, which
+ *  the caller already shows as its own section or its own line. */
+export interface WorkerFamilyOptions {
+	exclude?: string;
+}
+
+/** The heading over a family list — the one place the wording lives, so the status text and the card
+ *  cannot drift, and so a list that came from the ledger (no message counts, no renames) says so. */
+export function familyHeading(o: { live?: boolean; ledger?: boolean } = {}): string {
+	return `${o.live ? "other workers this session spawned" : "workers this session spawned"}${o.ledger ? " (from the flow's ledger — this host has no session file to nest)" : ""}:`;
+}
+
+/** The same session file written two ways is still one session (separators, trailing slash, and on
+ *  Windows the case of the drive letter). pi's own picker canonicalizes the same idea. */
+export function sessionPathKey(p: string): string {
+	const k = path.resolve(p).replace(/[\\/]+$/, "");
+	return process.platform === "win32" ? k.toLowerCase() : k;
+}
+
+function sessionTime(row: WorkerSessionRow): number {
+	const raw = row.modified instanceof Date ? row.modified.getTime() : typeof row.modified === "number" ? row.modified : row.modified ? Date.parse(row.modified) : 0;
+	return Number.isFinite(raw) ? raw : 0;
+}
+
+/**
+ * The family — every stage worker this session spawned, newest first, one line each.
+ *
+ * A stage worker is a real pi session whose header carries `parentSession` pointing at the driver's
+ * own file, so pi's picker nests it under the driver by itself (Threaded sort). This reads the same
+ * fact back for every surface that has no tree: the `flow_stage` card and `op: "status"`. Nothing is
+ * stored here, so a renamed worker (`✓ 🔍 · PASS · stamp attack`) reads back renamed, and workers a
+ * previous session already delegated show up next to this one's.
+ */
+export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null | undefined, opts: WorkerFamilyOptions = {}): string[] {
+	if (!driverFile) return [];
+	const max = WORKER_FAMILY_ITEMS;
+	const drop = opts.exclude ? sessionPathKey(opts.exclude) : null;
+	const mine = rows
+		.filter((r) => r.parent && sessionPathKey(r.parent) === sessionPathKey(driverFile) && (!drop || sessionPathKey(r.path) !== drop))
+		.sort((a, b) => sessionTime(b) - sessionTime(a));
+	const shown = mine.slice(0, max);
+	const lines = shown.map((r) => {
+		const at = sessionTime(r);
+		return `${r.name?.trim() || "(unnamed worker)"} · ${r.messageCount ?? 0} msgs · ${at ? localStamp(at) : "time unknown"} · ${r.path}`;
+	});
+	if (mine.length > shown.length) lines.push(familyFoldLine(mine.length - shown.length));
+	return lines;
+}
+
+/** The line that stands in for the workers too old to list. It is not a worker, so anything counting
+ *  the list has to know it — and both sources fold the same way, so the shape lives here. */
+export function familyFoldLine(dropped: number): string {
+	return `… ${dropped} earlier workers`;
+}
+
+export function isFamilyFoldLine(line: string): boolean {
+	return line.startsWith("… ");
+}
+
+/** How many workers a rendered family list stands for: the fold line is a count, not a worker. */
+export function workerFamilyCount(lines: string[] | null | undefined): number | null {
+	if (!lines) return null;
+	return lines.filter((l) => !isFamilyFoldLine(l)).length;
+}
+
+/** Local wall-clock `YYYY-MM-DD HH:mm` — the convention every dev-flow timestamp follows (a UTC
+ *  stamp next to the operator's own clock reads as a future or past session, and the family line is
+ *  meant to be scanned, not converted). */
+function localStamp(ms: number): string {
+	const d = new Date(ms);
+	const p = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** What the tool accumulated from a worker's assistant usage records. */

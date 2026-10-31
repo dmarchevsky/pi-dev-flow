@@ -4,12 +4,12 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import devFlow, { compactionTakeover, stageTimingOverride, stageWorkerSpawn, testSeams } from "../extensions/dev-flow.ts";
-import { tagNotesCommand } from "../src/core.ts";
+import devFlow, { compactionTakeover, sessionRowsScan, stageTimingOverride, stageWorkerSpawn, testSeams, workerSessionManager } from "../extensions/dev-flow.ts";
+import { tagNotesCommand, workerFamily } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
@@ -2813,3 +2813,363 @@ test("flow_stage: refusals stand, a stubbed worker's report comes back through t
 	}
 });
 
+
+/** A ctx whose session is file-backed the way pi's is — the lineage reads both endpoints off the
+ *  live manager, and a test must not touch the operator's real session directory. */
+function withSession(ctx: Record<string, unknown>, file: string, dir: string) {
+	ctx.sessionManager = { getSessionId: () => "lineage-session", getSessionFile: () => file, getSessionDir: () => dir };
+	return ctx;
+}
+
+/** init → start → plan → approve, so a worker op is legal. */
+async function toImplement(pi: ReturnType<typeof makePi>, ctx: unknown, slug: string) {
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", slug]);
+	mkdirSync(path.join(String((ctx as { cwd: string }).cwd), ".dev-flow", slug, "plan"), { recursive: true });
+	writeFileSync(path.join(String((ctx as { cwd: string }).cwd), ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	return flow;
+}
+
+test("a stage worker is stamped with its driver's lineage: header link plus the driver's session bucket", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = withSession(makeCtx(repo), path.join(repo, "sessions", "driver.jsonl"), path.join(repo, "sessions"));
+	await toImplement(pi, ctx, "lineage");
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+
+	const seen: { parent?: string; dir?: string }[] = [];
+	const real = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = (async (o: { parent?: string; dir?: string }) => {
+		seen.push({ parent: o.parent, dir: o.dir });
+		return { session: { subscribe: () => () => {}, prompt: async () => {}, steer: () => {}, abort: async () => {}, dispose: () => {}, getLastAssistantText: () => "ok", sessionManager: { getSessionFile: () => path.join(repo, "sessions", "worker.jsonl") } }, rename: () => {} };
+	}) as never;
+	try {
+		const res = await stage({ op: "verify", label: "stamp attack" });
+		assert.equal(seen.length, 1, "the seam saw the spawn");
+		assert.equal(seen[0].parent, path.join(repo, "sessions", "driver.jsonl"), "the worker's header links to the driver's own session file, so pi's picker nests it");
+		assert.equal(seen[0].dir, path.join(repo, "sessions"), "and its transcript goes into the driver's bucket, so Current Folder shows the family without switching scope");
+		assert.match(res.content[0].text, /lineage: nested under .*driver\.jsonl/, "the result says where the worker will be found in the picker");
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+});
+
+test("lineage is skipped silently on a host with no file-backed session", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // makeCtx carries no sessionManager at all — like an unbacked host
+	await toImplement(pi, ctx, "unbacked");
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+
+	const seen: { parent?: string; dir?: string }[] = [];
+	const real = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = (async (o: { parent?: string; dir?: string }) => {
+		seen.push({ parent: o.parent, dir: o.dir });
+		return { session: { subscribe: () => () => {}, prompt: async () => {}, steer: () => {}, abort: async () => {}, dispose: () => {}, getLastAssistantText: () => "ok", sessionManager: { getSessionFile: () => undefined } }, rename: () => {} };
+	}) as never;
+	try {
+		const res = await stage({ op: "verify" });
+		assert.equal(seen[0].parent, undefined, "no parent link: there is no driver file to point at");
+		assert.equal(seen[0].dir, undefined, "and no bucket override: the worker keeps pi's default session location");
+		assert.doesNotMatch(res.content[0].text, /lineage:/, "and the result promises no nesting it could not stamp");
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+});
+
+test("op status prints the family pi's picker already threads \u2014 inside a flow only", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const driver = path.join(repo, "sessions", "driver.jsonl");
+	const ctx = withSession(makeCtx(repo), driver, path.join(repo, "sessions"));
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown> }>;
+
+	const realScan = sessionRowsScan.run;
+	const rows = [
+		{ path: path.join(repo, "sessions", "w2.jsonl"), parent: driver, name: "\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 stamp attack", messageCount: 7, modified: new Date("2026-10-30T12:00:00Z") },
+		{ path: path.join(repo, "sessions", "w1.jsonl"), parent: driver, name: "\u2717 \ud83d\udd28 #1 \u00b7 hard-cut", messageCount: 31, modified: new Date("2026-10-30T11:00:00Z") },
+		{ path: path.join(repo, "sessions", "unrelated.jsonl"), name: "an ordinary session", messageCount: 4, modified: new Date("2026-10-30T13:00:00Z") },
+	];
+	try {
+		// an unbound session has never spawned a worker: no family section, no bucket scan, no noise
+		sessionRowsScan.run = async () => rows;
+		const unbound = await stage({ op: "status" });
+		assert.equal(unbound.content[0].text, "no stage worker is running in this session", "unbound status is exactly what it always was");
+		assert.equal(unbound.details?.workers, undefined, "and it claims nothing about workers");
+
+		await toImplement(pi, ctx, "fam");
+		const idle = await stage({ op: "status" });
+		assert.match(idle.content[0].text, /no stage worker is running in this session/, "the live answer is unchanged");
+		assert.match(idle.content[0].text, /workers this session spawned:/, "inside a flow, the family answers the other question status gets");
+		assert.match(idle.content[0].text, /PASS \u00b7 stamp attack/);
+		assert.match(idle.content[0].text, /hard-cut/);
+		assert.doesNotMatch(idle.content[0].text, /ordinary session/, "only this session's children");
+		assert.equal(idle.details?.workers, 2, "the count is on details for a host that renders structurally");
+
+		sessionRowsScan.run = async () => [];
+		const none = await stage({ op: "status" });
+		assert.match(none.content[0].text, /\(none yet\)/, "an empty family says so instead of printing nothing");
+		assert.equal(none.details?.workers, 0);
+	} finally {
+		sessionRowsScan.run = realScan;
+	}
+});
+
+test("the live run and the settled card never meet themselves in the family list", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const driver = path.join(repo, "sessions", "driver.jsonl");
+	const own = path.join(repo, "sessions", "w-live.jsonl");
+	const other = path.join(repo, "sessions", "w-other.jsonl");
+	const ctx = withSession(makeCtx(repo), driver, path.join(repo, "sessions"));
+	await toImplement(pi, ctx, "self");
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown> }>;
+
+	const realScan = sessionRowsScan.run;
+	const realSpawn = stageWorkerSpawn.run;
+	let scans = 0;
+	try {
+		sessionRowsScan.run = async () => {
+			scans++;
+			return [
+				{ path: own, parent: driver, name: "\u23f3 \ud83d\udd0d \u00b7 stamp attack", messageCount: 3, modified: new Date("2026-10-30T12:00:00Z") },
+				{ path: other, parent: driver, name: "\u2713 \ud83d\udd28 #1 \u00b7 2 commits \u00b7 wire ops", messageCount: 44, modified: new Date("2026-10-30T11:00:00Z") },
+			];
+		};
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => { release = r; });
+		let prompting: () => void = () => {};
+		const promptingGate = new Promise<void>((r) => { prompting = r; });
+		stageWorkerSpawn.run = (async () => {
+			return {
+				session: {
+					subscribe: () => () => {}, prompt: async () => { prompting(); await gate; }, steer: () => {}, abort: async () => {}, dispose: () => {},
+					getLastAssistantText: () => "ok\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\nevidence:\n- read it\n",
+					sessionManager: { getSessionFile: () => own },
+				},
+				rename: () => {},
+			};
+		}) as never;
+		const running = stage({ op: "verify", label: "stamp attack" });
+		try {
+			await promptingGate; // the worker is prompting: its transcript is recorded before its first prompt, so the live row is known
+			const live = await stage({ op: "status" });
+			await stage({ op: "status" });
+			assert.equal(scans, 1, "a polled status re-reads the bucket at most once per window — pi parses every transcript in it in full");
+			assert.match(live.content[0].text, /other workers this session spawned:/, "a live run gets a heading that means it");
+			assert.match(live.content[0].text, /2 commits \u00b7 wire ops/, "the earlier worker is the other one");
+			assert.doesNotMatch(live.content[0].text, /w-live\.jsonl/, "the running worker is not listed under others \u2014 it is the section above");
+			release();
+			const settled = await running;
+			const cardFull = String(settled.details?.cardFull ?? "");
+			assert.match(cardFull, /workers this session spawned:/, "the settled card carries the family");
+			assert.match(cardFull, /2 commits \u00b7 wire ops/);
+			assert.ok(!cardFull.split("workers this session spawned:")[1].includes(own), "and the card's own transcript is not repeated as an anonymous row");
+		} finally {
+			release(); // a red assertion must still let the gated worker finish: a hanging suite hides the failure it just found
+		}
+	} finally {
+		sessionRowsScan.run = realScan;
+		stageWorkerSpawn.run = realSpawn;
+	}
+});
+
+test("the family scan reads the driver's bucket like the picker does, not like a cwd filter", async () => {
+	// The trap this guards: pi's `list(cwd, dir)` drops any row whose header cwd is not `cwd` once it
+	// is handed a directory that is not that cwd's default — which is exactly a stage worker (header
+	// cwd = the worktree, transcript in the driver's bucket). The scan must therefore read the bucket,
+	// the way the picker's Current Folder scope does, or the family prints empty in production while
+	// every stubbed test stays green.
+	const SessionManager = (await import("@earendil-works/pi-coding-agent")).SessionManager;
+	const bucket = mkdtempSync(path.join(tmpdir(), "family-bucket-"));
+	const mainCheckout = mkdtempSync(path.join(tmpdir(), "family-main-"));
+	const worktreeDir = mkdtempSync(path.join(tmpdir(), "family-worktree-"));
+	const talk = (sm: { appendMessage: (m: never) => unknown }, t: string) => sm.appendMessage({ role: "user", content: t, timestamp: Date.now() } as never);
+
+	const driver = SessionManager.create(mainCheckout, bucket);
+	talk(driver, "drive the flow");
+	driver.appendSessionInfo("driver-session");
+	const driverFile = driver.getSessionFile();
+	assert.ok(driverFile, "a session with a message has a file");
+	const worker = SessionManager.create(worktreeDir, bucket, { parentSession: driverFile });
+	talk(worker, "do the stage");
+	worker.appendSessionInfo("\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 real rows");
+
+	const rows = await sessionRowsScan.run({ cwd: mainCheckout, dir: bucket });
+	assert.equal(rows.length, 2, "both files in the bucket are listed, whatever cwd each was written under");
+	const fam = workerFamily(rows, driverFile);
+	assert.equal(fam.length, 1, "and the worker's parent link resolves it as the driver's child");
+	assert.match(fam[0] ?? "", /PASS \u00b7 real rows/, "the picker name is what the line carries");
+	assert.ok(!fam.join("").includes(path.basename(driverFile)), "the driver is not its own worker");
+});
+
+test("the real worker session manager stamps the lineage it promises", async () => {
+	// The seam itself is stubbed in every test (spending a model is not a unit test), so the *real*
+	// composition gets its own: this is the exact call the production seam makes, minus the model.
+	const SessionManager = (await import("@earendil-works/pi-coding-agent")).SessionManager;
+	const bucket = mkdtempSync(path.join(tmpdir(), "stamp-bucket-"));
+	const mainCheckout = mkdtempSync(path.join(tmpdir(), "stamp-main-"));
+	const worktreeDir = mkdtempSync(path.join(tmpdir(), "stamp-worktree-"));
+	const talk = (sm: { appendMessage: (m: never) => unknown }, t: string) => sm.appendMessage({ role: "user", content: t, timestamp: Date.now() } as never);
+
+	const driver = SessionManager.create(mainCheckout, bucket);
+	talk(driver, "drive");
+	const driverFile = driver.getSessionFile();
+	assert.ok(driverFile, "a session with a message has a file");
+
+	const child = workerSessionManager(worktreeDir, driverFile, bucket);
+	assert.ok(child, "parent + dir => a linked manager");
+	assert.equal(child.getCwd(), worktreeDir, "the worker still works in the worktree");
+	talk(child, "stage");
+	const file = child.getSessionFile();
+	assert.ok(file);
+	assert.equal(path.dirname(file), bucket, "and its transcript lands in the driver's bucket — that is what Current Folder nesting rests on");
+	const header = JSON.parse(readFileSync(file, "utf8").split("\n")[0]);
+	assert.equal(header.parentSession, driverFile, "the header carries the link pi's picker threads on");
+
+	assert.ok(!workerSessionManager(worktreeDir, undefined, bucket), "no parent => no link (pi's default location, as before)");
+	assert.ok(!workerSessionManager(worktreeDir, driverFile, undefined), "no dir => no link either: half a stamp is how a worker gets stranded in another agent dir");
+});
+
+test("with no session file to read, the family falls back to the ledger the flow already keeps", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // no sessionManager at all: nothing on this host can be a parent
+	await toImplement(pi, ctx, "ledger");
+	const log = path.join(repo, ".dev-flow", "ledger", "stage-sessions", "transcripts.log");
+	mkdirSync(path.dirname(log), { recursive: true });
+	writeFileSync(log, `[2026-10-30 11:02] worker transcript (run): ${path.join(repo, "w1.jsonl")}\n[2026-10-30 12:04] worker transcript (verify): ${path.join(repo, "w2.jsonl")}\n`);
+	const res = await pi.tools.flow_stage.execute("id", { op: "status" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: Record<string, unknown> };
+	assert.match(res.content[0].text, /workers this session spawned \(from the flow's ledger \u2014 this host has no session file to nest\):/, "a coarser source says so in its own heading");
+	assert.match(res.content[0].text, /verify \u00b7 2026-10-30 12:04/, "the ledger is coarser than the picker's rows, and still better than an apology");
+	assert.match(res.content[0].text, /run \u00b7 2026-10-30 11:02/);
+	assert.ok(res.content[0].text.indexOf("verify \u00b7") < res.content[0].text.indexOf("run \u00b7"), "newest first, like the picker rows");
+	assert.equal(res.details?.workers, 2);
+});
+
+test("the ledger fallback drops the run the card is reporting", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // unbacked driver: the family can only come from the ledger
+	await toImplement(pi, ctx, "ledgerdrop");
+	const log = path.join(repo, ".dev-flow", "ledgerdrop", "stage-sessions", "transcripts.log");
+	mkdirSync(path.dirname(log), { recursive: true });
+	writeFileSync(log, "[2026-10-30 11:02] worker transcript (run): /sd/earlier.jsonl\n");
+	const real = stageWorkerSpawn.run;
+	try {
+		stageWorkerSpawn.run = verifyWorkerStub(); // its transcript is /tmp/fake-verify-transcript.jsonl
+		const res = await pi.tools.flow_stage.execute("id", { op: "verify", label: "drop me" }, undefined, undefined, ctx) as { details?: Record<string, unknown> };
+		const cardFull = String(res.details?.cardFull ?? "");
+		assert.match(cardFull, /workers this session spawned \(from the flow's ledger/, "the card names its source the same way status does");
+		const tail = cardFull.split("workers this session spawned")[1] ?? "";
+		assert.match(tail, /run · 2026-10-30 11:02 · \/sd\/earlier\.jsonl/, "the ledger's other runs are still the family");
+		assert.ok(!tail.includes("fake-verify-transcript.jsonl"), "the run the card names above is not repeated in its own family list");
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+});
+
+test("a live run whose flow unbound mid-run prints no family and no orphan newline", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const driver = path.join(repo, "sessions", "driver.jsonl");
+	const ctx = withSession(makeCtx(repo), driver, path.join(repo, "sessions"));
+	await toImplement(pi, ctx, "vanish");
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+	const real = stageWorkerSpawn.run;
+	let release: () => void = () => {};
+	try {
+		const gate = new Promise<void>((r) => { release = r; });
+		stageWorkerSpawn.run = ((async () => ({
+			session: {
+				subscribe: () => () => {}, prompt: async () => { await gate; }, steer: () => {}, abort: async () => {}, dispose: () => {},
+				getLastAssistantText: () => "still going", sessionManager: { getSessionFile: () => "/sd/live.jsonl" },
+			},
+			rename: () => {},
+		}))) as never;
+		const running = stage({ op: "verify", label: "homeless" });
+		await new Promise((r) => setTimeout(r, 30));
+		await flow(["abort", "vanish"]); // the session loses its feature while the worker is still running
+		const live = await stage({ op: "status" });
+		assert.ok(!live.content[0].text.endsWith("\n"), "the empty family left no dangling separator");
+		assert.doesNotMatch(live.content[0].text, /workers.*spawned/, "a session with no flow has no family to list");
+		release();
+		await running;
+	} finally {
+		release();
+		stageWorkerSpawn.run = real;
+	}
+});
+
+test("the family is visible to the picker's own query, not just to dev-flow", async () => {
+	// The plan's proof for "Current Folder nests the family" is pi's own call, in the layout a normal
+	// session has: the driver's bucket IS the default for the checkout it ran in. Run with
+	// PI_CODING_AGENT_DIR pointed at a scratch dir (pi reads it lazily), then ask the question the
+	// picker asks — list(cwd) — and the question `pi --resume <id>` asks — findById(cwd, id).
+	const SessionManager = (await import("@earendil-works/pi-coding-agent")).SessionManager;
+	const prev = process.env.PI_CODING_AGENT_DIR;
+	const agent = mkdtempSync(path.join(tmpdir(), "picker-agent-"));
+	if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = agent;
+	process.env.PI_CODING_AGENT_DIR = agent;
+	try {
+		const main = mkdtempSync(path.join(tmpdir(), "picker-main-"));
+		const work = mkdtempSync(path.join(tmpdir(), "picker-work-"));
+		const talk = (sm: { appendMessage: (m: never) => unknown }, t: string) => sm.appendMessage({ role: "user", content: t, timestamp: Date.now() } as never);
+		const driver = SessionManager.create(main);
+		talk(driver, "drive");
+		assert.ok(driver.getSessionFile(), "a driver session with a message has a file");
+		const child = workerSessionManager(work, driver.getSessionFile(), driver.getSessionDir());
+		assert.ok(child, "the production composition built a manager");
+		talk(child, "stage");
+		child.appendSessionInfo("✓ 🔍 · PASS · stamp attack");
+		const workerFile = child.getSessionFile();
+		assert.ok(workerFile, "and the worker's file exists once it has been talked to");
+
+		const rows = await SessionManager.list(main); // Current Folder scope, verbatim
+		const row = rows.find((r: { path: string }) => r.path === workerFile);
+		assert.ok(row, `the picker's own listing shows the worker: got ${rows.length} row(s)`);
+		assert.equal(row.parentSessionPath, driver.getSessionFile(), "and it carries the link the tree threads on");
+		assert.equal(row.name, "✓ 🔍 · PASS · stamp attack", "renamed by the flow, visible to the picker");
+		assert.equal(await SessionManager.findById(main, child.getSessionId()), workerFile, "resuming the worker by id resolves from the driver's checkout");
+
+		// …and the one layout where that stops being true, pinned so that "why listAll?" is a fact in
+		// the suite and not folk law: when the session dir is NOT the default for the queried cwd, pi
+		// filters rows by their own header cwd — and a worker's header cwd is its worktree.
+		const elsewhere = mkdtempSync(path.join(tmpdir(), "picker-elsewhere-"));
+		copyFileSync(driver.getSessionFile()!, path.join(elsewhere, "driver.jsonl"));
+		copyFileSync(workerFile, path.join(elsewhere, "worker.jsonl"));
+		const scoped = await SessionManager.list(main, elsewhere);
+		assert.ok(!scoped.some((r: { path: string }) => r.path.endsWith("worker.jsonl")),
+			"list(cwd, nonDefaultDir) drops the worker: that filter is why the family scan uses listAll");
+		const all = await SessionManager.listAll(elsewhere);
+		assert.equal(all.length, 2, "listAll sees the whole family in either layout");
+		assert.ok(all.some((r: { parentSessionPath?: string }) => r.parentSessionPath), "with the link intact");
+
+	} finally {
+		if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
+	}
+});
+
+test("an empty ledger does not claim to have supplied anything", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // unbacked host, and no worker has ever run for this flow
+	await toImplement(pi, ctx, "emptyledger");
+	const res = await pi.tools.flow_stage.execute("id", { op: "status" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: Record<string, unknown> };
+	assert.match(res.content[0].text, /workers this session spawned:/, "the section is still there");
+	assert.doesNotMatch(res.content[0].text, /from the flow's ledger/, "and says nothing about a source that had no rows");
+	assert.match(res.content[0].text, /\(none yet\)/);
+	assert.equal(res.details?.workers, 0);
+
+	// the same host once the flow has outgrown the list: the ledger folds like the picker rows do,
+	// and the count stays the number of workers rather than the number of printed lines
+	const log = path.join(repo, ".dev-flow", "emptyledger", "stage-sessions", "transcripts.log");
+	mkdirSync(path.dirname(log), { recursive: true });
+	writeFileSync(log, Array.from({ length: 14 }, (_, i) => `[2026-10-30 1${i % 6}:0${i % 10}] worker transcript (run): /sd/w${i}.jsonl`).join("\n") + "\n");
+	const full = await pi.tools.flow_stage.execute("id", { op: "status" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: Record<string, unknown> };
+	assert.match(full.content[0].text, /\u2026 2 earlier workers/, "the overflow folds instead of vanishing");
+	assert.equal(full.details?.workers, 12, "and the count is the workers listed, not the lines printed");
+});

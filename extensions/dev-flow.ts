@@ -26,7 +26,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { compact, createAgentSession, DefaultResourceLoader, defineTool, getAgentDir, isToolCallEventType, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { compact, createAgentSession, DefaultResourceLoader, defineTool, getAgentDir, isToolCallEventType, SessionManager, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	ALLOW_REWRITE,
@@ -38,6 +38,8 @@ import {
 	buildStageBrief,
 	checkFingerprint,
 	changelogVersionsBetween,
+	familyFoldLine,
+	familyHeading,
 	normalizeReleaseBody,
 	pendingEntryLines,
 	pickReleaseNotes,
@@ -140,8 +142,13 @@ import {
 	recordVerifyPass,
 	renderVerifyReport,
 	verifyStampMissing,
+	sessionPathKey,
+	workerFamily,
+	workerFamilyCount,
+	WORKER_FAMILY_ITEMS,
 	workerOpError,
 	workerTranscriptLine,
+	type WorkerSessionRow,
 	workerName,
 	sanitizeWorkerLabel,
 	stateTamper,
@@ -436,14 +443,27 @@ export const compactionTakeover: { run: typeof compact } = { run: compact };
 
 /** Seam that spawns the stage worker as a disposable REAL pi session — the smoke suite replaces
  *  `.run` with a stub, so the worker contract stays testable without spending a model and tests
- *  never touch the real session directory. The real spawn uses the DEFAULT session location (the
- *  picker and `pi export` find it for free) and names the session through an inline extension —
- *  `setSessionName` only exists on a session's own extension API — handing back a rename channel
- *  the driver uses for the ⏳ → ✓/✗ lifecycle. */
+ *  never touch the real session directory. The real spawn stamps lineage: the worker's header
+ *  carries `parentSession` → the driver's own session file, and its transcript goes into the
+ *  driver's session bucket, so pi's picker nests it under the driver in its default Current Folder
+ *  scope (the Threaded sort reads that link — pi #1108 wrote it for exactly this, "extensions such
+ *  as /handoff can do the same"). Naming runs through an inline extension — `setSessionName` only
+ *  exists on a session's own extension API — handing back a rename channel the driver uses for the
+ *  ⏳ → ✓/✗ lifecycle. */
 
 export interface StageWorkerHandle { session: AgentSession; rename: (name: string) => void }
-export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string; tools: string[] }) => Promise<StageWorkerHandle> } = {
-	run: async ({ work, model, name, tools }) => {
+
+/** The worker's session manager, built exactly as the real seam builds it — split out so a test can
+ *  drive the production composition (header link + driver's bucket) without spawning a model.
+ *  Both or neither: `dir` is the driver's own bucket read off the live manager, so a custom
+ *  PI_CODING_AGENT_DIR can never strand a worker in a different agent dir from its driver, and pi's
+ *  private `--<encoded cwd>--` directory encoding is never duplicated here. */
+export function workerSessionManager(work: string, parent?: string, dir?: string): SessionManager | undefined {
+	return parent && dir ? SessionManager.create(work, dir, { parentSession: parent }) : undefined;
+}
+
+export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string; tools: string[]; parent?: string; dir?: string }) => Promise<StageWorkerHandle> } = {
+	run: async ({ work, model, name, tools, parent, dir }) => {
 		let rename: (name: string) => void = () => {};
 		const loader = new DefaultResourceLoader({
 			cwd: work,
@@ -458,13 +478,79 @@ export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: 
 			}],
 		});
 		await loader.reload();
-		const { session } = await createAgentSession({ cwd: work, model: model as never, tools, excludeTools: ["flow", "flow_stage"], resourceLoader: loader });
+		const sessionManager = workerSessionManager(work, parent, dir);
+		const { session } = await createAgentSession({ cwd: work, model: model as never, tools, excludeTools: ["flow", "flow_stage"], resourceLoader: loader, sessionManager });
 		// the op's toolset decides what the worker can touch at all: an implement worker gets the coding
 		// tools, a reviewer gets read + bash only (a checker with an edit tool is a second implementer).
 		// excludeTools is the belt on the extension tools — a worker never holds a gate or a second flow_stage.
 		return { session, rename: (n) => rename(n) };
 	},
 };
+
+/** Seam that reads the driver's session bucket the way the picker does — a stub in the smoke suite,
+ *  because a test must not scan the operator's real session directory. `listAll(dir)`, not
+ *  `list(cwd, dir)`: pi's `list` drops rows whose header cwd is not `cwd` whenever it is handed a
+ *  directory that is not that cwd's default — which is precisely a stage worker (header cwd = the
+ *  worktree, file in the driver's bucket), and precisely the layout a configured `sessionDir`
+ *  creates. `listAll(dir)` is what the picker's Current Folder scope sees in the default layout, so
+ *  the family list and the tree agree there; under a configured session dir the text view stays
+ *  complete even where that scope hides the worker, which is the cheaper direction to err in. */
+export const sessionRowsScan: { run: (o: { cwd: string; dir?: string }) => Promise<WorkerSessionRow[]> } = {
+	run: async ({ dir }) => (await SessionManager.listAll(dir)).map((s) => ({ path: s.path, parent: s.parentSessionPath, name: s.name, messageCount: s.messageCount, modified: s.modified })),
+};
+
+/** Where this session's own transcripts live, when it has any: the file the worker links to, and the
+ *  bucket it lands in. `null` on a host with no file-backed session — lineage is then unavailable,
+ *  which is a fact to print, never an error to raise. */
+function lineageOf(ctx: ExtensionContext): { file: string | null; dir: string | null } {
+	try {
+		return { file: ctx.sessionManager.getSessionFile() ?? null, dir: ctx.sessionManager.getSessionDir() ?? null };
+	} catch { /* an in-memory or otherwise unbacked session says so here */ return { file: null, dir: null }; }
+}
+
+/** With no file-backed lineage to read — an unbacked host, or a driver pi never wrote a file for —
+ *  the ledger is what the flow knows: every worker it recorded, newest first. Coarser than the
+ *  picker's data (no message count, no rename), so the status heading names the source. */
+function ledgerFamilyLines(logPath: string, exclude?: string): string[] {
+	try {
+		const drop = exclude ? sessionPathKey(exclude) : null;
+		const mine = parseWorkerTranscripts(readFileSync(logPath, "utf8")).filter((r) => !drop || sessionPathKey(r.path) !== drop);
+		const shown = mine.slice(-WORKER_FAMILY_ITEMS).reverse().map((r) => `${r.op} · ${r.at} · ${r.path}`);
+		return mine.length > shown.length ? [...shown, familyFoldLine(mine.length - shown.length)] : shown;
+	} catch { return []; }
+}
+
+/** Bucket reads are the one expensive thing the family view does: pi parses every transcript in the
+ *  driver's bucket in full — measured here at ~15 ms per MB of bucket history (25 sessions / 10.4 MB
+ *  ≈ 150–200 ms, 48 MB ≈ 1.3 s). A host renders a running worker by calling status repeatedly, so
+ *  that path is allowed a slightly stale read; the places the operator draws a conclusion from — idle
+ *  status, the settled card — always re-read. */
+const BUCKET_FRESH_MS = 2000;
+const bucketCache = new Map<string, { at: number; rows: Awaited<ReturnType<typeof sessionRowsScan.run>> }>();
+
+async function bucketRows(ctx: ExtensionContext, dir: string | null, staleMs = 0) {
+	const key = dir ?? "(default bucket)";
+	const hit = bucketCache.get(key);
+	if (hit && Date.now() - hit.at <= staleMs) return hit.rows;
+	const rows = await sessionRowsScan.run({ cwd: ctx.cwd, dir: dir ?? undefined });
+	if (bucketCache.size > 8) bucketCache.clear(); // a session drives one bucket; anything bigger is stale keys
+	bucketCache.set(key, { at: Date.now(), rows });
+	return rows;
+}
+
+/** The flow's workers as lines, newest first — `null` when this session has no file to be a parent of,
+ *  which is when the caller reaches for `ledgerFamilyLines` instead.
+ *  Deliberately read from the picker's own data, not from a dev-flow index: renames, deletions and
+ *  workers an older session already delegated all read back correctly for free. `exclude` drops one
+ *  transcript: the caller already shows that run, and meeting it again as an anonymous row under
+ *  "other workers" reads like somebody else's work belongs to this flow. */
+async function workerFamilyLines(ctx: ExtensionContext, exclude?: string, staleMs = 0): Promise<string[] | null> {
+	const { file, dir } = lineageOf(ctx);
+	if (!file) return null;
+	try {
+		return workerFamily(await bucketRows(ctx, dir, staleMs), file, { exclude });
+	} catch { /* visibility again: a bucket we cannot read is not a reason to lose the run's own report */ return null; }
+}
 
 /** Test-only timer override so the smoke suite drives the soft-steer and the hard cut in ms. */
 export const stageTimingOverride: { softMs?: number; hardMs?: number } = {};
@@ -485,6 +571,9 @@ interface StageRun {
 	slug: string;
 	usage: StageUsage;
 	turns: number;
+	/** the live worker's own session file, once spawned — a family listing leaves it out rather than
+	 *  meeting the run twice: once as the run, once as an unlabeled row under "other workers". */
+	transcript?: string;
 }
 
 const stageRuns = new Map<string, StageRun>();
@@ -2319,7 +2408,21 @@ export default function devFlow(pi: ExtensionAPI) {
 			const op: WorkerOp = opRaw;
 			if (op === "status") {
 				const run = stageRuns.get(sessionKey(ctx));
-				if (!run) return { content: [{ type: "text", text: "no stage worker is running in this session" }], details: { running: false } };
+				// The family is the question op:"status" gets when nothing is running — "what has this flow
+				// spawned, and how did each end?". pi's picker threads the same rows into a tree; this is
+				// that fact for a host with no tree, and for the moment between runs. A worker that is live
+				// right now is the section above, not one of "the others" — so it is left out here. The whole
+				// section is gated on a bound feature: an unbound session has never spawned a stage worker,
+				// so there it would be noise paid for with a directory scan.
+				const boundState = (() => { try { return initiated(ctx.cwd) ? boundFeature(ctx.cwd, sessionKey(ctx)) : null; } catch { return null; } })();
+				const inFlow = !!boundState;
+				const fam = inFlow ? await workerFamilyLines(ctx, run?.transcript, run ? BUCKET_FRESH_MS : 0) : null;
+				// the picker's rows when we have them; the ledger when the host gave us no file to be a parent of
+				const familyLines = fam ?? (boundState ? ledgerFamilyLines(path.join(featDir(ctx.cwd, boundState.slug), "stage-sessions", TRANSCRIPTS_FILE), run?.transcript) : null);
+				const familySection = inFlow ? [familyHeading({ live: !!run, ledger: fam === null && !!familyLines?.length }), ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
+				if (!run) {
+					return { content: [{ type: "text", text: ["no stage worker is running in this session", ...familySection].join("\n") }], details: { running: false, ...(inFlow ? { workers: workerFamilyCount(familyLines) } : {}) } };
+				}
 				const elapsed = Date.now() - run.startedAt;
 				const dirtyNow = await sh("git status --porcelain", run.work);
 				const logNow = await sh("git log --oneline -5", run.work);
@@ -2329,8 +2432,9 @@ export default function devFlow(pi: ExtensionAPI) {
 					stageUsageLine(run.usage, run.turns),
 					`worktree now: ${dirtyNow.ok && dirtyNow.out.trim() ? `${dirtyNow.out.trim().split("\n").length} uncommitted path(s)` : "clean"}`,
 					`recent commits:\n${logNow.ok && logNow.out.trim() ? logNow.out : "(none)"}`,
+					...(inFlow ? ["", ...familySection] : []),
 				].join("\n");
-				return { content: [{ type: "text", text }], details: { running: true, op: run.op, slug: run.slug, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired, usage: run.usage, turns: run.turns } };
+				return { content: [{ type: "text", text }], details: { running: true, op: run.op, slug: run.slug, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired, usage: run.usage, turns: run.turns, workers: workerFamilyCount(familyLines) } };
 			}
 			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
 			const st = boundFeature(ctx.cwd, sessionKey(ctx));
@@ -2365,6 +2469,9 @@ export default function devFlow(pi: ExtensionAPI) {
 			const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 			const logFile = path.join(featDir(ctx.cwd, st.slug), "stage-live.log");
 			const transcriptLog = path.join(featDir(ctx.cwd, st.slug), "stage-sessions", TRANSCRIPTS_FILE);
+			// read once, used twice: the worker's header links to this file and lands in this bucket,
+			// and the reflect brief names this session's own transcript to the reviewer
+			const lineage = lineageOf(ctx);
 			let child: AgentSession | undefined;
 			let crash: string | null = null;
 			let timedOut = false;
@@ -2400,10 +2507,8 @@ export default function devFlow(pi: ExtensionAPI) {
 					});
 				} else if (op === "reflect") {
 					const transcripts = existsSync(transcriptLog) ? parseWorkerTranscripts(readFileSync(transcriptLog, "utf8")) : [];
-					let driverSession: string | null = null;
-					try { driverSession = ctx.sessionManager.getSessionFile() ?? null; } catch { /* a host without a file-backed session says so in the brief */ }
 					brief = buildReflectBrief({
-						slug: st.slug, planFile, statusJson: statusJsonText, driverSession, transcripts,
+						slug: st.slug, planFile, statusJson: statusJsonText, driverSession: lineage.file, transcripts,
 						openReflections: readReflections(ctx.cwd).map((r) => r.line), note,
 					});
 				} else {
@@ -2426,8 +2531,9 @@ export default function devFlow(pi: ExtensionAPI) {
 				// the worker is a REAL pi session in the default location — the pi/pi-web picker renders it
 				// live from the append-only transcript (⏳ = resumable later; resuming a live one forks it,
 				// browsing is read-only by construction); `pi export <file>` makes it readable HTML
-				const worker = await stageWorkerSpawn.run({ work, model: ctx.model, name: workerName("⏳", glyph, seq, label), tools: [...WORKER_OP_TOOLS[op]] });
+				const worker = await stageWorkerSpawn.run({ work, model: ctx.model, name: workerName("⏳", glyph, seq, label), tools: [...WORKER_OP_TOOLS[op]], parent: lineage.file ?? undefined, dir: lineage.dir ?? undefined });
 				child = worker.session;
+				try { run.transcript = child.sessionManager.getSessionFile() ?? undefined; } catch { /* the family listing just won't know which row is this run */ }
 				emit("dev-flow:worker-started", { budgetMin, startedAt: new Date().toISOString() });
 				let lastBeat = 0;
 				/** One live line: ledger, durable log, and the streamed card — same text on every host. */
@@ -2585,8 +2691,13 @@ export default function devFlow(pi: ExtensionAPI) {
 				if (crash) parts.push(`worker run ended with an error: ${crash}`);
 				if (snapshot && !verify) parts.push(`uncommitted worktree snapshotted (tracked + untracked): ${snapshot} — read it before deciding what to keep`);
 				parts.push(check ? `tier-1 rerun after worker: ${check.text.replace(/\s+/g, " ").trim()}` : "tier-1 untouched: a check-only worker leaves the tree (and the records) as it found them — flow check / flow verify rerun what the tree still owes.");
-				parts.push(`worker transcript: ${transcript || "(session file unknown)"}${transcript ? `\nreadable as HTML: pi export ${transcript}` : ""}\nindexed in: ${transcriptLog}`);
+				parts.push(`worker transcript: ${transcript || "(session file unknown)"}${transcript ? `\nreadable as HTML: pi export ${transcript}` : ""}\nindexed in: ${transcriptLog}${lineage.file && transcript ? `\nlineage: nested under ${lineage.file} in pi's picker (Threaded, Current Folder)` : ""}`);
 				const failed = !!crash || timedOut || moved;
+				// the family belongs on the settled card and the result only: a live frame redraws on every
+				// worker tool call, and reading a session bucket is IO. This run is excluded — the card names
+				// its transcript already, and repeating it as a bare row reads like a different worker.
+				const famFromPicker = await workerFamilyLines(ctx, transcript || undefined);
+				const fam = famFromPicker ?? ledgerFamilyLines(transcriptLog, transcript || undefined);
 				emit(failed ? "dev-flow:worker-failed" : "dev-flow:worker-completed", {
 					elapsedMs: Date.now() - run.startedAt, usage: run.usage, turns: run.turns, budgetMin, softFired: run.softFired, timedOut, crash,
 					verdict: verify?.verdict ?? null, reportMissing: report?.missing ?? findings?.missing ?? false, transcript, snapshot,
@@ -2595,7 +2706,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				return {
 					content: [{ type: "text" as const, text: parts.join("\n\n") }],
 					details: {
-						op, slug: st.slug, stage: st.stage, card, cardFull: stageCardLines({ kind, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state: failed ? "failed" : "done", verdict: verify?.verdict ?? null, transcript }, true),
+						op, slug: st.slug, stage: st.stage, card, cardFull: stageCardLines({ kind, slug: st.slug, elapsedMs: Date.now() - run.startedAt, budgetMin, softFired: run.softFired, tail: run.lastLines, usage: stageUsageLine(run.usage, run.turns), state: failed ? "failed" : "done", verdict: verify?.verdict ?? null, transcript, family: fam?.length ? fam : undefined, familyHeading: famFromPicker === null ? familyHeading({ ledger: true }) : undefined }, true),
 						done: report?.done, files: report?.files, notes: report?.notes, blockers: report?.blockers, reportMissing: report?.missing ?? findings?.missing ?? false,
 						verdict: verify?.verdict ?? null, stamped, clearedStamp: cleared, verdictVoided: moved, timedOut, softFired: run.softFired, budgetMin, elapsedMs: Date.now() - run.startedAt, error: crash, transcript, snapshot,
 					},

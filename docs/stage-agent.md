@@ -95,8 +95,19 @@ driver's transcript wherever the host renders streamed tool updates (the TUI
 does; expansion adds the fuller stream, the report and the transcript path).
 Around it, three mirrors:
 
-- a worker is a real pi session in pi's standard session directory, named by
-  role glyph, ordinal and purpose — `⏳ 🔨 #2 · wire ops` while it runs, renamed
+- a worker is a real pi session, **stamped as this session's child**: its header
+  carries `parentSession` → the driver's session file, and its transcript lands in
+  the driver's own session bucket — so `pi --resume` nests it under the driver in
+  its default **Current Folder** scope, in the Threaded sort, with no scope switch
+  (pi #1108 built that link for exactly this: extensions may stamp it on sessions
+  they create on a user's behalf). One layout exception: if you point pi at a
+  configured session directory (settings `sessionDir`, or `--session-dir`) that is
+  not the default for the folder you started it in, that scope filters by each
+  session's own cwd and a worker's cwd is its worktree — the family is still
+  threaded, one Tab away under **All**, and dev-flow's text view below lists it in
+  either layout. On a host with no file-backed session the stamp
+  is skipped and the worker keeps pi's default location, unlinked. Named by role
+  glyph, ordinal and purpose — `⏳ 🔨 #2 · wire ops` while it runs, renamed
   at the end with its outcome: `✓ 🔨 #2 · 3 commits · wire ops`, a verify `✓ 🔍 ·
   PASS · stamp attack`, a cut-off worker `✗ 🔨 #3 · hard-cut`; the verdict never
   depends on opening the row (a `label` on the call supplies the purpose; with
@@ -112,6 +123,31 @@ Around it, three mirrors:
 - every line appends to `.dev-flow/<slug>/stage-live.log` — tail-able, and
   `flow_stage { op: "status" }` prints the same tail plus elapsed time, budget,
   the worktree state and recent commits, on any host, no model call.
+
+### The family, on a host with no tree
+
+The parent link makes pi's own picker the lineage view. Where a host has no tree
+(or you want the answer in text), the settled card and
+`flow_stage { op: "status" }` list the family instead: one line per worker this
+session spawned — its picker name (so the outcome is right there), message count,
+last-write time, transcript path, newest first, older ones folded behind one
+counted line. The worker the card or status is reporting on is left out — it is the
+section above it — and the section appears only inside a flow, because an unbound
+session has never spawned one:
+
+```
+workers this session spawned:
+✓ 🔍 · PASS · stamp attack · 7 msgs · 2026-10-30 12:04 · ~/.pi/agent/sessions/…/w2.jsonl
+✗ 🔨 #1 · hard-cut · 31 msgs · 2026-10-30 11:02 · ~/.pi/agent/sessions/…/w1.jsonl
+```
+
+It is read back from pi's session listing, not from a dev-flow index, so renames,
+deletions and workers an earlier session already delegated all read correctly for
+free. A host that gives dev-flow no session file to be a parent of falls back to
+the lines the flow's own `transcripts.log` already holds — coarser (no message
+count, no rename), still the same answer. Reading a bucket costs about 15 ms per
+MB of its history, so the polled live view re-reads at most once every two seconds
+while the settled card and an idle status always read fresh.
 
 Lifecycle is also on the bus: `dev-flow:worker-started` / `-completed` /
 `-failed` events (slug, op, elapsed, usage) let other extensions react without
@@ -135,8 +171,14 @@ file to read before deciding what to keep.
 
 ## Transcripts
 
-Session JSONL lives where pi keeps sessions (standard dir, discoverable by the
-picker and `pi export`); snapshots and the `transcripts.log` index live under
+Session JSONL lives in the **driver's own session bucket** (the directory pi already
+uses for this session), which is what lets pi's picker show a flow's workers as one
+nested family; `pi export` and the picker find them there. Two consequences worth
+knowing: a worker's header `cwd` is still the worktree, so after `flow finish`
+removes that worktree the row points at a directory that is gone (browsing and
+`pi export` still work — resuming it would not); and the bucket is shared with the
+driver's own history, so worker transcripts are only ever deleted by path, never
+by clearing a folder. Snapshots and the `transcripts.log` index live under
 `.dev-flow/<slug>/stage-sessions/` (gitignored, like all flow-owned state).
 
 ## Deliberate limits (v2)
