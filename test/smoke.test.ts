@@ -3173,3 +3173,38 @@ test("an empty ledger does not claim to have supplied anything", async () => {
 	assert.match(full.content[0].text, /\u2026 2 earlier workers/, "the overflow folds instead of vanishing");
 	assert.equal(full.details?.workers, 12, "and the count is the workers listed, not the lines printed");
 });
+
+test("a status call landing in the same millisecond still reads the bucket now", async () => {
+	// The CI runner is fast enough that two status calls share a millisecond, and the freshness window
+	// read that as "fresh": a settled card or an idle status — the reads an operator concludes from, the
+	// ones that ask for staleMs 0 — could print the bucket as it was microseconds ago. Freezing the clock
+	// is the whole point of the test: this pins the semantics instead of racing them.
+	const pi = makePi();
+	const repo = makeRepo();
+	const driver = path.join(repo, "sessions", "driver.jsonl");
+	const ctx = withSession(makeCtx(repo), driver, path.join(repo, "sessions"));
+	await toImplement(pi, ctx, "samems");
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; details?: Record<string, unknown> }>;
+
+	const realScan = sessionRowsScan.run;
+	const realNow = Date.now;
+	let scans = 0;
+	try {
+		Date.now = () => 1780000000000;
+		sessionRowsScan.run = async () => {
+			scans++;
+			return [{ path: path.join(repo, "sessions", "w1.jsonl"), parent: driver, name: "\u2713 \ud83d\udd0d \u00b7 PASS", messageCount: 2, modified: new Date(0) }];
+		};
+		const first = await stage({ op: "status" });
+		assert.match(first.content[0].text, /PASS/, "the first read shows what the bucket holds");
+
+		sessionRowsScan.run = async () => { scans++; return []; };
+		const second = await stage({ op: "status" });
+		assert.equal(scans, 2, "a fresh-read status re-reads even in the millisecond the previous read occupied");
+		assert.match(second.content[0].text, /\(none yet\)/, "and prints the truth of now, not the truth of microseconds ago");
+		assert.equal(second.details?.workers, 0);
+	} finally {
+		Date.now = realNow;
+		sessionRowsScan.run = realScan;
+	}
+});

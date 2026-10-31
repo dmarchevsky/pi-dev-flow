@@ -531,7 +531,12 @@ const bucketCache = new Map<string, { at: number; rows: Awaited<ReturnType<typeo
 async function bucketRows(ctx: ExtensionContext, dir: string | null, staleMs = 0) {
 	const key = dir ?? "(default bucket)";
 	const hit = bucketCache.get(key);
-	if (hit && Date.now() - hit.at <= staleMs) return hit.rows;
+	// staleMs = 0 is not "a zero-length window", it is "no window: read now" — which is what idle status
+	// and the settled card ask for, because that is where the operator draws a conclusion. With `<=` the
+	// condition also holds inside the caller's own millisecond, and a fast host got the previous read back
+	// as a fresh one (this made CI red: a status call answering "what is there now" in the same millisecond
+	// as the call before it printed the family that had just gone empty).
+	if (staleMs > 0 && hit && Date.now() - hit.at <= staleMs) return hit.rows;
 	const rows = await sessionRowsScan.run({ cwd: ctx.cwd, dir: dir ?? undefined });
 	if (bucketCache.size > 8) bucketCache.clear(); // a session drives one bucket; anything bigger is stale keys
 	bucketCache.set(key, { at: Date.now(), rows });
