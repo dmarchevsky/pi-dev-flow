@@ -38,12 +38,9 @@ import {
 	buildStageBrief,
 	checkFingerprint,
 	changelogVersionsBetween,
-		familyFoldLine,
+	familyFoldLine,
 	familyHeading,
 	normalizeReleaseBody,
-	sessionPathKey,
-	WORKER_FAMILY_ITEMS,
-	workerFamilyCount,
 	pendingEntryLines,
 	pickReleaseNotes,
 	parseStageReport,
@@ -145,9 +142,12 @@ import {
 	recordVerifyPass,
 	renderVerifyReport,
 	verifyStampMissing,
+	sessionPathKey,
+	workerFamily,
+	workerFamilyCount,
+	WORKER_FAMILY_ITEMS,
 	workerOpError,
 	workerTranscriptLine,
-	workerFamily,
 	type WorkerSessionRow,
 	workerName,
 	sanitizeWorkerLabel,
@@ -528,12 +528,13 @@ function ledgerFamilyLines(logPath: string, exclude?: string): string[] {
 const BUCKET_FRESH_MS = 2000;
 const bucketCache = new Map<string, { at: number; rows: Awaited<ReturnType<typeof sessionRowsScan.run>> }>();
 
-async function bucketRows(ctx: ExtensionContext, dir: string, staleMs = 0) {
-	const hit = bucketCache.get(dir);
+async function bucketRows(ctx: ExtensionContext, dir: string | null, staleMs = 0) {
+	const key = dir ?? "(default bucket)";
+	const hit = bucketCache.get(key);
 	if (hit && Date.now() - hit.at <= staleMs) return hit.rows;
-	const rows = await sessionRowsScan.run({ cwd: ctx.cwd, dir });
+	const rows = await sessionRowsScan.run({ cwd: ctx.cwd, dir: dir ?? undefined });
 	if (bucketCache.size > 8) bucketCache.clear(); // a session drives one bucket; anything bigger is stale keys
-	bucketCache.set(dir, { at: Date.now(), rows });
+	bucketCache.set(key, { at: Date.now(), rows });
 	return rows;
 }
 
@@ -547,7 +548,7 @@ async function workerFamilyLines(ctx: ExtensionContext, exclude?: string, staleM
 	const { file, dir } = lineageOf(ctx);
 	if (!file) return null;
 	try {
-		return workerFamily(await bucketRows(ctx, dir ?? undefined as never, staleMs), file, { exclude });
+		return workerFamily(await bucketRows(ctx, dir, staleMs), file, { exclude });
 	} catch { /* visibility again: a bucket we cannot read is not a reason to lose the run's own report */ return null; }
 }
 
