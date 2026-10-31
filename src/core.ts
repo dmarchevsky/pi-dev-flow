@@ -2361,6 +2361,13 @@ export interface WorkerSessionRow {
 /** How many workers one render lists before it folds the older ones. */
 export const WORKER_FAMILY_ITEMS = 12;
 
+/** Family rendering options: `max` folds the older ones, `exclude` drops one transcript — the live
+ *  or just-finished run, which the caller already shows as its own section or its own line. */
+export interface WorkerFamilyOptions {
+	max?: number;
+	exclude?: string;
+}
+
 /** The same session file written two ways is still one session (separators, trailing slash, and on
  *  Windows the case of the drive letter). pi's own picker canonicalizes the same idea. */
 function sessionKey(p: string): string {
@@ -2382,18 +2389,30 @@ function sessionTime(row: WorkerSessionRow): number {
  * stored here, so a renamed worker (`✓ 🔍 · PASS · stamp attack`) reads back renamed, and workers a
  * previous session already delegated show up next to this one's.
  */
-export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null | undefined, max = WORKER_FAMILY_ITEMS): string[] {
+export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null | undefined, opts: WorkerFamilyOptions = {}): string[] {
 	if (!driverFile) return [];
 	const key = sessionKey(driverFile);
-	const mine = rows.filter((r) => r.parent && sessionKey(r.parent) === key).sort((a, b) => sessionTime(b) - sessionTime(a));
+	const max = opts.max ?? WORKER_FAMILY_ITEMS;
+	const drop = opts.exclude ? sessionKey(opts.exclude) : null;
+	const mine = rows
+		.filter((r) => r.parent && sessionKey(r.parent) === key && (!drop || sessionKey(r.path) !== drop))
+		.sort((a, b) => sessionTime(b) - sessionTime(a));
 	const shown = mine.slice(0, max);
 	const lines = shown.map((r) => {
 		const at = sessionTime(r);
-		const stamp = at ? new Date(at).toISOString().slice(0, 16).replace("T", " ") : "time unknown";
-		return `${r.name?.trim() || "(unnamed worker)"} · ${r.messageCount ?? 0} msgs · ${stamp} · ${r.path}`;
+		return `${r.name?.trim() || "(unnamed worker)"} · ${r.messageCount ?? 0} msgs · ${at ? localStamp(at) : "time unknown"} · ${r.path}`;
 	});
 	if (mine.length > shown.length) lines.push(`… ${mine.length - shown.length} earlier workers`);
 	return lines;
+}
+
+/** Local wall-clock `YYYY-MM-DD HH:mm` — the convention every dev-flow timestamp follows (a UTC
+ *  stamp next to the operator's own clock reads as a future or past session, and the family line is
+ *  meant to be scanned, not converted). */
+function localStamp(ms: number): string {
+	const d = new Date(ms);
+	const p = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** What the tool accumulated from a worker's assistant usage records. */

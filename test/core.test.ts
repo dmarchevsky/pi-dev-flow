@@ -1653,3 +1653,33 @@ test("workerFamily matches the parent link however the path is spelled", () => {
 	assert.equal(workerFamily([{ path: "/sd/w.jsonl", parent: "/sd/w-parent.jsonl/", modified: 1 }], "/sd/w-parent.jsonl").length, 1, "a trailing separator is the same file");
 	assert.equal(workerFamily([{ path: "/sd/w.jsonl", parent: "/sd/other.jsonl", modified: 1 }], "/sd/w-parent.jsonl").length, 0, "and a different file is not");
 });
+
+test("the settled card carries the family; the collapsed card does not", () => {
+	const base = { kind: "\ud83d\udd0d verify", slug: "lineage", elapsedMs: 60_000, budgetMin: 30 };
+	const family = ["\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 other work \u00b7 9 msgs \u00b7 2026-10-30 11:00 \u00b7 /sd/other.jsonl"];
+	const settled = stageCardLines({ ...base, state: "done", transcript: "/sd/mine.jsonl", family }, true).join("\n");
+	assert.match(settled, /workers this session spawned:/, "the expanded settled card carries the family");
+	assert.match(settled, /PASS \u00b7 other work/);
+	assert.doesNotMatch(stageCardLines({ ...base, state: "done", family }).join("\n"), /other work/, "the collapsed one-liner stays lean");
+});
+
+test("workerFamily can leave the caller's own run out of its own family list", () => {
+	const driver = "/sd/driver.jsonl";
+	const rows = [
+		{ path: "/sd/live.jsonl", parent: driver, name: "\u23f3 \ud83d\udd28 #2 \u00b7 wire ops", messageCount: 5, modified: 20 },
+		{ path: "/sd/older.jsonl", parent: driver, name: "\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 check", messageCount: 8, modified: 10 },
+	];
+	assert.equal(workerFamily(rows, driver).length, 2, "by default the live worker is listed like any other");
+	const others = workerFamily(rows, driver, { exclude: "/sd/live.jsonl" });
+	assert.equal(others.length, 1, "excluded is gone, so a heading that says other workers means it");
+	assert.match(others[0], /PASS \u00b7 check/);
+	assert.equal(workerFamily(rows, driver, { exclude: "/sd/dir/../live.jsonl" }).length, 1, "the exclusion compares files, not strings");
+});
+
+test("family timestamps are local wall-clock, not UTC", () => {
+	// the operator scans these next to their own clock; a UTC stamp reads as a session in the future
+	const at = new Date(2026, 9, 30, 23, 45).getTime(); // local by construction
+	const line = workerFamily([{ path: "/w.jsonl", parent: "/d.jsonl", name: "w", messageCount: 1, modified: at }], "/d.jsonl")[0];
+	assert.match(line, /2026-10-30 23:45/, `expected local wall-clock in: ${line}`);
+	assert.doesNotMatch(line, /T\d{2}:\d{2}/, "no ISO/UTC shape snuck back in");
+});

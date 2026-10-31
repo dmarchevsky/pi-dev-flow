@@ -126,10 +126,12 @@ The parent link makes pi's own picker the lineage view. Where a host has no tree
 `flow_stage { op: "status" }` list the family instead: one line per worker this
 session spawned — its picker name (so the outcome is right there), message count,
 last-write time, transcript path, newest first, older ones folded behind one
-counted line:
+counted line. The worker the card or status is reporting on is left out — it is the
+section above it — and the section appears only inside a flow, because an unbound
+session has never spawned one:
 
 ```
-workers this session spawned:
+other workers this session spawned:
 ✓ 🔍 · PASS · stamp attack · 7 msgs · 2026-10-30 12:04 · ~/.pi/agent/sessions/…/w2.jsonl
 ✗ 🔨 #1 · hard-cut · 31 msgs · 2026-10-30 11:02 · ~/.pi/agent/sessions/…/w1.jsonl
 ```
