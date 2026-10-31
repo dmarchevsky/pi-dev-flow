@@ -476,9 +476,13 @@ export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: 
 };
 
 /** Seam that reads the driver's session bucket the way the picker does — a stub in the smoke suite,
- *  because a test must not scan the operator's real session directory. */
+ *  because a test must not scan the operator's real session directory. `listAll(dir)`, not
+ *  `list(cwd, dir)`: pi's `list` drops rows whose header cwd is not `cwd` whenever it is handed a
+ *  directory that is not that cwd's default — which is precisely a stage worker (header cwd = the
+ *  worktree, file in the driver's bucket). `listAll(dir)` is also what the picker's Current Folder
+ *  scope ends up seeing for a normal session, so the family list and the tree agree. */
 export const sessionRowsScan: { run: (o: { cwd: string; dir?: string }) => Promise<WorkerSessionRow[]> } = {
-	run: async ({ cwd, dir }) => (await SessionManager.list(cwd, dir)).map((s) => ({ path: s.path, parent: s.parentSessionPath, name: s.name, messageCount: s.messageCount, modified: s.modified })),
+	run: async ({ dir }) => (await SessionManager.listAll(dir)).map((s) => ({ path: s.path, parent: s.parentSessionPath, name: s.name, messageCount: s.messageCount, modified: s.modified })),
 };
 
 /** Where this session's own transcripts live, when it has any: the file the worker links to, and the

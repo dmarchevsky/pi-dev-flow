@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import devFlow, { compactionTakeover, sessionRowsScan, stageTimingOverride, stageWorkerSpawn, testSeams } from "../extensions/dev-flow.ts";
-import { tagNotesCommand } from "../src/core.ts";
+import { tagNotesCommand, workerFamily } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
@@ -2908,4 +2908,33 @@ test("op status prints the family pi's picker already threads", async () => {
 	} finally {
 		sessionRowsScan.run = realScan;
 	}
+});
+
+test("the family scan reads the driver's bucket like the picker does, not like a cwd filter", async () => {
+	// The trap this guards: pi's `list(cwd, dir)` drops any row whose header cwd is not `cwd` once it
+	// is handed a directory that is not that cwd's default — which is exactly a stage worker (header
+	// cwd = the worktree, transcript in the driver's bucket). The scan must therefore read the bucket,
+	// the way the picker's Current Folder scope does, or the family prints empty in production while
+	// every stubbed test stays green.
+	const SessionManager = (await import("@earendil-works/pi-coding-agent")).SessionManager;
+	const bucket = mkdtempSync(path.join(tmpdir(), "family-bucket-"));
+	const mainCheckout = mkdtempSync(path.join(tmpdir(), "family-main-"));
+	const worktreeDir = mkdtempSync(path.join(tmpdir(), "family-worktree-"));
+	const talk = (sm: { appendMessage: (m: never) => unknown }, t: string) => sm.appendMessage({ role: "user", content: t, timestamp: Date.now() } as never);
+
+	const driver = SessionManager.create(mainCheckout, bucket);
+	talk(driver, "drive the flow");
+	driver.appendSessionInfo("driver-session");
+	const driverFile = driver.getSessionFile();
+	assert.ok(driverFile, "a session with a message has a file");
+	const worker = SessionManager.create(worktreeDir, bucket, { parentSession: driverFile });
+	talk(worker, "do the stage");
+	worker.appendSessionInfo("\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 real rows");
+
+	const rows = await sessionRowsScan.run({ cwd: mainCheckout, dir: bucket });
+	assert.equal(rows.length, 2, "both files in the bucket are listed, whatever cwd each was written under");
+	const fam = workerFamily(rows, driverFile);
+	assert.equal(fam.length, 1, "and the worker's parent link resolves it as the driver's child");
+	assert.match(fam[0] ?? "", /PASS \u00b7 real rows/, "the picker name is what the line carries");
+	assert.ok(!fam.join("").includes(path.basename(driverFile)), "the driver is not its own worker");
 });
