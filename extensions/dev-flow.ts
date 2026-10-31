@@ -522,9 +522,9 @@ function ledgerFamilyLines(logPath: string, exclude?: string): string[] {
 
 /** Bucket reads are the one expensive thing the family view does: pi parses every transcript in the
  *  driver's bucket in full — measured here at ~15 ms per MB of bucket history (25 sessions / 10.4 MB
- *  ≈ 150–200 ms, 48 MB ≈ 1.3 s). The live card polls status every second, so the polling path is
- *  allowed a slightly stale read; the places the operator draws a conclusion from — idle status, the
- *  settled card — always re-read. */
+ *  ≈ 150–200 ms, 48 MB ≈ 1.3 s). A host renders a running worker by calling status repeatedly, so
+ *  that path is allowed a slightly stale read; the places the operator draws a conclusion from — idle
+ *  status, the settled card — always re-read. */
 const BUCKET_FRESH_MS = 2000;
 const bucketCache = new Map<string, { at: number; rows: Awaited<ReturnType<typeof sessionRowsScan.run>> }>();
 

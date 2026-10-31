@@ -2340,7 +2340,7 @@ export function stageCardLines(v: StageCardView, expanded = false): string[] {
 	if (expanded && v.transcript) out.push(`transcript: ${v.transcript}`);
 	// the family only on the settled card: listing a session directory is IO, and a live frame
 	// redraws on every worker tool call — a running run must not pay for a directory read
-	if (expanded && v.family?.length) out.push(v.familyHeading ?? "workers this session spawned:", ...v.family);
+	if (expanded && v.family?.length) out.push(v.familyHeading ?? familyHeading(), ...v.family);
 	return out;
 }
 
@@ -2370,8 +2370,8 @@ export interface WorkerFamilyOptions {
 	exclude?: string;
 }
 
-/** The heading over a family list. Both renderers ask for it here so the status text and the card can
- *  never drift, and so a list that came from the ledger — no message counts, no renames — says so. */
+/** The heading over a family list — the one place the wording lives, so the status text and the card
+ *  cannot drift, and so a list that came from the ledger (no message counts, no renames) says so. */
 export function familyHeading(o: { live?: boolean; ledger?: boolean } = {}): string {
 	return `${o.live ? "other workers this session spawned" : "workers this session spawned"}${o.ledger ? " (from the flow's ledger — this host has no session file to nest)" : ""}:`;
 }

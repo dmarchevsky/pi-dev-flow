@@ -136,7 +136,7 @@ section above it — and the section appears only inside a flow, because an unbo
 session has never spawned one:
 
 ```
-other workers this session spawned:
+workers this session spawned:
 ✓ 🔍 · PASS · stamp attack · 7 msgs · 2026-10-30 12:04 · ~/.pi/agent/sessions/…/w2.jsonl
 ✗ 🔨 #1 · hard-cut · 31 msgs · 2026-10-30 11:02 · ~/.pi/agent/sessions/…/w1.jsonl
 ```
