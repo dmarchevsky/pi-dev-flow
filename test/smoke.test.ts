@@ -2929,11 +2929,15 @@ test("the live run and the settled card never meet themselves in the family list
 
 	const realScan = sessionRowsScan.run;
 	const realSpawn = stageWorkerSpawn.run;
+	let scans = 0;
 	try {
-		sessionRowsScan.run = async () => [
-			{ path: own, parent: driver, name: "\u23f3 \ud83d\udd0d \u00b7 stamp attack", messageCount: 3, modified: new Date("2026-10-30T12:00:00Z") },
-			{ path: other, parent: driver, name: "\u2713 \ud83d\udd28 #1 \u00b7 2 commits \u00b7 wire ops", messageCount: 44, modified: new Date("2026-10-30T11:00:00Z") },
-		];
+		sessionRowsScan.run = async () => {
+			scans++;
+			return [
+				{ path: own, parent: driver, name: "\u23f3 \ud83d\udd0d \u00b7 stamp attack", messageCount: 3, modified: new Date("2026-10-30T12:00:00Z") },
+				{ path: other, parent: driver, name: "\u2713 \ud83d\udd28 #1 \u00b7 2 commits \u00b7 wire ops", messageCount: 44, modified: new Date("2026-10-30T11:00:00Z") },
+			];
+		};
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => { release = r; });
 		let prompting: () => void = () => {};
@@ -2949,17 +2953,23 @@ test("the live run and the settled card never meet themselves in the family list
 			};
 		}) as never;
 		const running = stage({ op: "verify", label: "stamp attack" });
-		await promptingGate; // the worker is prompting: its transcript is recorded before its first prompt, so the live row is known
-		const live = await stage({ op: "status" });
-		assert.match(live.content[0].text, /other workers this session spawned:/, "a live run gets a heading that means it");
-		assert.match(live.content[0].text, /2 commits \u00b7 wire ops/, "the earlier worker is the other one");
-		assert.doesNotMatch(live.content[0].text, /w-live\.jsonl/, "the running worker is not listed under others \u2014 it is the section above");
-		release();
-		const settled = await running;
-		const cardFull = String(settled.details?.cardFull ?? "");
-		assert.match(cardFull, /workers this session spawned:/, "the settled card carries the family");
-		assert.match(cardFull, /2 commits \u00b7 wire ops/);
-		assert.ok(!cardFull.split("workers this session spawned:")[1].includes(own), "and the card's own transcript is not repeated as an anonymous row");
+		try {
+			await promptingGate; // the worker is prompting: its transcript is recorded before its first prompt, so the live row is known
+			const live = await stage({ op: "status" });
+			await stage({ op: "status" });
+			assert.equal(scans, 1, "a polled status re-reads the bucket at most once per window — pi parses every transcript in it in full");
+			assert.match(live.content[0].text, /other workers this session spawned:/, "a live run gets a heading that means it");
+			assert.match(live.content[0].text, /2 commits \u00b7 wire ops/, "the earlier worker is the other one");
+			assert.doesNotMatch(live.content[0].text, /w-live\.jsonl/, "the running worker is not listed under others \u2014 it is the section above");
+			release();
+			const settled = await running;
+			const cardFull = String(settled.details?.cardFull ?? "");
+			assert.match(cardFull, /workers this session spawned:/, "the settled card carries the family");
+			assert.match(cardFull, /2 commits \u00b7 wire ops/);
+			assert.ok(!cardFull.split("workers this session spawned:")[1].includes(own), "and the card's own transcript is not repeated as an anonymous row");
+		} finally {
+			release(); // a red assertion must still let the gated worker finish: a hanging suite hides the failure it just found
+		}
 	} finally {
 		sessionRowsScan.run = realScan;
 		stageWorkerSpawn.run = realSpawn;
@@ -3021,4 +3031,20 @@ test("the real worker session manager stamps the lineage it promises", async () 
 
 	assert.ok(!workerSessionManager(worktreeDir, undefined, bucket), "no parent => no link (pi's default location, as before)");
 	assert.ok(!workerSessionManager(worktreeDir, driverFile, undefined), "no dir => no link either: half a stamp is how a worker gets stranded in another agent dir");
+});
+
+test("with no session file to read, the family falls back to the ledger the flow already keeps", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // no sessionManager at all: nothing on this host can be a parent
+	await toImplement(pi, ctx, "ledger");
+	const log = path.join(repo, ".dev-flow", "ledger", "stage-sessions", "transcripts.log");
+	mkdirSync(path.dirname(log), { recursive: true });
+	writeFileSync(log, `[2026-10-30 11:02] worker transcript (run): ${path.join(repo, "w1.jsonl")}\n[2026-10-30 12:04] worker transcript (verify): ${path.join(repo, "w2.jsonl")}\n`);
+	const res = await pi.tools.flow_stage.execute("id", { op: "status" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: Record<string, unknown> };
+	assert.match(res.content[0].text, /workers this session spawned:/);
+	assert.match(res.content[0].text, /verify \u00b7 2026-10-30 12:04/, "the ledger is coarser than the picker's rows, and still better than an apology");
+	assert.match(res.content[0].text, /run \u00b7 2026-10-30 11:02/);
+	assert.ok(res.content[0].text.indexOf("verify \u00b7") < res.content[0].text.indexOf("run \u00b7"), "newest first, like the picker rows");
+	assert.equal(res.details?.workers, 2);
 });

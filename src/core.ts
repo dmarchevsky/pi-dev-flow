@@ -2370,7 +2370,7 @@ export interface WorkerFamilyOptions {
 
 /** The same session file written two ways is still one session (separators, trailing slash, and on
  *  Windows the case of the drive letter). pi's own picker canonicalizes the same idea. */
-function sessionKey(p: string): string {
+export function sessionPathKey(p: string): string {
 	const k = path.resolve(p).replace(/[\\/]+$/, "");
 	return process.platform === "win32" ? k.toLowerCase() : k;
 }
@@ -2391,11 +2391,10 @@ function sessionTime(row: WorkerSessionRow): number {
  */
 export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null | undefined, opts: WorkerFamilyOptions = {}): string[] {
 	if (!driverFile) return [];
-	const key = sessionKey(driverFile);
 	const max = opts.max ?? WORKER_FAMILY_ITEMS;
-	const drop = opts.exclude ? sessionKey(opts.exclude) : null;
+	const drop = opts.exclude ? sessionPathKey(opts.exclude) : null;
 	const mine = rows
-		.filter((r) => r.parent && sessionKey(r.parent) === key && (!drop || sessionKey(r.path) !== drop))
+		.filter((r) => r.parent && sessionPathKey(r.parent) === sessionPathKey(driverFile) && (!drop || sessionPathKey(r.path) !== drop))
 		.sort((a, b) => sessionTime(b) - sessionTime(a));
 	const shown = mine.slice(0, max);
 	const lines = shown.map((r) => {

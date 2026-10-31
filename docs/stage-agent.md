@@ -138,8 +138,11 @@ other workers this session spawned:
 
 It is read back from pi's session listing, not from a dev-flow index, so renames,
 deletions and workers an earlier session already delegated all read correctly for
-free. A session with no file to be a parent of says `lineage unavailable` rather
-than pretending to have no children.
+free. A host that gives dev-flow no session file to be a parent of falls back to
+the lines the flow's own `transcripts.log` already holds — coarser (no message
+count, no rename), still the same answer. Reading a bucket costs about 15 ms per
+MB of its history, so the polled live view re-reads at most once every two seconds
+while the settled card and an idle status always read fresh.
 
 Lifecycle is also on the bus: `dev-flow:worker-started` / `-completed` /
 `-failed` events (slug, op, elapsed, usage) let other extensions react without

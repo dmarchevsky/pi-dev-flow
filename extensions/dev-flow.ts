@@ -39,6 +39,8 @@ import {
 	checkFingerprint,
 	changelogVersionsBetween,
 	normalizeReleaseBody,
+	sessionPathKey,
+	WORKER_FAMILY_ITEMS,
 	pendingEntryLines,
 	pickReleaseNotes,
 	parseStageReport,
@@ -506,11 +508,41 @@ function lineageOf(ctx: ExtensionContext): { file: string | null; dir: string | 
  *  workers an older session already delegated all read back correctly for free. `exclude` drops one
  *  transcript: the caller already shows that run, and meeting it again as an anonymous row under
  *  "other workers" reads like somebody else's work belongs to this flow. */
-async function workerFamilyLines(ctx: ExtensionContext, exclude?: string): Promise<string[] | null> {
+/** With no file-backed lineage to read — an unbacked host, or a driver pi never wrote a file for —
+ *  the ledger is what the flow knows: every worker it recorded, newest first. Coarser than the
+ *  picker's data (no message count, no rename), and the caller says which source it fell back to. */
+function ledgerFamilyLines(logPath: string, exclude?: string): string[] {
+	try {
+		const drop = exclude ? sessionPathKey(exclude) : null;
+		return parseWorkerTranscripts(readFileSync(logPath, "utf8"))
+			.filter((r) => !drop || sessionPathKey(r.path) !== drop)
+			.slice(-WORKER_FAMILY_ITEMS)
+			.reverse()
+			.map((r) => `${r.op} · ${r.at} · ${r.path}`);
+	} catch { return []; }
+}
+
+/** Bucket reads are the one expensive thing the family view does: pi parses every transcript in the
+ *  driver's bucket in full (a realistic 25-session bucket measured ~1.3 s here). The live card polls
+ *  status every second, so the polling path is allowed a slightly stale read; the places the operator
+ *  draws a conclusion from — idle status, the settled card — always re-read. */
+const BUCKET_FRESH_MS = 2000;
+const bucketCache = new Map<string, { at: number; rows: Awaited<ReturnType<typeof sessionRowsScan.run>> }>();
+
+async function bucketRows(ctx: ExtensionContext, dir: string, staleMs = 0) {
+	const hit = bucketCache.get(dir);
+	if (hit && Date.now() - hit.at <= staleMs) return hit.rows;
+	const rows = await sessionRowsScan.run({ cwd: ctx.cwd, dir });
+	if (bucketCache.size > 8) bucketCache.clear(); // a session drives one bucket; anything bigger is stale keys
+	bucketCache.set(dir, { at: Date.now(), rows });
+	return rows;
+}
+
+async function workerFamilyLines(ctx: ExtensionContext, exclude?: string, staleMs = 0): Promise<string[] | null> {
 	const { file, dir } = lineageOf(ctx);
 	if (!file) return null;
 	try {
-		return workerFamily(await sessionRowsScan.run({ cwd: ctx.cwd, dir: dir ?? undefined }), file, { exclude });
+		return workerFamily(await bucketRows(ctx, dir ?? undefined as never, staleMs), file, { exclude });
 	} catch { /* visibility again: a bucket we cannot read is not a reason to lose the run's own report */ return null; }
 }
 
@@ -2376,11 +2408,14 @@ export default function devFlow(pi: ExtensionAPI) {
 				// right now is the section above, not one of "the others" — so it is left out here. The whole
 				// section is gated on a bound feature: an unbound session has never spawned a stage worker,
 				// so there it would be noise paid for with a directory scan.
-				const inFlow = (() => { try { return initiated(ctx.cwd) && !!boundFeature(ctx.cwd, sessionKey(ctx)); } catch { return false; } })();
-				const fam = inFlow ? await workerFamilyLines(ctx, run?.transcript) : null;
-				const familySection = inFlow ? [`${run ? "other workers this session spawned:" : "workers this session spawned:"}`, ...(fam ?? ["(lineage unavailable — this session has no session file)"]), ...(fam && fam.length === 0 ? ["(none yet)"] : [])] : [];
+				const boundState = (() => { try { return initiated(ctx.cwd) ? boundFeature(ctx.cwd, sessionKey(ctx)) : null; } catch { return null; } })();
+				const inFlow = !!boundState;
+				const fam = inFlow ? await workerFamilyLines(ctx, run?.transcript, run ? BUCKET_FRESH_MS : 0) : null;
+				// the picker's rows when we have them; the ledger when the host gave us no file to be a parent of
+				const familyLines = fam ?? (boundState ? ledgerFamilyLines(path.join(featDir(ctx.cwd, boundState.slug), "stage-sessions", TRANSCRIPTS_FILE), run?.transcript) : null);
+				const familySection = inFlow ? [`${run ? "other workers this session spawned:" : "workers this session spawned:"}`, ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
 				if (!run) {
-					return { content: [{ type: "text", text: ["no stage worker is running in this session", ...(inFlow ? [""] : []), ...familySection].join("\n") }], details: { running: false, ...(inFlow ? { workers: fam?.length ?? null } : {}) } };
+					return { content: [{ type: "text", text: ["no stage worker is running in this session", ...familySection].join("\n") }], details: { running: false, ...(inFlow ? { workers: familyLines?.length ?? null } : {}) } };
 				}
 				const elapsed = Date.now() - run.startedAt;
 				const dirtyNow = await sh("git status --porcelain", run.work);
@@ -2391,10 +2426,9 @@ export default function devFlow(pi: ExtensionAPI) {
 					stageUsageLine(run.usage, run.turns),
 					`worktree now: ${dirtyNow.ok && dirtyNow.out.trim() ? `${dirtyNow.out.trim().split("\n").length} uncommitted path(s)` : "clean"}`,
 					`recent commits:\n${logNow.ok && logNow.out.trim() ? logNow.out : "(none)"}`,
-					"",
-					...familySection,
+					...(inFlow ? ["", ...familySection] : []),
 				].join("\n");
-				return { content: [{ type: "text", text }], details: { running: true, op: run.op, slug: run.slug, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired, usage: run.usage, turns: run.turns, workers: fam?.length ?? null } };
+				return { content: [{ type: "text", text }], details: { running: true, op: run.op, slug: run.slug, elapsedMs: elapsed, budgetMin: run.budgetMin, softFired: run.softFired, usage: run.usage, turns: run.turns, workers: familyLines?.length ?? null } };
 			}
 			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
 			const st = boundFeature(ctx.cwd, sessionKey(ctx));
@@ -2656,7 +2690,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				// the family belongs on the settled card and the result only: a live frame redraws on every
 				// worker tool call, and reading a session bucket is IO. This run is excluded — the card names
 				// its transcript already, and repeating it as a bare row reads like a different worker.
-				const fam = await workerFamilyLines(ctx, transcript || undefined);
+				const fam = (await workerFamilyLines(ctx, transcript || undefined)) ?? ledgerFamilyLines(transcriptLog, transcript || undefined);
 				emit(failed ? "dev-flow:worker-failed" : "dev-flow:worker-completed", {
 					elapsedMs: Date.now() - run.startedAt, usage: run.usage, turns: run.turns, budgetMin, softFired: run.softFired, timedOut, crash,
 					verdict: verify?.verdict ?? null, reportMissing: report?.missing ?? findings?.missing ?? false, transcript, snapshot,
