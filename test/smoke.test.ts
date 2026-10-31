@@ -3042,9 +3042,62 @@ test("with no session file to read, the family falls back to the ledger the flow
 	mkdirSync(path.dirname(log), { recursive: true });
 	writeFileSync(log, `[2026-10-30 11:02] worker transcript (run): ${path.join(repo, "w1.jsonl")}\n[2026-10-30 12:04] worker transcript (verify): ${path.join(repo, "w2.jsonl")}\n`);
 	const res = await pi.tools.flow_stage.execute("id", { op: "status" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: Record<string, unknown> };
-	assert.match(res.content[0].text, /workers this session spawned:/);
+	assert.match(res.content[0].text, /workers this session spawned \(from the flow's ledger \u2014 this host has no session file to nest\):/, "a coarser source says so in its own heading");
 	assert.match(res.content[0].text, /verify \u00b7 2026-10-30 12:04/, "the ledger is coarser than the picker's rows, and still better than an apology");
 	assert.match(res.content[0].text, /run \u00b7 2026-10-30 11:02/);
 	assert.ok(res.content[0].text.indexOf("verify \u00b7") < res.content[0].text.indexOf("run \u00b7"), "newest first, like the picker rows");
 	assert.equal(res.details?.workers, 2);
+});
+
+test("the ledger fallback drops the run the card is reporting", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // unbacked driver: the family can only come from the ledger
+	await toImplement(pi, ctx, "ledgerdrop");
+	const log = path.join(repo, ".dev-flow", "ledgerdrop", "stage-sessions", "transcripts.log");
+	mkdirSync(path.dirname(log), { recursive: true });
+	writeFileSync(log, "[2026-10-30 11:02] worker transcript (run): /sd/earlier.jsonl\n");
+	const real = stageWorkerSpawn.run;
+	try {
+		stageWorkerSpawn.run = verifyWorkerStub(); // its transcript is /tmp/fake-verify-transcript.jsonl
+		const res = await pi.tools.flow_stage.execute("id", { op: "verify", label: "drop me" }, undefined, undefined, ctx) as { details?: Record<string, unknown> };
+		const tail = String(res.details?.cardFull ?? "").split("workers this session spawned:")[1] ?? "";
+		assert.match(tail, /run · 2026-10-30 11:02 · \/sd\/earlier\.jsonl/, "the ledger's other runs are still the family");
+		assert.ok(!tail.includes("fake-verify-transcript.jsonl"), "the run the card names above is not repeated in its own family list");
+	} finally {
+		stageWorkerSpawn.run = real;
+	}
+});
+
+test("a live run whose flow unbound mid-run prints no family and no orphan newline", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const driver = path.join(repo, "sessions", "driver.jsonl");
+	const ctx = withSession(makeCtx(repo), driver, path.join(repo, "sessions"));
+	await toImplement(pi, ctx, "vanish");
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+	const stage = (p: Record<string, unknown>) => pi.tools.flow_stage.execute("id", p as never, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
+	const real = stageWorkerSpawn.run;
+	let release: () => void = () => {};
+	try {
+		const gate = new Promise<void>((r) => { release = r; });
+		stageWorkerSpawn.run = ((async () => ({
+			session: {
+				subscribe: () => () => {}, prompt: async () => { await gate; }, steer: () => {}, abort: async () => {}, dispose: () => {},
+				getLastAssistantText: () => "still going", sessionManager: { getSessionFile: () => "/sd/live.jsonl" },
+			},
+			rename: () => {},
+		}))) as never;
+		const running = stage({ op: "verify", label: "homeless" });
+		await new Promise((r) => setTimeout(r, 30));
+		await flow(["abort", "vanish"]); // the session loses its feature while the worker is still running
+		const live = await stage({ op: "status" });
+		assert.ok(!live.content[0].text.endsWith("\n"), "the empty family left no dangling separator");
+		assert.doesNotMatch(live.content[0].text, /workers.*spawned/, "a session with no flow has no family to list");
+		release();
+		await running;
+	} finally {
+		release();
+		stageWorkerSpawn.run = real;
+	}
 });

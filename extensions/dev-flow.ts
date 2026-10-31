@@ -503,14 +503,9 @@ function lineageOf(ctx: ExtensionContext): { file: string | null; dir: string | 
 	} catch { /* an in-memory or otherwise unbacked session says so here */ return { file: null, dir: null }; }
 }
 
-/** The flow's workers as lines, newest first — `null` when this session has no file to be a parent of.
- *  Deliberately read from the picker's own data, not from a dev-flow index: renames, deletions and
- *  workers an older session already delegated all read back correctly for free. `exclude` drops one
- *  transcript: the caller already shows that run, and meeting it again as an anonymous row under
- *  "other workers" reads like somebody else's work belongs to this flow. */
 /** With no file-backed lineage to read — an unbacked host, or a driver pi never wrote a file for —
  *  the ledger is what the flow knows: every worker it recorded, newest first. Coarser than the
- *  picker's data (no message count, no rename), and the caller says which source it fell back to. */
+ *  picker's data (no message count, no rename), so the status heading names the source. */
 function ledgerFamilyLines(logPath: string, exclude?: string): string[] {
 	try {
 		const drop = exclude ? sessionPathKey(exclude) : null;
@@ -523,9 +518,10 @@ function ledgerFamilyLines(logPath: string, exclude?: string): string[] {
 }
 
 /** Bucket reads are the one expensive thing the family view does: pi parses every transcript in the
- *  driver's bucket in full (a realistic 25-session bucket measured ~1.3 s here). The live card polls
- *  status every second, so the polling path is allowed a slightly stale read; the places the operator
- *  draws a conclusion from — idle status, the settled card — always re-read. */
+ *  driver's bucket in full — measured here at ~15 ms per MB of bucket history (25 sessions / 10.4 MB
+ *  ≈ 150–200 ms, 48 MB ≈ 1.3 s). The live card polls status every second, so the polling path is
+ *  allowed a slightly stale read; the places the operator draws a conclusion from — idle status, the
+ *  settled card — always re-read. */
 const BUCKET_FRESH_MS = 2000;
 const bucketCache = new Map<string, { at: number; rows: Awaited<ReturnType<typeof sessionRowsScan.run>> }>();
 
@@ -538,6 +534,12 @@ async function bucketRows(ctx: ExtensionContext, dir: string, staleMs = 0) {
 	return rows;
 }
 
+/** The flow's workers as lines, newest first — `null` when this session has no file to be a parent of,
+ *  which is when the caller reaches for `ledgerFamilyLines` instead.
+ *  Deliberately read from the picker's own data, not from a dev-flow index: renames, deletions and
+ *  workers an older session already delegated all read back correctly for free. `exclude` drops one
+ *  transcript: the caller already shows that run, and meeting it again as an anonymous row under
+ *  "other workers" reads like somebody else's work belongs to this flow. */
 async function workerFamilyLines(ctx: ExtensionContext, exclude?: string, staleMs = 0): Promise<string[] | null> {
 	const { file, dir } = lineageOf(ctx);
 	if (!file) return null;
@@ -2413,7 +2415,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				const fam = inFlow ? await workerFamilyLines(ctx, run?.transcript, run ? BUCKET_FRESH_MS : 0) : null;
 				// the picker's rows when we have them; the ledger when the host gave us no file to be a parent of
 				const familyLines = fam ?? (boundState ? ledgerFamilyLines(path.join(featDir(ctx.cwd, boundState.slug), "stage-sessions", TRANSCRIPTS_FILE), run?.transcript) : null);
-				const familySection = inFlow ? [`${run ? "other workers this session spawned:" : "workers this session spawned:"}`, ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
+				const familyHeading = `${run ? "other workers this session spawned" : "workers this session spawned"}${fam === null && boundState ? " (from the flow's ledger — this host has no session file to nest)" : ""}:`;
+				const familySection = inFlow ? [familyHeading, ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
 				if (!run) {
 					return { content: [{ type: "text", text: ["no stage worker is running in this session", ...familySection].join("\n") }], details: { running: false, ...(inFlow ? { workers: familyLines?.length ?? null } : {}) } };
 				}
