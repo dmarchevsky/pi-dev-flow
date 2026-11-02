@@ -614,6 +614,7 @@ test("delegationErrors: every branch commit falls inside an implement-stage run 
 	assert.deepEqual(delegationErrors({ ...impl, docs: true }, [], ["c1"], cover({})), [], "a docs flow is exempt");
 	assert.deepEqual(delegationErrors({ ...impl, patch: true }, [], ["c1"], cover({})), [], "a patch flow is exempt");
 	assert.deepEqual(delegationErrors(impl, [], null, cover({})), [], "git not answering is never proof of a violation");
+	assert.deepEqual(delegationErrors(impl, [], [], cover({})), [], "nothing on the branch is nothing to attribute — verifyGate refuses the empty branch by name");
 	assert.deepEqual(delegationErrors(impl, [pre], ["c1"], cover({ "s2..e2": ["c1"] })), [DELEGATION_REFUSAL], "a pre-release window proves nothing about who implemented");
 	assert.deepEqual(delegationErrors(impl, [w1], ["c1"], cover({ "s1..e1": [] })), [DELEGATION_REFUSAL], "a window that committed nothing delivered nothing");
 });

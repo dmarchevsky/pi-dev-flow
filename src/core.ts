@@ -2375,6 +2375,9 @@ export function delegationErrors(
 ): string[] {
 	if (state.docs || state.patch) return [];
 	if (branchCommits === null) return [];
+	// Nothing on the branch to attribute: coverage is a claim about commits, and an empty branch has
+	// none. verifyGate already refuses a branch with nothing committed — one refusal per fact.
+	if (!branchCommits.length) return [];
 	const covered = new Set<string>();
 	for (const w of ledger.filter((x) => x.stage === "implement")) for (const sha of windowCommits(w) ?? []) covered.add(sha);
 	// A window whose range holds nothing proves a worker ran and delivered nothing: the stage is still
