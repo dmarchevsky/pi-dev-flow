@@ -9,10 +9,14 @@ or the injection line) — writes elsewhere are blocked; other sessions'
 worktrees are theirs (attribution guards judge every path by its owning
 feature).
 
-**Delegating the stage's work.** Non-trivial implement is **delegated by default**: run it in
-a disposable worker session with `flow_stage` (`stage: "implement"`) — this session keeps its
-context for the gates and the checkpoint; stay inline only for a tail you can finish in a
-handful of file edits. The
+**Delegating the stage's work.** Implement **is delegated**: this session does not write the
+feature at all — run the work in a disposable worker session with `flow_stage`
+(`stage: "implement"`). That is enforced, not advised: the guard refuses a driver's own edit
+inside its worktree at implement, and `flow verify` refuses a branch whose commits fall outside a
+worker's run window (`.dev-flow/<slug>/stage-sessions/delegations.log` is the record it reads), so
+inline work is work that cannot be verified. `--docs` and `--patch` flows are exempt and stay
+inline — the operator granted those modes for exactly that. What stays the driver's own: the gates,
+the checkpoint, `flow check`, running the app. The
 worker gets a fresh context holding the plan, live git and `flow status
 --json` — it keeps nothing from this conversation, so put every operator
 answer, decision, warning and the exact next action into `note`, and a short
@@ -22,11 +26,10 @@ instead of a column of identical rows. The worker
 may edit and commit in the worktree but holds no flow tool: gates,
 checkpoints and the claim stay with you. When it returns, digest its stage
 report (done/files/notes/blockers — a handoff, never a verification), rerun
-`flow check` (its edits invalidated tier-1 records), and close the remaining
-loose ends yourself. A missing report block or a crashed worker means the
+`flow check` (its edits invalidated tier-1 records), and delegate the remaining
+loose ends too — a second `run` worker is how a tail gets finished, there is no inline allowance to fall back to. A missing report block or a crashed worker means the
 worktree is mid-stage: read the transcript path and (if it names one) the
-snapshot `.diff` the result gives. Delegate a real slice, not the tail: do not
-delegate a stage you are about to finish anyway. One worker per session at a
+snapshot `.diff` the result gives. Every slice goes out, the small ones with the big ones. One worker per session at a
 time — but **sequential re-delegation is legal and often right**: a second
 worker whose `note` says what the first one proved is how a big stage is
 sliced. While one runs, the **tool card streams the worker's live output into

@@ -4,14 +4,29 @@ A big `implement` costs more context than the rest of the flow will ever need:
 the driving session carries those hundred tool calls into every later gate and
 checkpoint. `flow_stage` runs that work in a fresh, disposable session
 instead, and hands back one bounded report. The conversation that talks to you
-stays lean — which is why non-trivial implement work is **delegated by default**,
-not inlined (see `references/implement.md`). Three ops share one mechanism: `run` (a stage's work), `verify` (an
+stays lean — which is why implement work is **delegated**, not inlined, and why
+`flow verify` proves it from the ledger below (see `references/implement.md`). Three ops share one mechanism: `run` (a stage's work), `verify` (an
 independent, check-only reviewer of the implement work) and `reflect` (an
 independent review of the whole finished flow at release). Only the brief, the
 toolset, the budget default and the closing contract differ — the safety story
 is identical, and a second mechanism would drift.
 
 ## What delegates, what does not
+
+**The ledger proves who worked.** Every finished `run` worker appends its stage and its commit
+range to `.dev-flow/<slug>/stage-sessions/delegations.log` — one line, `[<iso>] run (<stage>):
+<start>..<end> <n> commit(s)` — written by the same completion code that renames the worker with
+its commit count. `flow verify` reads it fresh and refuses when it shows no implement-stage
+delivery, or when a commit on the branch falls outside every implement window (the refusal counts
+the strays and names the fix: delegate a fixer that redoes them, or reset them). A range, not a
+count, is what makes it hold: an amend or a rebase after the fact moves the sha out of every window
+the ledger recorded, which no write guard could see. `--docs` and `--patch` flows are exempt —
+nothing to delegate in a docs pass or a one-file chore — and a git question that cannot be answered
+is never proof of a violation. Coverage is judged only at verify: the driver's own commits after it
+(changelog, bump) are pre-release work and belong to the session by design. The write guard is the
+early nudge of the same rule — a driver's edit inside its own worktree at implement is refused, a
+registered worker session's is not — while bash stays unguarded: running commands is driving, and
+the ledger's commit ranges are what carry the proof.
 
 `flow_stage(stage: "implement" | "pre-release", note)` runs the **work** of
 the stage you are in; `flow_stage(op: "verify")` (legal only while the flow is
@@ -128,7 +143,7 @@ Around it, three mirrors:
   tails a session still running is the viewer's choice, the card above is what
   the flow promises. Every finished worker appends its transcript path to
   `.dev-flow/<slug>/stage-sessions/transcripts.log` — the durable index the
-  reflect worker reads;
+  reflect worker reads, next to `delegations.log` — the delegation ledger the verify gate reads;
 - the driving session's **footer** beats `⏳ 🔨 implement · <label> · <slug>
   mm:ss · <tool>` while a worker runs (cleared when it ends);
 - every line appends to `.dev-flow/<slug>/stage-live.log` — tail-able, and

@@ -69,6 +69,8 @@ Ground rules:
   `flow status` is your view. **project.md is the operator-owned playbook**:
   read freely, **never edit** — it changes through `flow init --write` on the
   operator's word (`flow doctor` reviews what it lacks).
+- **At implement the driver drives, a worker writes** — `flow verify` proves the branch's
+  commits fall inside a `flow_stage` run window (`--docs`/`--patch` stay inline).
 - **Every bash/shell call states its own `timeout`** or the guard refuses it.
 - **A guard blocking you means you are skipping a stage or writing outside your
   feature** — run the gate instead of working around it. The guard reads
