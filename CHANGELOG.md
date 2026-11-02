@@ -4,6 +4,15 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-11-02
+
+- **A running worker finally wears its `⏳` name.** pi fires `session_start` only for sessions a host binds, never for the SDK-built worker, so the live name dev-flow hung on that event never landed: every worker since 0.68 ran as whatever an auto-namer made of its brief (`you-are-a-dev`), and only the final `✓`/`✗` rename showed. The name is now written onto the session before its first prompt.
+- **Workers get their brief, not the driver's context.** A worker loads the operator's extensions, dev-flow included (its guards must hold there too), and dev-flow injected into it what it injects into an unbound driver: about 5k characters of playbook core, "pre-plan first… `flow start`", and a false "main checkout is on feat/…, not main — surface this to the operator" (it read the worktree as the checkout). dev-flow now registers each worker it spawns and stays silent in it. Separately, a human session opened in a linked worktree is no longer told the main checkout is on the wrong branch.
+- **Verify rounds are numbered** like runs: `✓ 🔍 #3 · PASS · <label>`, so a feature that takes six rounds reads as a sequence.
+- **The family view reads headers, not history.** Finding a session's workers used to parse every transcript in the driver's bucket (~15 ms per MB; the dev-flow checkout's bucket was 55 MB, so ~0.8 s for every idle status and settled card, growing with every worker). It now reads the first line of each transcript and only the workers in full.
+- **A recycled pid no longer holds a dead session's claim.** A claim now records its process's start identity (`/proc/<pid>/stat` starttime); a live pid with a different start is somebody else's process and the claim is void. Refusals name the claim's age (`pid 854, claim 3 days old`), and atomic writes use a per-process temp name.
+- **`flow doctor` names worker buckets nothing will show again.** Workers from before 0.70 sit in a session bucket per worktree, invisible from the checkout's folder scope and left behind by `flow finish`; the doctor lists those whose feature is finished or whose worktree is gone, with the `rm -r` that removes them. It never removes them.
+
 ## [0.70.0] - 2026-10-31
 
 - **A flow's workers are one family in the picker.** Every `flow_stage` worker is now stamped as a child of the session that delegated it: its header carries `parentSession` → the driver's session file, and its transcript lands in the driver's own session bucket. `pi --resume` therefore nests the whole family under the driver in its default **Current Folder** scope, Threaded sort, with no scope switch — and because the worker's name carries its outcome (`✓ 🔍 · PASS · stamp attack`, `✗ 🔨 #3 · hard-cut`), the tree reads without opening a single row. One layout boundary: with a configured session directory that is not the checkout's default, the folder scope filters by each session's own cwd, so workers — whose cwd is the worktree — sit one Tab away under **All**, still threaded.

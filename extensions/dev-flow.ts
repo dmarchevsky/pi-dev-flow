@@ -22,6 +22,7 @@
 import { exec } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { open as openFile, readdir as readdirAsync, readFile as readFileAsync, stat as statAsync } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
@@ -143,6 +144,14 @@ import {
 	renderVerifyReport,
 	verifyStampMissing,
 	sessionPathKey,
+	sessionHeaderParent,
+	parseSessionSummary,
+	markWorkerSession,
+	isWorkerSession,
+	orphanWorktreeBuckets,
+	claimAge,
+	processStart,
+	type WorktreeBucketFeature,
 	workerFamily,
 	workerFamilyCount,
 	WORKER_FAMILY_ITEMS,
@@ -241,7 +250,13 @@ function copyWarning(): string | null {
 }
 /** Test seam: the smoke suite cannot load a second copy of this module, so it plants registry
  * entries and asserts the warnings the real duplicate would print. */
-export const testSeams = { copies: COPIES, skillCore: { value: undefined as string | null | undefined } };
+export const testSeams = {
+	copies: COPIES,
+	skillCore: { value: undefined as string | null | undefined },
+	/** Where `flow doctor` looks for pi's session buckets; tests point it at a scratch dir so the suite
+	 *  never reads the operator's real session store. `undefined` = `<agent dir>/sessions`. */
+	sessionsRoot: { value: undefined as string | null | undefined },
+};
 
 interface Ui {
 	hasUI: boolean;
@@ -393,7 +408,8 @@ function writeState(root: string, state: FlowState): void {
  *  truncated state.json — which reads as "no such feature", silently orphaning the worktree, the plan
  *  and every recorded check, with the folder gitignored so nothing else could restore it. */
 function atomicWrite(file: string, text: string): void {
-	const tmp = `${file}.tmp`;
+	// per-process temp name: two sessions writing the same file must not rename each other's half-write
+	const tmp = `${file}.${process.pid}.tmp`;
 	writeFileSync(tmp, text);
 	renameSync(tmp, file);
 }
@@ -447,9 +463,13 @@ export const compactionTakeover: { run: typeof compact } = { run: compact };
  *  carries `parentSession` → the driver's own session file, and its transcript goes into the
  *  driver's session bucket, so pi's picker nests it under the driver in its default Current Folder
  *  scope (the Threaded sort reads that link — pi #1108 wrote it for exactly this, "extensions such
- *  as /handoff can do the same"). Naming runs through an inline extension — `setSessionName` only
- *  exists on a session's own extension API — handing back a rename channel the driver uses for the
- *  ⏳ → ✓/✗ lifecycle. */
+ *  as /handoff can do the same"). The live ⏳ name is written straight onto the session before its
+ *  first prompt: pi emits `session_start` only from `bindExtensions()`, which an SDK-created worker
+ *  never runs, so a name set from a `session_start` handler never lands — every worker used to run
+ *  under whatever an auto-namer derived from its brief ("you-are-a-dev"). Named before the prompt,
+ *  an auto-namer sees a name that is not its own and leaves it alone. The same channel carries the
+ *  ⏳ → ✓/✗ rename. The worker is also registered as a worker, so the dev-flow copy its loader runs
+ *  keeps its guards but injects none of the driver's context (see `isWorkerSession`). */
 
 export interface StageWorkerHandle { session: AgentSession; rename: (name: string) => void }
 
@@ -464,26 +484,17 @@ export function workerSessionManager(work: string, parent?: string, dir?: string
 
 export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string; tools: string[]; parent?: string; dir?: string }) => Promise<StageWorkerHandle> } = {
 	run: async ({ work, model, name, tools, parent, dir }) => {
-		let rename: (name: string) => void = () => {};
-		const loader = new DefaultResourceLoader({
-			cwd: work,
-			agentDir: getAgentDir(),
-			extensionFactories: [{
-				name: "dev-flow-stage-naming",
-				hidden: true,
-				factory: (childPi: ExtensionAPI) => {
-					childPi.on("session_start", () => { try { childPi.setSessionName(name); } catch { /* naming is visibility, not function */ } });
-					rename = (n: string) => { try { childPi.setSessionName(n); } catch { /* ditto */ } };
-				},
-			}],
-		});
+		const loader = new DefaultResourceLoader({ cwd: work, agentDir: getAgentDir() });
 		await loader.reload();
 		const sessionManager = workerSessionManager(work, parent, dir);
 		const { session } = await createAgentSession({ cwd: work, model: model as never, tools, excludeTools: ["flow", "flow_stage"], resourceLoader: loader, sessionManager });
 		// the op's toolset decides what the worker can touch at all: an implement worker gets the coding
 		// tools, a reviewer gets read + bash only (a checker with an edit tool is a second implementer).
 		// excludeTools is the belt on the extension tools — a worker never holds a gate or a second flow_stage.
-		return { session, rename: (n) => rename(n) };
+		try { markWorkerSession(session.sessionManager.getSessionId()); } catch { /* an id-less session just gets the driver context */ }
+		const rename = (n: string) => { try { session.setSessionName(n); } catch { /* naming is visibility, not function */ } };
+		rename(name);
+		return { session, rename };
 	},
 };
 
@@ -495,9 +506,50 @@ export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: 
  *  creates. `listAll(dir)` is what the picker's Current Folder scope sees in the default layout, so
  *  the family list and the tree agree there; under a configured session dir the text view stays
  *  complete even where that scope hides the worker, which is the cheaper direction to err in. */
-export const sessionRowsScan: { run: (o: { cwd: string; dir?: string }) => Promise<WorkerSessionRow[]> } = {
-	run: async ({ dir }) => (await SessionManager.listAll(dir)).map((s) => ({ path: s.path, parent: s.parentSessionPath, name: s.name, messageCount: s.messageCount, modified: s.modified })),
+export const sessionRowsScan: { run: (o: { cwd: string; dir?: string; parent?: string }) => Promise<WorkerSessionRow[]> } = {
+	run: async ({ dir, parent }) => {
+		// no bucket or no driver file to match: the old full listing (a host that never reaches here in practice)
+		if (!dir || !parent) return (await SessionManager.listAll(dir)).map((s) => ({ path: s.path, parent: s.parentSessionPath, name: s.name, messageCount: s.messageCount, modified: s.modified }));
+		return scanFamilyRows(dir, parent);
+	},
 };
+
+/** Header bytes read per transcript in the family scan's cheap pass — the same budget pi gives its own
+ *  header reads. A pi header line is a few hundred bytes. */
+const SESSION_HEADER_BYTES = 4096;
+
+/** The family read in two passes, so its cost follows the family, not the bucket: the first line of
+ *  every transcript (≤ 4 KB each) names its parent; only the files whose parent is `parent` are read
+ *  in full. `listAll(dir)` parsed every transcript in the bucket — ~15 ms per MB, and a driver bucket
+ *  only grows (the dev-flow checkout's was 55 MB, ~0.8 s for every idle status and settled card).
+ *  `fullReads` counts the second pass for the smoke suite. */
+export async function scanFamilyRows(dir: string, parent: string, fullReads?: { n: number }): Promise<WorkerSessionRow[]> {
+	let names: string[];
+	try { names = (await readdirAsync(dir)).filter((f) => f.endsWith(".jsonl")); } catch { return []; }
+	const want = sessionPathKey(parent);
+	const rows: WorkerSessionRow[] = [];
+	await Promise.all(names.map(async (n) => {
+		const file = path.join(dir, n);
+		let head = "";
+		try {
+			const fh = await openFile(file, "r");
+			try {
+				const buf = Buffer.alloc(SESSION_HEADER_BYTES);
+				const { bytesRead } = await fh.read(buf, 0, SESSION_HEADER_BYTES, 0);
+				head = buf.subarray(0, bytesRead).toString("utf8");
+			} finally { await fh.close(); }
+		} catch { return; }
+		const p = sessionHeaderParent(head);
+		if (!p || sessionPathKey(p) !== want) return;
+		try {
+			if (fullReads) fullReads.n++;
+			const [text, st] = await Promise.all([readFileAsync(file, "utf8"), statAsync(file)]);
+			const row = parseSessionSummary(text, file, st.mtimeMs);
+			if (row) rows.push(row);
+		} catch { /* a transcript deleted mid-scan is simply not in the family */ }
+	}));
+	return rows;
+}
 
 /** Where this session's own transcripts live, when it has any: the file the worker links to, and the
  *  bucket it lands in. `null` on a host with no file-backed session — lineage is then unavailable,
@@ -520,16 +572,15 @@ function ledgerFamilyLines(logPath: string, exclude?: string): string[] {
 	} catch { return []; }
 }
 
-/** Bucket reads are the one expensive thing the family view does: pi parses every transcript in the
- *  driver's bucket in full — measured here at ~15 ms per MB of bucket history (25 sessions / 10.4 MB
- *  ≈ 150–200 ms, 48 MB ≈ 1.3 s). A host renders a running worker by calling status repeatedly, so
- *  that path is allowed a slightly stale read; the places the operator draws a conclusion from — idle
- *  status, the settled card — always re-read. */
+/** Bucket reads are the one IO-bound thing the family view does: one header read per transcript in
+ *  the driver's bucket, plus a full read of each worker (`scanFamilyRows`). A host renders a running
+ *  worker by calling status repeatedly, so that path is allowed a slightly stale read; the places the
+ *  operator draws a conclusion from — idle status, the settled card — always re-read. */
 const BUCKET_FRESH_MS = 2000;
 const bucketCache = new Map<string, { at: number; rows: Awaited<ReturnType<typeof sessionRowsScan.run>> }>();
 
-async function bucketRows(ctx: ExtensionContext, dir: string | null, staleMs = 0) {
-	const key = dir ?? "(default bucket)";
+async function bucketRows(ctx: ExtensionContext, dir: string | null, parent: string, staleMs = 0) {
+	const key = `${dir ?? "(default bucket)"}\0${parent}`;
 	const hit = bucketCache.get(key);
 	// staleMs = 0 is not "a zero-length window", it is "no window: read now" — which is what idle status
 	// and the settled card ask for, because that is where the operator draws a conclusion. With `<=` the
@@ -537,7 +588,7 @@ async function bucketRows(ctx: ExtensionContext, dir: string | null, staleMs = 0
 	// as a fresh one (this made CI red: a status call answering "what is there now" in the same millisecond
 	// as the call before it printed the family that had just gone empty).
 	if (staleMs > 0 && hit && Date.now() - hit.at <= staleMs) return hit.rows;
-	const rows = await sessionRowsScan.run({ cwd: ctx.cwd, dir: dir ?? undefined });
+	const rows = await sessionRowsScan.run({ cwd: ctx.cwd, dir: dir ?? undefined, parent });
 	if (bucketCache.size > 8) bucketCache.clear(); // a session drives one bucket; anything bigger is stale keys
 	bucketCache.set(key, { at: Date.now(), rows });
 	return rows;
@@ -553,7 +604,7 @@ async function workerFamilyLines(ctx: ExtensionContext, exclude?: string, staleM
 	const { file, dir } = lineageOf(ctx);
 	if (!file) return null;
 	try {
-		return workerFamily(await bucketRows(ctx, dir, staleMs), file, { exclude });
+		return workerFamily(await bucketRows(ctx, dir, file, staleMs), file, { exclude });
 	} catch { /* visibility again: a bucket we cannot read is not a reason to lose the run's own report */ return null; }
 }
 
@@ -636,7 +687,13 @@ function readClaim(root: string, slug: string): SessionClaim | null {
 }
 
 const writeClaim = (root: string, slug: string, key: string) =>
-	atomicWrite(claimFile(root, slug), `${JSON.stringify({ key, pid: process.pid, at: now() })}\n`);
+	atomicWrite(claimFile(root, slug), `${JSON.stringify({ key, pid: process.pid, at: now(), start: processStart(process.pid) })}\n`);
+
+/** "pid 854, claim 3 days old" — the age is what tells a live session from a recycled pid. */
+const claimWho = (claim: SessionClaim): string => {
+	const age = claimAge(claim);
+	return `pid ${claim.pid}${age ? `, claim ${age}` : ""}`;
+};
 
 /** Let go of everything one session held. In a shared-process host the pid on a claim is the server's and
  *  never dies, so a claim left behind by a finished session keeps refusing every later session with
@@ -2035,6 +2092,7 @@ async function gateDoctor(o: GateCtx): Promise<RunResult> {
 	const loaded = loadProject(df);
 	const findings = doctorFindings(root, loaded.cfg, loaded.md);
 	findings.push(...(await gitConsistency(root, loaded.cfg)));
+	findings.push(...orphanBucketFindings(root));
 	const refl = readReflections(root);
 	const fold = await foldView(root, refl, isSelfRepo(root));
 	if (refl.length) {
@@ -2054,6 +2112,35 @@ async function gateDoctor(o: GateCtx): Promise<RunResult> {
 	if (!rest.length) return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
 	// flow doctor <note>: a fresh observation gets an investigation brief and a fix route
 	return { text: investigationBrief(rest.filter((a) => !a.startsWith("--")).join(" "), isSelfRepo(root)).join("\n") };
+}
+
+/** Session buckets stage workers left under finished or vanished worktrees (see `orphanWorktreeBuckets`).
+ *  Information only: the doctor names them and the command that removes them; deleting transcripts is
+ *  the operator's call, never the doctor's. Silent when there is no session store to read. */
+function orphanBucketFindings(root: string): string[] {
+	const sessionsRoot = testSeams.sessionsRoot.value === undefined ? path.join(getAgentDir(), "sessions") : testSeams.sessionsRoot.value;
+	if (!sessionsRoot || !existsSync(sessionsRoot)) return [];
+	let buckets: string[];
+	try { buckets = readdirSync(sessionsRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return []; }
+	const features = new Map<string, WorktreeBucketFeature>();
+	try {
+		for (const d of readdirSync(dfDir(root), { withFileTypes: true })) {
+			if (!d.isDirectory()) continue;
+			const st = readState(root, d.name);
+			if (!st) continue;
+			const wt = st.worktree ? path.resolve(root, st.worktree) : null;
+			features.set(d.name, { finished: st.stage === "done" || !!st.aborted, worktreeExists: !!wt && existsSync(wt) });
+		}
+	} catch { /* no .dev-flow dir: every matching bucket is an orphan */ }
+	const orphans = orphanWorktreeBuckets(buckets, root, features);
+	if (!orphans.length) return [];
+	const rows = orphans.map((o) => {
+		const dir = path.join(sessionsRoot, o.bucket);
+		let n = 0;
+		try { n = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).length; } catch { /* count is cosmetic */ }
+		return `  ${o.slug}: ${n} transcript(s) — rm -r ${sq(dir)}`;
+	});
+	return [`worker session buckets left by finished or removed worktrees (${orphans.length}) — stage workers before 0.70 filed under their worktree, where no picker scope opened from this checkout shows them; keep them for the record or remove:\n${rows.join("\n")}`];
 }
 
 /** What a gate handler needs from the runFlow preamble. Bodies moved verbatim destructure
@@ -2136,7 +2223,7 @@ async function gateUse(o: GateCtx): Promise<RunResult> {
 	const st = readState(root, slugArg);
 	if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
 	const prior = readClaim(root, slugArg);
-	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
+	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (${claimWho(prior!)})` : "";
 	sess.bind(slugArg);
 	sess.rename(slugArg);
 	// a checkpoint that was still unanswered belongs to whoever asked; a session taking the feature over
@@ -2157,7 +2244,7 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 	// a live claim locks the whole feature, not only its gates: aborting it out from under the session
 	// that works it erases the plan that session is still writing (same rule needState applies)
 	const claim = readClaim(root, target);
-	if (claimBlocks(claim, sess.key)) return { text: `${target} is claimed by another live session (pid ${claim!.pid}) — flow use ${target} takes it over explicitly`, isError: true };
+	if (claimBlocks(claim, sess.key)) return { text: `${target} is claimed by another live session (${claimWho(claim!)}) — flow use ${target} takes it over explicitly`, isError: true };
 	if (sess.slug === target) sess.bind(null);
 	if (st && !st.worktree) {
 		// plan-stage abort = drop: no worktree/branch exists, so the state dir would linger
@@ -2169,6 +2256,14 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.aborted ? " (marked aborted — the doctor leaves it alone once you clean the worktree up)" : "") + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
 }
 
+
+/** True inside a linked worktree (its git dir is not the common dir), false in a main checkout or on error. */
+async function isLinkedWorktree(root: string): Promise<boolean> {
+	const r = await sh("git rev-parse --path-format=absolute --git-dir --git-common-dir", root);
+	if (!r.ok) return false;
+	const [gitDir, common] = r.out.split("\n").map((l) => l.trim());
+	return !!gitDir && !!common && path.resolve(gitDir) !== path.resolve(common);
+}
 
 async function currentBranch(root: string): Promise<string> {
 	const r = await sh("git branch --show-current", root);
@@ -2190,7 +2285,7 @@ function needState(root: string, sess: Session, slugArg?: string): { state: Flow
 	// sessions overwrite one state file (last write wins) while both believe they own the stage.
 	const claim = readClaim(root, slug);
 	if (sess.slug !== slug && claimBlocks(claim, sess.key))
-		return { state: null, err: { text: `${slug} is claimed by another live session (pid ${claim!.pid}) — flow use ${slug} takes it over explicitly`, isError: true } };
+		return { state: null, err: { text: `${slug} is claimed by another live session (${claimWho(claim!)}) — flow use ${slug} takes it over explicitly`, isError: true } };
 	return { state };
 }
 
@@ -2374,7 +2469,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		name: "flow_stage",
 		label: "Stage worker",
 		description:
-			'Delegate to a disposable dev-flow worker session with a fresh context. op "run" (default) does the current stage\'s work (implement | pre-release) and edits + commits on the feature branch; op "verify" is an independent read-only checker of the implement work (read + bash, standing order "check, don\'t fix", closes with a VERIFY REPORT verdict — flow verify refuses until a PASS exists over the current tree); op "reflect" reviews the finished flow — the driver transcript plus every worker transcript — at the release stage after release-done. Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. Give each delegation a short `label` (a few words of purpose) — session names then read `⏳ 🔍 · <label>` while running and `✓ 🔍 · <label> · PASS` (or `✗ … · hard-cut`, `✓ 🔨 #2 · 3 commits · <label>`) when done, so the picker is never a column of identical rows. A worker holds no flow tool: gates, checkpoints and the claim stay with you. At 75% of its budget (budgetMin: default 45 for run, 30 for verify/reflect) the worker is steered to commit and report instead of being cut. The tool card streams the live tail (current tool, last assistant line, ✓/✗ results, elapsed/budget, usage) and op "status" mirrors it on any host. When a worker returns: read its report, run flow check yourself, then ask the checkpoint — a stage report is a handoff, never a verification.',
+			'Delegate to a disposable dev-flow worker session with a fresh context. op "run" (default) does the current stage\'s work (implement | pre-release) and edits + commits on the feature branch; op "verify" is an independent read-only checker of the implement work (read + bash, standing order "check, don\'t fix", closes with a VERIFY REPORT verdict — flow verify refuses until a PASS exists over the current tree); op "reflect" reviews the finished flow — the driver transcript plus every worker transcript — at the release stage after release-done. Everything the worker must know — operator answers not yet recorded by a gate, decisions, warnings, the exact next action — travels in `note`; otherwise it sees only plan, git and flow status. Give each delegation a short `label` (a few words of purpose) — session names then read `⏳ 🔍 #1 · <label>` while running and `✓ 🔍 #1 · PASS · <label>` (or `✗ … · hard-cut`, `✓ 🔨 #2 · 3 commits · <label>`) when done, so the picker is never a column of identical rows. A worker holds no flow tool: gates, checkpoints and the claim stay with you. At 75% of its budget (budgetMin: default 45 for run, 30 for verify/reflect) the worker is steered to commit and report instead of being cut. The tool card streams the live tail (current tool, last assistant line, ✓/✗ results, elapsed/budget, usage) and op "status" mirrors it on any host. When a worker returns: read its report, run flow check yourself, then ask the checkpoint — a stage report is a handoff, never a verification.',
 		promptSnippet:
 			'flow_stage(op: "run"|"verify"|"reflect", note, budgetMin?) — delegate stage work, an independent read-only check, or the finish review to a fresh worker session; op: "status" reads the live run; gates and checkpoints stay with you',
 		parameters: Type.Object({
@@ -2491,9 +2586,9 @@ export default function devFlow(pi: ExtensionAPI) {
 				writeFileSync(logFile, `${stageLiveLine(0, "worker", `${op} started (${st.stage}, budget ${budgetMin} min)`)}\n`);
 				const beat = (toolName: string) => { if (ctx.hasUI) ctx.ui.setStatus("dev-flow-stage", `⏳ ${kindCard} · ${st.slug} ${stageElapsedLabel(Date.now() - run.startedAt)} · ${toolName}`); };
 				// ordinal among this feature's same-op workers, read from the durable index — re-delegations
-				// read #2, #3 in the list instead of identical rows (only run gets a seq; a verify is known
-				// by its verdict, a reflect is one per flow)
-				const seq = op === "run" ? (existsSync(transcriptLog) ? parseWorkerTranscripts(readFileSync(transcriptLog, "utf8")).filter((x) => x.op === op).length : 0) + 1 : null;
+				// read #2, #3 in the list instead of identical rows. A verify is numbered too: a feature that
+				// takes six rounds to PASS reads as a sequence, not as six free-text labels. A reflect is one per flow.
+				const seq = op !== "reflect" ? (existsSync(transcriptLog) ? parseWorkerTranscripts(readFileSync(transcriptLog, "utf8")).filter((x) => x.op === op).length : 0) + 1 : null;
 				const statusJsonText = (await runFlow(["status", "--json"], ctx.cwd, uiFrom(ctx), sessFor(ctx))).text;
 				const git = await sh("git status --porcelain -b", work);
 				const note = typeof params.note === "string" ? params.note : undefined;
@@ -2616,7 +2711,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				// rev-parse misses `checkout -b` at the same SHA, symbolic-ref misses a detached move,
 				// and all three miss the plan the verdict was written against living outside the worktree
 				const moved = op !== "run" && ((statusBefore.ok && statusAfter.ok && statusAfter.out !== statusBefore.out) || (headBefore.ok && headAfter.ok && headAfter.out !== headBefore.out) || (refBefore.ok && refAfter.ok && refAfter.out !== refBefore.out) || planFingerprint(planDir) !== planBefore);
-				// the outcome goes INTO the final name — a picker row like `✓ 🔍 · PASS · stamp attack` or
+				// the outcome goes INTO the final name — a picker row like `✓ 🔍 #3 · PASS · stamp attack` or
 				// `✓ 🔨 #2 · 3 commits · wire ops` answers "how did it end?" without opening the session
 				let outcome: string | null = null;
 				if (clean) {
@@ -2947,6 +3042,10 @@ export default function devFlow(pi: ExtensionAPI) {
 		// client attaches, and this is the earliest point the client is certainly listening
 		refreshStatus(ctx);
 		if (!initiated(ctx.cwd)) return undefined;
+		// A stage worker's whole instruction is its brief. The driver's context is wrong there twice over:
+		// the unbound posture tells it to pre-plan and `flow start`, and the branch check reads its
+		// worktree as a main checkout on the wrong branch. Guards still run — they hang off tool_call.
+		if (isWorkerSession(ctx.sessionManager?.getSessionId?.())) return undefined;
 		const key = sessionKey(ctx);
 		// The playbook core rides along on the message this run writes anyway — once per session.
 		const core = corePreamble(key);
@@ -2956,8 +3055,10 @@ export default function devFlow(pi: ExtensionAPI) {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
 			let content = "[dev-flow] no flow bound. Every request goes through flow. New work — pre-plan first (see the skill): analyze read-only, bring findings + questions + a direction with a proposed slug/mode to the operator, and flow start <slug> only once they say start; unfinished feature: flow use <slug>.";
 			const cb = claimBlocker(ctx.cwd, key);
-			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (pid ${cb.claim.pid}) — flow use ${cb.state.slug} takes it over explicitly.`;
-			const curBr = await currentBranch(ctx.cwd);
+			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (${claimWho(cb.claim)}) — flow use ${cb.state.slug} takes it over explicitly.`;
+			// only the main checkout has a "main checkout branch": a session opened in a linked worktree is
+			// on its feature branch by construction, and calling that a drift misleads it
+			const curBr = (await isLinkedWorktree(ctx.cwd)) ? "" : await currentBranch(ctx.cwd);
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
 			const refl0 = readReflections(ctx.cwd);
 			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open — run flow doctor.`;

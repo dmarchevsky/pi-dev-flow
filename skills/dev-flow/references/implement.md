@@ -17,7 +17,7 @@ worker gets a fresh context holding the plan, live git and `flow status
 --json` — it keeps nothing from this conversation, so put every operator
 answer, decision, warning and the exact next action into `note`, and a short
 `label` — a few words of purpose — so the picker reads `⏳ 🔨 #2 · wire ops` and,
-when it ends, `✓ 🔨 #2 · 3 commits · wire ops` (a verify: `✓ 🔍 · PASS · <label>`)
+when it ends, `✓ 🔨 #2 · 3 commits · wire ops` (a verify: `✓ 🔍 #3 · PASS · <label>`)
 instead of a column of identical rows. The worker
 may edit and commit in the worktree but holds no flow tool: gates,
 checkpoints and the claim stay with you. When it returns, digest its stage
