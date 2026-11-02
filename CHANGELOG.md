@@ -4,13 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.71.0] - 2026-11-02
+
 - **A running worker finally wears its `⏳` name.** pi fires `session_start` only for sessions a host binds, never for the SDK-built worker, so the live name dev-flow hung on that event never landed: every worker since 0.68 ran as whatever an auto-namer made of its brief (`you-are-a-dev`), and only the final `✓`/`✗` rename showed. The name is now written onto the session before its first prompt.
 - **Workers get their brief, not the driver's context.** A worker loads the operator's extensions, dev-flow included (its guards must hold there too), and dev-flow injected into it what it injects into an unbound driver: about 5k characters of playbook core, "pre-plan first… `flow start`", and a false "main checkout is on feat/…, not main — surface this to the operator" (it read the worktree as the checkout). dev-flow now registers each worker it spawns and stays silent in it. Separately, a human session opened in a linked worktree is no longer told the main checkout is on the wrong branch.
 - **Verify rounds are numbered** like runs: `✓ 🔍 #3 · PASS · <label>`, so a feature that takes six rounds reads as a sequence.
 - **The family view reads headers, not history.** Finding a session's workers used to parse every transcript in the driver's bucket (~15 ms per MB; the dev-flow checkout's bucket was 55 MB, so ~0.8 s for every idle status and settled card, growing with every worker). It now reads the first line of each transcript and only the workers in full.
 - **A recycled pid no longer holds a dead session's claim.** A claim now records its process's start identity (`/proc/<pid>/stat` starttime); a live pid with a different start is somebody else's process and the claim is void. Refusals name the claim's age (`pid 854, claim 3 days old`), and atomic writes use a per-process temp name.
 - **`flow doctor` names worker buckets nothing will show again.** Workers from before 0.70 sit in a session bucket per worktree, invisible from the checkout's folder scope and left behind by `flow finish`; the doctor lists those whose feature is finished or whose worktree is gone, with the `rm -r` that removes them. It never removes them.
-- A status read that asks for fresh data now reads the bucket even inside the millisecond of the previous read (fast CI hosts were served the previous family).
 
 ## [0.70.0] - 2026-10-31
 
