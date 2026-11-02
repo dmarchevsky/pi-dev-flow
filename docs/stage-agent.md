@@ -64,6 +64,13 @@ binding of its own:
   reaching around them is a hardening decision, not a control this feature
   claims.
 
+The worker loads your extensions like any session, dev-flow included — that is
+how the guards above hold inside it. What it does **not** get is the driver's
+context: dev-flow registers each worker it spawns and injects neither the
+playbook core nor the unbound-session posture into it (that text told a worker
+to pre-plan and `flow start`, and read its worktree as a main checkout on the
+wrong branch). The brief is the worker's whole instruction.
+
 ## The handoff
 
 The worker receives a brief assembled by the tool. A `run` worker gets the
@@ -108,10 +115,14 @@ Around it, three mirrors:
   either layout. On a host with no file-backed session the stamp
   is skipped and the worker keeps pi's default location, unlinked. Named by role
   glyph, ordinal and purpose — `⏳ 🔨 #2 · wire ops` while it runs, renamed
-  at the end with its outcome: `✓ 🔨 #2 · 3 commits · wire ops`, a verify `✓ 🔍 ·
-  PASS · stamp attack`, a cut-off worker `✗ 🔨 #3 · hard-cut`; the verdict never
-  depends on opening the row (a `label` on the call supplies the purpose; with
-  none, a `run` is still separated by its ordinal). It appears in the `/resume`
+  at the end with its outcome: `✓ 🔨 #2 · 3 commits · wire ops`, a verify `✓ 🔍 #3 ·
+  PASS · stamp attack` (verify rounds are numbered like runs, so a feature that took
+  six rounds reads as a sequence), a cut-off worker `✗ 🔨 #3 · hard-cut`; the verdict
+  never depends on opening the row (a `label` on the call supplies the purpose; with
+  none, the ordinal still separates the rows). The live name is written onto the
+  session before its first prompt — pi fires `session_start` only for sessions a host
+  binds, never for an SDK-built worker, so a name hung on that event never landed and
+  an auto-namer was left to title the row from the brief. It appears in the `/resume`
   picker, and its
   transcript grows live on disk, readable at any moment — whether a viewer
   tails a session still running is the viewer's choice, the card above is what
@@ -137,7 +148,7 @@ session has never spawned one:
 
 ```
 workers this session spawned:
-✓ 🔍 · PASS · stamp attack · 7 msgs · 2026-10-30 12:04 · ~/.pi/agent/sessions/…/w2.jsonl
+✓ 🔍 #2 · PASS · stamp attack · 7 msgs · 2026-10-30 12:04 · ~/.pi/agent/sessions/…/w2.jsonl
 ✗ 🔨 #1 · hard-cut · 31 msgs · 2026-10-30 11:02 · ~/.pi/agent/sessions/…/w1.jsonl
 ```
 
@@ -145,9 +156,11 @@ It is read back from pi's session listing, not from a dev-flow index, so renames
 deletions and workers an earlier session already delegated all read correctly for
 free. A host that gives dev-flow no session file to be a parent of falls back to
 the lines the flow's own `transcripts.log` already holds — coarser (no message
-count, no rename), still the same answer. Reading a bucket costs about 15 ms per
-MB of its history, so the polled live view re-reads at most once every two seconds
-while the settled card and an idle status always read fresh.
+count, no rename), still the same answer. A family read opens only the first line
+of each transcript in the bucket to find the workers whose header names this
+session, and reads only those in full — its cost follows the family, not the
+bucket's history. The polled live view still re-reads at most once every two
+seconds, while the settled card and an idle status always read fresh.
 
 Lifecycle is also on the bus: `dev-flow:worker-started` / `-completed` /
 `-failed` events (slug, op, elapsed, usage) let other extensions react without
@@ -178,7 +191,11 @@ knowing: a worker's header `cwd` is still the worktree, so after `flow finish`
 removes that worktree the row points at a directory that is gone (browsing and
 `pi export` still work — resuming it would not); and the bucket is shared with the
 driver's own history, so worker transcripts are only ever deleted by path, never
-by clearing a folder. Snapshots and the `transcripts.log` index live under
+by clearing a folder. Workers from before 0.70 sit in a bucket of their own per
+worktree, which no folder scope opened from the checkout shows; `flow doctor` names
+those buckets once their feature is finished or its worktree is gone, with the
+`rm -r` that removes them — it never removes them itself. Snapshots and the
+`transcripts.log` index live under
 `.dev-flow/<slug>/stage-sessions/` (gitignored, like all flow-owned state).
 
 ## Deliberate limits (v2)

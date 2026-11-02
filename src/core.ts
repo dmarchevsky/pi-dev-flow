@@ -1368,6 +1368,11 @@ export interface SessionClaim {
 	key: string;
 	pid: number;
 	at: string;
+	/** The claiming process's start identity (`processStart`), when the platform has one. A pid is
+	 *  recycled — a claim left by a crashed pi can name a pid some unrelated process now holds — so a
+	 *  live pid only counts as the claimant when its start identity still matches. Absent on legacy
+	 *  claims and on platforms without /proc, which keep the pid-only judgement. */
+	start?: string;
 }
 
 /** Whether a process is running (kill 0 only probes existence; EPERM means it exists, foreign-owned). */
@@ -1380,9 +1385,43 @@ export function pidAlive(pid: number): boolean {
 	}
 }
 
-/** True only when another live session holds the claim — its feature can only be taken by an explicit `flow use`, never quietly. */
-export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (pid: number) => boolean = pidAlive): boolean {
-	return !!claim && claim.key !== myKey && alive(claim.pid);
+/** A process's start identity: field 22 (`starttime`, clock ticks since boot) of `/proc/<pid>/stat`.
+ *  Two processes that share a pid never share it. `undefined` where there is no procfs. The comm
+ *  field (2) may itself hold spaces or parens, so the fields are counted from the LAST `)`. */
+export function processStart(pid: number, read: (file: string) => string = (f) => readFileSync(f, "utf8")): string | undefined {
+	try {
+		const stat = read(`/proc/${pid}/stat`);
+		const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+		// rest[0] is field 3 (state), so field 22 sits at index 19
+		const st = rest[19];
+		return st && /^\d+$/.test(st) ? st : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** True only when another live session holds the claim — its feature can only be taken by an explicit `flow use`, never quietly.
+ *  A claim whose pid is alive but whose recorded start identity no longer matches belongs to a dead
+ *  session whose pid was recycled: it does not block. */
+export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (pid: number) => boolean = pidAlive, startOf: (pid: number) => string | undefined = processStart): boolean {
+	if (!claim || claim.key === myKey || !alive(claim.pid)) return false;
+	if (claim.start) {
+		const now = startOf(claim.pid);
+		if (now !== undefined && now !== claim.start) return false;
+	}
+	return true;
+}
+
+/** How old a claim is, in words, for a refusal: "claimed 3 days ago" lets the operator tell a live
+ *  session from a stale pid at a glance. Empty when the stamp is unreadable. */
+export function claimAge(claim: SessionClaim, nowMs: number = Date.now()): string {
+	const t = Date.parse(claim.at);
+	if (!Number.isFinite(t)) return "";
+	const min = Math.max(0, Math.round((nowMs - t) / 60000));
+	if (min < 60) return `${min} min old`;
+	const h = Math.round(min / 60);
+	if (h < 48) return `${h} h old`;
+	return `${Math.round(h / 24)} days old`;
 }
 
 /** Footer glyph per stage: the footer has no room for stage words and no legend of its own (README:Status bar is the legend). */
@@ -2410,6 +2449,107 @@ export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null
 	});
 	if (mine.length > shown.length) lines.push(familyFoldLine(mine.length - shown.length));
 	return lines;
+}
+
+/** A transcript's header parent link, read from its first line alone — the cheap pass of the family
+ *  scan. Returns `undefined` for a file that is not a pi session (or has no complete first line in
+ *  the bytes read), `null` for a session that is nobody's child. */
+export function sessionHeaderParent(head: string): string | null | undefined {
+	const nl = head.indexOf("\n");
+	if (nl < 0) return undefined;
+	try {
+		const h = JSON.parse(head.slice(0, nl)) as { type?: string; parentSession?: unknown };
+		if (h?.type !== "session") return undefined;
+		return typeof h.parentSession === "string" && h.parentSession ? h.parentSession : null;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The fields the family view needs, from one transcript's full text — the same rules pi's own
+ *  session listing applies (latest `session_info` name wins, explicit clears included; messages are
+ *  `message` entries; last activity is the newest user/assistant message, else the header time).
+ *  Only the few files whose header names the driver reach this — that is what keeps a family read
+ *  proportional to the family, not to the bucket's whole history. */
+export function parseSessionSummary(text: string, file: string, mtimeMs?: number): WorkerSessionRow | null {
+	type Header = { timestamp?: unknown; parentSession?: unknown };
+	let header: Header | null = null;
+	let name: string | undefined;
+	let messageCount = 0;
+	let last: number | undefined;
+	for (const line of text.split("\n")) {
+		if (!line.trim()) continue;
+		let e: { type?: string; name?: unknown; timestamp?: unknown; message?: { role?: string; content?: unknown; timestamp?: unknown } };
+		try { e = JSON.parse(line); } catch { continue; }
+		if (!header) {
+			if (e?.type !== "session") return null;
+			header = e as Header;
+			continue;
+		}
+		if (e.type === "session_info") name = typeof e.name === "string" ? e.name.trim() || undefined : undefined;
+		if (e.type !== "message") continue;
+		messageCount++;
+		const m = e.message;
+		if (!m || m.content === undefined || (m.role !== "user" && m.role !== "assistant")) continue;
+		const t = typeof m.timestamp === "number" ? m.timestamp : Date.parse(String(e.timestamp));
+		if (Number.isFinite(t)) last = Math.max(last ?? 0, t);
+	}
+	if (!header) return null;
+	const headerTime = typeof header.timestamp === "string" ? Date.parse(header.timestamp) : NaN;
+	const modified = last && last > 0 ? last : Number.isFinite(headerTime) ? headerTime : mtimeMs;
+	return { path: file, parent: typeof header.parentSession === "string" ? header.parentSession : null, name, messageCount, modified };
+}
+
+/** pi's bucket name for a working directory (`--home-me-repo--`), the same encoding pi applies
+ *  (`getDefaultSessionDirPath`). Used only to RECOGNIZE buckets, never to choose where a session goes. */
+export function sessionBucketName(cwd: string): string {
+	return `--${path.resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+}
+
+/** What the doctor needs to judge one feature's worktree bucket. */
+export interface WorktreeBucketFeature {
+	/** the slug's state is gone, done or aborted — nothing will delegate into this worktree again */
+	finished: boolean;
+	worktreeExists: boolean;
+}
+
+/**
+ * Session buckets stage workers left behind before 0.70 put workers in the driver's bucket. Such a
+ * worker ran with cwd = the feature worktree, so pi filed it under that worktree's own bucket — which
+ * no folder scope opened from the main checkout ever shows, and which outlives the worktree. A bucket
+ * is reported when it encodes `<root>/.dev-flow/<slug>/worktree` and that slug is finished or its
+ * worktree is gone. `features` is keyed by slug; a slug absent from it has no state at all (finished).
+ */
+export function orphanWorktreeBuckets(buckets: string[], root: string, features: Map<string, WorktreeBucketFeature>): { bucket: string; slug: string }[] {
+	const prefix = sessionBucketName(path.join(root, ".dev-flow")).slice(0, -2) + "-";
+	const out: { bucket: string; slug: string }[] = [];
+	for (const b of buckets) {
+		if (!b.startsWith(prefix) || !b.endsWith("-worktree--")) continue;
+		const encSlug = b.slice(prefix.length, -"-worktree--".length);
+		if (!encSlug) continue;
+		// slugs are kebab-case, which the encoding leaves intact; a slug that is a known feature wins
+		const f = features.get(encSlug);
+		if (f && !f.finished && f.worktreeExists) continue;
+		out.push({ bucket: b, slug: encSlug });
+	}
+	return out;
+}
+
+/** Stage workers spawned in THIS process, by session id. A worker loads the operator's extensions —
+ *  dev-flow among them, because its guards must hold inside the worker too — but the driver's context
+ *  (the playbook core, the unbound-session posture, "surface this to the operator") is wrong there:
+ *  the brief is the worker's whole instruction. The worker's loader imports dev-flow as its own
+ *  module instance, so the registry lives on a process-global symbol both instances can see. */
+const WORKER_SESSIONS = Symbol.for("dev-flow.workerSessions");
+function workerSessionSet(): Set<string> {
+	const g = globalThis as unknown as Record<symbol, Set<string> | undefined>;
+	return (g[WORKER_SESSIONS] ??= new Set<string>());
+}
+export function markWorkerSession(id: string | undefined | null): void {
+	if (id) workerSessionSet().add(id);
+}
+export function isWorkerSession(id: string | undefined | null): boolean {
+	return !!id && workerSessionSet().has(id);
 }
 
 /** The line that stands in for the workers too old to list. It is not a worker, so anything counting

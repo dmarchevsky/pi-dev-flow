@@ -8,8 +8,8 @@ import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import devFlow, { compactionTakeover, sessionRowsScan, stageTimingOverride, stageWorkerSpawn, testSeams, workerSessionManager } from "../extensions/dev-flow.ts";
-import { tagNotesCommand, workerFamily } from "../src/core.ts";
+import devFlow, { compactionTakeover, scanFamilyRows, sessionRowsScan, stageTimingOverride, stageWorkerSpawn, testSeams, workerSessionManager } from "../extensions/dev-flow.ts";
+import { isWorkerSession, markWorkerSession, sessionBucketName, tagNotesCommand, workerFamily } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
@@ -24,6 +24,9 @@ interface Stub {
 	/** pi.events stand-in: every emit is recorded so a test can assert the worker lifecycle events. */
 	events: { emitted: { name: string; data: Record<string, unknown> }[] };
 }
+
+// the suite never reads the operator's real session store; the one doctor test that needs a store sets its own
+testSeams.sessionsRoot.value = null;
 
 function makePi(): Stub & ((...a: never[]) => void) {
 	const stub = { cmds: {}, tools: {}, handlers: {}, entries: [], events: { emitted: [] } } as Stub;
@@ -525,7 +528,7 @@ test("a verify worker that edits the tree voids its own verdict", async () => {
 	assert.equal(voided.details?.stamped, false, "the voided PASS never reaches the state");
 	assert.ok(voided.details?.snapshot, "the tree the reviewer left is snapshotted, not silently kept");
 	assert.ok((await flow(["verify"])).isError, "the voided verdict carries nothing");
-	assert.match(voiditRenames[voiditRenames.length - 1], /\u2713 \ud83d\udd0d \u00b7 verdict VOID/, "a voided PASS must not rename its session to a plain \u2713 PASS \u2014 the row says the verdict was voided");
+	assert.match(voiditRenames[voiditRenames.length - 1], /\u2713 \ud83d\udd0d #1 \u00b7 verdict VOID/, "a voided PASS must not rename its session to a plain \u2713 PASS \u2014 the row says the verdict was voided");
 });
 
 test("a verify worker that rewrites the plan it is judging voids its own verdict", async () => {
@@ -615,15 +618,18 @@ test("worker session names announce role, purpose and outcome end to end", async
 	const spawnNames: string[] = [];
 	const renames: string[] = [];
 	const real = stageWorkerSpawn.run;
+	let spawned = 0;
 	const fake = (text: () => string, work?: () => void) => (async (a: { name: string }) => {
 		spawnNames.push(a.name);
+		// a transcript path, so the ledger records each run and the next one of its kind counts up
+		const file = path.join(repo, `w${++spawned}.jsonl`);
 		return {
 			session: {
 				subscribe: () => () => {},
 				prompt: async () => { work?.(); },
 				steer: () => {}, abort: async () => {}, dispose: () => {},
 				getLastAssistantText: text,
-				sessionManager: { getSessionFile: () => undefined },
+				sessionManager: { getSessionFile: () => file },
 			},
 			rename: (n: string) => { renames.push(n); },
 		} as never;
@@ -631,8 +637,12 @@ test("worker session names announce role, purpose and outcome end to end", async
 	try {
 		stageWorkerSpawn.run = fake(() => "ok\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\n");
 		await stage({ op: "verify", label: "stamp attack\n\tround" });
-		assert.equal(spawnNames[0], "⏳ 🔍 · stamp attack round", "live name: role glyph + purpose, sanitized");
-		assert.equal(renames[0], "✓ 🔍 · PASS · stamp attack round", "final name carries the verdict — no need to open the row");
+		assert.equal(spawnNames[0], "⏳ 🔍 #1 · stamp attack round", "live name: role glyph + round + purpose, sanitized");
+		assert.equal(renames[0], "✓ 🔍 #1 · PASS · stamp attack round", "final name carries the verdict — no need to open the row");
+		await stage({ op: "verify", label: "again" });
+		assert.equal(spawnNames[1], "⏳ 🔍 #2 · again", "a re-verify is the next round, so six rounds read as a sequence");
+		spawnNames.splice(1, 1);
+		renames.splice(1, 1);
 		stageWorkerSpawn.run = fake(
 			() => "done:\n- x\n",
 			() => execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", "worker work"]),
@@ -3206,5 +3216,113 @@ test("a status call landing in the same millisecond still reads the bucket now",
 	} finally {
 		Date.now = realNow;
 		sessionRowsScan.run = realScan;
+	}
+});
+
+test("a real worker is named before its first prompt, linked to its driver, and registered as a worker", async () => {
+	// The production spawn, minus the model: pi emits session_start only from bindExtensions(), which an
+	// SDK-built worker never runs, so a name set from a session_start handler never landed and every
+	// worker ran as whatever an auto-namer made of its brief. The name must be on the session before
+	// prompt() — that is what this pins. PI_CODING_AGENT_DIR keeps pi off the operator's real store.
+	const SessionManager = (await import("@earendil-works/pi-coding-agent")).SessionManager;
+	const prev = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = mkdtempSync(path.join(tmpdir(), "spawn-agent-"));
+	try {
+		const main = mkdtempSync(path.join(tmpdir(), "spawn-main-"));
+		const work = mkdtempSync(path.join(tmpdir(), "spawn-work-"));
+		const driver = SessionManager.create(main);
+		driver.appendMessage({ role: "user", content: "drive", timestamp: Date.now() } as never);
+		const h = await stageWorkerSpawn.run({ work, model: undefined, name: "\u23f3 \ud83d\udd0d #1 \u00b7 probe", tools: ["read"], parent: driver.getSessionFile(), dir: driver.getSessionDir() });
+		try {
+			const sm = h.session.sessionManager;
+			assert.equal(sm.getSessionName(), "\u23f3 \ud83d\udd0d #1 \u00b7 probe", "the live name is set before any prompt");
+			assert.equal(sm.getHeader()?.parentSession, driver.getSessionFile(), "the header links the driver");
+			assert.equal(path.dirname(sm.getSessionFile()!), driver.getSessionDir(), "and the transcript lands in the driver's bucket");
+			assert.ok(isWorkerSession(sm.getSessionId()), "the worker is registered, so dev-flow inside it stays quiet");
+			h.rename("\u2713 \ud83d\udd0d #1 \u00b7 PASS \u00b7 probe");
+			assert.equal(sm.getSessionName(), "\u2713 \ud83d\udd0d #1 \u00b7 PASS \u00b7 probe", "the same channel carries the final rename");
+		} finally {
+			h.session.dispose();
+		}
+	} finally {
+		if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = prev;
+	}
+});
+
+test("a stage worker gets none of the driver's context; its guards are not this hook's business", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	initPlaybook(repo);
+	const ctxFor = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] } });
+	markWorkerSession("worker-ctx-1");
+	const before = pi.entries.length;
+	assert.equal(await pi.handlers.before_agent_start[0]({}, ctxFor("worker-ctx-1")), undefined, "a worker's brief is its whole instruction");
+	assert.ok(!pi.entries.slice(before).some((e: { customType?: string }) => e.customType === "dev-flow-skill"), "and no playbook core is paid into it");
+	const driver = (await pi.handlers.before_agent_start[0]({}, ctxFor("driver-ctx-1"))) as { message?: { content: string } };
+	assert.match(driver.message?.content ?? "", /no flow bound/, "a driver session still gets its context");
+});
+
+test("a session in a linked worktree is not told the main checkout is on the wrong branch", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	initPlaybook(repo);
+	execFileSync("git", ["-C", repo, "add", "-A"]);
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "playbook"]);
+	const wt = path.join(repo, "..", `${path.basename(repo)}-wt`);
+	execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", "feat/x", wt]);
+	const inWt = (await pi.handlers.before_agent_start[0]({}, makeCtx(wt))) as { message?: { content: string } };
+	assert.ok(inWt.message, "the worktree is initiated (the playbook is committed)");
+	assert.doesNotMatch(inWt.message!.content, /main checkout is on/, "a worktree is on its feature branch by construction");
+	execFileSync("git", ["-C", repo, "checkout", "-q", "-b", "drift"]);
+	const inMain = (await pi.handlers.before_agent_start[0]({}, makeCtx(repo))) as { message?: { content: string } };
+	assert.match(inMain.message?.content ?? "", /main checkout is on drift, not main/, "the main checkout's real drift is still surfaced");
+});
+
+test("the family scan reads headers, and only the workers in full", async () => {
+	const dir = mkdtempSync(path.join(tmpdir(), "bucket-"));
+	const driver = path.join(dir, "driver.jsonl");
+	const hdr = (id: string, parent?: string) => JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-11-01T10:00:00.000Z", cwd: "/w", ...(parent ? { parentSession: parent } : {}) });
+	const msg = (t: string, ts: number) => JSON.stringify({ type: "message", id: t, parentId: null, timestamp: new Date(ts).toISOString(), message: { role: "user", content: t, timestamp: ts } });
+	const info = (n: string) => JSON.stringify({ type: "session_info", id: n, parentId: null, timestamp: "2026-11-01T10:00:00.000Z", name: n });
+	// history the scan must not pay for: a big unrelated session, a foreign driver's worker, a non-session file
+	writeFileSync(driver, `${hdr("d")}\n${msg("x".repeat(2_000_000), 1)}\n`);
+	writeFileSync(path.join(dir, "other-child.jsonl"), `${hdr("o", "/elsewhere/driver.jsonl")}\n${msg("o", 2)}\n`);
+	writeFileSync(path.join(dir, "junk.jsonl"), "not json\n");
+	writeFileSync(path.join(dir, "w1.jsonl"), [hdr("w1", driver), info("you-are-a-dev"), msg("a", 1000), info("\u2713 \ud83d\udd0d #1 \u00b7 FAIL"), ""].join("\n"));
+	writeFileSync(path.join(dir, "w2.jsonl"), [hdr("w2", driver), msg("b", 2000), msg("c", 3000), ""].join("\n"));
+	const reads = { n: 0 };
+	const rows = await scanFamilyRows(dir, driver, reads);
+	assert.equal(reads.n, 2, "only the two workers were read past their header");
+	const byPath = new Map(rows.map((r) => [path.basename(r.path), r]));
+	assert.deepEqual([...byPath.keys()].sort(), ["w1.jsonl", "w2.jsonl"]);
+	assert.equal(byPath.get("w1.jsonl")!.name, "\u2713 \ud83d\udd0d #1 \u00b7 FAIL", "the latest session_info wins, as in pi's picker");
+	assert.equal(byPath.get("w2.jsonl")!.messageCount, 2);
+	assert.equal(byPath.get("w2.jsonl")!.modified, 3000, "last activity is the newest message");
+	const lines = workerFamily(rows, driver);
+	assert.match(lines[0], /^\(unnamed worker\) \u00b7 2 msgs/, "newest first, through the same renderer as before");
+});
+
+test("flow doctor names worker buckets left by finished or removed worktrees, and nothing else", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	await toImplement(pi, ctx, "alive");
+	const root = mkdtempSync(path.join(tmpdir(), "sessions-root-"));
+	const bucket = (slug: string) => path.join(root, sessionBucketName(path.join(repo, ".dev-flow", slug, "worktree")));
+	for (const slug of ["alive", "gone"]) {
+		mkdirSync(bucket(slug), { recursive: true });
+		writeFileSync(path.join(bucket(slug), "w.jsonl"), "{}\n");
+	}
+	mkdirSync(path.join(root, sessionBucketName(repo)), { recursive: true }); // the checkout's own bucket is never a finding
+	const prev = testSeams.sessionsRoot.value;
+	testSeams.sessionsRoot.value = root;
+	try {
+		const out = (await pi.tools.flow.execute("id", { args: ["doctor"] }, undefined, undefined, ctx) as { content: [{ text: string }] }).content[0].text;
+		assert.match(out, /worker session buckets left by finished or removed worktrees \(1\)/);
+		assert.match(out, /gone: 1 transcript\(s\) \u2014 rm -r /, "the stateless slug is reported with its cleanup command");
+		assert.doesNotMatch(out, /alive: \d+ transcript/, "a live feature's worktree bucket is left alone");
+		assert.ok(existsSync(bucket("gone")), "the doctor never deletes");
+	} finally {
+		testSeams.sessionsRoot.value = prev;
 	}
 });

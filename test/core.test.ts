@@ -13,6 +13,11 @@ import {
 	checklistHash,
 	checkoutTarget,
 	claimBlocks,
+	claimAge,
+	orphanWorktreeBuckets,
+	processStart,
+	sessionBucketName,
+	sessionHeaderParent,
 	classifyMergeHistory,
 	mergeShapeProof,
 	mergeStyleInvocation,
@@ -1106,6 +1111,52 @@ test("claimBlocks refuses a silent take-over only for a foreign live claim", () 
 	assert.equal(claimBlocks(claim, "A"), false, "our own claim — nothing to take over");
 	assert.equal(claimBlocks(claim, "B", () => true), true, "foreign claim from a live pid — take-over refused");
 	assert.equal(claimBlocks(claim, "B", () => false), false, "foreign claim from a dead pid — claim is void");
+});
+
+test("a recycled pid does not hold a dead session's claim", () => {
+	const claim = { key: "A", pid: 854, at: "2026-11-02T15:25:32.728Z", start: "1000" };
+	assert.equal(claimBlocks(claim, "B", () => true, () => "1000"), true, "same pid, same start: the claimant is alive");
+	assert.equal(claimBlocks(claim, "B", () => true, () => "9999"), false, "same pid, different start: an unrelated process inherited the pid");
+	assert.equal(claimBlocks(claim, "B", () => true, () => undefined), true, "no start identity to compare: the pid alone decides, as before");
+	assert.equal(claimBlocks({ key: "A", pid: 854, at: "x" }, "B", () => true, () => "9999"), true, "a legacy claim without start keeps the pid-only judgement");
+});
+
+test("processStart reads field 22 of /proc/<pid>/stat, counting past a comm with spaces and parens", () => {
+	const fields = Array.from({ length: 50 }, (_, i) => String(i + 3)); // field 3 onward
+	const stat = `854 (next-server (v16) x) ${fields.join(" ")}`;
+	assert.equal(processStart(854, () => stat), "22");
+	assert.equal(processStart(854, () => { throw new Error("no procfs"); }), undefined);
+	if (process.platform === "linux") assert.match(processStart(process.pid) ?? "", /^\d+$/, "a real process has one here");
+});
+
+test("claimAge words the claim's age for a refusal", () => {
+	const at = "2026-11-02T00:00:00.000Z";
+	const t = Date.parse(at);
+	assert.equal(claimAge({ key: "A", pid: 1, at }, t + 5 * 60000), "5 min old");
+	assert.equal(claimAge({ key: "A", pid: 1, at }, t + 3 * 3600000), "3 h old");
+	assert.equal(claimAge({ key: "A", pid: 1, at }, t + 3 * 86400000), "3 days old");
+	assert.equal(claimAge({ key: "A", pid: 1, at: "garbage" }), "");
+});
+
+test("orphanWorktreeBuckets: finished, vanished and stateless worktrees, never a live one or a foreign repo", () => {
+	const root = "/home/me/work/repo";
+	const b = (slug: string) => sessionBucketName(`${root}/.dev-flow/${slug}/worktree`);
+	assert.equal(b("my-feat"), "--home-me-work-repo-.dev-flow-my-feat-worktree--", "pi's own encoding");
+	const features = new Map([
+		["live", { finished: false, worktreeExists: true }],
+		["done-one", { finished: true, worktreeExists: false }],
+		["lost-wt", { finished: false, worktreeExists: false }],
+	]);
+	const buckets = [b("live"), b("done-one"), b("lost-wt"), b("no-state"), sessionBucketName(root), sessionBucketName("/home/me/work/other/.dev-flow/x/worktree")];
+	assert.deepEqual(orphanWorktreeBuckets(buckets, root, features).map((o) => o.slug), ["done-one", "lost-wt", "no-state"]);
+});
+
+test("sessionHeaderParent reads the parent off the first line alone", () => {
+	assert.equal(sessionHeaderParent('{"type":"session","id":"a","parentSession":"/b/d.jsonl"}\n{"type":"message"'), "/b/d.jsonl");
+	assert.equal(sessionHeaderParent('{"type":"session","id":"a"}\n'), null, "a session that is nobody's child");
+	assert.equal(sessionHeaderParent('{"type":"session","id":"a","parentSess'), undefined, "an incomplete first line is not judged");
+	assert.equal(sessionHeaderParent('{"type":"message"}\n'), undefined, "not a pi session");
+	assert.equal(sessionHeaderParent("garbage\n"), undefined);
 });
 
 test("pidAlive probes process existence without signaling", () => {
