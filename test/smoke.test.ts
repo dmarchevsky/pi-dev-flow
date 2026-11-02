@@ -4,12 +4,12 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import devFlow, { compactionTakeover, scanFamilyRows, sessionRowsScan, stageTimingOverride, stageWorkerSpawn, testSeams, workerSessionManager } from "../extensions/dev-flow.ts";
-import { isWorkerSession, markWorkerSession, sessionBucketName, tagNotesCommand, workerFamily } from "../src/core.ts";
+import { delegationLine, DELEGATIONS_FILE, isWorkerSession, markWorkerSession, sessionBucketName, tagNotesCommand, workerFamily } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
@@ -121,10 +121,31 @@ function trackPlaybook(repo: string) {
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 }
 
+/** Append the delegation ledger line flow_stage writes when a run worker finishes: the fixture
+ *  commits are worker commits, and the verify gate proves every branch commit falls inside such a
+ *  window. A test that wants the refusal commits WITHOUT calling this (see the delegation gate test). */
+function recordWindow(repo: string, slug: string, start: string, end: string, commits = 1): void {
+	const dir = path.join(repo, ".dev-flow", slug, "stage-sessions");
+	mkdirSync(dir, { recursive: true });
+	appendFileSync(path.join(dir, DELEGATIONS_FILE), `${delegationLine(new Date().toISOString(), "implement", start, end, commits)}\n`);
+}
+
 /** verify proves a committed branch, so every test that walks a feature to Verified? needs a
  *  commit in the worktree — what a real flow does as it goes. Empty is fine: these tests carry
- *  no feature content, only the commit proof. */
+ *  no feature content, only the commit proof. The window is recorded with it because a real flow's
+ *  commit is a worker's commit, and the gate (delegationErrors) wants both facts. */
 function commitWt(repo: string, slug: string, msg = "work") {
+	const wt = path.join(repo, ".dev-flow", slug, "worktree");
+	const head = (at: string) => execFileSync("git", ["-C", wt, "rev-parse", at], { encoding: "utf8" }).trim();
+	const before = head("HEAD");
+	execFileSync("git", ["-C", wt, "add", "-A"]);
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", msg]);
+	recordWindow(repo, slug, before, head("HEAD"));
+}
+
+/** A commit on the feature branch that NO worker run covers — a driver authoring work inline, which
+ *  is exactly what the verify gate refuses. */
+function commitWtUndelegated(repo: string, slug: string, msg = "driver commit"): void {
 	const wt = path.join(repo, ".dev-flow", slug, "worktree");
 	execFileSync("git", ["-C", wt, "add", "-A"]);
 	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-qm", msg]);
@@ -430,6 +451,44 @@ test("verify refuses a branch with nothing committed, and names what a passing v
 	await verifyPass(pi, ctx);
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 0 uncommitted path\(s\)/, "the operator sees the committed state they are approving");
+});
+
+test("the verify gate proves the implement work was delegated — inline commits refuse, a recorded window carries, docs is exempt", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const head = (slug: string, at = "HEAD") => execFileSync("git", ["-C", path.join(repo, ".dev-flow", slug, "worktree"), "rev-parse", at], { encoding: "utf8" }).trim();
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	const start = async (slug: string, extra: string[] = []) => {
+		await flow(["start", slug, ...extra]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+	};
+	await start("inline");
+	commitWtUndelegated(repo, "inline");
+	const straySha = head("inline");
+	await flow(["check"]);
+	await verifyPass(pi, ctx);
+	const refused = await flow(["verify"]);
+	assert.ok(refused.isError && /implement work was not delegated/.test(refused.content[0].text), "a branch no worker run covers cannot be verified");
+	assert.match(refused.content[0].text, /flow_stage \{ stage: "implement" \}/, "the refusal names the call that does the work");
+	// one delegated commit does not excuse the inline one: the gate counts what is still outside
+	commitWt(repo, "inline");
+	await verifyPass(pi, ctx);
+	assert.match((await flow(["verify"])).content[0].text, /1 commit\(s\) on the branch were made outside a worker run/, "a commit outside every window is named by count");
+	// write the ledger line the worker would have left, and the same gate walks on
+	recordWindow(repo, "inline", head("inline", `${straySha}^`), straySha);
+	const ok = await flow(["verify", "--confirmed"]);
+	assert.match(ok.content[0].text, /entering pre-release stage/, "the ledger is the proof, not a formality");
+	assert.match(ok.content[0].text, /delegation proven: 2 worker commit\(s\) in 2 window\(s\)/, "and the gate says what it proved");
+	// a docs flow stays exempt: nothing to delegate, so nothing to refuse
+	await start("docsy", ["--docs", "--confirmed"]);
+	commitWtUndelegated(repo, "docsy");
+	const docs = await flow(["verify", "--confirmed"]);
+	assert.match(docs.content[0].text, /docs mode: project commands skipped/);
+	assert.match(docs.content[0].text, /entering pre-release stage/, "a docs flow verifies with no ledger at all");
 });
 
 test("the verify gate owes its PASS to a verify worker over the current tree", async () => {

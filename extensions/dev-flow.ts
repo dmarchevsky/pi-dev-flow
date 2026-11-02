@@ -38,6 +38,11 @@ import {
 	bashFlowGuard,
 	buildStageBrief,
 	checkFingerprint,
+	DELEGATIONS_FILE,
+	delegationErrors,
+	delegationLine,
+	parseDelegationLedger,
+	type DelegationWindow,
 	changelogVersionsBetween,
 	familyFoldLine,
 	familyHeading,
@@ -910,9 +915,8 @@ async function stampChecks(root: string, state: FlowState, names: string[]): Pro
  *  question. Local refs only — same offline-safe stance as the changelog proof — and an
  *  unanswerable merge base reports null instead of refusing on a measurement failure. */
 async function branchState(cwd: string, defaultBranch: string): Promise<BranchState> {
-	const mb = await sh(`git merge-base origin/${sq(defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(defaultBranch)} HEAD 2>/dev/null || true`, cwd);
-	const base = mb.out.trim();
-	if (!mb.ok || !base) return { commitsAhead: null, uncommitted: 0 };
+	const base = await mergeBase(cwd, defaultBranch);
+	if (!base) return { commitsAhead: null, uncommitted: 0 };
 	const ahead = await sh(`git rev-list --count ${sq(base)}..HEAD`, cwd);
 	const n = Number.parseInt(ahead.out.trim(), 10);
 	const dirty = await sh("git status --porcelain", cwd);
@@ -920,6 +924,42 @@ async function branchState(cwd: string, defaultBranch: string): Promise<BranchSt
 		commitsAhead: Number.isFinite(n) ? n : null,
 		uncommitted: dirty.ok ? dirty.out.split("\n").filter((l) => l.trim()).length : 0,
 	};
+}
+
+/** The branch's merge base with the default branch, or "" when git cannot answer (no such ref, a
+ *  shallow clone). Callers read "" as "unprovable", never as "nothing ahead". Local refs only —
+ *  the same offline-safe stance as the changelog proof. */
+async function mergeBase(cwd: string, defaultBranch: string): Promise<string> {
+	const mb = await sh(`git merge-base origin/${sq(defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(defaultBranch)} HEAD 2>/dev/null || true`, cwd);
+	return mb.ok ? mb.out.trim() : "";
+}
+
+/** What the branch proves about *who* worked it: the flow's delegation ledger, the commits the branch
+ *  holds over the default branch, and the sha set each recorded window covers. Returns null for a
+ *  --docs or --patch flow — those modes are exempt, so nothing is measured and no git call is spent.
+ *  A window whose shas git cannot resolve covers nothing rather than excusing itself: a hand-written
+ *  line must not be able to exempt the commits lying next to it. */
+async function delegationProof(root: string, state: FlowState, defaultBranch: string): Promise<{ ledger: DelegationWindow[]; branchCommits: string[] | null; windowCommits: (w: DelegationWindow) => string[]; covered: number; windows: number } | null> {
+	if (state.docs || state.patch) return null;
+	const work = gateCwd(root, state);
+	let ledger: DelegationWindow[] = [];
+	try {
+		ledger = parseDelegationLedger(readFileSync(path.join(featDir(root, state.slug), "stage-sessions", DELEGATIONS_FILE), "utf8"));
+	} catch { /* no ledger yet: nobody delegated, which the gate reports rather than throwing on */ }
+	const shas = async (cmd: string) => {
+		const r = await sh(cmd, work);
+		return r.ok ? r.out.split("\n").map((l) => l.trim()).filter(Boolean) : null;
+	};
+	const base = await mergeBase(work, defaultBranch);
+	let branchCommits = base ? await shas(`git rev-list ${sq(base)}..HEAD`) : null;
+	const ranges = new Map<string, string[]>();
+	const key = (w: DelegationWindow) => `${w.start}..${w.end}`;
+	for (const w of ledger) ranges.set(key(w), (await shas(`git rev-list ${sq(w.start)}..${sq(w.end)}`)) ?? []);
+	const windowCommits = (w: DelegationWindow) => ranges.get(key(w)) ?? [];
+	const impl = ledger.filter((w) => w.stage === "implement");
+	const covered = new Set<string>();
+	for (const w of impl) for (const sha of windowCommits(w)) covered.add(sha);
+	return { ledger, branchCommits, windowCommits, covered: covered.size, windows: impl.filter((w) => windowCommits(w).length).length };
 }
 
 function describeBranchState(b: BranchState, defaultBranch: string): string {
@@ -1197,6 +1237,13 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		writeState(root, state!);
 		return { text: `verify gate FAILED:\n- ${VERIFY_STAMP_REFUSAL}${staleAtGate.includes(VERIFY_STAMP) || stampVoided ? " (a PASS was recorded, but the tree or its plan moved since — that is why it no longer counts)" : ""}\n${branchLine}`, isError: true };
 	}
+	// The implement stage has to have been *worked*, not just driven: every commit the branch holds
+	// must fall inside a worker's run window, as recorded in stage-sessions/delegations.log. Refused
+	// before any command runs, like the stamp — and judged only here, because the driver's own commits
+	// after this gate (changelog, bump) are pre-release work and belong to the session by design.
+	const deleg = await delegationProof(root, state!, cfg.defaultBranch);
+	const delegErrs = deleg ? delegationErrors(state!, deleg.ledger, deleg.branchCommits, deleg.windowCommits) : [];
+	if (delegErrs.length) return { text: `verify gate FAILED:\n- ${delegErrs.join("\n- ")}\n${branchLine}`, isError: true };
 	const pending = pendingChecks(state!, cfg);
 	const gateRun = pending.length ? await runChecks(root, state!, cfg, pending) : null;
 	if (gateRun?.failed) return { text: `verify gate FAILED — a check run at the gate failed:\n${gateRun.lines.join("\n")}\n${branchLine}`, isError: true };
@@ -1208,6 +1255,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const did: string[] = [];
 	if (gateRun) did.push(`checks ran at the gate (${pending.map((c) => c.name).join(", ")})`);
 	if (staleAtGate.length) did.push(`stale record(s) rerun after a worktree change: ${staleAtGate.join(", ")}`);
+	if (deleg) did.push(`delegation proven: ${deleg.covered} worker commit(s) in ${deleg.windows} window(s)`);
 	if (state!.docs) {
 		// docs mode's contract: no tier-1 work happens, so a docs flow neither builds, deploys nor probes (#43 #49)
 		did.push("docs mode: project commands skipped (build/dev/health)");
@@ -2569,6 +2617,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 			const logFile = path.join(featDir(ctx.cwd, st.slug), "stage-live.log");
 			const transcriptLog = path.join(featDir(ctx.cwd, st.slug), "stage-sessions", TRANSCRIPTS_FILE);
+			const delegationLog = path.join(featDir(ctx.cwd, st.slug), "stage-sessions", DELEGATIONS_FILE);
 			// read once, used twice: the worker's header links to this file and lands in this bucket,
 			// and the reflect brief names this session's own transcript to the reviewer
 			const lineage = lineageOf(ctx);
@@ -2714,12 +2763,20 @@ export default function devFlow(pi: ExtensionAPI) {
 				// the outcome goes INTO the final name — a picker row like `✓ 🔍 #3 · PASS · stamp attack` or
 				// `✓ 🔨 #2 · 3 commits · wire ops` answers "how did it end?" without opening the session
 				let outcome: string | null = null;
+				// The delegation ledger: this run's commit window, recorded however it ended — a
+				// hard-cut worker's commits still sit on the branch, and a window the gate never learned
+				// about reads as driver-authored work at flow verify. One count serves both: the picker row and the ledger.
+				let runCommits = 0;
+				if (op === "run" && headBefore.ok && headAfter.ok) {
+					const c = await sh(`git rev-list --count ${sq(headBefore.out)}..HEAD`, work);
+					runCommits = c.ok ? Number.parseInt(c.out.trim(), 10) || 0 : 0;
+					try {
+						mkdirSync(path.dirname(delegationLog), { recursive: true });
+						appendFileSync(delegationLog, `${delegationLine(now(), st.stage, headBefore.out.trim(), headAfter.out.trim(), runCommits)}\n`);
+					} catch { /* an index that failed to append is never a reason to lose the run */ }
+				}
 				if (clean) {
-					if (op === "run" && headBefore.ok) {
-						const c = await sh(`git rev-list --count ${sq(headBefore.out)}..HEAD`, work);
-						const n = c.ok ? c.out.trim() : "0";
-						if (n !== "0") outcome = `${n} commit${n === "1" ? "" : "s"}`;
-					}
+					if (runCommits > 0) outcome = `${runCommits} commit${runCommits === 1 ? "" : "s"}`;
 					if (verify?.verdict) outcome = moved ? "verdict VOID" : verify.verdict.toUpperCase();
 					if (findings && !findings.missing) outcome = `${findings.playbook.length + findings.plugin.length + findings.other.length} findings`;
 				} else {
@@ -2932,7 +2989,9 @@ export default function devFlow(pi: ExtensionAPI) {
 				const why = await askOperator(ctx, `Editing ${path.relative(ctx.cwd, abs) || abs}`, pv.confirm);
 				if (why) return { block: true, reason: why };
 			}
-			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd });
+			// A registered worker session is the one allowed to write a normal feature's worktree at
+			// implement — that is what it was sent to do (see writeGuard's byWorker).
+			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd, byWorker: isWorkerSession(ctx.sessionManager?.getSessionId?.()) });
 			if (reason) return { block: true, reason };
 			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
