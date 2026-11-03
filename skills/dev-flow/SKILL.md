@@ -50,9 +50,6 @@ Ground rules:
     `flow release --no-version --confirmed` — the merge still owes a changelog
     entry under `Unreleased`, which the next versioned release folds under its
     version heading (default is versioned: bump + tag).
-- **Pre-plan before binding:** an unbound session writes **nothing** — bring
-  findings, questions and a proposed direction + slug/mode, and **ask the
-  operator to start** (protocol: `references/start.md`).
 - **One session = exactly one feature** (flow + branch + worktree); parallel
   sessions, one feature each, are the model. A session binds **explicitly and
   only**: `flow start <slug>` binds its own feature (main checkout must be on
@@ -69,8 +66,6 @@ Ground rules:
   `flow status` is your view. **project.md is the operator-owned playbook**:
   read freely, **never edit** — it changes through `flow init --write` on the
   operator's word (`flow doctor` reviews what it lacks).
-- **At implement the driver drives, a worker writes** — `flow verify` proves the branch's
-  commits fall inside a `flow_stage` run window (`--docs`/`--patch` stay inline).
 - **Every bash/shell call states its own `timeout`** or the guard refuses it.
 - **A guard blocking you means you are skipping a stage or writing outside your
   feature** — run the gate instead of working around it. The guard reads
@@ -91,7 +86,7 @@ session's stage injection names the file to read now, and this is the map.
 
 | Read | For |
 | --- | --- |
-| `references/start.md` | pre-plan (unbound: no writes, ask to start), `flow init` (no `.dev-flow/` yet), mode grants (`--patch`, `--docs`), playbook ownership |
+| `references/start.md` | `flow init` (no `.dev-flow/` yet), mode grants (`--patch`, `--docs`), playbook ownership |
 | `references/plan.md` | plan stage — research, clarify, plan file, mockups, Approve? |
 | `references/implement.md` | implement stage — worktree, commits, checks, tier-2 list, Verified? |
 | `references/pre-release.md` | pre-release — `/flow-review`, docs, changelog + bump, Release? |

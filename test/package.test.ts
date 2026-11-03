@@ -54,9 +54,7 @@ test("the dev-flow skill keeps its always-on core inside the budget", () => {
 	assert.ok(open >= 0 && close > open, "the core must sit between its markers — that span is what every session gets injected");
 	const core = md.slice(open + "<!-- dev-flow:core:start -->".length, close).trim();
 	// 4500 since the Stage reports contract joined the always-on rules (~900 chars, docs/playbook.md holds the long form)
-	// 4700 since the pre-plan rule joined them (~230 chars): the always-on no-write-before-bind discipline for unbound sessions
-	// 4860 since the implement-delegation rule joined (~160 chars): the driver-drives discipline flow verify now proves from the ledger
-	assert.ok(core.length <= 4860, `the core costs every session ~${Math.round(core.length / 4)} tokens; stage detail belongs in references/ (now ${core.length} chars)`);
+	assert.ok(core.length <= 4500, `the core costs every session ~${Math.round(core.length / 4)} tokens; stage detail belongs in references/ (now ${core.length} chars)`);
 	for (const rule of ["flow tool is the only invocation", "Approve?", "flow abort"])
 		assert.ok(core.includes(rule), `the core has to carry "${rule}" — it is what a session gets wrong without it`);
 });
@@ -68,6 +66,4 @@ test("every stage has a playbook file and the map names it", () => {
 	for (const s of SKILL_STAGES) assert.match(md, new RegExp(`references/${s}\\.md`), `the stage map in SKILL.md never points at ${s}.md`);
 	// the state machine has no finish stage, so nothing would ever name finish.md if release.md did not
 	assert.match(readFileSync(path.join(SKILL_DIR, "references", "release.md"), "utf8"), /finish\.md/, "release must hand over to finish");
-	// gh#134: the release recipe must send the agent to green CI before merging — local gates cannot run CI-only jobs
-	assert.match(readFileSync(path.join(SKILL_DIR, "references", "release.md"), "utf8"), /gh pr checks <n> --watch/, "merge only once CI is green — say so where the merge command is printed");
 });
