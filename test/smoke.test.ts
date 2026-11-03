@@ -654,23 +654,27 @@ test("status bar: compact refresh follows the gates", async () => {
 
 test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {
 	const pi = makePi();
-	const statusCtx = (repo: string, seen: (string | undefined)[]) => ({
+	const statusCtx = (repo: string, seen: (string | undefined)[], widgets?: (string[] | undefined)[]) => ({
 		cwd: repo,
 		hasUI: true,
 		notices: [] as string[],
-		ui: { notify: () => {}, confirm: async () => true, select: async (_t: string, o: string[]) => o[0], input: async () => "", setStatus: (_k: string, t?: string) => seen.push(t), setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } },
+		ui: { notify: () => {}, confirm: async () => true, select: async (_t: string, o: string[]) => o[0], input: async () => "", setStatus: (_k: string, t?: string) => seen.push(t), setWidget: (_k: string, l?: string[]) => widgets?.push(l), theme: { fg: (_c: string, s: string) => s } },
 	});
 	// uninitiated: no injection at all, and any stale footer push is cleared
 	const bare = makeRepo();
 	const bareSeen: (string | undefined)[] = [];
-	assert.equal(await pi.handlers.before_agent_start[0]({}, statusCtx(bare, bareSeen)), undefined, "an uninitiated folder gets no dev-flow message");
+	const bareWidgets: (string[] | undefined)[] = [];
+	assert.equal(await pi.handlers.before_agent_start[0]({}, statusCtx(bare, bareSeen, bareWidgets)), undefined, "an uninitiated folder gets no dev-flow message");
 	assert.deepEqual(bareSeen, [undefined], "the footer stays cleared");
+	assert.deepEqual(bareWidgets, [undefined], "and a stale web chip is cleared with it");
 	// initiated, nothing in flight: the idle line is always there, repainted when a run starts
 	const repo = makeRepo();
 	initPlaybook(repo);
 	const seen: (string | undefined)[] = [];
-	await pi.cmds.flow.handler("status", statusCtx(repo, seen));
+	const idleWidgets: (string[] | undefined)[] = [];
+	await pi.cmds.flow.handler("status", statusCtx(repo, seen, idleWidgets));
 	assert.equal(seen.at(-1), "💬 no flows", "an initiated repo always carries the footer");
+	assert.deepEqual(idleWidgets, [undefined], "no open flows, no chip — the widget hides itself when there is nothing to list");
 	const inj = await pi.handlers.before_agent_start[0]({}, statusCtx(repo, seen));
 	assert.ok(inj, "the injection runs in an initiated repo");
 	assert.equal(seen.at(-1), "💬 no flows", "run start repaints the footer — the earliest point a web client is certainly listening");
