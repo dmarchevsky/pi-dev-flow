@@ -26,7 +26,10 @@ is never proof of a violation. Coverage is judged only at verify: the driver's o
 (changelog, bump) are pre-release work and belong to the session by design. The write guard is the
 early nudge of the same rule — a driver's edit inside its own worktree at implement is refused, a
 registered worker session's is not — while bash stays unguarded: running commands is driving, and
-the ledger's commit ranges are what carry the proof.
+the ledger's commit ranges are what carry the proof. A worktree session is judged by the **main
+checkout's** `.dev-flow/`, which is where the state actually lives: a linked worktree carries only the
+tracked playbook copy, so reading the worktree's own copy found no features and every guard answered
+"no active flow" — including for the worker it had to attribute.
 
 `flow_stage(stage: "implement" | "pre-release", note)` runs the **work** of
 the stage you are in; `flow_stage(op: "verify")` (legal only while the flow is
@@ -216,7 +219,9 @@ those buckets once their feature is finished or its worktree is gone, with the
 ## Deliberate limits (v2)
 
 Same model for worker and driver (a per-stage model/tool policy is a playbook
-conversation for later); no delegating verify's fix loop — the checker is
-fresh each cycle, the fixing stays the driver's call (inline or via a fresh
-`run` worker); the worker cannot ask you anything — if it needed to, the note
+conversation for later); the verify worker's fixing is delegated too — the
+checker is fresh each cycle and so is the fixer, because at implement the guard
+refuses the driver's own pen in its own worktree (the driver decides *what* the
+fix is and sends the note; a `run` worker writes it, then a fresh verify worker
+re-reads the tree); the worker cannot ask you anything — if it needed to, the note
 was too thin.

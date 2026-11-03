@@ -60,11 +60,12 @@ the worker is steered to commit and report rather than cut off.
 5. **The independent checker speaks before the operator does:** `flow_stage { op: "verify" }`
    runs a read-only reviewer (toolset read + bash, standing order *check, don't fix*) over the
    plan and the branch diff; it closes with a `VERIFY REPORT` verdict. Its **PASS is a
-   precondition of `flow verify`** and belongs to the tree it read: any edit after it — yours or
-   a delegated fixer's — drops it like a tier-1 record, so fix → a **fresh** verify worker;
-   a verdict from an interrupted or tree-touching worker never stamps (a reviewer that edits
-   voids its own report). FAIL means: fix (or delegate), then rerun a fresh one — the report is
-   a handoff, the gate's own rerun is the proof.
+   precondition of `flow verify`** and belongs to the tree it read: any edit after it drops it like
+   a tier-1 record, so the fix → a **fresh** verify worker; a verdict from an interrupted or
+   tree-touching worker never stamps (a reviewer that edits voids its own report). **FAIL means:
+   delegate the fix** — a fresh `flow_stage { stage: "implement" }` worker carries it out, because at
+   implement the guard refuses your own edit tool in your own worktree; then rerun a fresh verify
+   worker. The report is a handoff, the gate's own rerun is the proof.
 6. Done means **running and healthy with pre-existing data**, not "compiles":
    `commands.seedData` (if set) puts real data in place, the app starts with
    the `run` command, and the health check passes — `flow check` covers it
@@ -79,8 +80,9 @@ the worker is steered to commit and report rather than cut off.
    answered (with no `dev` deploy configured, `flow verify` live-re-probes
    `health` itself and refuses while nothing is answering). Checkpoint report: stage line **🔨 implement ·
    `<slug>`** — commits `N ahead, M uncommitted` · tier-1 · tier-2 · deploy/
-   health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = iterate and re-verify; that loop is
-   free — but every fix re-owes the verify worker's PASS.
+   health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = delegate,
+   iterate and re-verify; that loop is free — but every fix re-owes the verify worker's PASS, and a
+   fixer needs its own fresh worker: nothing at this stage comes off your own pen.
 
 `flow verify` re-runs build, runs the `dev` deploy when configured (the
 operator reviews the running app; the gate **prints what it ran** —
