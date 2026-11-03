@@ -4,6 +4,36 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-11-03
+
+**Audit: gaps closed, dead code out.** A full read of the extension, core and playbook parser after 0.73.0's reset.
+
+### Fixed
+- `flow approve --yolo` and `flow release --no-version` now take effect only after the operator answers the checkpoint. Before, a refused or headless call still saved yolo/no-version, so it applied to the next gate.
+- A session opened inside a feature worktree now drives the main checkout's flow. Before, `flow` gates, the footer, the context injection, compaction and claims read the worktree's own `.dev-flow/`; only the guards resolved the main checkout.
+- `flow health` now runs a `flow-check health` block (it used to require `health =`). The health probe inside `flow check` now seeds first and retries within `healthWait`, the same probe verify runs.
+- A `health =` key plus a `flow-check health` block no longer produce two `health` checks.
+- The drafted mockup checklist item is now `(ui)`-only, so non-UI features no longer have to confirm it.
+- Aborting a plan-stage feature that has a written plan now needs the operator's word (`--confirmed`, or a dialog).
+
+### Removed
+- The unreachable `done` stage. `flow finish` deletes the state, so nothing ever wrote it.
+- Legacy compatibility:
+  - the `project.json` refusal and doctor finding;
+  - the `.current` cleanup;
+  - the `github` / `release.github` alias for `releases`;
+  - `release.*` keys under `## global` (use `## release` / `## pre-release`);
+  - inline `(plugin)` markers in flat `reflections.md` files;
+  - release-done re-reading the manifest for flows approved before the release gate recorded their version.
+- Re-running `flow init` on an existing playbook no longer offers to regenerate it. It always refused for a hand-edited file anyway, and now it prints the doctor's findings.
+- An edit-tool write in a worktree no longer wipes recorded checks on the spot. The worktree fingerprint at verify/release is the single staleness check, and it already catches bash edits.
+- An auto-compaction no longer queues a `reflections.md` item.
+
+### Changed
+- Repeated git, forge and registry probes now go through shared helpers.
+- `flow help` is shorter.
+- The checkout guard sees a branch behind leading flags (`git checkout -f feat/x`) and ignores paths after `--`.
+
 ## [0.73.0] - 2026-11-03
 
 **Back to a simple worktree flow.** 0.67–0.72 grew a worker system (about 1.9k source lines) on top of a flow that was meant to be simple. A real session (`audit-hardening`: 6 h of implement across 9 workers and 4 verify rounds, then a release the flow could not close) showed that machinery costing more than it saved. This release starts again from 0.66.0, keeps the fixes from that range that are not about workers, and adds one small optional worker.
