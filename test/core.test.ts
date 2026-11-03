@@ -72,6 +72,7 @@ import {
 	sessionRunsOlderBuild,
 	changelogVersionsBetween,
 	inScratchDir,
+	mainCheckoutRoot,
 	guessReflectSections,
 	reflectItems,
 	reflectMove,
@@ -609,6 +610,17 @@ test("parseDelegationLedger: run windows parse, everything else is skipped", () 
 	assert.deepEqual(parseDelegationLedger(""), []);
 	assert.deepEqual(parseDelegationLedger("\n\nnot a ledger line\n[t] run (implement): zzz..yyy 1 commit(s)\n[t] run ():\n"), [], "prose and a short or missing sha range are not windows");
 	assert.deepEqual(parseDelegationLedger(`[t] run: ${a}..${b} 2 commit(s)`), [{ stage: "run", start: a, end: b }], "a line with no stage is still a window, just nobody's implement work");
+});
+
+test("mainCheckoutRoot: git's common dir names the main checkout a worktree borrows its history from", () => {
+	// The pure half of dev-flow's flowRoot: a feature worktree's .dev-flow/ holds only the tracked
+	// playbook, so every guard has to be judged from the checkout the state actually lives in.
+	assert.equal(mainCheckoutRoot("/repo/.dev-flow/x/worktree", "/repo/.git"), "/repo", "a linked worktree resolves to the checkout owning its objects");
+	assert.equal(mainCheckoutRoot("/elsewhere/wt", "/repo/.git"), "/repo", "a worktree parked anywhere off the repo still points home");
+	assert.equal(mainCheckoutRoot("/repo/.dev-flow/x/worktree", "/repo/wt/.git"), "/repo/wt", "a worktree of a worktree resolves to that worktree's own main checkout");
+	assert.equal(mainCheckoutRoot("/repo", "/repo/.git"), null, "a main checkout is its own flow truth: nothing to remap");
+	assert.equal(mainCheckoutRoot("/tmp/scratch", null), null, "no git answer is never a remap");
+	assert.equal(mainCheckoutRoot("/wt", ".git"), null, "a relative answer resolves against cwd and says cwd is the main checkout");
 });
 
 test("delegationErrors: every branch commit falls inside an implement-stage run window", () => {

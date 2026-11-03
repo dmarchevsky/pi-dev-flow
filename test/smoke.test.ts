@@ -510,6 +510,41 @@ test("the verify gate proves the implement work was delegated — inline commits
 	assert.ok(!/delegat/i.test(patchy.content[0].text), "and the gate says nothing about delegation about a mode it exempts");
 });
 
+test("a worker session edits inside its own worktree: the guard resolves the flow truth from the main checkout", async () => {
+	// The blocker the verify worker caught: a flow_stage worker's cwd is the worktree, and a linked
+	// worktree's own tracked .dev-flow/ holds nothing but project.md — the state, the plans and the
+	// ledgers live in the main checkout. Read from the worktree, featureRefs found zero features, so
+	// writeGuard answered "no active flow" and byWorker never got consulted: the worker half of the
+	// implement rule never fired and workers were pushed to authoring through bash.
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo); // the playbook is committed, so the worktree carries the .dev-flow/ copy that makes it initiated
+	await flow(["start", "wtguard"]);
+	mkdirSync(path.join(repo, ".dev-flow", "wtguard", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "wtguard", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]); // implement stage, worktree at .dev-flow/wtguard/worktree (a real linked worktree)
+	const wt = path.join(repo, ".dev-flow", "wtguard", "worktree");
+	const session = (id: string) => ({ ...makeCtx(wt), sessionManager: { getSessionId: () => id, getBranch: () => [] } });
+	const editInWt = (id: string) => pi.handlers.tool_call[0]({ toolName: "write", input: { path: path.join(wt, "src", "app.ts") } }, session(id)) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	markWorkerSession("wt-guard-worker");
+	assert.equal(await editInWt("wt-guard-worker"), undefined, "a REGISTERED worker session writes its own worktree at implement — owner attribution, not no-flow");
+	await flow(["check"]);
+	const st = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "wtguard", "state.json"), "utf8")) as { checks: Record<string, unknown> };
+	assert.ok(st().checks.test, "the recorded tier-1 PASS is there before the worker touches the tree");
+	assert.equal(await editInWt("wt-guard-worker"), undefined, "the worker's edit passes with the records in place");
+	assert.deepEqual(st().checks, {}, "and the worker's edit invalidated them — written through the MAIN checkout's state file, not the worktree's stub .dev-flow/");
+	assert.ok(!existsSync(path.join(wt, ".dev-flow", "wtguard", "state.json")), "nothing was written into the worktree's own .dev-flow/");
+	const driver = await editInWt("wt-guard-driver");
+	assert.match(driver?.reason ?? "", /implement work is delegated/, "the same path from an unregistered session is the delegation refusal");
+	assert.ok(!/no active flow/.test(driver?.reason ?? ""), "a worktree cwd no longer answers 'no active flow'");
+	// the bash half reads the same truth: the branch-discipline rule knows this directory IS the feature worktree
+	const checkout = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/wtguard", timeout: 60 } }, session("wt-guard-driver")) as { block?: boolean; reason?: string } | undefined;
+	assert.equal(checkout, undefined, "checking the feature branch out inside its own worktree is not 'checking it out in the main checkout'");
+});
+
 test("a verify re-run at pre-release answers with the stage, never with a delegation claim", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
