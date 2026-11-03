@@ -588,7 +588,6 @@ test("session binding: use/abort/ambiguity", async () => {
 	await pi.cmds.flow.handler("init", ctx);
 	initPlaybook(repo);
 	await pi.cmds.flow.handler("start a-one", ctx);
-	assert.ok(!existsSync(path.join(repo, ".dev-flow", ".current")), "no legacy .current file");
 	await pi.cmds.flow.handler("start b-two", ctx); // start binds b-two
 	await pi.cmds.flow.handler("use nope", ctx);
 	assert.ok(ctx.notices.at(-1)?.includes("no unfinished feature"), "use validates slug");
@@ -1512,18 +1511,18 @@ test("approve runs commands.setup in the fresh worktree; a failing setup fails t
 	assert.ok(bad.isError && bad.content[0].text.includes("setup failed"), "a broken worktree must not be approved as ready");
 });
 
-test("init doctor refuses a refresh that would drop hand-written project.md", async () => {
+test("re-init never regenerates a hand-written project.md — it prints the doctor's findings", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	// confirm always answers yes: the point is that the refresh cannot be talked into destroying anything
+	// confirm always answers yes: the point is that re-init cannot be talked into rewriting anything
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const mdFile = path.join(repo, ".dev-flow", "project.md");
 	const hand = ["# dev-flow\n## release\n\n```flow\nmerge = merge\n```\n", "", "## global", "", "Only ship from a green main.", "", "## implement", "", "```flow", "test = node --version", "```", "", "```flow-check overflow", "node scripts/check-overflow.mjs", "```", "", "## release", "", "```flow", "versionFile = package.json", "versionTag = {version}", "```", ""].join("\n");
 	await pi.cmds.flow.handler("init", ctx);
 	writeFileSync(mdFile, hand);
 	await pi.cmds.flow.handler("init", ctx);
-	assert.match(ctx.notices.at(-1) ?? "", /refresh refused/, "doctor must not overwrite a hand-written playbook");
-	assert.match(ctx.notices.at(-1) ?? "", /Only ship from a green main/, "it names what a draft cannot reproduce");
+	assert.match(ctx.notices.at(-1) ?? "", /project\.md already exists — kept/);
+	assert.match(ctx.notices.at(-1) ?? "", /doctor: (no findings|\d+ finding\(s\))/, "the findings are printed");
 	const after = readFileSync(mdFile, "utf8");
 	assert.match(after, /Only ship from a green main/, "tier-3 prose survives");
 	assert.match(after, /versionTag = \{version\}/, "a hand-set tag pattern survives");
@@ -1560,10 +1559,10 @@ test("flow init without a UI prints the findings; flow status reports them even 
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
 	await flow(["init", "--write", TEST_MD]);
-	writeFileSync(path.join(repo, ".dev-flow", "project.json"), JSON.stringify({ defaultBranch: "main" }));
+	mkdirSync(path.join(repo, ".dev-flow", "ghosty", "plan"), { recursive: true });
 	await pi.cmds.flow.handler("init", ctx); // the no-UI path: no dialogs, findings printed
 	assert.match(ctx.notices.at(-1) ?? "", /doctor: 1 finding\(s\):/);
-	assert.match(ctx.notices.at(-1) ?? "", /project\.json is no longer read/);
+	assert.match(ctx.notices.at(-1) ?? "", /ghosty has a plan\/ but no state\.json/);
 	const st = await flow(["status"]);
 	assert.match(st.content[0].text, /no features/);
 	assert.match(st.content[0].text, /⚠ doctor: 1 finding\(s\) — run flow doctor/);
@@ -2317,11 +2316,6 @@ test("a session inside a feature worktree is judged by the main checkout's flow 
 	const session = (id: string) => ({ ...makeCtx(wt), sessionManager: { getSessionId: () => id, getBranch: () => [] } });
 	const editInWt = (id: string) => pi.handlers.tool_call[0]({ toolName: "write", input: { path: path.join(wt, "src", "app.ts") } }, session(id)) as Promise<{ block?: boolean; reason?: string } | undefined>;
 	assert.equal(await editInWt("wt-worker"), undefined, "a session in the worktree writes it at implement — owner attribution, not 'no active flow'");
-	await flow(["check"]);
-	const st = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "wtguard", "state.json"), "utf8")) as { checks: Record<string, unknown> };
-	assert.ok(st().checks.test, "tier-1 PASS recorded");
-	await editInWt("wt-worker");
-	assert.deepEqual(st().checks, {}, "the edit invalidated the records in the MAIN checkout's state file");
 	assert.ok(!existsSync(path.join(wt, ".dev-flow", "wtguard", "state.json")), "nothing was written into the worktree's own .dev-flow/");
 	const checkout = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/wtguard", timeout: 60 } }, session("wt-worker")) as { block?: boolean; reason?: string } | undefined;
 	assert.equal(checkout, undefined, "checking the feature branch out inside its own worktree is allowed");

@@ -204,8 +204,6 @@ export const testSeams = { copies: COPIES, skillCore: { value: undefined as stri
 interface Ui {
 	hasUI: boolean;
 	confirm: (title: string, message: string) => Promise<boolean>;
-	/** Multi-line review/edit dialog where the client has one (TUI); undefined elsewhere. */
-	editor?: (title: string, prefill?: string) => Promise<string | undefined>;
 }
 
 const now = () => new Date().toISOString();
@@ -557,12 +555,6 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 	if (existsSync(path.join(root, ".dev-flow", "project.md")) && !(await sh("git ls-files --error-unmatch -- .dev-flow/project.md", root)).ok)
 		out.push('.dev-flow/project.md is not tracked in git — track it: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force: a root .gitignore may exclude .dev-flow/ wholesale; the env prefix is for the installed hook — dev-flow allows a main commit whose only change is the playbook)');
 	return out;
-}
-
-/** Lines the current project.md has that a regenerated draft cannot reproduce. */
-function droppableLines(current: string, draft: string): string[] {
-	const keep = new Set(draft.split("\n").map((l) => l.trim()).filter(Boolean));
-	return current.split("\n").map((l) => l.trim()).filter((l) => l && !keep.has(l));
 }
 
 /** Where feature commands run: the feature worktree once it exists (that is where the
@@ -1154,18 +1146,9 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
 	const errs = releaseGate(state!);
-	let manifestVer: string | null = state!.releaseVersion ?? null;
-	if (cfg.versioning.file && !state!.noVersion && !manifestVer) {
-		// a flow approved before releaseVersion existed: the worktree copy is what the release gate
-		// validated, the main checkout is the last resort (#52)
-		for (const dir of [gateCwd(root, state!), root]) {
-			const p = path.join(dir, cfg.versioning.file);
-			if (!existsSync(p)) continue;
-			manifestVer = parseVersion(cfg.versioning.file, readFileSync(p, "utf8"));
-			if (manifestVer) break;
-		}
-		if (!manifestVer) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — fix the playbook`);
-	}
+	// the version of record is what flow release approved (#52) — never a re-read of a checkout that may be behind
+	const manifestVer: string | null = state!.releaseVersion ?? null;
+	if (cfg.versioning.file && !state!.noVersion && !manifestVer) errs.push(`flow release approved no version (versioning.file "${cfg.versioning.file}" was set after it?) — fix the playbook, or ship this flow unversioned`);
 	const expectedTag = manifestVer ? cfg.versioning.pattern.replace("{version}", manifestVer) : null;
 	const hasOrigin = (await sh("git remote get-url origin", root)).ok;
 	// one round-trip answers both questions about the tag: is it there, and did it leave this laptop (#52)
@@ -1451,7 +1434,6 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 	const notes: string[] = dfExisted ? [] : [`.dev-flow/ created in ${root}`];
 	// self-ignoring folder with one exception: the playbook is the only file under .dev-flow/ that lives in git
 	writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n!project.md\n");
-	rmSync(path.join(dfDir(root), ".current"), { force: true }); // migrate away the legacy repo-global pointer
 	const mdFile = path.join(dfDir(root), "project.md");
 	const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
 	const curBr = await currentBranch(root);
@@ -1461,10 +1443,7 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 	const origin = await sh("git remote get-url origin", root);
 	det.partial.forge = origin.ok && origin.out.trim() ? detectForge(origin.out) : undefined; // confirmed or corrected by the operator during setup; absent = no origin to detect from
 	det.partial.merge = (await mergeHistoryEvidence(root, branch))?.note; // "what do you actually do when a PR merges", read off the log
-	const loaded = loadProject(dfDir(root));
 	const draftFresh = buildDraft(det);
-	const draftRefresh = buildDraft(det, loaded.cfg);
-	const editHint = "to change anything: edit .dev-flow/project.md directly (flow init = doctor revalidates), or from an agent session: flow init --draft → discuss → --write";
 	if (flag("draft")) return { text: existsSync(mdFile) ? readFileSync(mdFile, "utf8") : draftFresh }; // read path: prints content, writes nothing (and offers no deletions)
 	// ghosts: feature dirs whose state.json is gone — inert, invisible to status and guards, and only findable by eye
 	const ghosts = ghostFeatureDirs(root);
@@ -1475,22 +1454,21 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 			notes.push(`removed ${ghosts.length} ghost feature dir(s): ${ghosts.map((g) => g.slice(".dev-flow/".length)).join(", ")}`);
 		} else notes.push(`kept ${ghosts.length} ghost feature dir(s) — inert, remove them whenever you like`);
 	}
-	const writeMd = (text: string): RunResult | null => {
+	/** Validate, back up what was there (the operator's rules are not regenerable), write. */
+	const writeMd = (text: string): { rej: RunResult } | { warn: string[] } => {
 		const parsed = parseProjectMd(text);
-		if (parsed.hard.length) return { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true };
-		// the operator's rules are not regenerable — keep what was there before any overwrite
+		if (parsed.hard.length) return { rej: { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true } };
 		if (existsSync(mdFile)) copyFileSync(mdFile, `${mdFile}.bak`);
 		writeFileSync(mdFile, text.endsWith("\n") ? text : `${text}\n`);
-		return null;
+		return { warn: parsed.warn };
 	};
 	if (flag("write")) {
 		const content = rest[rest.indexOf("--write") + 1];
 		if (!content || content.startsWith("--")) return { text: 'usage: flow init --write "<full project.md content>"', isError: true };
-		const parsed = parseProjectMd(content);
-		const rej = writeMd(content);
-		if (rej) return rej;
+		const w = writeMd(content);
+		if ("rej" in w) return w.rej;
 		notes.push("project.md written (operator-owned playbook)", GIT_TRACK_NOTE);
-		if (parsed.warn.length) notes.push("warnings:", ...parsed.warn.map((w) => `  ${w}`));
+		if (w.warn.length) notes.push("warnings:", ...w.warn.map((x) => `  ${x}`));
 	} else if (!existsSync(mdFile)) {
 		// first init: never write silently. The setup brief lists what detection could not decide;
 		// the agent relays the questions to the operator and applies the answers via flow init --write
@@ -1506,8 +1484,8 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 		if (ui.hasUI) {
 			const ok = await ui.confirm("Write project.md draft?", `${mdDigest(draftFresh)}\n\nWrite this detection draft now? Declining leaves the setup questions open for chat clarification.`);
 			if (ok) {
-				const rej = writeMd(draftFresh);
-				if (rej) return rej;
+				const w = writeMd(draftFresh);
+				if ("rej" in w) return w.rej;
 				notes.push("wrote .dev-flow/project.md from detection — review it and adjust as needed", GIT_TRACK_NOTE);
 			} else notes.push("draft not written — answer the setup questions, then flow init --write");
 		}
@@ -1519,44 +1497,12 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 		copyFileSync(mdFile, `${mdFile}.bak`);
 		writeFileSync(mdFile, draftFresh);
 		notes.push("project.md OVERWRITTEN (--force; previous copy kept as project.md.bak):", ...det.report.map((r) => `  ${r}`), GIT_TRACK_NOTE);
-	} else if (!ui.hasUI) {
-		// the CI/agent path: the doctor's findings have to be printed, not just promised
+	} else {
+		// re-init is the doctor's file-level check: findings are printed, the playbook is never regenerated —
+		// a draft cannot reproduce hand-written prose, items and keys. Edit the file, or flow init --write.
+		const loaded = loadProject(dfDir(root));
 		const findings = doctorFindings(root, loaded.cfg, loaded.md);
-		notes.push("project.md already exists — kept (flow init --force to overwrite, --write to edit)", findings.length ? `doctor: ${findings.length} finding(s):` : "doctor: no findings", ...findings.map((x) => `  ${x}`));
-	} else if (existsSync(mdFile)) {
-		// doctor mode: cheap consistency probes only — never runs project commands
-		const findings = doctorFindings(root, loaded.cfg, loaded.md);
-		findings.push(...(await gitConsistency(root, loaded.cfg)));
-		// a repo that never said how a PR merges gets the evidence next to the finding, so the answer is a choice and not a guess
-		if (!loaded.cfg.release.merge) {
-			const ev = await mergeHistoryEvidence(root, loaded.cfg.defaultBranch);
-			if (ev?.recent) findings.push(`${ev.note} — write it into the playbook: merge = ${ev.recent} under ## release (or let the next flow start ask and write it)`);
-		}
-		for (const it of readReflections(root)) findings.push(`open reflection [${it.section}]: ${it.line.slice(6)}`);
-		if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
-		else {
-			// a refresh is regenerated from detection + config: lines it cannot reproduce are
-			// hand-written (prose, checklist items, hand-set keys) and would vanish silently.
-			const dropped = droppableLines(readFileSync(mdFile, "utf8"), draftRefresh);
-			let edited: string | undefined;
-			if (dropped.length)
-				notes.push(`doctor: refresh refused — a regenerated draft would drop ${dropped.length} hand-written line(s):`, ...dropped.slice(0, 8).map((l) => `  ${l}`), ...(dropped.length > 8 ? [`  …(${dropped.length - 8} more)`] : []));
-			else
-				edited = ui.editor
-					? await ui.editor(`flow init — doctor: ${findings.length} finding(s) — edit & save to apply, Esc skips`, draftRefresh)
-					: (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}
-
-Write refreshed project.md? Your file; cancel writes nothing.
-${mdDigest(draftRefresh)}`))
-						? draftRefresh
-						: undefined;
-			if (edited === undefined) notes.push(dropped.length ? "findings — fix them by editing the file:" : "declined — project.md unchanged", ...findings.map((f) => `  ${f}`));
-			else {
-				const rej = writeMd(edited);
-				if (rej) return rej;
-				notes.push("project.md refreshed — findings addressed:", ...findings.map((f) => `  ${f}`), editHint);
-			}
-		}
+		notes.push("project.md already exists — kept (edit it directly, flow init --write to replace it, --force to redraft)", findings.length ? `doctor: ${findings.length} finding(s):` : "doctor: no findings", ...findings.map((x) => `  ${x}`));
 	}
 	const initCfg = loadProject(dfDir(root)).cfg;
 	if (initCfg.mainHook) {
@@ -2061,7 +2007,6 @@ export default function devFlow(pi: ExtensionAPI) {
 	const uiFrom = (ctx: ExtensionContext): Ui => ({
 		hasUI: ctx.hasUI,
 		confirm: async (title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
-		editor: ctx.mode === "tui" ? (title: string, prefill?: string) => ctx.ui.editor(title, prefill) : undefined,
 	});
 
 	const sessFor = (ctx: ExtensionContext, root: string): Session => {
@@ -2381,15 +2326,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				if (why) return { block: true, reason: why };
 			}
 			const reason = writeGuard({ abs, dfDir: dfDir(guardRoot), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd });
-			if (reason) return { block: true, reason };
-			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
-			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
-			if (owner && (owner.state.stage === "implement" || owner.state.stage === "pre-release") && (Object.keys(owner.state.checks).length || owner.state.confirmations?.implement)) {
-				owner.state.checks = {};
-				delete owner.state.confirmations?.implement;
-				writeState(guardRoot, owner.state);
-			}
-			return undefined;
+			// a stale green is caught where it matters: verify and release fingerprint the worktree (freshenChecks)
+			return reason ? { block: true, reason } : undefined;
 		}
 
 		if (isToolCallEventType("bash", event)) {

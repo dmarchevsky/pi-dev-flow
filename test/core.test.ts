@@ -664,13 +664,11 @@ test("reflectMove re-files an item under the other section", () => {
 	assert.match(merged, /## plugin\n\n- \[ \] same note — s 2\n$/);
 });
 
-test("appendReflection writes the two sections and migrates a legacy flat file", () => {
-	const legacy = "# dev-flow reflections\n\n<!-- note -->\n- [ ] (plugin) old plugin note — x 2025-10-01\n- [ ] (playbook) old playbook note — y 2025-10-01\n";
-	const out = appendReflection(legacy, ["plugin"], "- [ ] new note — z 2025-10-02");
-	assert.match(out, /## playbook\n\n- \[ \] old playbook note — y 2025-10-01\n\n## plugin\n/);
-	assert.match(out, /- \[ \] old plugin note — x 2025-10-01\n- \[ \] new note — z 2025-10-02\n$/);
-	assert.ok(!out.includes("(plugin)"), "inline target markers go away once the section carries them");
-	assert.equal(openChecklistItems(out).length, 3);
+test("appendReflection writes the two sections; an item under no heading files under playbook", () => {
+	const flat = "# dev-flow reflections\n\n<!-- note -->\n- [ ] old note — y 2025-10-01\n";
+	const out = appendReflection(flat, ["plugin"], "- [ ] new note — z 2025-10-02");
+	assert.match(out, /## playbook\n\n- \[ \] old note — y 2025-10-01\n\n## plugin\n\n- \[ \] new note — z 2025-10-02\n$/);
+	assert.equal(openChecklistItems(out).length, 2);
 	const both = appendReflection("", ["playbook", "plugin"], "- [ ] both — z 2025-10-02");
 	assert.equal(openChecklistItems(both).length, 2, "a both-sections note is written to each");
 	const noted = "# my notes\n\noperator: triage on Fridays\n\n- [ ] item one\n";

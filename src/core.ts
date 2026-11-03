@@ -1344,7 +1344,6 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	// a brand-new file under a real directory resolves right, and a never-existing one is stable).
 	const abs = realAbs(o.abs);
 	const dfDir = realAbs(o.dfDir);
-	if (abs === path.join(dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
 	if (abs === path.join(dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (abs.endsWith("state.json") && abs.includes(dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
 	if (abs.endsWith("claim.json") && abs.includes(dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
@@ -1676,10 +1675,9 @@ export function reflectProtocol(items: ReflectItem[], selfRepo: boolean, facts: 
  * Rewrite reflections.md as a preamble + one section per non-empty bucket, with `line` appended to
  * the end of each named section. Everything above the first item (title, comment, operator notes) is
  * kept verbatim. Below the first item a `## section` heading owns the lines under it, so an existing
- * line never changes section. Legacy flat lines carry their target inline (`- [ ] (plugin) …`,
- * `— to playbook`); that marker buckets them and is then dropped, so an old file migrates on next
- * write. A note already in a section is not written there again — an all-duplicate call returns the
- * content untouched so the caller can say so.
+ * line never changes section; an item under no known heading files under `## playbook` (where the
+ * operator reads it — `flow reflect move` re-files it). A note already in a section is not written
+ * there again — an all-duplicate call returns the content untouched so the caller can say so.
  */
 export function appendReflection(text: string, sections: ReflectSection[], line: string): string {
 	const lines = text.split("\n");
@@ -1704,9 +1702,7 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 			continue;
 		}
 		if (!l.startsWith("- [")) continue;
-		// items above every heading come from a legacy flat file, where the inline marker is the only clue.
-		const key: ReflectSection = section ?? (/\((plugin|doctor)\)/.test(l) || /\bto plugin\b/.test(l) ? "plugin" : "playbook");
-		buckets[key].push(l.replace(/\((plugin|playbook|doctor)\)/, "").replace(/\s*[—-]\s*to\s+(playbook|plugin|doctor)/, "").replace(/\s{2,}/g, " ").trim());
+		buckets[section ?? "playbook"].push(l);
 	}
 	const note = line.trim();
 	const body = reflectionBody(note);
