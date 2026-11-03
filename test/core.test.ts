@@ -779,27 +779,28 @@ test("statusFor: bound flow renders as before; unbound shows only the count", ()
 	assert.deepEqual(statusFor(newState("f", false), 1), { text: "📝 f" }, "no pendingAsk, no glyph — an open flow reads exactly as before");
 });
 
-test("widgetLines: one lean line per flow, → marks the session's bound one (pi-web chip panel)", () => {
-	assert.deepEqual(widgetLines(null, []), [], "no flows, no lines — the caller clears the widget");
+test("widgetLines: one lean line per OTHER flow — the chip label already is the bound one (pi-web chip panel)", () => {
+	assert.deepEqual(widgetLines(null, []), [], "no flows, no lines — a plain `💬 no flows` chip");
 	const a = newState("alpha", false);
 	const b = newState("beta", false);
 	b.stage = "pre-release";
 	assert.deepEqual(
 		widgetLines(null, [a, b]),
-		["  📝 alpha · plan", "  🔍 beta · pre-release"],
-		"unbound: nobody gets the →, stage word spelled out",
+		["📝 alpha · plan", "🔍 beta · pre-release"],
+		"unbound: every open flow, stage word spelled out",
 	);
-	assert.deepEqual(widgetLines(a, [a, b]), ["→ 📝 alpha · plan", "  🔍 beta · pre-release"], "only the bound slug earns the →");
+	assert.deepEqual(widgetLines(a, [a, b]), ["🔍 beta · pre-release"], "bound: its own line is the chip label, not repeated in the panel");
+	assert.deepEqual(widgetLines(a, [a]), ["no other flows open"], "bound and alone: the chip still expands, saying so");
 	b.patch = true;
 	b.yolo = true;
 	b.pendingAsk = "Verified?";
 	assert.deepEqual(
 		widgetLines(null, [b]),
-		["  🔍 beta ⚡ 🎱 💬 · pre-release"],
+		["🔍 beta ⚡ 🎱 💬 · pre-release"],
 		"markers ride exactly as in the footer — one vocabulary, no drift",
 	);
 	b.checks.test = { ok: false, at: "2026-01-01T10:00:00Z" };
-	assert.deepEqual(widgetLines(null, [b]), ["  🔍 beta ⚡ 🎱 💬 · pre-release ⚠️"], "⚠️ rides on the flow's own failing checks");
+	assert.deepEqual(widgetLines(null, [b]), ["🔍 beta ⚡ 🎱 💬 · pre-release ⚠️"], "⚠️ rides on the flow's own failing checks");
 });
 
 test("applyAnswer: dot paths, deletion, empty-object pruning", () => {

@@ -2121,24 +2121,40 @@ function tail(out: string, n = 15): string {
 
 // ------------------------------------------------------------------ extension
 
+/** The pi-web chip's current key: the chip's label IS the widget key, so it changes with the footer text
+ *  and the previous one must be cleared on every repaint. */
+let webChipKey: string | undefined;
+
 /** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
  *  unfinished-flow count, or `💬 no flows` — an initiated repo always carries the footer. An uninitiated
- *  folder gets nothing: the status is cleared. In pi-web the footer text is not clickable, so the same
- *  snapshot also feeds a flow-list widget (a `dev-flow` chip whose panel lists every open flow, one lean
- *  line each). Pure read — rendering never binds or claims anything. */
+ *  folder gets nothing: the status is cleared. In pi-web the footer text is not clickable, so there the
+ *  footer IS a widget: one chip labelled with the footer text whose panel lists every open flow, one lean
+ *  line each (no lines → a plain, non-expandable chip). Pure read — rendering never binds or claims anything. */
 function refreshStatus(ctx: ExtensionContext, root: string): void {
 	if (!ctx.hasUI) return;
+	const web = ctx.mode !== "tui";
+	const setChip = (key: string | undefined, lines?: string[]) => {
+		if (webChipKey !== undefined && webChipKey !== key) ctx.ui.setWidget(webChipKey, undefined);
+		webChipKey = key;
+		if (key !== undefined) ctx.ui.setWidget(key, lines);
+	};
 	if (!initiated(root)) {
 		ctx.ui.setStatus("dev-flow", undefined);
-		if (ctx.mode !== "tui") ctx.ui.setWidget("dev-flow", undefined);
+		if (web) setChip(undefined);
 		return;
 	}
 	const un = unfinishedStates(root);
 	const bound = boundFeature(root, sessionKey(ctx));
-	ctx.ui.setStatus("dev-flow", statusFor(bound, un.length).text);
+	const text = statusFor(bound, un.length).text;
 	// TUI keeps the footer as its only surface: a lines-widget there is an always-present block above the
-	// editor (no click to collapse), which competes with "the footer is the legend". pi-web gets the chip.
-	if (ctx.mode !== "tui") ctx.ui.setWidget("dev-flow", un.length ? widgetLines(bound, un) : undefined);
+	// editor (no click to collapse), which competes with "the footer is the legend". pi-web shows the footer
+	// text once, as the chip itself — a status line beside it would only repeat it.
+	if (!web) {
+		ctx.ui.setStatus("dev-flow", text);
+		return;
+	}
+	ctx.ui.setStatus("dev-flow", undefined);
+	setChip(text, widgetLines(bound, un));
 }
 
 

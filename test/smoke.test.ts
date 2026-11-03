@@ -636,45 +636,50 @@ test("status bar: compact refresh follows the gates", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const statuses: (string | undefined)[] = [];
-	const widgets: (string[] | undefined)[] = [];
-	const ctx = { cwd: repo, hasUI: true, mode: "rpc", notices: [] as string[], ui: { notify: (_m: string) => {}, confirm: async () => true, select: async (_t: string, opts: string[]) => opts.find((o) => o === "keep") ?? opts.find((o) => o === "leave unset") ?? opts.find((o) => o === "(none)") ?? opts[0], input: async () => "", setStatus: (_k: string, t?: string) => statuses.push(t), setWidget: (_k: string, l?: string[]) => widgets.push(l), theme: { fg: (_c: string, s: string) => s } } };
+	// pi-web: the footer IS the widget chip — its key is the footer text, its lines the flow list
+	const chips = new Map<string, string[]>();
+	const chip = (m: Map<string, string[]>) => [...m.entries()].at(-1);
+	const setWidget = (m: Map<string, string[]>) => (k: string, l?: string[]) => { m.delete(k); if (l) m.set(k, l); };
+	const ctx = { cwd: repo, hasUI: true, mode: "rpc", notices: [] as string[], ui: { notify: (_m: string) => {}, confirm: async () => true, select: async (_t: string, opts: string[]) => opts.find((o) => o === "keep") ?? opts.find((o) => o === "leave unset") ?? opts.find((o) => o === "(none)") ?? opts[0], input: async () => "", setStatus: (_k: string, t?: string) => statuses.push(t), setWidget: setWidget(chips), theme: { fg: (_c: string, s: string) => s } } };
 	await pi.cmds.flow.handler("init", ctx);
 	// the interactive init draft has no merge policy yet, so the first start answers it (--merge writes it into the playbook)
 	await pi.cmds.flow.handler("start demo-feature --merge=merge --confirmed", ctx);
-	assert.equal(statuses.at(-1), "📝 demo-feature");
-	// pi-web gets the clickable chip beside the footer: one lean line per open flow, → on the bound one
-	assert.deepEqual(widgets.at(-1), ["→ 📝 demo-feature · plan"], "the widget panel lists the flow the gate just started");
+	assert.equal(statuses.at(-1), undefined, "pi-web carries no separate status line — the chip is the footer");
+	assert.equal(chips.size, 1, "exactly one dev-flow chip: the stale footer key was cleared on repaint");
+	// the chip reads the footer text; its panel lists the OTHER open flows — none yet
+	assert.deepEqual(chip(chips), ["📝 demo-feature", ["no other flows open"]], "the bound flow is the chip label, not repeated in its panel");
 	// a second session that never bound sees only the open-flow count — never the slug
-	const seenB: (string | undefined)[] = [];
-	const b = { ...ctx, sessionManager: { getSessionId: () => "sess-foot-B", getBranch: () => [] as never[] }, ui: { ...ctx.ui, setStatus: (_k: string, t?: string) => seenB.push(t) } };
+	const chipsB = new Map<string, string[]>();
+	const b = { ...ctx, sessionManager: { getSessionId: () => "sess-foot-B", getBranch: () => [] as never[] }, ui: { ...ctx.ui, setWidget: setWidget(chipsB) } };
 	await pi.cmds.flow.handler("status", b);
-	assert.equal(seenB.at(-1), "💬 1 flow open", "unbound footer shows the count, not the slug");
-	assert.deepEqual(widgets.at(-1), ["  📝 demo-feature · plan"], "the chip lists every open flow — the → only follows this session's binding");
+	assert.deepEqual(chip(chipsB), ["💬 1 flow open", ["📝 demo-feature · plan"]], "unbound chip reads the count, not the slug, and lists every open flow");
 });
 
 test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {
 	const pi = makePi();
-	const statusCtx = (repo: string, seen: (string | undefined)[], widgets?: (string[] | undefined)[]) => ({
+	const statusCtx = (repo: string, seen: (string | undefined)[], widgets?: [string, string[] | undefined][]) => ({
 		cwd: repo,
 		hasUI: true,
+		mode: widgets ? "rpc" : "tui",
 		notices: [] as string[],
-		ui: { notify: () => {}, confirm: async () => true, select: async (_t: string, o: string[]) => o[0], input: async () => "", setStatus: (_k: string, t?: string) => seen.push(t), setWidget: (_k: string, l?: string[]) => widgets?.push(l), theme: { fg: (_c: string, s: string) => s } },
+		ui: { notify: () => {}, confirm: async () => true, select: async (_t: string, o: string[]) => o[0], input: async () => "", setStatus: (_k: string, t?: string) => seen.push(t), setWidget: (k: string, l?: string[]) => widgets?.push([k, l]), theme: { fg: (_c: string, s: string) => s } },
 	});
 	// uninitiated: no injection at all, and any stale footer push is cleared
 	const bare = makeRepo();
 	const bareSeen: (string | undefined)[] = [];
-	const bareWidgets: (string[] | undefined)[] = [];
+	const bareWidgets: [string, string[] | undefined][] = [];
 	assert.equal(await pi.handlers.before_agent_start[0]({}, statusCtx(bare, bareSeen, bareWidgets)), undefined, "an uninitiated folder gets no dev-flow message");
 	assert.deepEqual(bareSeen, [undefined], "the footer stays cleared");
-	assert.deepEqual(bareWidgets, [undefined], "and a stale web chip is cleared with it");
+	assert.ok(bareWidgets.every(([, l]) => l === undefined), "and no web chip is shown — a stale one is only ever cleared");
 	// initiated, nothing in flight: the idle line is always there, repainted when a run starts
 	const repo = makeRepo();
 	initPlaybook(repo);
 	const seen: (string | undefined)[] = [];
-	const idleWidgets: (string[] | undefined)[] = [];
-	await pi.cmds.flow.handler("status", statusCtx(repo, seen, idleWidgets));
+	await pi.cmds.flow.handler("status", statusCtx(repo, seen));
 	assert.equal(seen.at(-1), "💬 no flows", "an initiated repo always carries the footer");
-	assert.deepEqual(idleWidgets, [undefined], "no open flows, no chip — the widget hides itself when there is nothing to list");
+	const idleWidgets: [string, string[] | undefined][] = [];
+	await pi.cmds.flow.handler("status", statusCtx(repo, [], idleWidgets));
+	assert.deepEqual(idleWidgets.at(-1), ["💬 no flows", []], "pi-web: the footer chip is always there — with nothing open it has nothing to expand");
 	const inj = await pi.handlers.before_agent_start[0]({}, statusCtx(repo, seen));
 	assert.ok(inj, "the injection runs in an initiated repo");
 	assert.equal(seen.at(-1), "💬 no flows", "run start repaints the footer — the earliest point a web client is certainly listening");
@@ -1392,7 +1397,7 @@ test("pending checkpoint: 💬 rides the footer until the word arrives, and is n
 	const repo = makeRepo();
 	const seen: string[] = [];
 	const ctx = { cwd: repo, hasUI: false, notices: [] as string[], ui: { notify: () => {}, setStatus: (_k: string, s?: string) => seen.push(s ?? ""), theme: { fg: (_c: string, s: string) => s } }, mode: "rpc" };
-	const uiCtx = { ...ctx, hasUI: true, ui: { ...ctx.ui, confirm: async () => true, setWidget: () => {} } };
+	const uiCtx = { ...ctx, hasUI: true, ui: { ...ctx.ui, confirm: async () => true, setWidget: (k: string, l?: string[]) => { if (l) seen.push(k); } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);

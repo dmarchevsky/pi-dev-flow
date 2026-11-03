@@ -4,6 +4,11 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.77.2] - 2026-11-03
+
+### Changed
+- In pi-web the flow list now lives in the footer itself: the `💬 N flows open` (or bound `<glyph> <slug>`) footer is the clickable chip that expands to the per-flow list, instead of a separate `dev-flow` chip beside it. The panel lists only the flows other than the bound one (that one is the chip's label); alone, it reads `no other flows open`. With nothing open it reads `💬 no flows` and has nothing to expand. The terminal footer is unchanged.
+
 ## [0.77.1] - 2026-11-03
 
 ### Changed
