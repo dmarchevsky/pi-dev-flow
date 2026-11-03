@@ -25,7 +25,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
 import { compact, createAgentSession, DefaultResourceLoader, defineTool, getAgentDir, isToolCallEventType, SessionManager, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import {
 	ALLOW_REWRITE,
 	approveGate,
@@ -114,6 +114,8 @@ import {
 	statusJson,
 	subst,
 	sq,
+	featureTmpDir,
+	withTmpDir,
 	tagNotesCommand,
 	validSlug,
 	verifyGate,
@@ -228,9 +230,9 @@ const now = () => new Date().toISOString();
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function sh(command: string, cwd: string, timeoutMs = 15 * 60_000): Promise<{ ok: boolean; out: string }> {
+async function sh(command: string, cwd: string, timeoutMs = 15 * 60_000, env?: Record<string, string>): Promise<{ ok: boolean; out: string }> {
 	try {
-		const { stdout, stderr } = await execAsync(command, { cwd, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 });
+		const { stdout, stderr } = await execAsync(command, { cwd, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, ...(env ? { env: { ...process.env, ...env } } : {}) });
 		return { ok: true, out: `${stdout}\n${stderr}`.trim() };
 	} catch (e) {
 		const err = e as { stdout?: string; stderr?: string; message?: string };
@@ -345,12 +347,12 @@ async function writePlaybookMergePolicy(root: string, style: string): Promise<{ 
  * container start can never pass a single shot, and hand-writing a poll loop into every playbook was
  * the workaround; the gate waits and says how long it tried. Attempts/schedule: core.healthRetry.
  */
-async function runHealthProbe(cmd: string, cwd: string, waitSec: number): Promise<{ ok: boolean; out: string; attempts: number }> {
+async function runHealthProbe(cmd: string, cwd: string, waitSec: number, env?: Record<string, string>): Promise<{ ok: boolean; out: string; attempts: number }> {
 	const { attempts, delayMs } = healthRetry(waitSec);
 	const deadline = Date.now() + waitSec * 1000; // the budget is wall time: a slow probe must not multiply it by its own duration
 	let res = { ok: false, out: "" };
 	for (let i = 1; ; i++) {
-		res = await sh(cmd, cwd);
+		res = await sh(cmd, cwd, undefined, env);
 		if (res.ok || i >= attempts || Date.now() >= deadline) return { ...res, attempts: i };
 		await sleep(delayMs);
 	}
@@ -603,6 +605,14 @@ function gateCwd(root: string, state: FlowState): string {
 	return wt && existsSync(wt) ? wt : root;
 }
 
+/** TMPDIR for the project commands a gate runs: the feature's own scratch dir, removed at finish —
+ *  a test suite's mkdtemp fixtures no longer pile up in the OS temp dir. */
+function featureEnv(root: string, state: FlowState): Record<string, string> {
+	const dir = featureTmpDir(dfDir(root), state.slug);
+	mkdirSync(dir, { recursive: true });
+	return { TMPDIR: dir };
+}
+
 /** Tier-1 checks the gate still has to see green. Entering a stage — and every edit of the worktree —
  * clears the records, so "run flow check first" cost three round trips to say what one could (#84).
  * `health` is left to the post-deploy probe when there is a deploy to prove: probing twice only waits twice. */
@@ -618,7 +628,7 @@ async function runChecks(root: string, state: FlowState, cfg: Config, checks: St
 	const ran: string[] = [];
 	for (const c of checks) {
 		// health is the same probe `flow health` runs: seeded first, retried within healthWait
-		const res = c.name === "health" ? await seededProbe(root, state, cfg, c.cmd) : await sh(c.cmd, gateCwd(root, state));
+		const res = c.name === "health" ? await seededProbe(root, state, cfg, c.cmd) : await sh(c.cmd, gateCwd(root, state), undefined, featureEnv(root, state));
 		if ("seedFail" in res) {
 			lines.push(res.seedFail.text);
 			failed = true;
@@ -643,7 +653,7 @@ const healthRerunsAfterDeploy = (cfg: Config) => !!cfg.commands.dev && !!healthP
  *  deploy probe both do this). Returns an error result on failure, null when seeded or not configured. */
 async function seedStep(root: string, state: FlowState, cfg: Config): Promise<{ text: string; isError: true } | null> {
 	if (!cfg.commands.seedData) return null;
-	const seed = await sh(cfg.commands.seedData, gateCwd(root, state));
+	const seed = await sh(cfg.commands.seedData, gateCwd(root, state), undefined, featureEnv(root, state));
 	state.checks.seedData = { ok: seed.ok, at: now() };
 	writeState(root, state);
 	return seed.ok ? null : { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
@@ -654,7 +664,7 @@ type HealthRun = { ok: boolean; out: string; attempts: number } | { seedFail: Ru
 /** Seed (when configured), then run the health probe within the playbook's wait budget. */
 async function seededProbe(root: string, state: FlowState, cfg: Config, probe: string): Promise<HealthRun> {
 	const seedFail = await seedStep(root, state, cfg);
-	return seedFail ? { seedFail } : runHealthProbe(probe, gateCwd(root, state), cfg.healthWait);
+	return seedFail ? { seedFail } : runHealthProbe(probe, gateCwd(root, state), cfg.healthWait, featureEnv(root, state));
 }
 
 /** seededProbe, recorded and stamped as the `health` check — `flow health` and both verify probes. */
@@ -1055,7 +1065,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		did.push("docs mode: project commands skipped (build/dev/health)");
 	} else {
 		if (cfg.commands.build) {
-			const res = await sh(cfg.commands.build, gateCwd(root, state!));
+			const res = await sh(cfg.commands.build, gateCwd(root, state!), undefined, featureEnv(root, state!));
 			state!.checks.build = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			if (!res.ok) return { text: `build FAILED (${cfg.commands.build}):\n${tail(res.out)}`, isError: true };
@@ -1064,7 +1074,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		// deploy to dev before asking — the operator reviews the running dev app, not a promise
 		const probe = healthProbe(cfg);
 		if (cfg.commands.dev) {
-			const res = await sh(cfg.commands.dev, gateCwd(root, state!));
+			const res = await sh(cfg.commands.dev, gateCwd(root, state!), undefined, featureEnv(root, state!));
 			state!.checks.dev = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev}):\n${tail(res.out)}`, isError: true };
@@ -1992,7 +2002,7 @@ async function gateTest(o: GateCtx): Promise<RunResult> {
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
 	if (!cfg.commands.test) return { text: "no commands.test configured — add `test = <command>` under ## implement in .dev-flow/project.md", isError: true };
-	const res = await sh(cfg.commands.test, gateCwd(root, state!));
+	const res = await sh(cfg.commands.test, gateCwd(root, state!), undefined, featureEnv(root, state!));
 	state!.checks.test = { ok: res.ok, at: now() };
 	await stampChecks(root, state!, ["test"]);
 	writeState(root, state!);
@@ -2068,6 +2078,8 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 		return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
 	}
 	if (sess.slug === target) sess.bind(null);
+	// the scratch dir is the bound session's working junk — it does not outlive the binding
+	rmSync(featureTmpDir(dfDir(root), target), { recursive: true, force: true });
 	if (st?.worktree) { st.aborted = now(); writeState(root, st); } // the doctor skips the removed worktree for stamped states (gh#138)
 	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.aborted ? " (marked aborted — the doctor leaves it alone once you clean the worktree up)" : "") + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
 }
@@ -2656,7 +2668,22 @@ export default function devFlow(pi: ExtensionAPI) {
 		pi.appendEntry("dev-flow-skill", { core: true, stale: true });
 	});
 
+	// A bash call every guard let through runs with TMPDIR in its bound feature's scratch dir
+	// (.dev-flow/<slug>/tmp/): mktemp, os.tmpdir() and test fixtures land there and flow finish removes
+	// them. Prefixed only after the verdict, so no guard ever judges the prefix.
 	pi.on("tool_call", async (event, ctx) => {
+		const verdict = await guardToolCall(event, ctx);
+		if (verdict || !isToolCallEventType("bash", event) || !guardsAreMine() || !initiated(ctx.cwd)) return verdict;
+		const root = await flowRoot(ctx.cwd);
+		const bound = boundFeature(root, sessionKey(ctx));
+		if (!bound) return undefined;
+		const dir = featureTmpDir(dfDir(root), bound.slug);
+		mkdirSync(dir, { recursive: true });
+		event.input.command = withTmpDir(String(event.input.command ?? ""), dir);
+		return undefined;
+	});
+
+	async function guardToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
 		if (!guardsAreMine()) return undefined; // election: only the newest loaded copy judges
 		// pi kills a shell call only when a timeout was passed, and the model omits it in ~75% of
 		// calls (observed hangs: hours). Deterministic class defaults, clamped ceilings — runs for
@@ -2786,7 +2813,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			}
 		}
 		return undefined;
-	});
+	}
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!guardsAreMine()) return undefined;

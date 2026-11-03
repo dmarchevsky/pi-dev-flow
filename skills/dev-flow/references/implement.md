@@ -22,6 +22,9 @@ feature).
    never block verify, they are what the operator sees they are approving.
 2. Write tests as you go (project framework: the `test` key / `flow-check`
    blocks).
+   Throwaway scripts and scratch output go in `$TMPDIR` (or `mktemp`), not a
+   hard-coded `/tmp/...`: in a bound session, and in every command a gate runs,
+   it is `.dev-flow/<slug>/tmp/`, and finish removes it with the feature.
 3. `flow check` runs every tier-1 check (test, health, named `flow-check`
    blocks) and records each against a fingerprint of the worktree; any later
    worktree change makes them stale — verify reruns stale checks itself.

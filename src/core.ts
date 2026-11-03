@@ -1325,6 +1325,18 @@ export function mainCheckoutRoot(cwd: string, commonDir: string | null): string 
 	return main === path.resolve(cwd) ? null : main;
 }
 
+/** A bound feature's scratch dir: every process the flow runs for it gets this as TMPDIR, so throwaways
+ *  and test fixtures land inside `.dev-flow/<slug>/` and `flow finish` removes them with the feature. */
+export function featureTmpDir(dfDir: string, slug: string): string {
+	return path.join(dfDir, slug, "tmp");
+}
+
+/** The agent's shell command with TMPDIR pointed at the feature's scratch dir (newline-prefixed, the
+ *  shape pi's own commandPrefix uses — the command itself stays byte-for-byte what the guards judged). */
+export function withTmpDir(command: string, dir: string): string {
+	return `export TMPDIR=${sq(dir)}\n${command}`;
+}
+
 export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
 	const real = realAbs(abs);
 	if (repoRoot) {
@@ -1382,7 +1394,7 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	}
 	if (bound) {
 		if (bound.state.stage === "implement" || bound.state.stage === "pre-release")
-			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout; a throwaway script goes outside the repo (under $TMPDIR)`;
+			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout; a throwaway script goes in $TMPDIR (.dev-flow/${o.boundSlug}/tmp/, removed at finish)`;
 		return null; // release: release chores may touch the main checkout
 	}
 	if (!o.features.length) return "no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature";

@@ -43,8 +43,8 @@ unmerged. `flow finish [slug]`:
   through `flow abort` instead;
 - requires the main checkout **clean and pushed** — an uncommitted changelog or
   a local-only release commit is exactly what it protects against;
-- removes the worktree and branch, then deletes `.dev-flow/<slug>/` and
-  unbinds the session. A feature branch still on `origin` is deleted **only on
+- removes the worktree and branch, then deletes `.dev-flow/<slug>/` (its
+  `tmp/` scratch dir included) and unbinds the session. A feature branch still on `origin` is deleted **only on
   proof it was merged** — ancestor of `origin/<default>`, or a merged PR via gh
   or glab (what a squash leaves behind); otherwise kept with a note. Uncommitted worktree edits block
   finish; commits that never reached the default branch are read against the playbook's `merge` policy —
