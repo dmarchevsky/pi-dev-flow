@@ -384,6 +384,16 @@ test("parsePushRefs: what does each push actually write", () => {
 	assert.deepEqual(parsePushRefs([["origin", "v1.0", "v1.1"]]), [{ kind: "branch", name: "v1.0" }, { kind: "branch", name: "v1.1" }]);
 });
 
+test("stateTamper: the delegation ledger is state too — the bash half of the same rule", () => {
+	// writeGuard refuses the ledger to the edit/write tools; a `echo >>` around it would leave the
+	// honest session guarded and every other one free, so the ledger rides with state.json here.
+	assert.ok(stateTamper("echo x >> .dev-flow/b/stage-sessions/delegations.log"), "appending a hand-made window is a forgery, not a write to a log");
+	assert.ok(stateTamper("echo x > /repo/.dev-flow/b/stage-sessions/delegations.log"), "also at an absolute path");
+	assert.ok(stateTamper("rm .dev-flow/b/stage-sessions/delegations.log"), "deleting the proof is tampering with it");
+	assert.equal(stateTamper("cat .dev-flow/b/stage-sessions/delegations.log"), false, "reading the ledger is what flow status does");
+	assert.equal(stateTamper("git add .dev-flow/b/stage-sessions/delegations.log"), false, "git is not a write to the file it names");
+});
+
 test("stateTamper catches direct state.json writes", () => {
 	assert.ok(stateTamper("echo x > .dev-flow/f/state.json"));
 	assert.ok(stateTamper("rm .dev-flow/f/state.json"));

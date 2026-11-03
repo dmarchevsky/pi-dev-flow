@@ -885,11 +885,14 @@ export function parsePushRefs(pushes: string[][]): PushRef[] {
 	return out;
 }
 
-/** Flow control files by full path — state.json and claim.json — or a bare name when the command
- *  also touches `.dev-flow` (that is how `cd .dev-flow/<slug> && mv state.json …` reaches it).
- *  The claim is the live-session lock: deleting it is as much theft as forging a stage. */
-const STATE_PATH = /(^|[\s'"\/])(?:state|claim)\.json$/;
-const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:state|claim)\.json$/;
+/** Flow control files by full path — state.json, claim.json and the delegation ledger — or a bare
+ *  name when the command also touches `.dev-flow` (that is how `cd .dev-flow/<slug> && mv state.json …`
+ *  reaches it). The claim is the live-session lock: deleting it is as much theft as forging a stage.
+ *  `delegations.log` joins the two because the verify gate reads it as proof of WHO worked the stage:
+ *  refusing it to the edit/write tools only while `echo >>` still reaches it would guard the honest
+ *  session and none other (writeGuard is the same rule for the other half of the tool surface). */
+const STATE_PATH = /(^|[\s'"\/])(?:(?:state|claim)\.json|delegations\.log)$/;
+const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:(?:state|claim)\.json|delegations\.log)$/;
 const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
 const DF_ANYWHERE = /\.dev-flow\b/;
 /** The `.dev-flow/` folder itself or one feature directory under it — deleting either destroys the flow
