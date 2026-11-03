@@ -214,7 +214,7 @@ While a feature is active, every tool call passes a guard:
   sanctioned overwrite keeps a `.bak`;
 - your own `deny` / `confirm` / `protect` / `forbid` rules run on every command and path, ahead of
   dev-flow's verdicts, with the reason you wrote;
-- a shell call must state its own timeout, and a bash command named `flow` is refused (there is no
+- a shell call with no timeout gets its class default armed silently, and a bash command named `flow` is refused (there is no
   CLI — gates live in the session).
 
 → [Guardrails](docs/guardrails.md) — the full list, and [what this is *not*](docs/guardrails.md#limitations-deliberate-v1).

@@ -103,8 +103,8 @@ export interface Config {
 	healthWait: number;
 	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string; merge?: MergeStyle | "any" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
-	/** `require` (default): a shell call must carry its own visible timeout — the injected class
-	 *  default is armed silently and never shows in the transcript. `inject`: arm it silently. */
+	/** `inject` (default): the class default timeout is armed silently on every shell call.
+	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
 	bashTimeout: "require" | "inject";
 	/** Operator safety rules from the project.md flow-guard block — stage-independent. */
 	guard: GuardRules;
@@ -124,7 +124,7 @@ export const DEFAULTS: Config = {
 	healthWait: 30,
 	release: { review: "/flow-review", changelog: "CHANGELOG.md", releases: true },
 	mainHook: true,
-	bashTimeout: "require",
+	bashTimeout: "inject",
 	guard: { deny: [], confirm: [], protect: [], forbid: [] },
 };
 

@@ -101,8 +101,8 @@ here if your project wants that (per-sprint grouping, issue numbers, a strict Ke
 vocabulary).
 
 `## global` holds
-`defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = require`
-(default: every shell call must state its own timeout) `| inject`, `release.review`,
+`defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = inject`
+(default: the class timeout is armed silently on every shell call) `| require` (refuse calls that do not state one), `release.review`,
 `release.changelog` (default `CHANGELOG.md`; set it empty to opt out), `release.releases` and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
 `dev`. Of those, `setup` runs once inside a freshly created worktree at `approve` (where `cp .env` +
 `npm install` belong — a failing setup fails the gate), and `run` is advisory: the agent starts the app

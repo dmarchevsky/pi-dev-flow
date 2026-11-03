@@ -27,7 +27,7 @@ export interface ParsedMd {
 const KEYMAP: Record<string, Record<string, string>> = {
 	global: {
 		defaultBranch: "defaultBranch",
-		bashTimeout: "bashTimeout", // require (default) | inject — must a shell call state its own timeout?
+		bashTimeout: "bashTimeout", // inject (default) | require — must a shell call state its own timeout?
 		branchPattern: "branchPattern",
 		worktreeDir: "worktreeDir",
 		mainHook: "mainHook",
@@ -160,7 +160,7 @@ export function parseProjectMd(text: string): ParsedMd {
 						if (mapped === "release.releases" && m[1].endsWith("github")) p.warn.push(`${where}: key "${m[1]}" is renamed "releases" — rename it`);
 						// the only enum-valued key: a junk mode must not silently mean "block every shell call"
 						if (m[1] === "bashTimeout" && !/^(require|inject)$/i.test(m[2].trim())) {
-							p.warn.push(`${where}: bashTimeout = "${m[2]}" — expected require or inject, keeping require`);
+							p.warn.push(`${where}: bashTimeout = "${m[2]}" — expected require or inject, keeping inject`);
 							return;
 						}
 						// merge is the other enum: a typo here must not quietly mean "no policy" and drop the teeth

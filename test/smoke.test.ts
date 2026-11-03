@@ -2086,7 +2086,7 @@ test("turn_end compaction check survives a broken compaction setting", async () 
 	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, c); // must not reject
 });
 
-test("shell calls must state their timeout only in initiated repos; bashTimeout = inject restores the silent arming", async () => {
+test("bare shell calls run with the class default armed silently; bashTimeout = require opts into the refusal", async () => {
 	// one bash tool_call against a repo: the verdict plus the input the handler may have armed
 	const run = async (cwd: string, command: string, timeout?: number) => {
 		const pi = makePi();
@@ -2107,17 +2107,17 @@ test("shell calls must state their timeout only in initiated repos; bashTimeout 
 	const noMd = makeRepo();
 	mkdirSync(path.join(noMd, ".dev-flow"), { recursive: true });
 	assert.equal((await run(noMd, "git status")).verdict, undefined, "a stray .dev-flow/ without project.md keeps the folder dormant");
-	// 2. a playbook with no bashTimeout key: require is the default
-	const plain = init(makeRepo(), TEST_MD);
-	await plain.seed;
-	assert.match(((await run(plain.ctx.cwd, "git status")).verdict as { reason: string }).reason, /class default here is 30s/, "no key means the model must state it");
-	// 3. the same playbook opting back to inject: the call runs and the default is armed silently
-	const inj = init(makeRepo(), TEST_MD.replace("## implement", "## global\n```flow\nbashTimeout = inject\n```\n\n## implement"));
+	// 2. a playbook with no bashTimeout key: inject is the default — the bare call runs, the default is armed silently
+	const inj = init(makeRepo(), TEST_MD);
 	await inj.seed;
-	assert.equal(await inj.pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git status" } }, inj.ctx), undefined, "inject: the bare call runs");
+	assert.equal(await inj.pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git status" } }, inj.ctx), undefined, "no key: the bare call runs, no refusal turn wasted");
 	const armed = { command: "git status" } as { command: string; timeout?: number };
 	await inj.pi.handlers.tool_call[0]({ toolName: "bash", input: armed }, inj.ctx);
 	assert.equal(armed.timeout, 30, "and the class default lands on the call input — that is what arms pi\u0027s kill timer");
+	// 3. a playbook opting into require: the bare call is refused with its class value
+	const req = init(makeRepo(), TEST_MD.replace("## implement", "## global\n```flow\nbashTimeout = require\n```\n\n## implement"));
+	await req.seed;
+	assert.match(((await run(req.ctx.cwd, "git status")).verdict as { reason: string }).reason, /class default here is 30s/, "require: the model must state it");
 });
 
 test("a second copy of the package adds no second [dev-flow] line", async () => {

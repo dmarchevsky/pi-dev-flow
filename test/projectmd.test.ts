@@ -304,12 +304,12 @@ test("ghostFeatureDirs: a plan/ with no flow state is a ghost, everything else i
 	assert.deepEqual(ghostFeatureDirs(mkdtempSync(path.join(tmpdir(), "nodf-"))), [], "no .dev-flow at all, no ghosts");
 });
 
-test("bashTimeout knob: inject opts out, junk keeps the blocking default", () => {
-	assert.equal(mdToConfig(parseProjectMd("## global\n```flow\nbashTimeout = inject\n```\n")).bashTimeout, "inject");
-	assert.equal(mdToConfig(parseProjectMd("## global\n```flow\ndefaultBranch = main\n```\n")).bashTimeout, "require", "no key means the model must state its timeout");
+test("bashTimeout knob: require opts into the refusal, junk keeps the silent default", () => {
+	assert.equal(mdToConfig(parseProjectMd("## global\n```flow\nbashTimeout = require\n```\n")).bashTimeout, "require");
+	assert.equal(mdToConfig(parseProjectMd("## global\n```flow\ndefaultBranch = main\n```\n")).bashTimeout, "inject", "no key means the default timeout is armed silently — no refusal");
 	const junk = parseProjectMd("## global\n```flow\nbashTimeout = maybe\n```\n");
 	assert.ok(junk.warn.some((w) => w.includes('bashTimeout = "maybe"')), "a junk mode is reported, not silently obeyed");
-	assert.equal(mdToConfig(junk).bashTimeout, "require", "and the safe default stands");
+	assert.equal(mdToConfig(junk).bashTimeout, "inject", "and the default stands");
 	assert.match(mdDigest("## global\n```flow\nbashTimeout = inject\n```\n"), /shell-call timeout mode/, "the init digest names the knob");
 });
 
