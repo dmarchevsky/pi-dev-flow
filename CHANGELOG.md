@@ -4,6 +4,11 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.77.1] - 2026-11-03
+
+### Changed
+- The implement stage spells out when to hand a slice to a `flow_stage` worker and when to stay inline: delegate a slice that is in the plan, provable by `flow check`, needs no operator input and is big enough (≈4+ files or heavy reading) to crowd the driver's context; keep small fixes, mid-debug work, operator-judged work, exploration and final integration inline. Plus how to run workers (one slice at a time, read each diff, review before Verified?). Still advisory: no gate asks who wrote a commit.
+
 ## [0.77.0] - 2026-11-03
 
 **The finish reflection is done by a separate reviewer, and plugin feedback goes upstream.** The driving agent used to review its own session inline (biased, and blind to its workers' transcripts), wrote findings straight into the project's `reflections.md` — dev-flow complaints included — and reminded the operator about open reflections on every turn.
