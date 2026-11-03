@@ -47,6 +47,7 @@ export interface FlowState {
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
 	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
 	pendingAsk?: string; // the checkpoint word a gate asked for and has not been given ("Approve?", "Verified?", …) — presentation only (💬 in the footer), it never gates
+	reflectedAt?: string; // a flow_stage reflect worker reported for this flow — finish names a missing one (advisory, never a block)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
@@ -1505,15 +1506,21 @@ export function reflectionLine(note: string, slug: string | null, date: string):
 }
 
 export const REFLECT_HEADER =
-	"# dev-flow reflections\n\n<!-- Suggestions queued by the agent; the operator decides. Fold playbook items in via flow init --write, file plugin items as issues; check off when handled. -->\n";
+	"# dev-flow reflections\n\n<!-- This project's queue, filed by the agent; the operator decides. ## playbook = fix in project.md (docs flow), ## code = fix in code (patch flow). dev-flow plugin feedback never lands here — it is filed as a GitHub issue upstream. Check off when handled. -->\n";
 
-/** The two reflections.md sections, in document order. */
-export const REFLECT_SECTIONS = ["playbook", "plugin"] as const;
+/** The sections a note can be written to, in document order: `playbook` — the fix lives only in
+ *  project.md (docs flow); `code` — the fix touches project code, maybe the playbook too (patch flow).
+ *  Plugin feedback has no section: it is filed as an upstream GitHub issue, never kept locally. */
+export const REFLECT_SECTIONS = ["playbook", "code"] as const;
 export type ReflectSection = (typeof REFLECT_SECTIONS)[number];
+/** `## plugin` from before plugin notes went upstream: still read (and flagged), never written to. */
+const LEGACY_SECTIONS = ["plugin"] as const;
+type KnownSection = ReflectSection | (typeof LEGACY_SECTIONS)[number];
+const KNOWN_SECTIONS: readonly KnownSection[] = [...REFLECT_SECTIONS, ...LEGACY_SECTIONS];
 
 /** One matcher for the section headings: the writer, the tidy and the reader share it, so a heading
  *  one of them accepts cannot be invisible to another. */
-const REFLECT_HEADING = new RegExp(`^##\\s*(${REFLECT_SECTIONS.join("|")})\\s*$`, "i");
+const REFLECT_HEADING = new RegExp(`^##\\s*(${KNOWN_SECTIONS.join("|")})\\s*$`, "i");
 /** Any `## …` line claims the items under it — one that names no section leaves them unfiled, so the
  *  reader (and doctor) can say so instead of inheriting whichever heading came before. */
 const ANY_HEADING = /^##/;
@@ -1521,8 +1528,8 @@ const ANY_HEADING = /^##/;
 /** An open reflections.md item together with the section that owns it. The heading is the record of
  *  where a note was filed; the keyword guess is made once, when the note is queued. */
 export interface ReflectItem {
-	/** the `## section` the line sits under; "unfiled" = above every heading or under an unknown one */
-	section: ReflectSection | "unfiled";
+	/** the `## section` the line sits under; "plugin" = legacy heading (belongs on GitHub); "unfiled" = above every heading or under an unknown one */
+	section: KnownSection | "unfiled";
 	/** the verbatim `- [ ] …` line, trimmed */
 	line: string;
 	/** the note without checkbox and without the ` — attribution` tail */
@@ -1534,12 +1541,12 @@ export interface ReflectItem {
  *  silently inheriting whichever bucket came before them. */
 export function reflectItems(text: string): ReflectItem[] {
 	const out: ReflectItem[] = [];
-	let section: ReflectSection | "unfiled" = "unfiled";
+	let section: KnownSection | "unfiled" = "unfiled";
 	for (const raw of text.split("\n")) {
 		const l = raw.trim();
 		if (ANY_HEADING.test(l)) {
 			const h = REFLECT_HEADING.exec(l);
-			section = h ? (h[1].toLowerCase() as ReflectSection) : "unfiled";
+			section = h ? (h[1].toLowerCase() as KnownSection) : "unfiled";
 			continue;
 		}
 		if (!isOpenItem(l)) continue;
@@ -1551,6 +1558,8 @@ export function reflectItems(text: string): ReflectItem[] {
 /** Open items the file does not place in a known section — doctor names the count so a note that
  *  would once have quietly migrated to `## playbook` on the next write gets moved on purpose. */
 export const reflectUnfiledCount = (text: string) => reflectItems(text).filter((i) => i.section === "unfiled").length;
+/** Open items still under the legacy `## plugin` heading — doctor and list ask for each to be filed upstream. */
+export const reflectLegacyPluginCount = (text: string) => reflectItems(text).filter((i) => i.section === "plugin").length;
 
 // The classifier decides where a note being queued LANDS — nothing re-derives it afterwards.
 // Signals are ranked. A note that names dev-flow's own surface is a plugin issue, and its commands
@@ -1566,15 +1575,18 @@ const PLAYBOOK_STRONG = /project\.md|playbook|checklist|defaultBranch|merge poli
 const PLUGIN_WEAK = /\b(plugin|extension|dev-flow|tool|session|compact\w*|hook|status bar)\b/i;
 const PLAYBOOK_WEAK = /\b(playbook|checklist|versioning|prose|setup|docs?|readme)\b/i;
 
+/** Where a note belongs: one of this project's sections, or `plugin` — dev-flow itself, filed upstream. */
+export type ReflectTarget = ReflectSection | "plugin";
+
 export interface ReflectGuess {
-	sections: ReflectSection[];
+	target: ReflectTarget;
 	/** why the note landed there — printed, so a wrong guess is visible at the moment it is filed */
 	why: string;
 }
 
-/** Where a fresh note lands: ONE primary home. Writing a both-shaped note to both sections made the
- *  operator check the same issue off twice while only the plugin half ever got a route. A strong
- *  plugin signal wins; otherwise the playbook, where the operator reads it and can move it. */
+/** Where a fresh note lands: ONE home. A strong plugin signal wins (it goes upstream, not into the
+ *  file); otherwise the playbook, where the operator reads it and can move it. `code` is never a
+ *  guess — the agent states it with --code. */
 export function guessReflectSections(note: string): ReflectGuess {
 	// never classify the ` — <slug> <date>` tail: slugs are made of "guard", "release", "versioning"
 	const body = reflectionBody(note);
@@ -1584,36 +1596,58 @@ export function guessReflectSections(note: string): ReflectGuess {
 	const hits = [...body.matchAll(PLUGIN_STRONG_ALL)]
 		.map((m) => m[0].trim())
 		.filter((h) => !(qualified && /gates?|guards?/i.test(h)));
-	if (hits.length) return { sections: ["plugin"], why: `"${hits[0]}" names dev-flow itself` };
+	if (hits.length) return { target: "plugin", why: `"${hits[0]}" names dev-flow itself` };
 	const plug = PLUGIN_WEAK.test(body);
 	const playStrong = PLAYBOOK_STRONG.test(body);
 	const play = playStrong || PLAYBOOK_WEAK.test(body);
-	if (plug && !play) return { sections: ["plugin"], why: "plugin wording" };
-	if (play) return { sections: ["playbook"], why: playStrong ? "playbook or project wording" : "playbook wording" };
-	return { sections: ["playbook"], why: "nothing plugin-shaped in the note — if it is a dev-flow bug: flow reflect move <n> --plugin" };
+	if (plug && !play) return { target: "plugin", why: "plugin wording" };
+	if (play) return { target: "playbook", why: playStrong ? "playbook or project wording" : "playbook wording" };
+	return { target: "playbook", why: "nothing plugin-shaped in the note — a code fix: flow reflect move <n> --code; a dev-flow bug: file it upstream (flow reflect --plugin)" };
+}
+
+/** How a plugin note is filed: never into reflections.md — search the upstream tracker, then open an
+ *  issue whose body ends in the `— reflection from` tail the fold matches on. dev-flow runs nothing
+ *  itself; the agent runs these on the operator's fold answer. */
+export function pluginIssueRecipe(note: string, upstream: string, slug: string | null, date: string): string[] {
+	const title = reflectionBody(note).replace(/"/g, "'");
+	const tail = `— reflection from ${slug ? `${slug} ` : ""}${date}`;
+	if (!upstream)
+		return [
+			`plugin note — not written to reflections.md (dev-flow feedback is filed upstream, never kept in a project): "${title}"`,
+			"upstream repo unknown — ask the operator for the dev-flow repo, then file a GitHub issue with a detailed description, session evidence and a suggested fix,",
+			`ending the body with '${tail}'.`,
+		];
+	return [
+		`plugin note — not written to reflections.md (dev-flow feedback is filed upstream, never kept in a project): "${title}"`,
+		`1. dedupe: gh issue list --repo ${upstream} --state all --search "<keywords>" — an issue the author already answered (fixed in v… / won't-fix) is reported back, never re-filed.`,
+		`2. no match: gh issue create --repo ${upstream} --title "${title}" --body "<what happened, session evidence, suggested fix>\n\n${tail}"`,
+		"3. report the issue URL to the operator. No gh / offline: hand the operator the title and body to file by hand.",
+	];
 }
 
 /** Where a fix must be implemented: every fix runs through a flow whose gates confirm it —
- *  playbook-only change → docs flow; code in the dev-flow repo → patch/normal flow;
- *  plugin feedback in someone else's repo → upstream issue (dev-flow files nothing itself). */
+ *  playbook-only change → docs flow; code change → patch flow (normal flow when bigger); a legacy
+ *  `## plugin` row → upstream issue (or the code route in the dev-flow repo itself). */
 export interface ReflectionRoute {
 	text: string;
-	sections: ReflectSection[];
+	sections: (KnownSection | "unfiled")[];
 	mode: "docs" | "code" | "upstream";
 	route: string;
 }
 
+const DOCS_ROUTE = "docs flow (flow start fold-<topic> --docs --confirmed) — project.md edits only pass its worktree";
+const CODE_ROUTE = "patch flow (flow start fix-<topic> --patch --confirmed), normal flow when bigger";
+
 export function reflectionRoutes(items: ReflectItem[], selfRepo: boolean): ReflectionRoute[] {
 	return items.map((it) => {
 		const text = it.line.replace(/^-\s*\[[ xX]\]\s*/, "").trim();
-		// the heading the item lives under IS the filing; a both-flagged note sits under both headings
-		// and therefore yields one item per section, each with its own route.
-		const sections: ReflectSection[] = it.section === "unfiled" ? ["playbook"] : [it.section];
-		if (sections.includes("plugin"))
+		const sections = [it.section];
+		if (it.section === "code") return { text, sections, mode: "code" as const, route: CODE_ROUTE };
+		if (it.section === "plugin")
 			return selfRepo
-				? { text, sections, mode: "code" as const, route: "patch flow for a small fix (flow start fix-<topic> --patch --confirmed), normal flow when bigger" }
-				: { text, sections, mode: "upstream" as const, route: "file an issue against pi-dev-flow upstream (manual — dev-flow files nothing itself); copy the item text there" };
-		return { text, sections, mode: "docs", route: "docs flow (flow start fold-<topic> --docs --confirmed) — project.md edits only pass its worktree" };
+				? { text, sections, mode: "code" as const, route: `${CODE_ROUTE} — legacy ## plugin row: flow reflect move <n> --code files it where it belongs` }
+				: { text, sections, mode: "upstream" as const, route: "legacy ## plugin row — belongs on GitHub, not here: file it upstream (flow reflect --plugin \"<note>\" prints the recipe), then check it off '— filed: gh#NNN'" };
+		return { text, sections, mode: "docs" as const, route: DOCS_ROUTE };
 	});
 }
 
@@ -1640,40 +1674,53 @@ export function reflectMove(text: string, n: number, section: ReflectSection): s
  *  the plugin has no LLM; the agent investigates, the gates confirm, the flow implements. */
 export function investigationBrief(note: string, selfRepo: boolean): string[] {
 	const guess = guessReflectSections(note);
-	const [route] = reflectionRoutes([{ section: guess.sections[0], line: `- [ ] ${note.trim()}`, body: note.trim() }], selfRepo);
+	const target = guess.target === "plugin" ? (selfRepo ? "code" : "plugin") : guess.target;
+	const route =
+		target === "plugin"
+			? "file a GitHub issue upstream (flow reflect --plugin \"<note>\" prints the recipe) — plugin notes never go into reflections.md"
+			: target === "code"
+				? CODE_ROUTE
+				: DOCS_ROUTE;
 	return [
-		`investigate: "${route.text}"`,
+		`investigate: "${note.trim()}"`,
 		"read first: .dev-flow/project.md, flow doctor findings, and whatever files the note names.",
-		`if it is real it belongs in ## ${route.sections[0]} (${guess.why})`,
-		`fix routing: ${route.route}`,
+		target === "plugin" ? `if it is real it is dev-flow feedback (${guess.why}) — an upstream issue, not a local row` : `if it is real it belongs in ## ${target} (${guess.why})`,
+		`fix routing: ${route}`,
 		"the note is not implemented by doctor — propose the fix to the operator first; only after they confirm, open the routed flow; its gates carry the confirmation.",
 	];
 }
 
-/** Bare `flow reflect`: the full session-reflection protocol for the agent (the plugin has no LLM —
- *  the agent reviews the session log, re-checks open items against shipped fixes, dedupes new
- *  findings and puts the fix decision to the operator). Writes nothing, runs no network calls. */
-export function reflectProtocol(items: ReflectItem[], selfRepo: boolean, facts: { version: string | null; upstream: string; closed?: number; ghFold?: { repo: string; open: number; similar: number } }): string[] {
+/** Bare `flow reflect`: the session-reflection protocol for the agent (the plugin has no LLM). Bound to
+ *  a flow, the review itself is delegated to a fresh reflect worker (flow_stage op "reflect") that reads
+ *  the driver's and every worker's transcript; unbound, the agent runs the review inline. Either way the
+ *  operator decides fold or drop per finding. Writes nothing, runs no network calls. */
+export function reflectProtocol(
+	items: ReflectItem[],
+	selfRepo: boolean,
+	facts: { version: string | null; upstream: string; tidy?: string | null; fix?: string | null; bound?: boolean; ghFold?: { repo: string; open: number; similar: number } },
+): string[] {
 	const ver = facts.version ? `dev-flow ${facts.version}` : "dev-flow version unknown";
 	const up = facts.upstream || "<upstream — ask the operator for the dev-flow repo>";
 	const url = facts.upstream ? `https://github.com/${facts.upstream}` : "<upstream-url>";
+	const review = facts.bound
+		? '1. delegate the review: call flow_stage(op: "reflect", note: "<anything the operator said about friction this session>") — a fresh read-only reviewer reads this session\'s transcript and every flow_stage worker transcript, re-checks the open items below and returns a classified list (docs / code / plugin) with a fold-or-drop recommendation per finding. Only if the worker fails, do the review inline: read the full session log — every message, tool call and result.'
+		: "1. review the current session log in full — every message, tool call and result: friction, wrong turns, repeated failures, guards or gates that misfired, playbook drift, optimization candidates. Classify each finding: docs (fix only in project.md), code (fix in this project's code, maybe the playbook too) or plugin (dev-flow itself).";
 	const lines = [
 		`flow reflect — session reflection (${ver}, upstream: ${up})`,
 		"this output is your work instruction: execute these steps now — do not echo the protocol and do not ask to begin.",
-		"queue: .dev-flow/reflections.md — gitignored and yours to edit; check items off as `- [x] … — fixed: <what or where>`; a note filed under the wrong heading is moved with flow reflect move <n> --plugin|--playbook (flow reflect list numbers them).",
-		"1. review the current session log in full — every message, tool call and result: friction, wrong turns, repeated failures, guards or gates that misfired, playbook drift, optimization candidates. Decide each one BEFORE queueing — you know what the note is about, so say it: flow reflect --plugin \"<note>\" for a dev-flow bug, --playbook for this project's playbook; a note queued without a flag is filed on a keyword guess and the printed line tells you which.",
-		`2. re-check every open item below: already handled by the current playbook (.dev-flow/project.md) or obsolete → check it off with a fixed: note. Possibly fixed in a newer dev-flow: npm view pi-dev-flow version — a newer published version covering the item → recommend the operator update the plugin (pi install npm:pi-dev-flow, then /reload; a git-installed copy updates against its own tags: git ls-remote --tags --sort=-v:refname ${url} | head -1), never update it yourself.`,
-		'3. new findings: dedupe against the open items first — never reflect the same issue twice; queue each real one with flow reflect --plugin|--playbook "<one-line note>", then report to the operator structurally: playbook items vs plugin items, each with its route from the list below.',
-		"4. ask the operator whether to fix the open issues now. If yes:",
-		`   a. plugin items: search upstream first — gh issue list --repo ${up} --state all --search "<keywords>" — an author-addressed match → report the verdict back to the operator (fixed in v… / closed won't-fix + reason), do not re-file; no match → gh issue create --repo ${up} with a detailed description, session evidence and a suggested fix.`,
-		"   b. playbook items: run flow doctor — it reviews each open item and routes it to the docs flow that implements the fix.",
+		"queue: .dev-flow/reflections.md — this project's queue only (## playbook → docs flow, ## code → patch flow); dev-flow plugin feedback is never written there, it becomes a GitHub issue upstream. Gitignored and yours to edit; check items off as `- [x] … — fixed: <what or where>`.",
+		review,
+		`2. re-check every open item below: handled by the current playbook (.dev-flow/project.md) or code, or obsolete → propose checking it off with a fixed: note. dev-flow behaviour possibly fixed in a newer release: npm view pi-dev-flow version — newer → recommend the operator update (pi install npm:pi-dev-flow, then /reload; a git-installed copy: git ls-remote --tags --sort=-v:refname ${url} | head -1), never update it yourself.`,
+		"3. show the operator the findings as one numbered list — per item: the note, its kind (docs / code / plugin), its route (docs flow / patch flow / upstream issue), a duplicate it matches, and your recommendation (fold or drop, with a one-clause reason). Ask fold or drop per item (one answer like 'fold 1,3 drop 2' is fine) and STOP until the operator answers.",
+		"4. apply the answer: fold docs → flow reflect --playbook \"<note>\"; fold code → flow reflect --code \"<note>\"; fold plugin → flow reflect --plugin \"<note>\" prints the upstream recipe (dedupe search, then gh issue create — the fold answer is the operator's confirmation), report the issue URL; drop → nothing is recorded anywhere.",
 	];
 	if (facts.ghFold)
 		lines.push(
-			`upstream fold: ${facts.ghFold.open} open issue(s) on ${facts.ghFold.repo} ride along in flow doctor and flow reflect list — treat them as already filed: never file a finding an open issue covers, resolve upstream items on GitHub (close there, never in reflections.md)${facts.ghFold.similar ? `; ${facts.ghFold.similar} flagged near-duplicate(s) of local items need your verdict before anything is fixed twice` : ""}. When filing an issue for a local item, end the body with '— reflection from <flow-slug> <date>' so future folds match it, then check the item off with '— filed: gh#NNN'.`,
+			`upstream fold: ${facts.ghFold.open} open issue(s) on ${facts.ghFold.repo} ride along in flow doctor and flow reflect list — treat them as already filed: never file a finding an open issue covers, resolve them on GitHub (close there, never in reflections.md)${facts.ghFold.similar ? `; ${facts.ghFold.similar} flagged near-duplicate(s) of local items need your verdict before anything is fixed twice` : ""}.`,
 		);
-	if (facts.closed) lines.push(`${reflectionsTidyHint(facts.closed)} — check an item off only when it is handled; tidy once the checked-off pile grows.`);
-	if (!items.length) lines.push("open items: none — steps 1 and 3 still apply.");
+	if (facts.fix) lines.push(`${facts.fix} — offer it to the operator after the fold/drop answer.`);
+	if (facts.tidy) lines.push(`${facts.tidy} — offer it to the operator after the fold/drop answer; check an item off only when it is handled.`);
+	if (!items.length) lines.push("open items: none — steps 1, 3 and 4 still apply.");
 	else {
 		lines.push(`open items (${items.length}):`);
 		for (const r of reflectionRoutes(items, selfRepo)) lines.push(`  [${r.sections.join("+")}] ${r.text}`, `      → ${r.route}`);
@@ -1686,8 +1733,10 @@ export function reflectProtocol(items: ReflectItem[], selfRepo: boolean, facts: 
  * the end of each named section. Everything above the first item (title, comment, operator notes) is
  * kept verbatim. Below the first item a `## section` heading owns the lines under it, so an existing
  * line never changes section; an item under no known heading files under `## playbook` (where the
- * operator reads it — `flow reflect move` re-files it). A note already in a section is not written
- * there again — an all-duplicate call returns the content untouched so the caller can say so.
+ * operator reads it — `flow reflect move` re-files it). Legacy `## plugin` rows are kept verbatim
+ * (last, so they read as the leftover they are) but nothing new is ever written there. A note already
+ * in a section is not written there again — an all-duplicate call returns the content untouched so the
+ * caller can say so.
  */
 export function appendReflection(text: string, sections: ReflectSection[], line: string): string {
 	const lines = text.split("\n");
@@ -1699,8 +1748,8 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 		.join("\n")
 		.replace(/\n{3,}/g, "\n\n")
 		.trim();
-	const buckets = Object.fromEntries(REFLECT_SECTIONS.map((s) => [s, [] as string[]])) as Record<ReflectSection, string[]>;
-	let section: ReflectSection | null = null;
+	const buckets = Object.fromEntries(KNOWN_SECTIONS.map((s) => [s, [] as string[]])) as Record<KnownSection, string[]>;
+	let section: KnownSection | null = null;
 	for (const raw of firstBody < 0 ? [] : lines.slice(firstBody)) {
 		const l = raw.trim();
 		if (ANY_HEADING.test(l)) {
@@ -1708,7 +1757,7 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 			// a heading is authoritative for the items under it: deriving the bucket from the inline
 			// marker instead moved every marker-less `## plugin` line into `## playbook` on the next write.
 			// an unknown `## …` heading places nothing (it used to inherit the previous section by accident).
-			section = header ? (header[1].toLowerCase() as ReflectSection) : null;
+			section = header ? (header[1].toLowerCase() as KnownSection) : null;
 			continue;
 		}
 		if (!l.startsWith("- [")) continue;
@@ -1718,7 +1767,58 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 	const body = reflectionBody(note);
 	// only open items block a duplicate: a checked-off note may be reported again when it comes back.
 	for (const s of sections) if (!buckets[s].some((l) => l.trim().startsWith("- [ ]") && reflectionBody(l) === body)) buckets[s].push(note);
-	return `${preamble || REFLECT_HEADER.trimEnd()}\n\n` + REFLECT_SECTIONS.filter((s) => buckets[s].length).map((s) => `## ${s}\n\n${buckets[s].join("\n")}\n`).join("\n");
+	return `${preamble || REFLECT_HEADER.trimEnd()}\n\n` + KNOWN_SECTIONS.filter((s) => buckets[s].length).map((s) => `## ${s}\n\n${buckets[s].join("\n")}\n`).join("\n");
+}
+
+/** The `YYYY-MM-DD` an item was filed — the first date in its ` — <slug> <date>` tail (a later
+ *  ` — fixed: …` clause may carry another date; the note itself is never read). */
+const itemDate = (line: string): string | null => {
+	const at = line.indexOf(" — ");
+	return at < 0 ? null : (/\b(\d{4}-\d{2}-\d{2})\b/.exec(line.slice(at))?.[1] ?? null);
+};
+const daysBetween = (from: string, to: string): number => Math.floor((Date.parse(to) - Date.parse(from)) / 86_400_000);
+
+/** Thresholds for the two timing nudges. Mid-feature is the wrong moment for either — they surface
+ *  at finish, between flows, and in doctor. */
+export const REFLECT_NUDGE = { staleDays: 14, docsBatch: 3, tidyClosed: 5, tidyMinClosed: 3, tidyAgeDays: 30 } as const;
+
+/**
+ * When to suggest fixing the open project reflections, and when to suggest the tidy. Pure: the
+ * reflections.md text, today's date, and what the caller knows (`recurred` — open items the reflect
+ * worker saw hit again this session; `between` — no flow bound, the natural moment to start one).
+ * fix fires on: a recurrence (strongest), an item ≥ staleDays old, ≥ docsBatch playbook items (one
+ * docs flow takes them all), or any code item while between flows. tidy fires on: ≥ tidyClosed
+ * closed, closed ≥ open with ≥ tidyMinClosed closed, or a closed item filed ≥ tidyAgeDays ago.
+ */
+export function reflectionNudges(text: string, today: string, opts: { recurred?: number; between?: boolean } = {}): { fix: string | null; tidy: string | null } {
+	const open = reflectItems(text).filter((i) => i.section !== "plugin");
+	const docs = open.filter((i) => i.section === "playbook" || i.section === "unfiled").length;
+	const code = open.filter((i) => i.section === "code").length;
+	const stale = open.filter((i) => {
+		const d = itemDate(i.line);
+		return d !== null && daysBetween(d, today) >= REFLECT_NUDGE.staleDays;
+	}).length;
+	const why: string[] = [];
+	if (opts.recurred) why.push(`${opts.recurred} recurred this session`);
+	if (stale) why.push(`${stale} open ≥ ${REFLECT_NUDGE.staleDays} days`);
+	if (docs >= REFLECT_NUDGE.docsBatch) why.push(`${docs} playbook items batch into one docs flow`);
+	if (code && opts.between) why.push("between flows");
+	let fix: string | null = null;
+	if (open.length && why.length) {
+		const split = [docs ? `${docs} playbook item(s) → one docs flow (flow start fold-<topic> --docs --confirmed)` : "", code ? `${code} code item(s) → patch flow (flow start fix-<topic> --patch --confirmed)` : ""].filter(Boolean).join("; ");
+		fix = `⚑ fix the open reflections now? (${why.join(", ")}) — ${split}`;
+	}
+	const closedLines = text.split("\n").filter(isDoneItem);
+	const closed = closedLines.length;
+	const oldClosed = closedLines.some((l) => {
+		const d = itemDate(l);
+		return d !== null && daysBetween(d, today) >= REFLECT_NUDGE.tidyAgeDays;
+	});
+	const tidy =
+		closed >= REFLECT_NUDGE.tidyClosed || (closed >= REFLECT_NUDGE.tidyMinClosed && closed >= open.length) || (closed > 0 && oldClosed)
+			? reflectionsTidyHint(closed)
+			: null;
+	return { fix, tidy };
 }
 
 /** Header of roadmap.md — the backlog of future features (gitignored, agent-editable like reflections.md). */
@@ -1923,14 +2023,15 @@ export function applyAnswer(partial: Record<string, unknown>, key: string, value
 
 // ------------------------------------------------------------- stage worker (flow_stage)
 
-export type WorkerOp = "implement" | "review";
+export type WorkerOp = "implement" | "review" | "reflect";
 
 /** Stages where each worker op is legal: implement edits only while the flow is at implement; a review
- *  (read-only, advisory) is useful before verify and again before release. */
-export const WORKER_OP_STAGES: Record<WorkerOp, Stage[]> = { implement: ["implement"], review: ["implement", "pre-release"] };
+ *  (read-only, advisory) is useful before verify and again before release; a reflection (read-only,
+ *  reviews the session transcripts) runs whenever the operator asks — finish is its standard moment. */
+export const WORKER_OP_STAGES: Record<WorkerOp, Stage[]> = { implement: ["implement"], review: ["implement", "pre-release"], reflect: ["plan", "implement", "pre-release", "release"] };
 
 /** Default wall-clock budget per op, in minutes. */
-export const WORKER_BUDGET_MIN: Record<WorkerOp, number> = { implement: 60, review: 30 };
+export const WORKER_BUDGET_MIN: Record<WorkerOp, number> = { implement: 60, review: 30, reflect: 20 };
 
 /** Times a worker that stopped without its REPORT is told to keep going before the run gives up. */
 export const WORKER_NUDGES = 2;
@@ -1942,13 +2043,13 @@ export const clampBudgetMin = (n: unknown, op: WorkerOp): number => {
 
 /** Why an op is not legal for a feature at this stage, or null. */
 export function workerOpError(op: string, stage: Stage): string | null {
-	if (op !== "implement" && op !== "review") return `unknown op "${op}" — flow_stage ops: implement (a worker edits and commits a slice), review (a fresh read-only reviewer)`;
+	if (op !== "implement" && op !== "review" && op !== "reflect") return `unknown op "${op}" — flow_stage ops: implement (a worker edits and commits a slice), review (a fresh read-only reviewer), reflect (a fresh reviewer of this session's transcripts)`;
 	const ok = WORKER_OP_STAGES[op];
 	return ok.includes(stage) ? null : `op "${op}" runs at ${ok.join(" or ")} — the feature is at ${stage}`;
 }
 
 export interface WorkerBriefInput {
-	op: WorkerOp;
+	op: Exclude<WorkerOp, "reflect">;
 	slug: string;
 	workDir: string;
 	planFile: string;
@@ -2011,3 +2112,155 @@ export function parseWorkerReport(text: string): { found: boolean; body: string;
 
 /** The nudge a worker gets when its turn ended without the REPORT block. */
 export const WORKER_NUDGE = "You stopped before finishing and without the REPORT section. Continue the task now (keep using tools; commit as you go). When it is done — or you are truly blocked — end with the `REPORT` section the contract asks for.";
+
+/** The nudge a read-only worker (review, reflect) gets — it has nothing to commit. */
+export const WORKER_NUDGE_READONLY = "You stopped before finishing and without the REPORT section. Continue the task now (keep using tools; change no files). When it is done — or you are truly blocked — end with the `REPORT` section the contract asks for.";
+
+// ------------------------------------------------------------- reflect worker (flow_stage op "reflect")
+
+/** A pi session file and the `parentSession` its header names (line 1 of the JSONL). */
+export interface SessionHeaderInfo {
+	file: string;
+	parentSession?: string;
+	name?: string;
+}
+
+/** The sub-agent transcripts of a driver session: every session file whose header names the driver
+ *  (flow_stage workers are created with parentSession = the driver's file), and their children in
+ *  turn. Ordered as found; cycles and the driver itself are never returned. */
+export function childSessionFiles(driverFile: string, headers: SessionHeaderInfo[]): SessionHeaderInfo[] {
+	const out: SessionHeaderInfo[] = [];
+	const seen = new Set<string>([path.resolve(driverFile)]);
+	const queue = [path.resolve(driverFile)];
+	while (queue.length) {
+		const parent = queue.shift()!;
+		for (const h of headers) {
+			const f = path.resolve(h.file);
+			if (seen.has(f) || !h.parentSession || path.resolve(h.parentSession) !== parent) continue;
+			seen.add(f);
+			out.push(h);
+			queue.push(f);
+		}
+	}
+	return out;
+}
+
+export interface ReflectBriefInput {
+	slug: string;
+	root: string;
+	today: string;
+	driverFile: string | null;
+	children: SessionHeaderInfo[];
+	reflectionsFile: string;
+	items: ReflectItem[];
+	projectMd: string;
+	version: string | null;
+	upstream: string;
+	selfRepo: boolean;
+	/** open issues on this project's own GitHub repo (the read-time fold), when gh could list them */
+	projectIssues?: { repo: string; issues: { number: number; title: string }[] };
+	note: string;
+}
+
+/** The brief for the reflect worker: a fresh, read-only reviewer of the session transcripts. It
+ *  classifies, dedupes and recommends; it never writes reflections.md and never files an issue —
+ *  the operator decides fold or drop per finding in the driving session. */
+export function buildReflectBrief(o: ReflectBriefInput): string {
+	const up = o.upstream || "(unknown — say so in the REPORT)";
+	const open = o.items.length ? o.items.map((it, i) => `  ${i + 1}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}`).join("\n") : "  (none)";
+	const kids = o.children.length ? o.children.map((c) => `  - ${c.file}${c.name ? ` (${c.name})` : ""}`).join("\n") : "  (none — no flow_stage worker ran in this session)";
+	const issues = o.projectIssues ? (o.projectIssues.issues.length ? o.projectIssues.issues.map((i) => `  gh#${i.number} ${i.title}`).join("\n") : "  (none open)") : "";
+	return [
+		`You are a fresh, independent reviewer of the dev-flow session for feature \`${o.slug}\`: find what went wrong or was slow, and say where each fix belongs.`,
+		"",
+		"## Facts",
+		`- Repo (your cwd): ${o.root} — today is ${o.today}`,
+		`- Driver session transcript (read it in full): ${o.driverFile ?? "(unknown — the session is not file-backed; say so and review what you can)"}`,
+		`- Sub-agent (flow_stage worker) transcripts:\n${kids}`,
+		"- Transcripts are pi JSONL, one entry per line (type session / message / custom …; messages carry role, content, tool calls and tool results). Skim with jq or grep — e.g. jq -c 'select(.type==\"message\")' <file> — for tool errors, guard or gate refusals, NEEDS-OPERATOR, retries, repeated commands, operator corrections; then read the surrounding entries.",
+		`- This project's playbook: ${o.projectMd}`,
+		`- This project's reflection queue: ${o.reflectionsFile} — open items:\n${open}`,
+		`- dev-flow ${o.version ?? "(version unknown)"}; upstream repo: ${up}${o.selfRepo ? " — this checkout IS dev-flow, so plugin findings are this project's code findings" : ""}`,
+		...(o.upstream && !o.selfRepo ? [`- Dedupe plugin findings upstream (read-only): gh issue list --repo ${o.upstream} --state all --search "<keywords>" — cite gh#N when one covers it (fixed / won't-fix / open).`] : []),
+		...(o.projectIssues ? [`- Open issues on this project's repo ${o.projectIssues.repo}:\n${issues}`] : []),
+		"- You hold no flow tool and write nothing: no file edits, no commits, no gh issue create. The driving session and the operator decide.",
+		"",
+		"## Your task",
+		o.note.trim() ? `Operator context: ${o.note.trim()}` : "(no extra context from the driver)",
+		"1. Review the transcripts for real friction only: wrong turns, repeated failures, misfiring guards or gates, playbook drift, slow paths with an obvious fix. One-off typos, environment hiccups and things already fixed later in the session are not findings.",
+		`2. Classify each finding: docs — the fix lives only in this project's playbook (project.md) → docs flow; code — the fix touches this project's code (maybe the playbook too) → patch flow; plugin — dev-flow's own behaviour or wording → upstream GitHub issue${o.selfRepo ? " (here: report it as code)" : ""}.`,
+		"3. Dedupe each finding against the open items above and the issues; a finding an open item already covers is not new — mark that item recurred instead.",
+		"4. Recommend fold (worth recording / filing) or drop (one-off, environmental, operator choice, already covered) with a one-clause reason.",
+		"5. Re-check every open item: still-open, fixed (cite where — playbook line, commit, newer dev-flow) or recurred (hit again in this session).",
+		"",
+		"## Contract",
+		"- Check, don't fix: read and run read-only probes only. Change no files, make no commits, file nothing.",
+		"- Finish with a final message whose last section starts with a line `REPORT`, then one row per line, pipe-separated, nothing else in the section:",
+		"  F<n> | fold|drop | docs|code|plugin | <one-line note, written as the reflection itself> | dup: none|#<open item>|gh#<N> | why: <reason> | evidence: <transcript file:line or a short quote>",
+		"  O<n> | still-open|fixed|recurred | <reason, with evidence>",
+		"  (no findings → a single line `F0 | none`; no open items → no O rows)",
+	].join("\n");
+}
+
+export type ReflectKind = "docs" | "code" | "plugin";
+export interface ReflectFinding {
+	n: number;
+	rec: "fold" | "drop";
+	kind: ReflectKind;
+	note: string;
+	dup: string;
+	why: string;
+	evidence: string;
+}
+export interface ReflectOpenCheck {
+	n: number;
+	status: "still-open" | "fixed" | "recurred";
+	reason: string;
+}
+
+/** Parse the reflect worker's REPORT rows. Malformed rows are skipped — the caller shows the raw
+ *  REPORT when nothing parsed, so a sloppy report is never silently lost. */
+export function parseReflectReport(body: string): { findings: ReflectFinding[]; open: ReflectOpenCheck[] } {
+	const findings: ReflectFinding[] = [];
+	const open: ReflectOpenCheck[] = [];
+	for (const raw of (body ?? "").split("\n")) {
+		const cells = raw.replace(/^[\s>*`-]+/, "").replace(/`+\s*$/, "").split("|").map((c) => c.trim());
+		const f = /^F(\d+)$/i.exec(cells[0] ?? "");
+		if (f && cells.length >= 4) {
+			const rec = cells[1].toLowerCase();
+			const kind = cells[2].toLowerCase();
+			if ((rec !== "fold" && rec !== "drop") || !["docs", "code", "plugin"].includes(kind) || !cells[3]) continue;
+			const field = (k: string) => cells.slice(4).find((c) => c.toLowerCase().startsWith(`${k}:`))?.slice(k.length + 1).trim() ?? "";
+			findings.push({ n: Number(f[1]), rec, kind: kind as ReflectKind, note: cells[3], dup: field("dup") || "none", why: field("why"), evidence: field("evidence") });
+			continue;
+		}
+		const o = /^O(\d+)$/i.exec(cells[0] ?? "");
+		if (o && cells.length >= 2) {
+			const status = cells[1].toLowerCase();
+			if (status !== "still-open" && status !== "fixed" && status !== "recurred") continue;
+			open.push({ n: Number(o[1]), status, reason: cells.slice(2).join(" | ") });
+		}
+	}
+	return { findings, open };
+}
+
+/** The numbered list the driver shows the operator: one row per finding with its route, then the
+ *  open-item re-check. Routes follow where the fix lives — plugin is always an upstream issue
+ *  (code in the dev-flow repo itself), never a local row. */
+export function renderReflectFindings(r: { findings: ReflectFinding[]; open: ReflectOpenCheck[] }, selfRepo: boolean): string[] {
+	const route = (k: ReflectKind) =>
+		k === "docs" ? "docs flow · record: flow reflect --playbook" : k === "code" || selfRepo ? "patch flow · record: flow reflect --code" : "upstream GitHub issue · flow reflect --plugin prints the recipe (never a local row)";
+	const out: string[] = [];
+	if (r.findings.length) {
+		out.push(`findings (${r.findings.length}) — recommendation · kind → route:`);
+		for (const f of r.findings) {
+			out.push(`  ${f.n}. [${f.rec}] ${f.kind}: ${f.note}`);
+			out.push(`      → ${route(f.kind === "plugin" && selfRepo ? "code" : f.kind)}${f.dup && f.dup !== "none" ? ` · dup: ${f.dup}` : ""}${f.why ? ` · ${f.why}` : ""}`);
+		}
+	} else out.push("findings: none");
+	if (r.open.length) {
+		out.push("open items re-checked:");
+		for (const o of r.open) out.push(`  #${o.n} ${o.status}${o.reason ? ` — ${o.reason}` : ""}${o.status === "fixed" ? " → propose the check-off" : o.status === "recurred" ? " → recommend fixing it now" : ""}`);
+	}
+	return out;
+}

@@ -168,16 +168,19 @@ you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doct
 flags problems, and `flow doctor` runs the same probes on demand without offering to change
 anything (findings are also printed whenever `flow init` runs without a UI, e.g. in CI). `--force`
 rewrites from fresh detection. Improvement
-ideas the agent notices along the way queue up in `.dev-flow/reflections.md` under `## playbook`
-(what to change in *your* playbook) and `## plugin` (what to change in dev-flow itself) —
-`flow reflect "<note>"` appends them (`--playbook` / `--plugin` says which section, no flag guesses
-from the wording and prints why), `flow reflect list` numbers the open ones, `flow reflect move <n>
---plugin|--playbook` re-files one, `flow reflect tidy` drops the closed (`- [x]`) ones,
-plain `flow doctor` reviews the open ones and routes
-each fix to the flow that implements it (docs flow for playbook items — those edits only pass a
-docs/patch flow's worktree), bare `flow reflect` hands the agent the full end-of-session
-reflection protocol (review the session log, re-check open items against fixes that already
-shipped, dedupe new findings, put the fix decision to the operator) — and nothing there ever gates.
+ideas the agent notices along the way queue up in `.dev-flow/reflections.md` — *this project's*
+queue only: `## playbook` (the fix lives in your playbook → docs flow) and `## code` (the fix
+touches your code → patch flow). Feedback about dev-flow itself never lands there: it becomes a
+GitHub issue on the dev-flow repo. `flow reflect --playbook|--code "<note>"` appends a note,
+`flow reflect --plugin "<note>"` prints the upstream issue recipe instead (no flag guesses from the
+wording and prints why), `flow reflect list` numbers the open ones, `flow reflect move <n>
+--playbook|--code` re-files one, `flow reflect tidy` drops the closed (`- [x]`) ones, plain
+`flow doctor` reviews the open ones and routes each fix to the flow that implements it. At finish
+a fresh read-only **reflect worker** (`flow_stage` op `reflect`) reviews the whole session — the
+driver's and every worker's transcript — and returns classified findings with a fold/drop
+recommendation each; the operator decides per item (fold = a queue row or an upstream issue, drop
+= nothing recorded). Suggestions to fix open items or tidy closed ones are timed (finish, between
+flows, doctor — never mid-feature) — and nothing there ever gates.
 Future features have their own file: `.dev-flow/roadmap.md`, a gitignored backlog `flow roadmap`
 manages (add / pick → `flow start` / done / tidy) — a picked item is checked off by `finish` when
 its feature ships, and it never gates either.

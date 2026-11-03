@@ -86,6 +86,14 @@ import {
 	doneItemCount,
 	reflectionsTidy,
 	reflectionsTidyHint,
+	reflectionNudges,
+	reflectLegacyPluginCount,
+	pluginIssueRecipe,
+	REFLECT_HEADER,
+	childSessionFiles,
+	buildReflectBrief,
+	parseReflectReport,
+	renderReflectFindings,
 	appendRoadmapItem,
 	roadmapDone,
 	roadmapDoneForSlug,
@@ -426,25 +434,31 @@ test("detectForge: the origin URL decides", () => {
 });
 
 /** One open reflections.md item as the section-aware reader returns it — the heading is the filing. */
-const rItem = (note: string, section: "playbook" | "plugin" = "playbook") => reflectItems("## " + section + "\n\n- [ ] " + note + "\n")[0];
+const rItem = (note: string, section: "playbook" | "code" | "plugin" = "playbook") => reflectItems("## " + section + "\n\n- [ ] " + note + "\n")[0];
 
-test("reflectionRoutes route from the section an item is filed under, not from its wording", () => {	const [p] = reflectionRoutes([rItem("the checklist item about seeded data is stale")], false);
+test("reflectionRoutes route from the section an item is filed under, not from its wording", () => {
+	const [p] = reflectionRoutes([rItem("the checklist item about seeded data is stale")], false);
 	assert.equal(p.mode, "docs");
 	assert.match(p.route, /docs flow/);
+	const [c] = reflectionRoutes([rItem("the seed script skips users", "code")], false);
+	assert.equal(c.mode, "code", "a code item is a patch flow");
+	assert.match(c.route, /patch flow/);
 	const [x] = reflectionRoutes([rItem("the gate prompt asks twice", "plugin")], false);
-	assert.equal(x.mode, "upstream", "plugin feedback in someone else's repo goes upstream");
-	assert.match(x.route, /pi-dev-flow/);
+	assert.equal(x.mode, "upstream", "a legacy ## plugin row in someone else's repo belongs on GitHub");
+	assert.match(x.route, /legacy ## plugin row — belongs on GitHub/);
+	assert.match(x.route, /filed: gh#NNN/);
 	const [s] = reflectionRoutes([rItem("the gate prompt asks twice", "plugin")], true);
-	assert.equal(s.mode, "code", "in the dev-flow repo a plugin item is a flow of its own");
+	assert.equal(s.mode, "code", "in the dev-flow repo a legacy plugin item is code");
+	assert.match(s.route, /move <n> --code/);
 	const [home] = reflectionRoutes([rItem("the gate prompt asks twice", "playbook")], false);
 	assert.equal(home.mode, "docs", "the heading is the record — re-guessing from the wording re-routed items out of the section they live in");
-	// a --both note sits under both headings, so it yields one routed item per section
-	const both = reflectItems("## playbook\n\n- [ ] gate prompts twice\n\n## plugin\n\n- [ ] gate prompts twice\n");
-	assert.deepEqual(reflectionRoutes(both, false).map((r) => r.mode), ["docs", "upstream"]);
 	const brief = investigationBrief("the gate prompt asks twice", true);
 	assert.match(brief.join(" "), /gate prompt asks twice/);
 	assert.match(brief.join(" "), /patch flow/);
-	assert.match(brief.join(" "), /## plugin \("gate" names dev-flow itself\)/, "a fresh note is told where it would land, with the reason");
+	assert.match(brief.join(" "), /## code \("gate" names dev-flow itself\)/, "in the dev-flow repo a plugin-shaped note is told it lands under ## code");
+	const foreign = investigationBrief("the gate prompt asks twice", false).join(" ");
+	assert.match(foreign, /dev-flow feedback \("gate" names dev-flow itself\) — an upstream issue, not a local row/);
+	assert.match(foreign, /flow reflect --plugin/);
 });
 
 test("writeGuard: path attribution + session binding rules", () => {
@@ -606,109 +620,133 @@ test("reflections: closed count; tidy drops closed items and headings left empty
 	assert.match(reflectionsTidyHint(3), /↻ 3 closed reflection\(s\) — flow reflect tidy drops them/);
 });
 
-const reflectSections = (note: string) => guessReflectSections(note).sections;
+const reflectTarget = (note: string) => guessReflectSections(note).target;
 
-test("guessReflectSections: one primary home, named signals, the attribution tail never classified", () => {
-	assert.deepEqual(reflectSections("the gate prompt asks twice, that is wrong"), ["plugin"]);
-	assert.deepEqual(reflectSections("the checklist item about seeded data is stale"), ["playbook"]);
-	// a note that names dev-flow's own surface is a plugin issue even when it also mentions project.md:
-	// filing it in both sections made the operator check one issue off twice and routed only the plugin half
-	assert.deepEqual(reflectSections("the verify gate should read the health command from project.md"), ["plugin"]);
-	assert.deepEqual(guessReflectSections("the verify gate should read the health command from project.md").why, '"gate" names dev-flow itself');
-	assert.deepEqual(reflectSections("typo in the readme"), ["playbook"], "unclear notes land where the operator reads them");
-	assert.match(guessReflectSections("the banner tagline is wrong").why, /flow reflect move <n> --plugin/, "a filing that was only a guess says so");
-	assert.deepEqual(reflectSections("the test command drifted, npm test no longer works"), ["playbook"], "a drifted project command is a playbook issue, not a plugin one");
-	// dev-flow's own surface, phrased without any of the old trigger words
+test("guessReflectSections: one home, named signals, the attribution tail never classified", () => {
+	assert.equal(reflectTarget("the gate prompt asks twice, that is wrong"), "plugin");
+	assert.equal(reflectTarget("the checklist item about seeded data is stale"), "playbook");
+	// a note that names dev-flow's own surface is a plugin issue even when it also mentions project.md
+	assert.equal(reflectTarget("the verify gate should read the health command from project.md"), "plugin");
+	assert.equal(guessReflectSections("the verify gate should read the health command from project.md").why, '"gate" names dev-flow itself');
+	assert.equal(reflectTarget("typo in the readme"), "playbook", "unclear notes land where the operator reads them");
+	assert.match(guessReflectSections("the banner tagline is wrong").why, /flow reflect move <n> --code/, "a filing that was only a guess says so");
+	assert.equal(reflectTarget("the test command drifted, npm test no longer works"), "playbook", "a drifted project command is a playbook issue, not a plugin one");
 	for (const note of ["doctor prints the same finding twice", "flow doctor lists a finding twice", "flow release tags the wrong commit", "state.json loses the yolo flag"])
-		assert.deepEqual(reflectSections(note), ["plugin"], note);
-	// a project's own hook/gate/tooling is not the plugin's
-	assert.deepEqual(reflectSections("our repo's commit hook rejects rebases"), ["playbook"], "a project git hook is the playbook's business");
-	assert.deepEqual(reflectSections("the deploy gate in CI is flaky"), ["playbook"], "a CI gate is the project's own gate");
-	// the invariant: a verdict never depends on the ` — <slug> <date>` tail, whose words are trigger words
+		assert.equal(reflectTarget(note), "plugin", note);
+	assert.equal(reflectTarget("our repo's commit hook rejects rebases"), "playbook", "a project git hook is the playbook's business");
+	assert.equal(reflectTarget("the deploy gate in CI is flaky"), "playbook", "a CI gate is the project's own gate");
 	for (const note of ["notes drifted, the plan doc is stale", "the gate prompt asks twice", "release notes should list contributors"]) {
 		const lined = reflectionLine(note, "fix-versioning-guard", "2026-10-24");
-		assert.deepEqual(guessReflectSections(lined).sections, reflectSections(note), `${note}: the slug tail moved the verdict`);
+		assert.equal(guessReflectSections(lined).target, reflectTarget(note), `${note}: the slug tail moved the verdict`);
 	}
 });
 
+test("pluginIssueRecipe: dedupe search first, then an issue whose body carries the fold tail", () => {
+	const r = pluginIssueRecipe("- [ ] the gate prompt asks \"twice\" — s 2026-11-01", "dmarchevsky/dev-flow", "my-slug", "2026-11-03").join("\n");
+	assert.match(r, /not written to reflections\.md/);
+	assert.match(r, /gh issue list --repo dmarchevsky\/dev-flow --state all --search/);
+	assert.match(r, /gh issue create --repo dmarchevsky\/dev-flow --title "the gate prompt asks 'twice'"/);
+	assert.match(r, /— reflection from my-slug 2026-11-03/);
+	assert.ok(r.indexOf("gh issue list") < r.indexOf("gh issue create"), "search before create");
+	const blind = pluginIssueRecipe("a note", "", null, "2026-11-03").join("\n");
+	assert.match(blind, /upstream repo unknown — ask the operator/);
+	assert.match(blind, /— reflection from 2026-11-03/);
+});
+
 test("reflectItems: every open item carries the heading that owns it", () => {
-	const text = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] drift — s 2026-10-01\n- [x] handled — fixed: v1\n\n## plugin\n\n- [ ] doctor double-prints — s 2026-10-02\n";
+	const text = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] drift — s 2026-10-01\n- [x] handled — fixed: v1\n\n## code\n\n- [ ] seed skips users — s 2026-10-02\n\n## plugin\n\n- [ ] doctor double-prints — s 2026-10-02\n";
 	const items = reflectItems(text);
 	assert.deepEqual(items.map((i) => [i.section, i.body]), [
 		["playbook", "drift"],
+		["code", "seed skips users"],
 		["plugin", "doctor double-prints"],
 	]);
 	assert.equal(reflectUnfiledCount(text), 0);
-	// legacy flat file and an unknown heading are "unfiled" — they used to inherit the previous bucket silently
-	const legacy = "# dev-flow reflections\n\n- [ ] flat legacy note — s 2026-10-01\n\n## plugin\n\n- [ ] placed\n\n## Plugin notes\n\n- [ ] orphan\n";
-	assert.deepEqual(reflectItems(legacy).map((i) => i.section), ["unfiled", "plugin", "unfiled"]);
+	assert.equal(reflectLegacyPluginCount(text), 1, "a legacy ## plugin row is counted so doctor can ask for it upstream");
+	const legacy = "# dev-flow reflections\n\n- [ ] flat legacy note — s 2026-10-01\n\n## code\n\n- [ ] placed\n\n## Plugin notes\n\n- [ ] orphan\n";
+	assert.deepEqual(reflectItems(legacy).map((i) => i.section), ["unfiled", "code", "unfiled"]);
 	assert.equal(reflectUnfiledCount(legacy), 2);
 	assert.equal(reflectUnfiledCount(""), 0);
-	assert.deepEqual(reflectItems("##plugin\n\n- [ ] a heading without the space still owns its item\n").map((i) => i.section), ["plugin"], "spacing does not hide a section");
+	assert.deepEqual(reflectItems("##code\n\n- [ ] a heading without the space still owns its item\n").map((i) => i.section), ["code"], "spacing does not hide a section");
 	assert.deepEqual(reflectItems("## playbook\n\n### triage on Fridays\n\n- [ ] under a sub-heading\n").map((i) => i.section), ["unfiled"], "a sub-heading places nothing — doctor names it instead of inheriting ## playbook");
 });
 
 test("reflectMove re-files an item under the other section", () => {
-	const src = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] doctor double-prints — s 2026-10-01\n\n## plugin\n\n- [ ] real playbook thing — s 2026-10-02\n";
-	const out = reflectMove(src, 1, "plugin");
-	assert.match(out ?? "", /## plugin\n\n- \[ \] real playbook thing — s 2026-10-02\n- \[ \] doctor double-prints — s 2026-10-01\n$/);
+	const src = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] seed skips users — s 2026-10-01\n\n## code\n\n- [ ] real code thing — s 2026-10-02\n";
+	const out = reflectMove(src, 1, "code");
+	assert.match(out ?? "", /## code\n\n- \[ \] real code thing — s 2026-10-02\n- \[ \] seed skips users — s 2026-10-01\n$/);
 	assert.ok(!(out ?? "").includes("## playbook"), "a section emptied by a move loses its heading");
-	assert.deepEqual(reflectItems(out ?? "").map((i) => i.section), ["plugin", "plugin"]);
+	assert.deepEqual(reflectItems(out ?? "").map((i) => i.section), ["code", "code"]);
 	assert.equal(reflectMove(src, 3, "playbook"), null, "item 3 of 2 is out of range");
-	// a legacy flat file is migrated into sections by the move
-	const flat = "# dev-flow reflections\n\n- [ ] doctor double-prints — s 2026-10-01\n";
-	assert.match(reflectMove(flat, 1, "plugin") ?? "", /## plugin\n\n- \[ \] doctor double-prints — s 2026-10-01\n$/);
-	// an old --both filing: moving one copy onto the other merges it, it does not duplicate
-	const both = "## playbook\n\n- [ ] same note — s 1\n\n## plugin\n\n- [ ] same note — s 2\n";
-	const merged = reflectMove(both, 1, "plugin") ?? "";
+	const flat = "# dev-flow reflections\n\n- [ ] seed skips users — s 2026-10-01\n";
+	assert.match(reflectMove(flat, 1, "code") ?? "", /## code\n\n- \[ \] seed skips users — s 2026-10-01\n$/);
+	// a legacy ## plugin row moves out to ## code (the dev-flow repo's own migration)
+	const old = "## plugin\n\n- [ ] doctor double-prints — s 1\n";
+	assert.match(reflectMove(old, 1, "code") ?? "", /^# dev-flow reflections[\s\S]*## code\n\n- \[ \] doctor double-prints — s 1\n$/);
+	const both = "## playbook\n\n- [ ] same note — s 1\n\n## code\n\n- [ ] same note — s 2\n";
+	const merged = reflectMove(both, 1, "code") ?? "";
 	assert.equal(openChecklistItems(merged).length, 1, "the duplicate merges away instead of being copied");
-	assert.match(merged, /## plugin\n\n- \[ \] same note — s 2\n$/);
+	assert.match(merged, /## code\n\n- \[ \] same note — s 2\n$/);
 });
 
-test("appendReflection writes the two sections; an item under no heading files under playbook", () => {
+test("appendReflection writes the two project sections; an item under no heading files under playbook; legacy ## plugin is kept, never added to", () => {
 	const flat = "# dev-flow reflections\n\n<!-- note -->\n- [ ] old note — y 2025-10-01\n";
-	const out = appendReflection(flat, ["plugin"], "- [ ] new note — z 2025-10-02");
-	assert.match(out, /## playbook\n\n- \[ \] old note — y 2025-10-01\n\n## plugin\n\n- \[ \] new note — z 2025-10-02\n$/);
+	const out = appendReflection(flat, ["code"], "- [ ] new note — z 2025-10-02");
+	assert.match(out, /## playbook\n\n- \[ \] old note — y 2025-10-01\n\n## code\n\n- \[ \] new note — z 2025-10-02\n$/);
 	assert.equal(openChecklistItems(out).length, 2);
-	const both = appendReflection("", ["playbook", "plugin"], "- [ ] both — z 2025-10-02");
-	assert.equal(openChecklistItems(both).length, 2, "a both-sections note is written to each");
 	const noted = "# my notes\n\noperator: triage on Fridays\n\n- [ ] item one\n";
 	assert.equal(
-		appendReflection(noted, ["plugin"], "- [ ] item two"),
-		"# my notes\n\noperator: triage on Fridays\n\n## playbook\n\n- [ ] item one\n\n## plugin\n\n- [ ] item two\n",
+		appendReflection(noted, ["code"], "- [ ] item two"),
+		"# my notes\n\noperator: triage on Fridays\n\n## playbook\n\n- [ ] item one\n\n## code\n\n- [ ] item two\n",
 		"the operator's preamble survives a rewrite verbatim",
 	);
-	assert.equal(both.split(/^## /m).length - 1, 2, "both sections written");
-	assert.equal(both.split("- [ ] both").length - 1, 2, "the line is in each section");
-	const stale = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n\n## plugin\n\n## playbook\n\n- [ ] item one\n";
-	assert.equal(stale.split(/^## /m).length - 1, 3, "fixture: duplicated empty section headers");
+	const stale = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n\n## code\n\n## playbook\n\n- [ ] item one\n";
 	const refreshed = appendReflection(stale, ["playbook"], "- [ ] item two\n");
 	assert.equal(refreshed.split(/^## /m).length - 1, 1, "stale headers go away; only the non-empty section keeps a header");
-	assert.ok(!refreshed.includes("## plugin"), "an empty section is not resurrected by its stale header");
+	assert.ok(!/^## code$/m.test(refreshed), "an empty section is not resurrected by its stale header");
 	assert.ok(refreshed.includes("<!-- n -->"), "the real preamble survives");
-	// a file whose playbook section is empty starts with `## plugin` — that header must own its items too.
-	const pluginOnly = "# dev-flow reflections\n\n<!-- n -->\n\n## plugin\n\n- [ ] upstream thing — s 2026-10-19\n";
+	const legacy = "# dev-flow reflections\n\n<!-- n -->\n\n## plugin\n\n- [ ] upstream thing — s 2026-10-19\n";
 	assert.equal(
-		appendReflection(pluginOnly, ["plugin"], "- [ ] another — s 2026-10-20"),
-		"# dev-flow reflections\n\n<!-- n -->\n\n## plugin\n\n- [ ] upstream thing — s 2026-10-19\n- [ ] another — s 2026-10-20\n",
-		"the leading header is not mistaken for preamble and its items do not fall to playbook",
+		appendReflection(legacy, ["playbook"], "- [ ] another — s 2026-10-20"),
+		"# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] another — s 2026-10-20\n\n## plugin\n\n- [ ] upstream thing — s 2026-10-19\n",
+		"a legacy ## plugin row survives verbatim, last — it is not mistaken for preamble and does not fall to playbook",
 	);
+	assert.match(REFLECT_HEADER, /never lands here — it is filed as a GitHub issue upstream/);
 });
 
 test("appendReflection: a heading owns its items, an exact note is queued once (#69)", () => {
-	const start = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] old playbook item\n\n## plugin\n\n- [x] done plugin thing — fixed: earlier\n";
-	// the reported sequence: plugin, then playbook + plugin, then playbook.
-	const after = appendReflection(appendReflection(appendReflection(start, ["plugin"], "- [ ] linter note — s 2026-10-20"), ["playbook", "plugin"], "- [ ] gate note — s 2026-10-20"), ["playbook"], "- [ ] flaky note — s 2026-10-20");
+	const start = "# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] old playbook item\n\n## code\n\n- [x] done code thing — fixed: earlier\n";
+	const after = appendReflection(appendReflection(start, ["code"], "- [ ] linter note — s 2026-10-20"), ["playbook"], "- [ ] flaky note — s 2026-10-20");
 	assert.equal(
 		after,
-		"# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] old playbook item\n- [ ] gate note — s 2026-10-20\n- [ ] flaky note — s 2026-10-20\n\n## plugin\n\n- [x] done plugin thing — fixed: earlier\n- [ ] linter note — s 2026-10-20\n- [ ] gate note — s 2026-10-20\n",
+		"# dev-flow reflections\n\n<!-- n -->\n\n## playbook\n\n- [ ] old playbook item\n- [ ] flaky note — s 2026-10-20\n\n## code\n\n- [x] done code thing — fixed: earlier\n- [ ] linter note — s 2026-10-20\n",
 		"nothing moves out of its section, nothing is written twice",
 	);
-	// re-reflecting the same note is a no-op in one section, and in both.
-	assert.equal(appendReflection(after, ["plugin"], "- [ ] linter note — s 2026-10-21"), after, "the same note at another date is the same note");
-	assert.equal(appendReflection(after, ["playbook", "plugin"], "- [ ] gate note — s 2026-10-21"), after, "a both-sections note already in both adds nothing");
-	assert.equal(appendReflection(after, ["plugin"], "- [ ] done plugin thing — s 2026-10-21").split("done plugin thing").length - 1, 2, "a checked-off note may be queued again — it came back");
-	assert.equal(appendReflection(after, ["plugin"], "- [ ] flaky note — s 2026-10-21").split("flaky note").length - 1, 2, "a note the other section has is still queued here — dedupe is per section");
+	assert.equal(appendReflection(after, ["code"], "- [ ] linter note — s 2026-10-21"), after, "the same note at another date is the same note");
+	assert.equal(appendReflection(after, ["code"], "- [ ] done code thing — s 2026-10-21").split("done code thing").length - 1, 2, "a checked-off note may be queued again — it came back");
+	assert.equal(appendReflection(after, ["code"], "- [ ] flaky note — s 2026-10-21").split("flaky note").length - 1, 2, "a note the other section has is still queued here — dedupe is per section");
+});
+
+test("reflectionNudges: fix fires on recurrence, age, a docs batch or code between flows; tidy on a real pile", () => {
+	const q = (open: string[], closed: string[] = []) => `# dev-flow reflections\n\n## playbook\n\n${[...open, ...closed].join("\n")}\n`;
+	const today = "2026-11-03";
+	assert.deepEqual(reflectionNudges(q(["- [ ] a — s 2026-11-01"]), today), { fix: null, tidy: null }, "one fresh item: nothing to say");
+	assert.match(reflectionNudges(q(["- [ ] a — s 2026-11-01"]), today, { recurred: 1 }).fix ?? "", /1 recurred this session/);
+	assert.match(reflectionNudges(q(["- [ ] a — s 2026-10-10"]), today).fix ?? "", /1 open ≥ 14 days/);
+	const batch = reflectionNudges(q(["- [ ] a — s 2026-11-01", "- [ ] b — s 2026-11-01", "- [ ] c — s 2026-11-01"]), today).fix ?? "";
+	assert.match(batch, /3 playbook items batch into one docs flow/);
+	assert.match(batch, /3 playbook item\(s\) → one docs flow \(flow start fold-<topic> --docs --confirmed\)/);
+	const code = "## code\n\n- [ ] seed — s 2026-11-01\n";
+	assert.equal(reflectionNudges(code, today).fix, null, "a code item mid-flow is not a reason to divert");
+	assert.match(reflectionNudges(code, today, { between: true }).fix ?? "", /\(between flows\) — 1 code item\(s\) → patch flow/);
+	assert.equal(reflectionNudges("## plugin\n\n- [ ] x — s 2020-01-01\n", today, { recurred: 1 }).fix, null, "legacy plugin rows never prompt a local fix");
+	assert.equal(reflectionNudges("## playbook\n\n- [ ] old note dated 2020-01-01 in its text — s 2026-11-02\n", today).fix, null, "a date inside the note is not its filing date");
+	// tidy
+	const closed = (n: number, d = "2026-11-01") => Array.from({ length: n }, (_, i) => `- [x] c${i} — s ${d} — fixed: v1`);
+	assert.equal(reflectionNudges(q(["- [ ] a — s 2026-11-01", "- [ ] b — s 2026-11-01", "- [ ] c — s 2026-11-01"], closed(2)), today).tidy, null, "a couple of fresh closed items among many open: no tidy");
+	assert.match(reflectionNudges(q([], closed(5)), today).tidy ?? "", /↻ 5 closed reflection\(s\) — flow reflect tidy drops them/);
+	assert.match(reflectionNudges(q(["- [ ] a — s 2026-11-01"], closed(3)), today).tidy ?? "", /3 closed/, "closed ≥ open with at least 3 closed");
+	assert.match(reflectionNudges(q(["- [ ] a — s 2026-11-01", "- [ ] b — s 2026-11-01"], closed(1, "2026-09-01")), today).tidy ?? "", /1 closed/, "a month-old closed item is history worth dropping");
 });
 
 test("reflectionLine: the slug is left out with no flow bound (#69)", () => {
@@ -843,32 +881,101 @@ test("githubSlug: owner/slug from manifest strings, URLs and scp-style remotes",
 	assert.equal(githubSlug(""), "");
 });
 
-test("reflectProtocol: session-review steps, npm-based update probe, routed open items", () => {
+test("reflectProtocol: session-review steps, npm-based update probe, fold/drop decision, routed open items", () => {
 	const out = reflectProtocol(reflectItems("## plugin\n\n- [ ] the gate prompt asks twice — x 2026-01-01\n"), false, { version: "1.2.3", upstream: "dmarchevsky/dev-flow" }).join("\n");
 	assert.match(out, /flow reflect — session reflection \(dev-flow 1\.2\.3, upstream: dmarchevsky\/dev-flow\)/);
 	assert.match(out, /this output is your work instruction: execute these steps now/);
-	assert.match(out, /gitignored and yours to edit/);
-	assert.match(out, /1\. review the current session log in full/);
+	assert.match(out, /dev-flow plugin feedback is never written there, it becomes a GitHub issue upstream/);
+	assert.match(out, /1\. review the current session log in full/, "unbound: the review runs inline");
 	assert.match(out, /git ls-remote --tags --sort=-v:refname https:\/\/github\.com\/dmarchevsky\/dev-flow \| head -1/, "a git-installed copy still gets a git probe");
 	assert.match(out, /npm view pi-dev-flow version/);
 	assert.match(out, /pi install npm:pi-dev-flow, then \/reload/);
-	assert.match(out, /gh issue list --repo dmarchevsky\/dev-flow --state all --search/);
-	assert.match(out, /gh issue create --repo dmarchevsky\/dev-flow/);
-	assert.match(out, /b\. playbook items: run flow doctor/);
+	assert.match(out, /Ask fold or drop per item/);
+	assert.match(out, /STOP until the operator answers/);
+	assert.match(out, /fold plugin → flow reflect --plugin "<note>" prints the upstream recipe/);
+	assert.match(out, /drop → nothing is recorded anywhere/);
 	assert.match(out, /\[plugin\] the gate prompt asks twice/);
-	assert.match(out, /file an issue against pi-dev-flow upstream/);
+	assert.match(out, /legacy ## plugin row — belongs on GitHub/);
 	assert.ok(out.indexOf("npm view pi-dev-flow") < out.indexOf("git ls-remote"), "npm is the primary update route; the git probe is the fallback for git installs");
+	const bound = reflectProtocol([], false, { version: "1.2.3", upstream: "dmarchevsky/dev-flow", bound: true }).join("\n");
+	assert.match(bound, /1\. delegate the review: call flow_stage\(op: "reflect"/, "bound: the review goes to a fresh reflect worker");
+	assert.match(bound, /every flow_stage worker transcript/);
 	const empty = reflectProtocol([], true, { version: null, upstream: "" }).join("\n");
 	assert.match(empty, /dev-flow version unknown/);
 	assert.match(empty, /<upstream-url>/);
 	assert.match(empty, /open items: none/);
-	assert.ok(!/closed reflection\(s\)/.test(empty), "no closed items passed, no tidy hint");
+	assert.ok(!/closed reflection\(s\)/.test(empty), "no tidy nudge passed, no tidy line");
 });
 
-test("reflectProtocol: closed items add the tidy hint next to the queue line", () => {
-	const out = reflectProtocol(reflectItems("## playbook\n\n- [ ] an open note"), true, { version: "1.2.3", upstream: "dmarchevsky/dev-flow", closed: 2 }).join("\n");
-	assert.match(out, /↻ 2 closed reflection\(s\) — flow reflect tidy drops them/);
+test("reflectProtocol: fix and tidy nudges ride after the decision step", () => {
+	const out = reflectProtocol(reflectItems("## playbook\n\n- [ ] an open note"), true, { version: "1.2.3", upstream: "dmarchevsky/dev-flow", tidy: "↻ 6 closed reflection(s) — flow reflect tidy drops them", fix: "⚑ fix the open reflections now? (x)" }).join("\n");
+	assert.match(out, /↻ 6 closed reflection\(s\) — flow reflect tidy drops them — offer it to the operator after the fold\/drop answer/);
+	assert.match(out, /⚑ fix the open reflections now\? \(x\) — offer it/);
 	assert.ok(out.indexOf("closed reflection(s)") < out.indexOf("open items ("), "the hint precedes the routed list the agent acts on");
+});
+
+test("childSessionFiles: workers of the driver and their children, never the driver or strangers", () => {
+	const h = [
+		{ file: "/s/driver.jsonl" },
+		{ file: "/s/w1.jsonl", parentSession: "/s/driver.jsonl" },
+		{ file: "/s/other.jsonl", parentSession: "/s/someone-else.jsonl" },
+		{ file: "/s/w1a.jsonl", parentSession: "/s/w1.jsonl" },
+		{ file: "/s/w2.jsonl", parentSession: "/s/driver.jsonl" },
+		{ file: "/s/loop.jsonl", parentSession: "/s/loop.jsonl" },
+	];
+	assert.deepEqual(childSessionFiles("/s/driver.jsonl", h).map((x) => x.file), ["/s/w1.jsonl", "/s/w2.jsonl", "/s/w1a.jsonl"]);
+	assert.deepEqual(childSessionFiles("/s/none.jsonl", h), []);
+});
+
+test("buildReflectBrief: transcripts, queue, upstream dedupe and the row contract", () => {
+	const brief = buildReflectBrief({
+		slug: "feat-x", root: "/r", today: "2026-11-03", driverFile: "/s/driver.jsonl",
+		children: [{ file: "/s/w1.jsonl" }],
+		reflectionsFile: "/r/.dev-flow/reflections.md",
+		items: reflectItems("## playbook\n\n- [ ] stale test cmd — a 2026-10-01\n"),
+		projectMd: "/r/.dev-flow/project.md", version: "1.2.3", upstream: "dmarchevsky/dev-flow", selfRepo: false,
+		projectIssues: { repo: "me/app", issues: [{ number: 7, title: "seed is slow" }] },
+		note: "the operator hated the double prompt",
+	});
+	assert.match(brief, /Driver session transcript \(read it in full\): \/s\/driver\.jsonl/);
+	assert.match(brief, /  - \/s\/w1\.jsonl/);
+	assert.match(brief, /1\. \[playbook\] stale test cmd — a 2026-10-01/);
+	assert.match(brief, /gh issue list --repo dmarchevsky\/dev-flow --state all --search/);
+	assert.match(brief, /gh#7 seed is slow/);
+	assert.match(brief, /Operator context: the operator hated the double prompt/);
+	assert.match(brief, /no gh issue create/);
+	assert.match(brief, /F<n> \| fold\|drop \| docs\|code\|plugin/);
+	assert.match(brief, /O<n> \| still-open\|fixed\|recurred/);
+	const self = buildReflectBrief({ slug: "s", root: "/r", today: "d", driverFile: null, children: [], reflectionsFile: "f", items: [], projectMd: "p", version: null, upstream: "", selfRepo: true, note: "" });
+	assert.match(self, /not file-backed/);
+	assert.match(self, /no flow_stage worker ran/);
+	assert.match(self, /this checkout IS dev-flow/);
+	assert.ok(!self.includes("gh issue list --repo"), "no upstream search line without a foreign upstream");
+});
+
+test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, plugin routes upstream", () => {
+	const body = [
+		"F1 | fold | docs | test command drifted to pnpm | dup: none | why: hit 3 times | evidence: driver.jsonl:120",
+		"- F2 | drop | plugin | guard blocked a scratch write | dup: gh#12 | why: already filed",
+		"`F3 | fold | code | seed script skips admins | dup: #2 | why: real bug | evidence: w1.jsonl:40`",
+		"F4 | maybe | docs | bad rec",
+		"O1 | recurred | the stale checklist hit again (driver.jsonl:88)",
+		"O2 | fixed | project.md line 12 now says pnpm",
+		"O3 | bogus | x",
+	].join("\n");
+	const r = parseReflectReport(body);
+	assert.deepEqual(r.findings.map((f) => [f.n, f.rec, f.kind, f.dup]), [[1, "fold", "docs", "none"], [2, "drop", "plugin", "gh#12"], [3, "fold", "code", "#2"]]);
+	assert.equal(r.findings[0].evidence, "driver.jsonl:120");
+	assert.deepEqual(r.open.map((o) => [o.n, o.status]), [[1, "recurred"], [2, "fixed"]]);
+	const out = renderReflectFindings(r, false).join("\n");
+	assert.match(out, /1\. \[fold\] docs: test command drifted to pnpm\n      → docs flow · record: flow reflect --playbook · hit 3 times/);
+	assert.match(out, /2\. \[drop\] plugin: guard blocked a scratch write\n      → upstream GitHub issue · flow reflect --plugin prints the recipe \(never a local row\) · dup: gh#12/);
+	assert.match(out, /3\. \[fold\] code: .*\n      → patch flow · record: flow reflect --code · dup: #2/);
+	assert.match(out, /#1 recurred — .* → recommend fixing it now/);
+	assert.match(out, /#2 fixed — .* → propose the check-off/);
+	assert.match(renderReflectFindings(r, true).join("\n"), /2\. \[drop\] plugin: .*\n      → patch flow/, "in the dev-flow repo plugin is code");
+	assert.deepEqual(parseReflectReport("nothing useful here"), { findings: [], open: [] });
+	assert.match(renderReflectFindings({ findings: [], open: [] }, false).join("\n"), /findings: none/);
 });
 
 test("versionTagGate: manifest and tag must agree", () => {
@@ -1371,6 +1478,7 @@ test("worker helpers: op legality, budget clamp, REPORT parsing", () => {
 	assert.equal(workerOpError("review", "pre-release"), null);
 	assert.match(workerOpError("review", "plan") ?? "", /runs at implement or pre-release/);
 	assert.match(workerOpError("verify", "implement") ?? "", /unknown op/);
+	for (const st of ["plan", "implement", "pre-release", "release"] as const) assert.equal(workerOpError("reflect", st), null, `reflect runs at ${st}`);
 	assert.equal(clampBudgetMin(undefined, "implement"), 60);
 	assert.equal(clampBudgetMin(1000, "review"), 180);
 	assert.equal(clampBudgetMin(1, "review"), 5);

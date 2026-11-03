@@ -146,12 +146,25 @@ claiming a gate result it never produced. → [Gate reference](docs/gates.md)
 
 When something costs the agent a step — a playbook command that stopped existing, a guard that
 refused the wrong thing, a gate that forced a detour, a rough edge in dev-flow itself — it does not
-just work around it. It parks a one-line note in `.dev-flow/reflections.md`, under **playbook**
-(something about your project) or **plugin** (something about dev-flow) — the agent says which with
-`flow reflect --playbook|--plugin "<note>"`, and a note queued without a flag lands on a keyword
-guess the printed line explains (`flow reflect list` numbers the queue, `flow reflect move <n>
---plugin` re-files one). The open count surfaces in
-`flow status` and in the agent's stage context (`↻ 2 reflection(s) open`).
+just work around it. It parks a one-line note in `.dev-flow/reflections.md` — your project's queue — under **playbook**
+(the fix lives in `project.md`, a docs flow) or **code** (the fix touches your code, a patch flow):
+`flow reflect --playbook|--code "<note>"`. Feedback about **dev-flow itself never lands in your
+project**: `flow reflect --plugin "<note>"` prints the recipe for a GitHub issue on the dev-flow repo
+(search first, then `gh issue create`), filed on your word. A note queued without a flag lands on a
+keyword guess the printed line explains (`flow reflect list` numbers the queue, `flow reflect move
+<n> --code` re-files one). The open count surfaces in `flow status` and `flow doctor`.
+
+**At finish, a separate reviewer reflects on the session.** `flow_stage` op `reflect` starts a fresh
+read-only pi session that reads the whole driving transcript *and every worker's*, re-checks the
+open items, dedupes against them and the upstream issues, and returns a numbered list — each
+finding classified docs / code / plugin with a **fold or drop** recommendation. You answer per item
+(`fold 1,3 drop 2`): fold records a docs/code row or files the plugin issue, drop records nothing.
+
+The nudges are timed, not constant. *Fix the open reflections now?* is suggested only when an item
+recurred this session, has waited 14 days, three playbook items can share one docs flow, or a code
+item waits while you are between flows — at finish, in an unbound session, in `flow doctor`, never
+mid-feature. *Tidy* is suggested once the closed pile is real (5 closed, more closed than open, or a
+month-old closed item).
 
 With a GitHub remote, `flow doctor` and `flow reflect list` also **fold in the open GitHub issues**
 — external submissions land on GitHub while the queue lives in `reflections.md`, so both surfaces
@@ -164,10 +177,8 @@ the file, never both. No GitHub remote shows nothing; missing or failing `gh` is
 They never gate anything, and the fix is never the agent's call alone. You ask it to go through them
 — usually with `flow doctor`, which reviews each open item and routes it: a playbook item becomes a
 small docs flow that edits `project.md` through the flow (so the change is committed and reviewed like
-any other), a dev-flow item goes upstream as an issue. At the end of a session the agent does the same
-review over the whole exchange before `Finish?`, so friction it noticed but never filed shows up too.
-Fold, fix or drop them — but leaving them is the one option that lets the same friction come back next
-feature.
+any other), a code item a patch flow. Leaving them is the one option that lets the same friction come
+back next feature — which is exactly what the *recurred* nudge catches.
 
 ### Reviews and senior discipline, built in
 
@@ -184,8 +195,8 @@ speculative layers — removed in a risk-ascending order, one verified commit pe
 tests as contract, and a structural-vs-cheap self-audit so the diff shrank because the system
 got smaller, not because comments got deleted. For a big implement slice the session can hand
 the work to **`flow_stage`**: a fresh pi session in the worktree that edits, commits and reports,
-or a fresh read-only reviewer (`op: "review"`) whose PASS/FAIL is advice, not a gate. Both are
-optional, and the plan path, commits and checks are briefed automatically. In pi-web a worker also
+or a fresh read-only reviewer (`op: "review"`) whose PASS/FAIL is advice, not a gate, or the
+end-of-session reflection (`op: "reflect"`, see Reflections). All are optional, and the plan path, commits and checks are briefed automatically. In pi-web a worker also
 shows up in the session's Agents menu as a subagent, its final status on the row and its report in
 the opened transcript. And while a flow writes code, the
 implement stage injects a compact senior-discipline guidance — smallest complete change, no
@@ -229,7 +240,7 @@ While a feature is active, every tool call passes a guard:
 ```
 .dev-flow/
   project.md            your playbook — the only committed file here
-  reflections.md        the agent's suggestion queue for you (advisory)
+  reflections.md        this project's suggestion queue for you (advisory; plugin feedback goes upstream)
   roadmap.md            your backlog of future features (advisory)
   <slug>/
     plan/plan.md        the spec you approve (embeds the mockup renders)

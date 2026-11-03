@@ -535,8 +535,8 @@ test("reflect <note> --confirmed queues the note without the flag (#43)", async 
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", TEST_MD]);
-	const r = await flow(["reflect", "the", "verify", "gate", "lies", "--confirmed"]);
-	assert.match(r.content[0].text, /- \[ \] the verify gate lies — /, "the flag is not part of the operator's sentence");
+	const r = await flow(["reflect", "the", "seed", "data", "lies", "--confirmed"]);
+	assert.match(r.content[0].text, /- \[ \] the seed data lies — /, "the flag is not part of the operator's sentence");
 	assert.ok(!/--confirmed/.test(readFileSync(path.join(repo, ".dev-flow", "reflections.md"), "utf8")), "and nothing lands in the file");
 	const bare = await flow(["reflect", "--confirmed"]);
 	assert.match(bare.content[0].text, /flow reflect — session reflection/, "a flags-only reflect is a bare reflect");
@@ -732,14 +732,19 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	initPlaybook(repo);
 	await flow(["start", "rfeat"]);
 	await flow(["reflect", "test", "cmd", "is", "stale"]);
-	const r2 = await flow(["reflect", "ui", "panels", "are", "ugly", "in", "the", "plugin"]);
-	assert.match(r2.content[0].text, /reflected \(plugin — plugin wording\): - \[ \] ui panels are ugly in the plugin — rfeat \d{4}-\d{2}-\d{2}/, "the echo says why the note landed there");
+	await flow(["reflect", "--code", "the", "seed", "script", "skips", "admins"]);
 	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
-	assert.match(readFileSync(reflFile, "utf8"), /## playbook\n\n- \[ \] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}/);
+	const r2 = await flow(["reflect", "ui", "panels", "are", "ugly", "in", "the", "plugin"]);
+	assert.match(r2.content[0].text, /plugin note — not written to reflections\.md/, "a plugin-shaped note goes upstream, never into the project's file");
+	assert.match(r2.content[0].text, /filed as plugin: plugin wording/, "the echo says why it was read as plugin");
+	assert.ok(!readFileSync(reflFile, "utf8").includes("ui panels"), "nothing written");
+	assert.match(readFileSync(reflFile, "utf8"), /## playbook\n\n- \[ \] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}\n\n## code\n\n- \[ \] the seed script skips admins — rfeat /);
 	const proto = await flow(["reflect"]);
 	assert.match(proto.content[0].text, /flow reflect — session reflection \(dev-flow \d+\.\d+\.\d+, upstream: dmarchevsky\/pi-dev-flow\)/);
+	assert.match(proto.content[0].text, /1\. delegate the review: call flow_stage\(op: "reflect"/, "a bound session delegates the review");
 	assert.match(proto.content[0].text, /open items \(2\)/);
 	assert.match(proto.content[0].text, /\[playbook\] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}/);
+	assert.match(proto.content[0].text, /\[code\] the seed script skips admins[\s\S]*patch flow/);
 	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + "- [x] already handled\n");
 	const proto2 = await flow(["reflect"]);
 	assert.match(proto2.content[0].text, /open items \(2\)/, "checked-off items stay out of the open list");
@@ -748,7 +753,7 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	assert.match(st.content[0].text, /↻ 2 reflection\(s\) open/);
 });
 
-test("reflect --plugin/--playbook file by decision, list numbers them, move re-files one, doctor reads the heading", async () => {
+test("reflect --playbook/--code file by decision, --plugin prints the upstream recipe, list numbers them, move re-files one, doctor reads the heading", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
@@ -757,29 +762,40 @@ test("reflect --plugin/--playbook file by decision, list numbers them, move re-f
 	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
 	const a = await flow(["reflect", "--playbook", "the", "seed", "data", "note", "is", "stale"]);
 	assert.match(a.content[0].text, /reflected \(playbook — as told\)/);
-	const b = await flow(["reflect", "--plugin", "the", "deploy", "gate", "in", "CI", "is", "flaky"]);
-	assert.match(b.content[0].text, /reflected \(plugin — as told\)/, "an explicit flag beats the keyword guess");
-	assert.match(readFileSync(reflFile, "utf8"), /## plugin\n\n- \[ \] the deploy gate in CI is flaky — /);
+	const b = await flow(["reflect", "--code", "the", "deploy", "gate", "in", "CI", "is", "flaky"]);
+	assert.match(b.content[0].text, /reflected \(code — as told\)/, "an explicit flag beats the keyword guess");
+	assert.match(readFileSync(reflFile, "utf8"), /## code\n\n- \[ \] the deploy gate in CI is flaky — /);
+	const before = readFileSync(reflFile, "utf8");
+	const p = await flow(["reflect", "--plugin", "flow", "doctor", "prints", "twice"]);
+	assert.match(p.content[0].text, /gh issue list --repo dmarchevsky\/pi-dev-flow --state all --search/);
+	assert.match(p.content[0].text, /gh issue create --repo dmarchevsky\/pi-dev-flow --title "flow doctor prints twice"/);
+	assert.match(p.content[0].text, /— reflection from \d{4}-\d{2}-\d{2}/);
+	assert.ok(!/filed as plugin/.test(p.content[0].text), "an explicit --plugin needs no guess explanation");
+	assert.equal(readFileSync(reflFile, "utf8"), before, "--plugin never writes the project's queue");
 	const list = await flow(["reflect", "list"]);
 	assert.match(list.content[0].text, /1\. \[playbook\] the seed data note is stale/);
-	assert.match(list.content[0].text, /2\. \[plugin\] the deploy gate in CI is flaky/);
+	assert.match(list.content[0].text, /2\. \[code\] the deploy gate in CI is flaky/);
 	const moved = await flow(["reflect", "move", "2", "--playbook"]);
 	assert.match(moved.content[0].text, /item 2 re-filed under ## playbook/);
 	const filed = readFileSync(reflFile, "utf8");
-	assert.ok(!filed.includes("## plugin"), "the emptied section goes with its item");
+	assert.ok(!/^## code$/m.test(filed), "the emptied section goes with its item");
 	assert.equal(filed.split("- [ ] ").length - 1, 2, "the move moves one item, it does not copy it");
 	assert.match((await flow(["reflect", "move", "1", "--playbook"])).content[0].text, /already under ## playbook/);
-	assert.match((await flow(["reflect", "move", "9", "--plugin"])).content[0].text, /open item 1–2 required/);
-	assert.match((await flow(["reflect", "move", "1"])).content[0].text, /usage: flow reflect move <n> --plugin \| --playbook/);
+	assert.match((await flow(["reflect", "move", "9", "--code"])).content[0].text, /open item 1–2 required/);
+	assert.match((await flow(["reflect", "move", "1", "--plugin"])).content[0].text, /plugin notes are not kept in reflections\.md/);
+	assert.match((await flow(["reflect", "move", "1"])).content[0].text, /usage: flow reflect move <n> --playbook \| --code/);
 	const doctor = await flow(["doctor"]);
 	assert.match(doctor.content[0].text, /\[playbook\] the seed data note is stale/, "doctor labels from the heading the item lives under");
 	assert.match(doctor.content[0].text, /docs flow/, "and routes it to the flow that can change the playbook");
-	// an item the file does not place is named instead of quietly bucketed on the next write
 	writeFileSync(reflFile, "# dev-flow reflections\n\n- [ ] orphan note — x 2026-01-01\n");
-	assert.match((await flow(["doctor"])).content[0].text, /1 open item\(s\) sit outside ## playbook \/ ## plugin/);
+	assert.match((await flow(["doctor"])).content[0].text, /1 open item\(s\) sit outside ## playbook \/ ## code/);
+	// a legacy ## plugin row is flagged: it belongs on GitHub
+	writeFileSync(reflFile, "# dev-flow reflections\n\n## plugin\n\n- [ ] old plugin gripe — x 2026-01-01\n");
+	assert.match((await flow(["doctor"])).content[0].text, /1 open item\(s\) under the legacy ## plugin heading belong on GitHub/);
+	assert.match((await flow(["reflect", "list"])).content[0].text, /legacy ## plugin heading belong on GitHub/);
 });
 
-test("reflect tidy: drops closed items; every reflection surface nudges while the pile is there", async () => {
+test("reflect tidy: drops closed items; the nudge fires once the pile is worth a tidy", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
@@ -788,35 +804,34 @@ test("reflect tidy: drops closed items; every reflection surface nudges while th
 	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
 	const none = await flow(["reflect", "tidy"]);
 	assert.match(none.content[0].text, /nothing to tidy/, "no queue, nothing to do");
-	await flow(["reflect", "gate prompt asks twice"]);
+	await flow(["reflect", "the seed data is stale"]);
 	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + "- [x] handled one — fixed: v0.1\n");
-	const queued = await flow(["reflect", "the", "status", "bar", "lies", "in", "the", "plugin"]);
-	assert.match(queued.content[0].text, /reflected \(plugin — plugin wording\): - \[ \] the status bar lies in the plugin/);
-	assert.match(queued.content[0].text, /↻ 1 closed reflection\(s\) — flow reflect tidy drops them/, "queueing a note points at the tidy");
-	assert.match((await flow(["reflect"])).content[0].text, /↻ 1 closed reflection\(s\)/, "the protocol carries the hint too");
-	assert.match((await flow(["doctor"])).content[0].text, /↻ 1 closed reflection\(s\)/, "doctor carries it too");
-	// a note merely starting with the verb word stays a note
+	const quiet = await flow(["reflect", "the", "readme", "is", "out", "of", "date"]);
+	assert.ok(!/closed reflection\(s\)/.test(quiet.content[0].text), "one closed item among open ones is not worth a tidy yet");
+	const old = Array.from({ length: 5 }, (_, i) => `- [x] handled ${i} — s 2026-01-0${i + 1} — fixed: v0.1`).join("\n");
+	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + old + "\n");
+	const queued = await flow(["reflect", "the", "docs", "page", "lies"]);
+	assert.match(queued.content[0].text, /↻ 6 closed reflection\(s\) — flow reflect tidy drops them/, "queueing a note points at the tidy once the pile is real");
+	assert.match((await flow(["reflect"])).content[0].text, /↻ 6 closed reflection\(s\)/, "the protocol carries the hint too");
+	assert.match((await flow(["doctor"])).content[0].text, /↻ 6 closed reflection\(s\)/, "doctor carries it too");
 	assert.match((await flow(["reflect", "tidy", "up", "the", "readme"])).content[0].text, /reflected \(playbook — playbook wording\): - \[ \] tidy up the readme/);
 	const t = await flow(["reflect", "tidy"]);
-	assert.match(t.content[0].text, /dropped 1 closed item\(s\) — 3 open/);
+	assert.match(t.content[0].text, /dropped 6 closed item\(s\) — 4 open/);
 	assert.ok(!readFileSync(reflFile, "utf8").includes("- [x]"), "closed lines are gone from the file");
 	const again = await flow(["reflect", "tidy"]);
-	assert.match(again.content[0].text, /nothing to tidy \(3 open, 0 closed\)/);
-	assert.ok(!/closed reflection\(s\)/.test((await flow(["reflect", "final plugin finding"])).content[0].text), "no hint once the pile is gone");
+	assert.match(again.content[0].text, /nothing to tidy \(4 open, 0 closed\)/);
 });
 
-test("bare reflect prints the protocol in a foreign repo: plugin items route upstream", async () => {
+test("bare reflect prints the protocol in a foreign repo: plugin findings become upstream issues", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", TEST_MD]);
-	await flow(["reflect", "the gate prompt asks twice"]);
 	const proto = await flow(["reflect"]);
-	assert.match(proto.content[0].text, /1\. review the current session log in full/);
-	assert.match(proto.content[0].text, /gh issue list --repo dmarchevsky\/pi-dev-flow --state all --search/);
-	assert.match(proto.content[0].text, /b\. playbook items: run flow doctor/);
-	assert.match(proto.content[0].text, /file an issue against pi-dev-flow upstream/, "a foreign repo routes plugin items upstream");
+	assert.match(proto.content[0].text, /1\. review the current session log in full/, "unbound: inline review");
+	assert.match(proto.content[0].text, /fold plugin → flow reflect --plugin "<note>" prints the upstream recipe/);
+	assert.match(proto.content[0].text, /dev-flow plugin feedback is never written there/);
 });
 
 test("flow doctor no longer queues: reflect is the only queue command", async () => {
@@ -1171,7 +1186,15 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "state.json")), "a refused finish removes nothing");
 	await flow(["release", "--confirmed"]);
 	await flow(["release-done", "--confirmed"]);
-	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature fin done — worktree and branch feat\/fin removed.*roadmap: 1 item\(s\) marked done/, "finish checks off the picked backlog item");
+	const ask = await flow(["finish"]);
+	assert.match(ask.content[0].text, /no reflection recorded for fin — the finish protocol runs flow_stage\(op: "reflect"\) first/, "finish names a skipped reflection");
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "state.json")), "advisory only: the ask removes nothing");
+	// three open playbook items: finish (the moment between flows) suggests one docs flow for them
+	writeFileSync(path.join(repo, ".dev-flow", "reflections.md"), "# dev-flow reflections\n\n## playbook\n\n- [ ] a — s 2099-01-01\n- [ ] b — s 2099-01-01\n- [ ] c — s 2099-01-01\n");
+	const done = await flow(["finish", "--confirmed"]);
+	assert.match(done.content[0].text, /feature fin done — worktree and branch feat\/fin removed.*roadmap: 1 item\(s\) marked done/, "finish checks off the picked backlog item");
+	assert.match(done.content[0].text, /⚑ fix the open reflections now\? \(3 playbook items batch into one docs flow\)/, "finish suggests the fix when a rule fires");
+	assert.ok(!/no reflection recorded/.test(done.content[0].text), "the skipped-reflection note is for the question, not the close-out");
 	assert.match(readFileSync(path.join(repo, ".dev-flow", "roadmap.md"), "utf8"), /- \[x\] the finishing move \(fin\) — done: \d{4}-\d{2}-\d{2}/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "fin")), "the flow state folder is gone");
 	assert.throws(() => execFileSync("git", ["-C", repo, "rev-parse", "--verify", "feat/fin"]));
@@ -1600,12 +1623,13 @@ test("flow doctor reviews open reflections with routing and briefs a fresh note"
 	await flow(["init", "--write", TEST_MD]);
 	writeFileSync(
 		path.join(repo, ".dev-flow", "reflections.md"),
-		"# dev-flow reflections\n\n## playbook\n\n- [ ] test command is stale — x 2026-01-01\n\n## plugin\n\n- [ ] the gate prompt asks twice — y 2026-01-01\n\n## release\n\n```flow\nmerge = merge\n```\n",
+		"# dev-flow reflections\n\n## playbook\n\n- [ ] test command is stale — x 2026-01-01\n\n## code\n\n- [ ] seed skips admins — x 2026-01-01\n\n## plugin\n\n- [ ] the gate prompt asks twice — y 2026-01-01\n\n## release\n\n```flow\nmerge = merge\n```\n",
 	);
 	const d = await flow(["doctor"]);
-	assert.match(d.content[0].text, /reflection review — 2 open item\(s\)/);
+	assert.match(d.content[0].text, /reflection review — 3 open item\(s\)/);
 	assert.match(d.content[0].text, /docs flow \(flow start fold-<topic> --docs --confirmed\)/, "playbook items route to a docs flow");
-	assert.match(d.content[0].text, /file an issue against pi-dev-flow upstream/, "plugin items route upstream in a foreign repo");
+	assert.match(d.content[0].text, /\[code\] seed skips admins[^\n]*\n\s*→ patch flow/, "code items route to a patch flow");
+	assert.match(d.content[0].text, /legacy ## plugin row — belongs on GitHub/, "a legacy plugin row is sent upstream in a foreign repo");
 	assert.match(d.content[0].text, /doctor never implements/);
 	const n = await flow(["doctor", "the", "health", "check", "drifted"]);
 	assert.match(n.content[0].text, /investigate: "the health check drifted"/);
@@ -2460,6 +2484,72 @@ test("flow_stage review: advisory verdict, read-only toolset, no gate state touc
 	} finally {
 		stageWorkerSpawn.run = orig;
 	}
+});
+
+test("flow_stage reflect: reads the driver and worker transcripts, renders fold/drop rows, records the run", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const sdir = mkdtempSync(path.join(tmpdir(), "sessions-"));
+	const driver = path.join(sdir, "driver.jsonl");
+	writeFileSync(driver, '{"type":"session","version":3,"id":"d","cwd":"/x"}\n{"type":"message"}\n');
+	writeFileSync(path.join(sdir, "w1.jsonl"), `{"type":"session","version":3,"id":"w1","parentSession":${JSON.stringify(driver)}}\n`);
+	writeFileSync(path.join(sdir, "stranger.jsonl"), '{"type":"session","version":3,"id":"s","parentSession":"/elsewhere.jsonl"}\n');
+	writeFileSync(path.join(sdir, "junk.jsonl"), "not json\n");
+	const ctx = { ...makeCtx(repo), sessionManager: { getSessionId: () => "driver-sid", getSessionFile: () => driver, getSessionDir: () => sdir } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "rfl"]);
+	await flow(["reflect", "--playbook", "the", "seed", "note", "is", "stale"]);
+	const stateFile = path.join(repo, ".dev-flow", "rfl", "state.json");
+	assert.equal(JSON.parse(readFileSync(stateFile, "utf8")).reflectedAt, undefined);
+	const worker = fakeWorker([
+		() => "Read both.\n\nREPORT\nF1 | fold | docs | test command drifted | dup: none | why: hit twice | evidence: driver.jsonl:2\nF2 | fold | plugin | guard refused a scratch write | dup: none | why: real friction\nO1 | recurred | the seed note bit again",
+	]);
+	const orig = stageWorkerSpawn.run;
+	let spawned: { work: string; tools: string[]; subagent?: { profile: string } } | undefined;
+	stageWorkerSpawn.run = async (o) => { spawned = o; return worker as never; };
+	try {
+		const r = (await pi.tools.flow_stage.execute("id", { op: "reflect", note: "the operator disliked the double prompt" }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean; details?: { findings?: number } };
+		assert.ok(!r.isError, r.content[0].text);
+		assert.equal(spawned?.work, repo, "the reflection runs in the main checkout, not a worktree");
+		assert.deepEqual(spawned?.tools, ["read", "bash"], "read-only");
+		assert.equal(spawned?.subagent?.profile, "flow-reflect");
+		const brief = worker.prompts[0];
+		assert.match(brief, new RegExp(`Driver session transcript \\(read it in full\\): ${driver.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+		assert.match(brief, /w1\.jsonl/, "a worker transcript (parentSession = driver) is handed over");
+		assert.ok(!brief.includes("stranger.jsonl"), "another session's worker is not");
+		assert.match(brief, /1\. \[playbook\] the seed note is stale/);
+		assert.match(brief, /Operator context: the operator disliked the double prompt/);
+		const out = r.content[0].text;
+		assert.match(out, /1\. \[fold\] docs: test command drifted\n\s+→ docs flow/);
+		assert.match(out, /2\. \[fold\] plugin: guard refused a scratch write\n\s+→ upstream GitHub issue/);
+		assert.match(out, /#1 recurred — the seed note bit again → recommend fixing it now/);
+		assert.match(out, /ask fold or drop for each/);
+		assert.match(out, /⚑ fix the open reflections now\? \(1 recurred this session\)/);
+		assert.equal(r.details?.findings, 2);
+		assert.ok(JSON.parse(readFileSync(stateFile, "utf8")).reflectedAt, "the run is recorded for finish");
+		assert.ok(!readFileSync(path.join(repo, ".dev-flow", "reflections.md"), "utf8").includes("test command drifted"), "the worker's findings are not written — the operator decides");
+	} finally {
+		stageWorkerSpawn.run = orig;
+	}
+});
+
+test("reflection nudges: no mid-flow nag in bound context; between flows the fix suggestion names the route", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	writeFileSync(path.join(repo, ".dev-flow", "reflections.md"), "# dev-flow reflections\n\n## code\n\n- [ ] seed skips admins — s 2099-01-01\n");
+	// a fresh ctx per run: the context line is emitted once per run object
+	const unbound = ((await pi.handlers.before_agent_start[0]({}, { ...ctx })) as { message: { content: string } }).message.content;
+	assert.match(unbound, /1 reflection\(s\) open — ⚑ fix the open reflections now\? \(between flows\) — 1 code item\(s\) → patch flow/);
+	await flow(["start", "mid"]);
+	const bound = ((await pi.handlers.before_agent_start[0]({}, { ...ctx })) as { message: { content: string } }).message.content;
+	assert.match(bound, /bound to: mid/, "fixture: the bound context was emitted");
+	assert.ok(!/reflection\(s\) open/.test(bound), "a feature in progress is not diverted into old reflections");
 });
 
 test("flow_stage workers stamp pi-web subagent entries — visible in the Agents menu", async () => {
