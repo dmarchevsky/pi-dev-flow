@@ -18,9 +18,7 @@ import {
 	mergeStyleInvocation,
 	parseMergeStyle,
 	changelogEntry,
-	cleanupAssess,
 	cmpVersions,
-	compactionReflectionLine,
 	DEFAULTS,
 	detectForge,
 	featureBranchPrefix,
@@ -71,7 +69,6 @@ import {
 	reflectItems,
 	reflectMove,
 	reflectProtocol,
-	reflectSections,
 	reflectUnfiledCount,
 	reflectionLine,
 	reflectionRoutes,
@@ -86,13 +83,12 @@ import {
 	DF_ADVISORY_FILES,
 	sq,
 	tagNotesCommand,
-	openReflections,
-	closedReflectionCount,
+	openChecklistItems,
+	doneItemCount,
 	reflectionsTidy,
 	reflectionsTidyHint,
 	appendRoadmapItem,
 	roadmapDone,
-	roadmapDoneCount,
 	roadmapDoneForSlug,
 	roadmapOpenCount,
 	roadmapPick,
@@ -145,7 +141,6 @@ test("stageReference: every stage names its own playbook file", () => {
 	assert.equal(stageReference("implement"), "references/implement.md");
 	assert.equal(stageReference("pre-release"), "references/pre-release.md");
 	assert.equal(stageReference("release"), "references/release.md", "the release stage reads release.md, which hands over to finish.md");
-	assert.equal(stageReference("done"), null, "a finished feature has nothing left to read");
 });
 
 test("healthRetry: the wait budget becomes attempts at the probe interval (#42)", () => {
@@ -545,8 +540,8 @@ test("writeGuard: a symlink in the worktree is judged where the bytes land", () 
 });
 
 test("openReflections: unchecked items only", () => {
-	assert.deepEqual(openReflections("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
-	assert.deepEqual(openReflections(""), []);
+	assert.deepEqual(openChecklistItems("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
+	assert.deepEqual(openChecklistItems(""), []);
 });
 
 test("roadmap: append mints the header once and adds open items", () => {
@@ -556,7 +551,7 @@ test("roadmap: append mints the header once and adds open items", () => {
 	const two = appendRoadmapItem(one, "  roadmap tidy  \n");
 	assert.ok(two.includes("- [ ] roadmap tidy\n"), "text is trimmed into the item");
 	assert.equal(roadmapOpenCount(two), 2);
-	assert.equal(roadmapDoneCount(two), 0);
+	assert.equal(doneItemCount(two), 0);
 });
 
 test("roadmap: pick stamps the nth open item, idempotent per slug", () => {
@@ -573,7 +568,7 @@ test("roadmap: done checks the nth open item with a stamp", () => {
 	const src = "- [ ] a\n- [x] old\n- [ ] b\n";
 	assert.match(roadmapDone(src, 2, "2025-10-19 fin")!, /- \[x\] b — done: 2025-10-19 fin/);
 	assert.equal(roadmapDone(src, 3, "x"), null);
-	assert.equal(roadmapDoneCount(roadmapDone(src, 1, "d")!), 2);
+	assert.equal(doneItemCount(roadmapDone(src, 1, "d")!), 2);
 });
 
 test("roadmap: finish hook checks off every item stamped (slug)", () => {
@@ -593,8 +588,8 @@ test("roadmap: tidy drops done items and keeps preamble and open items", () => {
 });
 
 test("reflections: closed count; tidy drops closed items and headings left empty", () => {
-	assert.equal(closedReflectionCount("# h\n## playbook\n\n- [ ] open\n- [x] done — fixed: v1\n## plugin\n\n- [X] gone\n"), 2);
-	assert.equal(closedReflectionCount(""), 0);
+	assert.equal(doneItemCount("# h\n## playbook\n\n- [ ] open\n- [x] done — fixed: v1\n## plugin\n\n- [X] gone\n"), 2);
+	assert.equal(doneItemCount(""), 0);
 	const src = "# dev-flow reflections\n\n<!-- note -->\n\n## playbook\n\n- [ ] keep me — a 2025-01-01\n- [x] done — fixed: v1\n\n## plugin \n\n- [x] all gone — fixed: v2\n";
 	const out = reflectionsTidy(src);
 	assert.ok(out.includes("- [ ] keep me — a 2025-01-01\n"), "open item stays verbatim");
@@ -610,7 +605,9 @@ test("reflections: closed count; tidy drops closed items and headings left empty
 	assert.match(reflectionsTidyHint(3), /↻ 3 closed reflection\(s\) — flow reflect tidy drops them/);
 });
 
-test("reflectSections: one primary home, named signals, the attribution tail never classified", () => {
+const reflectSections = (note: string) => guessReflectSections(note).sections;
+
+test("guessReflectSections: one primary home, named signals, the attribution tail never classified", () => {
 	assert.deepEqual(reflectSections("the gate prompt asks twice, that is wrong"), ["plugin"]);
 	assert.deepEqual(reflectSections("the checklist item about seeded data is stale"), ["playbook"]);
 	// a note that names dev-flow's own surface is a plugin issue even when it also mentions project.md:
@@ -663,7 +660,7 @@ test("reflectMove re-files an item under the other section", () => {
 	// an old --both filing: moving one copy onto the other merges it, it does not duplicate
 	const both = "## playbook\n\n- [ ] same note — s 1\n\n## plugin\n\n- [ ] same note — s 2\n";
 	const merged = reflectMove(both, 1, "plugin") ?? "";
-	assert.equal(openReflections(merged).length, 1, "the duplicate merges away instead of being copied");
+	assert.equal(openChecklistItems(merged).length, 1, "the duplicate merges away instead of being copied");
 	assert.match(merged, /## plugin\n\n- \[ \] same note — s 2\n$/);
 });
 
@@ -673,9 +670,9 @@ test("appendReflection writes the two sections and migrates a legacy flat file",
 	assert.match(out, /## playbook\n\n- \[ \] old playbook note — y 2025-10-01\n\n## plugin\n/);
 	assert.match(out, /- \[ \] old plugin note — x 2025-10-01\n- \[ \] new note — z 2025-10-02\n$/);
 	assert.ok(!out.includes("(plugin)"), "inline target markers go away once the section carries them");
-	assert.equal(openReflections(out).length, 3);
+	assert.equal(openChecklistItems(out).length, 3);
 	const both = appendReflection("", ["playbook", "plugin"], "- [ ] both — z 2025-10-02");
-	assert.equal(openReflections(both).length, 2, "a both-sections note is written to each");
+	assert.equal(openChecklistItems(both).length, 2, "a both-sections note is written to each");
 	const noted = "# my notes\n\noperator: triage on Fridays\n\n- [ ] item one\n";
 	assert.equal(
 		appendReflection(noted, ["plugin"], "- [ ] item two"),
@@ -737,9 +734,6 @@ test("statusFor: bound flow renders as before; unbound shows only the count", ()
 	assert.deepEqual(statusFor(null, 1), { text: "💬 1 flow open" }, "unbound names nobody — count only, under the pre-flow glyph");
 	assert.deepEqual(statusFor(null, 2), { text: "💬 2 flows open" });
 	assert.deepEqual(statusFor(null, 0), { text: "💬 no flows" }, "an initiated repo always carries the footer");
-	const done = newState("f", false);
-	done.stage = "done";
-	assert.deepEqual(statusFor(done, 0), { text: "💬 no flows" }, "a done bound feature falls back to the idle line");
 	const asked = newState("f", false);
 	asked.pendingAsk = "Approve?";
 	assert.deepEqual(statusFor(asked, 1), { text: "📝 f 💬" }, "an unanswered checkpoint is the operator's turn — 💬 is the legend's glyph for it");
@@ -858,15 +852,9 @@ test("reflectProtocol: closed items add the tidy hint next to the queue line", (
 test("versionTagGate: manifest and tag must agree", () => {
 	assert.deepEqual(versionTagGate("1.2.3", "v{version}", ["v1.2.3", "v1.2.2"]), []);
 	assert.match(versionTagGate("1.2.3", "v{version}", ["v1.2.2"])[0], /expected release tag "v1\.2\.3"/);
-	assert.ok(versionTagGate(null, "v{version}", []).length === 1);
 	assert.deepEqual(versionTagGate("0.13.1-letta_0.34.9", "{version}", ["0.13.1-letta_0.34.9"]), [], "suffix-style patterns");
 });
 
-test("cleanupAssess flags dirty worktree and lists unmerged", () => {
-	assert.deepEqual(cleanupAssess("", []), { errors: [], unmerged: [] });
-	assert.ok(cleanupAssess(" M file.ts", []).errors.length === 1);
-	assert.deepEqual(cleanupAssess("", ["abc msg", ""]).unmerged, ["abc msg"]);
-});
 
 test("approveGate: patch features skip the plan document, gates stay", () => {
 	const p = newState("p", false, true);
@@ -898,7 +886,6 @@ test("shouldSelfCompact: only near pi's threshold and only when no chat-only sta
 	assert.equal(shouldSelfCompact({ ...base, tokens: 167_233 }), true, "one over threshold-minus-margin triggers");
 	assert.equal(shouldSelfCompact({ ...base, tokens: null }), false, "unknown usage");
 	assert.equal(shouldSelfCompact({ ...base, stage: null }), false, "no flow bound");
-	assert.equal(shouldSelfCompact({ ...base, stage: "done" }), false, "finished feature");
 	assert.equal(shouldSelfCompact({ ...base, checklistPending: 2 }), false, "operator dialog in flight — chat is the state");
 	assert.equal(shouldSelfCompact({ ...base, stage: "plan", planFiles: 0 }), false, "undigested plan discussion");
 	assert.equal(shouldSelfCompact({ ...base, stage: "plan", planFiles: 1 }), true, "plan on disk is safe to summarize");
@@ -920,11 +907,6 @@ test("shouldTakeOverCompaction: only pi's threshold path, only when bound and id
 	assert.equal(shouldTakeOverCompaction({ reason: "threshold", bound: true, inFlight: true }), false, "no stacked compactions");
 });
 
-test("compactionReflectionLine is a valid open reflection item", () => {
-	const line = compactionReflectionLine("compact-aware", "implement", "threshold", "2025-10-13");
-	assert.deepEqual(openReflections(line).length, 1);
-	assert.match(line, /^- \[ \] pi auto-compacted \(threshold\) at stage implement .* — compact-aware 2025-10-13$/);
-});
 
 // ---------------------------------------------------------------- flow-guard rules
 

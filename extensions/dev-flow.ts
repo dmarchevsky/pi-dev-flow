@@ -44,9 +44,7 @@ import {
 	claimBlocks,
 	classifyMergeHistory,
 	cmpVersions,
-	cleanupAssess,
-	closedReflectionCount,
-	compactionReflectionLine,
+	doneItemCount,
 	detectForge,
 	extractSkillCore,
 	featureBranchPrefix,
@@ -92,11 +90,9 @@ import {
 	newState,
 	nextHint,
 	openChecklistItems,
-	openReflections,
 	releaseGate,
 	parseVersion,
 	roadmapDone,
-	roadmapDoneCount,
 	roadmapDoneForSlug,
 	roadmapOpenCount,
 	roadmapPick,
@@ -379,9 +375,8 @@ const compacting = new Set<string>();
 const coreInjected = new Set<string>();
 /** Sessions whose last compaction dropped the core out of context — the next run pays it once more. */
 const coreStale = new Set<string>();
-/** The skill dir of THIS loaded copy. Since 0.57.1 dropped the `.pi/extensions` dogfood shim, the
- *  copy a session runs and a development checkout are different installs, so playbook paths
- *  resolve from the code actually loaded — never from cwd. */
+/** The skill dir of THIS loaded copy: the copy a session runs and a development checkout can be
+ *  different installs, so playbook paths resolve from the code actually loaded — never from cwd. */
 const SKILL_DIR = path.join(import.meta.dirname, "..", "skills", "dev-flow");
 let skillCoreCache: string | null | undefined;
 /** The core block between SKILL.md's markers, read once per process (/reload reloads the module
@@ -406,12 +401,13 @@ export const compactionTakeover: { run: typeof compact } = { run: compact };
 /** Marks the before_agent_start pass that already wrote this run's [dev-flow] line — see the claim in that handler. */
 const CONTEXT_EMITTED = Symbol.for("pi-dev-flow.context-emitted");
 
+/** Every feature with a state file — finish deletes the state, so whatever is on disk is unfinished. */
 function unfinishedStates(root: string): FlowState[] {
 	if (!existsSync(dfDir(root))) return [];
 	return readdirSync(dfDir(root), { withFileTypes: true })
 		.filter((d) => d.isDirectory())
 		.map((d) => readState(root, d.name))
-		.filter((s): s is FlowState => !!s && s.stage !== "done");
+		.filter((s): s is FlowState => !!s);
 }
 
 /** Open items of the agent's suggestion queue (.dev-flow/reflections.md), each with its section. */
@@ -442,7 +438,7 @@ function boundFeature(root: string, key: string): FlowState | null {
 	const bound = bindings.get(key);
 	if (bound) {
 		const s = readState(root, bound);
-		if (s && s.stage !== "done") return s;
+		if (s) return s;
 	}
 	return unfinishedStates(root).find((s) => readClaim(root, s.slug)?.key === key) ?? null;
 }
@@ -563,15 +559,14 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 	return out;
 }
 
-/** Where feature commands run: the feature worktree once it exists (that is where the
- *  code under test lives), else the main checkout. Keeps gates off the main branch. */
-
 /** Lines the current project.md has that a regenerated draft cannot reproduce. */
 function droppableLines(current: string, draft: string): string[] {
 	const keep = new Set(draft.split("\n").map((l) => l.trim()).filter(Boolean));
 	return current.split("\n").map((l) => l.trim()).filter((l) => l && !keep.has(l));
 }
 
+/** Where feature commands run: the feature worktree once it exists (that is where the
+ *  code under test lives), else the main checkout. Keeps gates off the main branch. */
 function gateCwd(root: string, state: FlowState): string {
 	const wt = worktreeAbs(root, state);
 	return wt && existsSync(wt) ? wt : root;
@@ -741,7 +736,7 @@ function reflectNote(root: string, sess: Session, note: string[], forced: Reflec
 	if (next === text) return { text: `already reflected (duplicate): ${line}` };
 	writeFileSync(file, next);
 	// queueing is exactly when the operator hears about the checked-off pile — nudge instead of letting it grow
-	const closed = closedReflectionCount(next);
+	const closed = doneItemCount(next);
 	const why = forced ? "as told" : guess.why;
 	return { text: `reflected (${sections.join(" + ")} — ${why}): ${line}` + (closed ? `\n${reflectionsTidyHint(closed)}` : "") };
 }
@@ -771,7 +766,7 @@ async function fetchUpstream(root: string): Promise<{ slug: string; issues: GhIs
 
 type FoldView = { state: "absent" } | { state: "skipped"; why: string } | { state: "ok"; slug: string; result: FoldResult; open: number };
 
-async function foldView(root: string, items: ReflectItem[], selfRepo: boolean): Promise<FoldView> {
+async function foldView(root: string, items: ReflectItem[]): Promise<FoldView> {
 	const up = await fetchUpstream(root);
 	if ("absent" in up) return { state: "absent" };
 	if ("skipped" in up) return { state: "skipped", why: up.skipped };
@@ -796,7 +791,7 @@ function foldRows(fold: FoldView, selfRepo: boolean): string[] {
  *  addressable by move: each item keeps the home it is resolved in. */
 async function reflectList(root: string): Promise<RunResult> {
 	const items = readReflections(root);
-	const fold = await foldView(root, items, isSelfRepo(root));
+	const fold = await foldView(root, items);
 	const local = items.length
 		? [
 				`reflections — ${items.length} open:`,
@@ -835,8 +830,8 @@ function reflectTidy(root: string): RunResult {
 	const file = path.join(dfDir(root), "reflections.md");
 	if (!existsSync(file)) return { text: "reflections: nothing to tidy (no queue yet)" };
 	const text = readFileSync(file, "utf8");
-	const closed = closedReflectionCount(text);
-	const open = openReflections(text).length;
+	const closed = doneItemCount(text);
+	const open = openChecklistItems(text).length;
 	if (!closed) return { text: `reflections: nothing to tidy (${open} open, 0 closed)` };
 	writeFileSync(file, reflectionsTidy(text));
 	return { text: `reflections: dropped ${closed} closed item(s) — ${open} open` };
@@ -1352,25 +1347,25 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	if (wt && existsSync(wt)) {
 		const status = await sh(`git -C ${sq(wt)} status --porcelain`, root);
 		const unmerged = await sh(`git -C ${sq(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${sq(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
-		const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
+		const unmergedLines = unmerged.out.split("\n").filter(Boolean);
 		// the refusal names the paths, not just the count — same proof verify and release print (gh#131)
-		if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}${status.out.trim() ? `:\n${tail(status.out)}` : ""}`, isError: true };
-		if (assess.unmerged.length) {
+		if (status.out.trim()) return { text: `finish blocked:\n- worktree has uncommitted changes — commit or discard them first:\n${tail(status.out)}`, isError: true };
+		if (unmergedLines.length) {
 			const policy = cfg.release.merge;
 			// "not on the default branch" is only a violation when the ancestry is measurable: with no origin,
 			// or a branch that was never pushed, the same count describes a local-only repo, not a squash
 			const measurable = hasOriginF && !!state!.branch && (await sh(`git show-ref --quiet --verify ${sq(`refs/remotes/origin/${state!.branch}`)} ${sq(`refs/remotes/origin/${cfg.defaultBranch}`)}`, root)).ok;
 			unmergedNote =
 				policy && policy !== "merge" && policy !== "any"
-					? ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} — expected, the playbook merges with ${policy}.`
+					? ` ${unmergedLines.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} — expected, the playbook merges with ${policy}.`
 					: policy === "merge" && measurable
-						? ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} although the playbook says merge = merge — that PR did not land as a merge commit`
-						: ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?)`;
+						? ` ${unmergedLines.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} although the playbook says merge = merge — that PR did not land as a merge commit`
+						: ` ${unmergedLines.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?)`;
 			// under a merge-commit policy this is a violation, not a routine cleanup note: yolo does not
 			// answer it, only the operator does
 			if (policy === "merge" && measurable && !flag("confirmed")) {
 				markPendingAsk(root, state!, "Merge policy violation?");
-				return { text: needsOperator(`the playbook says merge = merge, but ${assess.unmerged.length} commit(s) of ${state!.slug} are not on ${cfg.defaultBranch} — the PR landed as a squash or a rebase. Ask the operator how to proceed, then re-run with --confirmed`, "Merge policy violation?"), isError: true };
+				return { text: needsOperator(`the playbook says merge = merge, but ${unmergedLines.length} commit(s) of ${state!.slug} are not on ${cfg.defaultBranch} — the PR landed as a squash or a rebase. Ask the operator how to proceed, then re-run with --confirmed`, "Merge policy violation?"), isError: true };
 			}
 		}
 	}
@@ -1447,7 +1442,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 }
 
 async function gateInit(o: GateCtx): Promise<RunResult> {
-	const { root, ui, cfg, rest, flag } = o;
+	const { root, ui, rest, flag } = o;
 	// a recursive mkdir is silent about whether it created anything, and `flow init --write` is the
 	// only sanctioned agent path to the playbook: claiming "created" when the folder was already
 	// there sends the agent diffing its own config for damage that never happened (#39).
@@ -1582,7 +1577,7 @@ ${mdDigest(draftRefresh)}`))
 }
 
 async function gateStart(o: GateCtx): Promise<RunResult> {
-	const { root, ui, sess, cfg, rest, flag, slugArg } = o;
+	const { root, sess, cfg, rest, flag, slugArg } = o;
 	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --ui/--patch/--docs are operator-granted — ask the operator in chat, then add --confirmed", isError: true };
 	if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
 	// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
@@ -1614,11 +1609,7 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 	const styleArg = flagValue(rest, "merge");
 	const style = styleArg === null ? null : parseMergeStyle(styleArg);
 	if (styleArg !== null && !style) return { text: `--merge=${styleArg} is not a policy — use squash, merge, rebase or any`, isError: true };
-	// with no playbook at all there is nothing to ask about: writing the playbook is `flow init`'s job, and
-	// a repo that never ran init must not be refused a feature by a merge-policy question
-	const hasPlaybook = existsSync(path.join(dfDir(root), "project.md"));
-	if (!hasPlaybook) notes.push("no .dev-flow/project.md yet — flow init writes the playbook (it now asks for the merge policy too)");
-	if (hasPlaybook && (!cfg.release.merge || (style && style !== cfg.release.merge))) {
+	if (!cfg.release.merge || (style && style !== cfg.release.merge)) {
 		if (!style) {
 			const ev = await mergeHistoryEvidence(root, cfg.defaultBranch);
 			return {
@@ -1706,7 +1697,7 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 }
 
 async function gateStatus(o: GateCtx): Promise<RunResult> {
-	const { root, ui, sess, cfg, flag, slugArg } = o;
+	const { root, sess, cfg, flag, slugArg } = o;
 	const df = dfDir(root);
 	const { md } = loadProject(df);
 	// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
@@ -1719,7 +1710,7 @@ async function gateStatus(o: GateCtx): Promise<RunResult> {
 	// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
 	const rmap = roadmapOpenCount(readRoadmap(root));
 	const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
-	const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
+	const slugs = slugArg ? [slugArg] : unfinishedStates(root).map((s) => s.slug);
 	const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
 	if (flag("json")) {
 		const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
@@ -1767,12 +1758,12 @@ async function gateReflect(o: GateCtx): Promise<RunResult> {
 	const self = pluginVersion(import.meta.dirname);
 	const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
 	const refl = readReflections(root);
-	const fold = await foldView(root, refl, isSelfRepo(root));
+	const fold = await foldView(root, refl);
 	return {
 		text: reflectProtocol(refl, isSelfRepo(root), {
 			version: self.version,
 			upstream,
-			closed: closedReflectionCount(readReflectionsText(root)),
+			closed: doneItemCount(readReflectionsText(root)),
 			ghFold: fold.state === "ok" && fold.open ? { repo: fold.slug, open: fold.open, similar: fold.result.similar.length } : undefined,
 		}).join("\n"),
 	};
@@ -1785,7 +1776,7 @@ async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 	const [verb = "list", ...args] = words;
 	const text = readRoadmap(root);
 	const open = roadmapOpenCount(text);
-	const done = roadmapDoneCount(text);
+	const done = doneItemCount(text);
 	const save = (next: string) => writeFileSync(roadmapFile(root), next); // .dev-flow/ existence is runFlow's precondition
 	const idx = Number(args[0]);
 	const validIdx = Number.isInteger(idx) && idx >= 1 && idx <= open;
@@ -1823,14 +1814,14 @@ async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 }
 
 async function gateDoctor(o: GateCtx): Promise<RunResult> {
-	const { root, cfg, rest } = o;
+	const { root, rest } = o;
 	// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
 	const df = dfDir(root);
 	const loaded = loadProject(df);
 	const findings = doctorFindings(root, loaded.cfg, loaded.md);
 	findings.push(...(await gitConsistency(root, loaded.cfg)));
 	const refl = readReflections(root);
-	const fold = await foldView(root, refl, isSelfRepo(root));
+	const fold = await foldView(root, refl);
 	if (refl.length) {
 		findings.push(`reflection review — ${refl.length} open item(s); doctor never implements: investigate each, present the fix, the operator confirms, then the routed flow implements it:`);
 		// labelled from the heading each item sits under — the file is the record, re-guessing from the
@@ -1843,15 +1834,14 @@ async function gateDoctor(o: GateCtx): Promise<RunResult> {
 	findings.push(...foldRows(fold, isSelfRepo(root)));
 	const unfiled = reflectUnfiledCount(readReflectionsText(root));
 	if (unfiled) findings.push(`  reflections: ${unfiled} open item(s) sit outside ## playbook / ## plugin — flow reflect list shows them, flow reflect move <n> --plugin|--playbook files them`);
-	const closedRefl = closedReflectionCount(readReflectionsText(root));
+	const closedRefl = doneItemCount(readReflectionsText(root));
 	if (closedRefl) findings.push(reflectionsTidyHint(closedRefl));
 	if (!rest.length) return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
 	// flow doctor <note>: a fresh observation gets an investigation brief and a fix route
 	return { text: investigationBrief(rest.filter((a) => !a.startsWith("--")).join(" "), isSelfRepo(root)).join("\n") };
 }
 
-/** What a gate handler needs from the runFlow preamble. Bodies moved verbatim destructure
- *  their own names back, so the bodies needed zero edits. */
+/** What a gate handler needs from the runFlow preamble. */
 interface GateCtx {
 	root: string;
 	ui: Ui;
@@ -1924,7 +1914,7 @@ async function gateUse(o: GateCtx): Promise<RunResult> {
 	const { root, sess, slugArg } = o;
 	if (!slugArg) return { text: "usage: flow use <slug>", isError: true };
 	const st = readState(root, slugArg);
-	if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
+	if (!st) return { text: `no unfinished feature ${slugArg}`, isError: true };
 	const prior = readClaim(root, slugArg);
 	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
 	sess.bind(slugArg);
@@ -2030,11 +2020,6 @@ function needState(root: string, sess: Session, slugArg?: string): { state: Flow
 	if (sess.slug !== slug && claimBlocks(claim, sess.key))
 		return { state: null, err: { text: `${slug} is claimed by another live session (pid ${claim!.pid}) — flow use ${slug} takes it over explicitly`, isError: true } };
 	return { state };
-}
-
-async function listDirs(dir: string): Promise<string[]> {
-	const { readdirSync } = await import("node:fs");
-	return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
 }
 
 function tail(out: string, n = 15): string {
@@ -2503,11 +2488,10 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!guardsAreMine()) return undefined;
-		// One [dev-flow] line per run, whatever number of copies of this package are installed.
-		// The same package reaches one runtime twice all the time (a project pin beside the npm install,
-		// or this checkout's .pi/extensions pointer beside it) and pi dedupes extensions by file path
-		// only, so both copies answer and the line lands twice in the prompt. pi hands every handler of
-		// a run the same ctx object, so the first pass claims the run and the rival stays silent.
+		// One [dev-flow] line per run, whatever number of copies of this package are installed. The same
+		// package can reach one runtime twice (a project pin beside the npm install) and pi dedupes
+		// extensions by file path only; equal-version copies both pass the election, so the first pass
+		// claims the run (pi hands every handler of a run the same ctx object) and the rival stays silent.
 		const run = ctx as unknown as Record<symbol, boolean | undefined>;
 		if (run[CONTEXT_EMITTED]) return undefined;
 		run[CONTEXT_EMITTED] = true;
@@ -2522,7 +2506,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		const core = corePreamble(key);
 		const cfg = loadProject(dfDir(root)).cfg;
 		const state = boundFeature(root, key);
-		if (!state || state.stage === "done") {
+		if (!state) {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
 			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
 			const cb = claimBlocker(root, key);

@@ -67,8 +67,8 @@ export function bashTimeout(command: string, explicit?: number): number {
 }
 
 /**
- * `bashTimeout = require` (the default): the model must state the timeout itself, because the
- * injected value never reaches the transcript — the tool call entry records the arguments the model
+ * `bashTimeout = require` (opt-in; `inject` is the default): the model must state the timeout itself,
+ * because the injected value never reaches the transcript — the tool call entry records the arguments the model
  * emitted, and the handler mutates them afterwards. Returns the refusal, or undefined when the call
  * already carries an explicit timeout. The refused call is not lost: the reason names the exact
  * value the class table would have armed, so the retry is a one-token fix.
