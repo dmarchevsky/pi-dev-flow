@@ -228,9 +228,11 @@ export function mdToConfig(p: ParsedMd): Config {
 	mergeInto(c, nested);
 	// a flow-guard block is the whole rule set; with none in project.md the DEFAULTS (empty) stand
 	if (GUARD_VERBS.some((v) => p.guard[v].length)) c.guard = structuredClone(p.guard);
+	// one check per name: an explicit flow-check block wins over the `test =` / `health =` shorthand
+	const named = new Set(p.checks.map((x) => x.name));
 	c.checkList = [
-		...(c.commands.test ? [{ name: "test", cmd: c.commands.test }] : []),
-		...(c.commands.health ? [{ name: "health", cmd: c.commands.health }] : []),
+		...(c.commands.test && !named.has("test") ? [{ name: "test", cmd: c.commands.test }] : []),
+		...(c.commands.health && !named.has("health") ? [{ name: "health", cmd: c.commands.health }] : []),
 		...p.checks.map((x) => ({ name: x.name, cmd: x.cmd })),
 	];
 	c.checklist = p.checklist;
@@ -415,7 +417,7 @@ export function buildDraft(det: { report: string[]; partial: { defaultBranch: st
 	L.push("## global", "", "```flow", `defaultBranch = ${branch}`);
 	if (det.partial.forge) L.push(`forge = ${det.partial.forge}`); // from the origin URL — confirm or correct
 	L.push("```", "");
-	L.push("## plan", "", "- [ ] rendered mockups attached for every changed screen", "", "<!-- what the plan must contain, UI expectations -->", "");
+	L.push("## plan", "", "- [ ] (ui) rendered mockups attached for every changed screen", "", "<!-- what the plan must contain, UI expectations -->", "");
 	L.push("## implement", "", "```flow");
 	for (const k of ["setup", "test", "build", "run", "seedData", "dev"]) if (cmd(k)) L.push(`${k} = ${cmd(k)}`);
 	// a hand-set wait budget is a real setting: a refresh that dropped it would silently make the probe single-shot again

@@ -366,3 +366,14 @@ test("setPlaybookKey inserts, replaces and opens a block — and never touches a
 	assert.match(created.text, /prose\n\n## release\n\n```flow\nmerge = squash\n```\n$/);
 	assert.match(created.where, /section was created/);
 });
+
+test("mdToConfig: one check per name — an explicit flow-check block wins over the shorthand key", () => {
+	const cfg = mdToConfig(parseProjectMd("# dev-flow\n\n## implement\n\n```flow\ntest = npm test\nhealth = curl -sf :1/a\n```\n\n```flow-check health\ncurl -sf :2/b\n```\n"));
+	assert.deepEqual(cfg.checkList.map((c) => `${c.name}=${c.cmd}`), ["test=npm test", "health=curl -sf :2/b"]);
+});
+
+test("buildDraft: the mockup item applies to --ui features only", () => {
+	const draft = buildDraft({ report: [], partial: { defaultBranch: "main", commands: {} } });
+	assert.match(draft, /- \[ \] \(ui\) rendered mockups attached/);
+	assert.equal(mdToConfig(parseProjectMd(draft)).checklist.plan?.[0]?.uiOnly, true);
+});

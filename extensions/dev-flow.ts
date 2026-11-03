@@ -492,12 +492,12 @@ const flowCompactInstructions = (st: FlowState) =>
  * (computed with the *effective* reserveTokens — settings + model overrides, like pi does) and
  * never while chat-only state is pending (open dialog, undigested plan) — see shouldSelfCompact.
  */
-function maybeCompactNow(ctx: ExtensionContext): void {
-	if (!initiated(ctx.cwd)) return;
+function maybeCompactNow(ctx: ExtensionContext, root: string): void {
+	if (!initiated(root)) return;
 	const u = ctx.getContextUsage?.(); // minimal/fake contexts may lack usage info — treat as unknown
 	if (!u || u.tokens === null) return;
 	const key = sessionKey(ctx);
-	const st = boundFeature(ctx.cwd, key);
+	const st = boundFeature(root, key);
 	if (!st) return;
 	let reserve: number;
 	try {
@@ -507,27 +507,23 @@ function maybeCompactNow(ctx: ExtensionContext): void {
 	} catch {
 		return;
 	}
-	const cfg = loadProject(dfDir(ctx.cwd)).cfg;
+	const cfg = loadProject(dfDir(root)).cfg;
 	const decision = {
 		tokens: u.tokens,
 		contextWindow: u.contextWindow,
 		stage: st.stage,
-		planFiles: listFiles(path.join(featDir(ctx.cwd, st.slug), "plan")).length,
+		planFiles: listFiles(path.join(featDir(root, st.slug), "plan")).length,
 		checklistPending: checklistPending(cfg, st, st.stage),
 		compacting: compacting.has(key),
 	};
 	if (!shouldSelfCompact(decision, reserve)) return;
-			compacting.add(key);
-			const done = () => compacting.delete(key);
-			try {
-				ctx.compact({
-					customInstructions: flowCompactInstructions(st),
-					onComplete: done,
-					onError: done,
-				});
-			} catch {
-				done(); // a throw before the run started must not leave the flag set: that switched off self-compaction and the takeover for the rest of the session
-			}
+	compacting.add(key);
+	const done = () => compacting.delete(key);
+	try {
+		ctx.compact({ customInstructions: flowCompactInstructions(st), onComplete: done, onError: done });
+	} catch {
+		done(); // a throw before the run started must not leave the flag set: that switched off self-compaction and the takeover for the rest of the session
+	}
 }
 
 function featureRefs(root: string): FeatureRef[] {
@@ -595,18 +591,17 @@ async function runChecks(root: string, state: FlowState, cfg: Config, checks: St
 	let failed = false;
 	const ran: string[] = [];
 	for (const c of checks) {
-		if (c.name === "health" && cfg.commands.seedData) {
-			const seed = await sh(cfg.commands.seedData, gateCwd(root, state));
-			if (!seed.ok) {
-				lines.push(`seedData FAILED:\n${tail(seed.out)}`);
-				failed = true;
-				break;
-			}
+		// health is the same probe `flow health` runs: seeded first, retried within healthWait
+		const res = c.name === "health" ? await seededProbe(root, state, cfg, c.cmd) : await sh(c.cmd, gateCwd(root, state));
+		if ("seedFail" in res) {
+			lines.push(res.seedFail.text);
+			failed = true;
+			break;
 		}
-		const res = await sh(c.cmd, gateCwd(root, state));
 		state.checks[c.name] = { ok: res.ok, at: now() };
 		ran.push(c.name);
-		lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd})${res.ok ? "" : `\n${tail(res.out)}`}`);
+		const tried = triedNote((res as { attempts?: number }).attempts ?? 1);
+		lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd}${tried})${res.ok ? "" : `\n${tail(res.out)}`}`);
 		if (!res.ok) failed = true;
 	}
 	await stampChecks(root, state, ran);
@@ -627,6 +622,27 @@ async function seedStep(root: string, state: FlowState, cfg: Config): Promise<{ 
 	writeState(root, state);
 	return seed.ok ? null : { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
 }
+
+type HealthRun = { ok: boolean; out: string; attempts: number } | { seedFail: RunResult };
+
+/** Seed (when configured), then run the health probe within the playbook's wait budget. */
+async function seededProbe(root: string, state: FlowState, cfg: Config, probe: string): Promise<HealthRun> {
+	const seedFail = await seedStep(root, state, cfg);
+	return seedFail ? { seedFail } : runHealthProbe(probe, gateCwd(root, state), cfg.healthWait);
+}
+
+/** seededProbe, recorded and stamped as the `health` check — `flow health` and both verify probes. */
+async function probeHealth(root: string, state: FlowState, cfg: Config, probe: string): Promise<HealthRun> {
+	const res = await seededProbe(root, state, cfg, probe);
+	if ("seedFail" in res) return res;
+	state.checks.health = { ok: res.ok, at: now() };
+	await stampChecks(root, state, ["health"]);
+	writeState(root, state);
+	return res;
+}
+
+/** A probe that needed the wait budget says so — "it passed on the 9th try" is the operator's business (#42). */
+const triedNote = (attempts: number) => (attempts > 1 ? `, ${attempts} attempts` : "");
 
 /** Fingerprint of the working-tree state the checks ran against: paths (`status --porcelain`),
  *  tracked content (a hash of the uncommitted diff) and HEAD. Null when git cannot answer — a
@@ -963,32 +979,21 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 			// the worktree cwd, so it can compare the served build stamp with `git rev-parse HEAD`.
 			if (!probe) did.push("health: none configured");
 			else {
-				const seedFail = await seedStep(root, state!, cfg);
-				if (seedFail) return seedFail;
-				const probed = await runHealthProbe(probe, gateCwd(root, state!), cfg.healthWait);
-				state!.checks.health = { ok: probed.ok, at: now() };
-				await stampChecks(root, state!, ["health"]);
-				writeState(root, state!);
-				// a probe that needed the wait budget says so — "it passed on the 9th try" is the operator's business (#42)
-				const tried = probed.attempts > 1 ? `, ${probed.attempts} attempts` : "";
+				const probed = await probeHealth(root, state!, cfg, probe);
+				if ("seedFail" in probed) return probed.seedFail;
 				if (!probed.ok) return { text: `post-deploy probe FAILED (${probe}) — the deploy is not healthy / not serving this build (gave up after ${probed.attempts} attempt(s), healthWait ${cfg.healthWait}s):\n${tail(probed.out)}`, isError: true };
-				did.push(`health: PASS (${probe}${tried})`);
+				did.push(`health: PASS (${probe}${triedNote(probed.attempts)})`);
 			}
 		} else if (!probe) did.push("dev: none configured");
 		else {
 			// no deploy to prove, but the operator still reviews a live app — and a green health record
 			// survives a killed server (process death dirties no worktree fingerprint), so the record
 			// cannot stand for liveness: re-probe, before anyone is asked.
-			const seedFail = await seedStep(root, state!, cfg);
-			if (seedFail) return seedFail;
-			const probed = await runHealthProbe(probe, gateCwd(root, state!), cfg.healthWait);
-			state!.checks.health = { ok: probed.ok, at: now() };
-			await stampChecks(root, state!, ["health"]);
-			writeState(root, state!);
-			const tried = probed.attempts > 1 ? `, ${probed.attempts} attempts` : "";
+			const probed = await probeHealth(root, state!, cfg, probe);
+			if ("seedFail" in probed) return probed.seedFail;
 			if (!probed.ok)
 				return { text: `live probe FAILED (${probe}) — nothing is answering and no dev deploy is configured: the app the operator must review has to be running before verify — start it and rerun (gave up after ${probed.attempts} attempt(s), healthWait ${cfg.healthWait}s):\n${tail(probed.out)}`, isError: true };
-			did.push(`health: live re-probe PASS (${probe}${tried})`);
+			did.push(`health: live re-probe PASS (${probe}${triedNote(probed.attempts)})`);
 		}
 	}
 	const ran = [branchLine, ...did].join("; ");
@@ -1025,7 +1030,8 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
 	const items = applicableItems(cfg, state!, "pre-release");
-	if (flag("no-version")) state!.noVersion = true; // operator's word at Release?: this flow ships without a version bump or tag
+	// operator's word at Release?: this flow ships without a version bump or tag — recorded only once Release? is answered
+	const noVersion = flag("no-version") || !!state!.noVersion;
 	// yolo is the operator's word at Release? — pre-confirms Finish?; publishing guardrails stay enforced
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
@@ -1044,7 +1050,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 		? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
 		: null;
 	// tags are only needed on the versioned path; a project without versioning must not be held up by an offline origin
-	const remoteTags = cfg.versioning.file && !state!.noVersion ? await releaseTags(root) : [];
+	const remoteTags = cfg.versioning.file && !noVersion ? await releaseTags(root) : [];
 	if (remoteTags === null) return { text: "release gate FAILED:\n- cannot list tags on origin (offline?) — retry; local tags do not decide what is already released", isError: true };
 	const changelog =
 		cfg.release.changelog && existsSync(path.join(wtCwd, cfg.release.changelog))
@@ -1064,7 +1070,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 			const changes = await sh(`git diff --name-only ${sq(mbRef)} -- ${p} 2>/dev/null; git ls-files --others --exclude-standard -- ${p}`, wtCwd);
 			changelogChanged = changes.out.split("\n").some((l) => l.trim());
 		}
-		const newest = !state!.noVersion && cfg.versioning.file ? newestTaggedVersion(cfg.versioning.pattern, remoteTags) : null;
+		const newest = !noVersion && cfg.versioning.file ? newestTaggedVersion(cfg.versioning.pattern, remoteTags) : null;
 		// tag first, merge base as the understudy: `releaseTags` asks origin, so a clone that has not
 		// fetched the tag yet must still get a baseline instead of losing the fold proof
 		const bases: { ref: string; source: "tag" | "merge-base" }[] = [];
@@ -1083,7 +1089,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// same freshness rule as verify: a green predating a worktree write may not stand for the tree this gate blesses
 	if (freshenChecks(state!, await worktreeFingerprint(wtCwd)).length) writeState(root, state!);
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
-	const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
+	const preGate = preReleaseGate({ ...state!, noVersion, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 	if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
 	// the build the tag will trigger, proven before anything ships: a broken artifact build found after the
 	// tag costs follow-up PRs and a re-cut tag
@@ -1120,13 +1126,14 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 		if (!ui.hasUI) {
 			return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}`, "Release?"), isError: true };
 		}
-		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${state!.noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${state!.noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
+		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
 		if (!ok) {
 			clearPendingAsk(state!);
 			writeState(root, state!);
 			return { text: "release declined — keep preparing in pre-release" };
 		}
 	}
+	if (noVersion) state!.noVersion = true;
 	state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
 	state!.approvals["pre-release"] = now();
 	state!.stage = "release";
@@ -1650,7 +1657,6 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	const errs = approveGate(state!, cfg, listFiles(planDir), existsSync(planMd) ? readFileSync(planMd, "utf8") : undefined);
 	if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 	const planItems = applicableItems(cfg, state!, "plan");
-	if (flag("yolo")) state!.yolo = true; // operator's word at Approve? — every later gate question is pre-confirmed; checks and guardrails stay
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 	const askPending = !flag("confirmed");
 	if (askPending) {
@@ -1659,8 +1665,14 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 			return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
 		}
 		const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
-		if (!ok) return { text: "approval declined — keep iterating on the plan" };
+		if (!ok) {
+			delete state!.pendingAsk;
+			writeState(root, state!);
+			return { text: "approval declined — keep iterating on the plan" };
+		}
 	}
+	// the operator's word at Approve?, recorded only once given: every later gate question is pre-confirmed; checks and guardrails stay
+	if (flag("yolo")) state!.yolo = true;
 	if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
 	const branch = subst(cfg.branchPattern, state!.slug);
 	const wtRel = subst(cfg.worktreeDir, state!.slug);
@@ -1900,15 +1912,12 @@ async function gateHealth(o: GateCtx): Promise<RunResult> {
 	const { root, sess, cfg, slugArg } = o;
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
-	if (!cfg.commands.health) return { text: "no commands.health configured — add `health = <command>` (or a flow-check health block) under ## implement in .dev-flow/project.md", isError: true };
-	const seedFail = await seedStep(root, state!, cfg);
-	if (seedFail) return seedFail;
-	const res = await runHealthProbe(cfg.commands.health, gateCwd(root, state!), cfg.healthWait);
-	state!.checks.health = { ok: res.ok, at: now() };
-	await stampChecks(root, state!, ["health"]);
-	writeState(root, state!);
-	const tried = res.attempts > 1 ? `, ${res.attempts} attempts` : "";
-	return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health}${tried})\n${tail(res.out)}` };
+	// commands.health and a flow-check named health are the same probe (healthProbe reads both)
+	const probe = healthProbe(cfg);
+	if (!probe) return { text: "no health check configured — add `health = <command>` (or a flow-check health block) under ## implement in .dev-flow/project.md", isError: true };
+	const res = await probeHealth(root, state!, cfg, probe);
+	if ("seedFail" in res) return res.seedFail;
+	return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${probe}${triedNote(res.attempts)})\n${tail(res.out)}` };
 }
 
 async function gateUse(o: GateCtx): Promise<RunResult> {
@@ -1930,7 +1939,7 @@ async function gateUse(o: GateCtx): Promise<RunResult> {
 }
 
 async function gateAbort(o: GateCtx): Promise<RunResult> {
-	const { root, sess, slugArg } = o;
+	const { root, ui, sess, flag, slugArg } = o;
 	// Unbinds the session only; state and worktree stay for manual recovery.
 	const target = slugArg ?? sess.slug;
 	if (!target) return { text: "nothing bound — pass a slug", isError: true };
@@ -1939,13 +1948,20 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 	// that works it erases the plan that session is still writing (same rule needState applies)
 	const claim = readClaim(root, target);
 	if (claimBlocks(claim, sess.key)) return { text: `${target} is claimed by another live session (pid ${claim!.pid}) — flow use ${target} takes it over explicitly`, isError: true };
-	if (sess.slug === target) sess.bind(null);
 	if (st && !st.worktree) {
 		// plan-stage abort = drop: no worktree/branch exists, so the state dir would linger
-		// as a ghost the doctor flags (a plan/ whose state.json is gone)
+		// as a ghost the doctor flags (a plan/ whose state.json is gone). A written plan is the
+		// operator's work too — it is not dropped without their word.
+		const written = listFiles(path.join(featDir(root, target), "plan"));
+		if (written.length && !flag("confirmed")) {
+			const ok = ui.hasUI && (await ui.confirm("Drop plan?", `Abort ${target}? Its plan/ (${written.join(", ")}) is deleted for good.`));
+			if (!ok) return { text: needsOperator(`aborting ${target} deletes its written plan (${written.join(", ")}) — ask the operator, then re-run with --confirmed`, "Drop plan?"), isError: true };
+		}
+		if (sess.slug === target) sess.bind(null);
 		rmSync(featDir(root, target), { recursive: true, force: true });
 		return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
 	}
+	if (sess.slug === target) sess.bind(null);
 	if (st?.worktree) { st.aborted = now(); writeState(root, st); } // the doctor skips the removed worktree for stamped states (gh#138)
 	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.aborted ? " (marked aborted — the doctor leaves it alone once you clean the worktree up)" : "") + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
 }
@@ -1973,31 +1989,23 @@ export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: 
 	},
 };
 
-async function isLinkedWorktree(root: string): Promise<boolean> {
-	const r = await sh("git rev-parse --path-format=absolute --git-dir --git-common-dir", root);
-	if (!r.ok) return false;
-	const [gitDir, common] = r.out.split("\n").map((l) => l.trim());
-	return !!gitDir && !!common && path.resolve(gitDir) !== path.resolve(common);
-}
-
-/** Per-cwd cache for flowRoot — the tool_call hook consults it on every call. */
-const flowRootCache = new Map<string, string>();
+/** Per-cwd cache of the main checkout a linked worktree belongs to (null = not a linked worktree) —
+ *  every hook resolves its root through flowRoot, so git is asked once per directory. */
+const mainCheckoutCache = new Map<string, string | null>();
 
 /** The root whose .dev-flow/ is the flow truth for a session cwd. A feature worktree is a linked git
  *  worktree whose tracked .dev-flow/ holds only project.md — state, claims and plans live in the main
  *  checkout. Judging a session by its own cwd found no features and every guard answered "no active
  *  flow". So a linked worktree resolves to its main checkout when that checkout is initiated. */
 async function flowRoot(cwd: string): Promise<string> {
-	const hit = flowRootCache.get(cwd);
-	if (hit !== undefined) return hit;
-	let root = cwd;
-	if (await isLinkedWorktree(cwd)) {
-		const r = await sh("git rev-parse --path-format=absolute --git-common-dir", cwd);
-		const main = mainCheckoutRoot(cwd, r.ok ? r.out.trim() : null);
-		if (main && initiated(main)) root = main;
+	if (!mainCheckoutCache.has(cwd)) {
+		const r = await sh("git rev-parse --path-format=absolute --git-dir --git-common-dir", cwd);
+		const [gitDir, common] = r.ok ? r.out.split("\n").map((l) => l.trim()) : [];
+		const linked = !!gitDir && !!common && path.resolve(gitDir) !== path.resolve(common);
+		mainCheckoutCache.set(cwd, linked ? mainCheckoutRoot(cwd, common) : null);
 	}
-	flowRootCache.set(cwd, root);
-	return root;
+	const main = mainCheckoutCache.get(cwd);
+	return main && initiated(main) ? main : cwd;
 }
 
 async function currentBranch(root: string): Promise<string> {
@@ -2039,13 +2047,13 @@ function tail(out: string, n = 15): string {
 /** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
  *  unfinished-flow count, or `💬 no flows` — an initiated repo always carries the footer. An uninitiated
  *  folder gets nothing: the status is cleared. Pure read — rendering never binds or claims anything. */
-function refreshStatus(ctx: ExtensionContext): void {
+function refreshStatus(ctx: ExtensionContext, root: string): void {
 	if (!ctx.hasUI) return;
-	if (!initiated(ctx.cwd)) {
+	if (!initiated(root)) {
 		ctx.ui.setStatus("dev-flow", undefined);
 		return;
 	}
-	const s = statusFor(boundFeature(ctx.cwd, sessionKey(ctx)), unfinishedStates(ctx.cwd).length);
+	const s = statusFor(boundFeature(root, sessionKey(ctx)), unfinishedStates(root).length);
 	ctx.ui.setStatus("dev-flow", s.text);
 }
 
@@ -2071,7 +2079,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		editor: ctx.mode === "tui" ? (title: string, prefill?: string) => ctx.ui.editor(title, prefill) : undefined,
 	});
 
-	const sessFor = (ctx: ExtensionContext): Session => {
+	const sessFor = (ctx: ExtensionContext, root: string): Session => {
 		const key = sessionKey(ctx);
 		return {
 			key,
@@ -2081,8 +2089,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				bindings.set(key, slug);
 				pi.appendEntry("dev-flow-bind", { slug });
 				// claims track the binding: claim what you bind, release what you drop.
-				if (prev && prev !== slug && readClaim(ctx.cwd, prev)?.key === key) rmSync(claimFile(ctx.cwd, prev), { force: true });
-				if (slug) writeClaim(ctx.cwd, slug, key);
+				if (prev && prev !== slug && readClaim(root, prev)?.key === key) rmSync(claimFile(root, prev), { force: true });
+				if (slug) writeClaim(root, slug, key);
 			},
 			rename: (slug) => {
 				// pi's public session-name API, kept defensive: an older host without it must not fail a gate.
@@ -2097,7 +2105,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	};
 
 	/** Restore this session's binding from its branch history (survives resume/fork). */
-	const rebuildSession = (ctx: ExtensionContext) => {
+	const rebuildSession = (ctx: ExtensionContext, root: string) => {
 		let slug: string | null = null;
 		let sawCore = false;
 		let coreStaleHere = false;
@@ -2122,7 +2130,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		// A reload ends the old session, which released its claim; the restored one must reclaim what its own
 		// branch says it holds, or the repo answers "claimed by another live session" to the session that
 		// holds it. A foreign live claim wins — restoring is not a takeover.
-		if (slug && readState(ctx.cwd, slug) && !claimBlocks(readClaim(ctx.cwd, slug), key)) writeClaim(ctx.cwd, slug, key);
+		if (slug && readState(root, slug) && !claimBlocks(readClaim(root, slug), key)) writeClaim(root, slug, key);
 	};
 
 	/** The run's playbook preamble: the skill's always-on core, once per session. Later runs come back
@@ -2143,13 +2151,14 @@ export default function devFlow(pi: ExtensionAPI) {
 		description: `dev-flow gates: ${GATE_HELP}`,
 		handler: async (args, ctx) => {
 			const cmd = parse(args);
-			const res = await runFlow(cmd, ctx.cwd, uiFrom(ctx), sessFor(ctx));
+			const root = await flowRoot(ctx.cwd);
+			const res = await runFlow(cmd, root, uiFrom(ctx), sessFor(ctx, root));
 			// gate output belongs to the conversation, not a toast: display:true renders a [flow] box (TUI + web), no triggerTurn so no model turn fires.
 			// bare reflect is the exception: its whole output is instructions for the agent — displayed without a turn, they would never execute.
 			const wake = cmd.length === 1 && cmd[0] === "reflect";
 			pi.sendMessage({ customType: "flow", content: res.text, display: true }, wake ? { triggerTurn: true } : undefined);
-			refreshStatus(ctx);
-			if (!res.isError) maybeCompactNow(ctx);
+			refreshStatus(ctx, root);
+			if (!res.isError) maybeCompactNow(ctx, root);
 		},
 	});
 
@@ -2162,8 +2171,9 @@ export default function devFlow(pi: ExtensionAPI) {
 			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug"]' }),
 		}),
 		execute: async (_id, params, _signal, _onUpdate, ctx) => {
-			const res = await runFlow(params.args, ctx.cwd, uiFrom(ctx), sessFor(ctx));
-			if (!res.isError) maybeCompactNow(ctx);
+			const root = await flowRoot(ctx.cwd);
+			const res = await runFlow(params.args, root, uiFrom(ctx), sessFor(ctx, root));
+			if (!res.isError) maybeCompactNow(ctx, root);
 			return { content: [{ type: "text", text: res.text }], details: undefined, isError: res.isError };
 		},
 	});
@@ -2187,18 +2197,19 @@ export default function devFlow(pi: ExtensionAPI) {
 		execute: async (_id, params, signal, onUpdate, ctx) => {
 			const err = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
 			const op = String(params.op ?? "").trim().toLowerCase();
-			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
+			const root = await flowRoot(ctx.cwd);
+			if (!initiated(root)) return err("dev-flow is not initiated here — run flow init first");
 			const key = sessionKey(ctx);
-			const st = boundFeature(ctx.cwd, key);
+			const st = boundFeature(root, key);
 			if (!st) return err("this session is not bound to a feature — flow start <slug> or flow use <slug> first");
 			const why = workerOpError(op, st.stage);
 			if (why) return err(why);
 			const wop = op as WorkerOp;
-			const work = worktreeAbs(ctx.cwd, st);
+			const work = worktreeAbs(root, st);
 			if (!work || !existsSync(work)) return err(`feature ${st.slug} has no worktree on disk — nothing for a worker to work in`);
 			if (runningWorkers.has(key)) return err("a worker is already running for this session — wait for it to return");
 			runningWorkers.add(key);
-			const cfg = loadProject(dfDir(ctx.cwd)).cfg;
+			const cfg = loadProject(dfDir(root)).cfg;
 			const budgetMin = clampBudgetMin(params.budgetMin, wop);
 			const label = String(params.label ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 40);
 			const glyph = wop === "implement" ? "🔨" : "🔍";
@@ -2208,7 +2219,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const headBefore = (await git("git rev-parse HEAD")).trim();
 			const brief = buildWorkerBrief({
 				op: wop, slug: st.slug, workDir: work,
-				planFile: path.join(featDir(ctx.cwd, st.slug), "plan", "plan.md"),
+				planFile: path.join(featDir(root, st.slug), "plan", "plan.md"),
 				defaultBranch: cfg.defaultBranch,
 				commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
 				status: await git("git status --short"),
@@ -2256,6 +2267,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const newCommits = headBefore && headAfter && headBefore !== headAfter ? await git(`git log --oneline ${sq(headBefore)}..HEAD`) : "";
 			const dirty = (await git("git status --short")).trim();
 			const outcome = crash ? `crashed: ${crash}` : timedOut ? `interrupted at the ${budgetMin}-min budget` : report.found ? "reported" : `ended without REPORT after ${nudges} nudge(s)`;
+			try { if (child) workerSessions.delete(child.sessionManager.getSessionId()); } catch { /* id-less session: nothing was registered */ }
 			try { child?.setSessionName(`${report.found && !crash && !timedOut ? "✓" : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
 			const parts = [
 				`${glyph} ${wop} worker ${outcome} (${Math.round((Date.now() - started) / 60_000)} min)`,
@@ -2264,7 +2276,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				`uncommitted: ${dirty ? `\n${dirty}` : "clean"}`,
 			];
 			if (wop === "implement") {
-				const check = await runFlow(["check"], ctx.cwd, uiFrom(ctx), sessFor(ctx));
+				const check = await runFlow(["check"], root, uiFrom(ctx), sessFor(ctx, root));
 				parts.push(`flow check after the worker: ${check.text.replace(/\s+/g, " ").trim().slice(0, 1500)}`);
 			} else if (newCommits.trim() || dirty) {
 				parts.push("note: the reviewer changed the tree — treat its verdict with suspicion and inspect the change");
@@ -2279,30 +2291,33 @@ export default function devFlow(pi: ExtensionAPI) {
 	// Agent-run gates refresh at turn_end (tool ctx lacks setStatus; turn_end catches them).
 	pi.on("session_start", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		rebuildSession(ctx);
-		refreshStatus(ctx);
+		const root = await flowRoot(ctx.cwd);
+		rebuildSession(ctx, root);
+		refreshStatus(ctx, root);
 	});
 	pi.on("session_tree", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		rebuildSession(ctx);
+		rebuildSession(ctx, await flowRoot(ctx.cwd));
 	});
 	// The session, not the process, owns the binding and the claim: pi-web keeps serving other sessions
 	// after one ends, and a stale claim there is a permanent lock (its pid is the server's, always alive).
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		if (!existsSync(dfDir(ctx.cwd))) return;
-		releaseSession(ctx.cwd, sessionKey(ctx));
+		const root = await flowRoot(ctx.cwd);
+		if (!existsSync(dfDir(root))) return;
+		releaseSession(root, sessionKey(ctx));
 	});
 	pi.on("turn_end", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		refreshStatus(ctx);
+		const root = await flowRoot(ctx.cwd);
+		refreshStatus(ctx, root);
 		// pi checks its compaction threshold between every turn; our safe points must be as frequent.
-		maybeCompactNow(ctx);
+		maybeCompactNow(ctx, root);
 	});
 	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		maybeCompactNow(ctx);
+		maybeCompactNow(ctx, await flowRoot(ctx.cwd));
 	});
 	// pi forcing a threshold compaction while a flow is bound means our safe-point pacing missed — rebuild the
 	// summary here with flow-aware instructions and hand it back through the event's custom-compaction channel.
@@ -2312,9 +2327,10 @@ export default function devFlow(pi: ExtensionAPI) {
 	// overflow is never taken over (cancelling it would drop pi's compact-and-retry); manual is the operator's or ours.
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (!guardsAreMine()) return undefined;
-		if (!initiated(ctx.cwd)) return undefined;
+		const root = await flowRoot(ctx.cwd);
+		if (!initiated(root)) return undefined;
 		const key = sessionKey(ctx);
-		const st = boundFeature(ctx.cwd, key);
+		const st = boundFeature(root, key);
 		if (!shouldTakeOverCompaction({ reason: event.reason, bound: !!st, inFlight: compacting.has(key) })) return undefined;
 		const model = ctx.model;
 		if (!model) return undefined;
@@ -2333,24 +2349,15 @@ export default function devFlow(pi: ExtensionAPI) {
 			compacting.delete(key);
 		}
 	});
-	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
-	pi.on("session_compact", async (event, ctx) => {
+	// Whatever the reason, the summary replaced the transcript — the core the first run injected is gone
+	// from context, so the next run pays it once more (manual compactions included: our own safe-point
+	// compaction is the common one). Durable too: a branch whose newest skill entry is stale tells a
+	// reloaded session to pay the core again.
+	pi.on("session_compact", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		if (!initiated(ctx.cwd)) return;
-		// Whatever the reason, the summary replaced the transcript — the core the first run injected is
-		// gone from context, so the next run pays it once more (manual compactions included: our own
-		// safe-point compaction is the common one).
+		if (!initiated(await flowRoot(ctx.cwd))) return;
 		coreStale.add(sessionKey(ctx));
-		// Durable too: a compaction the session survives a reload outlives the in-memory flag, and a
-		// branch whose newest skill entry is stale tells the restored run to pay the core again.
 		pi.appendEntry("dev-flow-skill", { core: true, stale: true });
-		if (event.reason === "manual") return;
-		const st = boundFeature(ctx.cwd, sessionKey(ctx));
-		if (!st) return;
-		const f = path.join(dfDir(ctx.cwd), "reflections.md");
-		const text = existsSync(f) ? readFileSync(f, "utf8") : "";
-		const line = compactionReflectionLine(st.slug, st.stage, event.reason, new Date().toISOString().slice(0, 10));
-		writeFileSync(f, appendReflection(text, ["plugin"], line));
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -2506,24 +2513,25 @@ export default function devFlow(pi: ExtensionAPI) {
 		run[CONTEXT_EMITTED] = true;
 		// repaint the footer at the start of every run: the session_start push can land before a web
 		// client attaches, and this is the earliest point the client is certainly listening
-		refreshStatus(ctx);
-		if (!initiated(ctx.cwd)) return undefined;
+		const root = await flowRoot(ctx.cwd);
+		refreshStatus(ctx, root);
+		if (!initiated(root)) return undefined;
 		try { if (workerSessions.has(ctx.sessionManager.getSessionId())) return undefined; } catch { /* not a worker */ }
 		const key = sessionKey(ctx);
 		// The playbook core rides along on the message this run writes anyway — once per session.
 		const core = corePreamble(key);
-		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
-		const state = boundFeature(ctx.cwd, key);
+		const cfg = loadProject(dfDir(root)).cfg;
+		const state = boundFeature(root, key);
 		if (!state || state.stage === "done") {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
 			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
-			const cb = claimBlocker(ctx.cwd, key);
+			const cb = claimBlocker(root, key);
 			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (pid ${cb.claim.pid}) — flow use ${cb.state.slug} takes it over explicitly.`;
-			const curBr = await currentBranch(ctx.cwd);
+			const curBr = await currentBranch(root);
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
-			const refl0 = readReflections(ctx.cwd);
+			const refl0 = readReflections(root);
 			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open — run flow doctor.`;
-			const rmap0 = roadmapOpenCount(readRoadmap(ctx.cwd));
+			const rmap0 = roadmapOpenCount(readRoadmap(root));
 			if (rmap0) content += ` Also: ${rmap0} roadmap item(s) open — flow roadmap lists them, flow roadmap pick <n> <slug> hands one to flow start.`;
 			content += ` Also: the playbook map is ${path.join(SKILL_DIR, "SKILL.md")} — per-stage detail sits in references/ beside it (start: flow init, modes, ownership).`;
 			return { message: { customType: "dev-flow-context", display: false, content: `${core}${content}` } };
@@ -2539,9 +2547,9 @@ export default function devFlow(pi: ExtensionAPI) {
 		guidance.push("Stage reports: open every report with the stage line (statusbar glyph + slug + provenance-marked decision fields); close a checkpoint with an event title and `Done:` / `Next steps:` on own lines — italic verbs, recommended first, yolo last. See Stage reports in the ground rules.");
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
-		const refl = readReflections(ctx.cwd);
+		const refl = readReflections(root);
 		if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — mention to the operator; run flow doctor to review and route them (fold in only on request).`);
-		const rmap = roadmapOpenCount(readRoadmap(ctx.cwd));
+		const rmap = roadmapOpenCount(readRoadmap(root));
 		if (rmap) guidance.push(`◇ ${rmap} roadmap item(s) open — flow roadmap lists them (pick only on the operator's word).`);
 		return {
 			message: {
