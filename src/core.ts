@@ -1299,6 +1299,16 @@ export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
 	return real === tmp || real.startsWith(tmp + path.sep);
 }
 
+/** The main checkout a linked worktree shares its history with, from git's answer for the common dir
+ *  (`<main>/.git`), or null when there is nothing to remap: git did not answer, or cwd already is that
+ *  checkout (a plain clone answers its own dir). Pure — the caller decides whether to trust the root it
+ *  gets (dev-flow's `flowRoot` keeps cwd unless the main checkout is dev-flow-initiated). */
+export function mainCheckoutRoot(cwd: string, commonDir: string | null): string | null {
+	if (!commonDir) return null;
+	const main = path.resolve(path.dirname(path.resolve(cwd, commonDir)));
+	return main === path.resolve(cwd) ? null : main;
+}
+
 /** True when the path is a feature's delegation ledger (.dev-flow/<slug>/stage-sessions/delegations.log)
  *  — the file the verify gate reads to prove a worker ran. Matched by shape, not just filename, so a
  *  source file that merely happens to be named delegations.log stays writable anywhere, including inside
