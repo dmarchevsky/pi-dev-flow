@@ -936,7 +936,7 @@ async function mergeBase(cwd: string, defaultBranch: string): Promise<string> {
 }
 
 /** What the branch proves about *who* worked it: the flow's delegation ledger, the commits the branch
- *  holds over the default branch, and the sha set each recorded window covers. Returns null for a
+ *  holds over the default branch, and the sha set each recorded **implement** window covers. Returns null for a
  *  --docs or --patch flow — those modes are exempt, so nothing is measured and no git call is spent.
  *  A window whose shas git cannot resolve covers nothing rather than excusing itself: a hand-written
  *  line must not be able to exempt the commits lying next to it. */
@@ -953,11 +953,16 @@ async function delegationProof(root: string, state: FlowState, defaultBranch: st
 	};
 	const base = await mergeBase(work, defaultBranch);
 	let branchCommits = base ? await shas(`git rev-list ${sq(base)}..HEAD`) : null;
+	// Only implement windows are ever consulted (delegationErrors filters the same way), so a pre-release
+	// or release worker's line resolves to nothing instead of costing a `git rev-list` per line — the
+	// ledger grows with every worker the feature runs, and the gate reads it on every verify.
+	// The `?? []` stays: a window whose objects git cannot resolve covers nothing, it does not excuse
+	// itself — otherwise a hand-written line about a garbage range would exempt the commits beside it.
+	const impl = ledger.filter((w) => w.stage === "implement");
 	const ranges = new Map<string, string[]>();
 	const key = (w: DelegationWindow) => `${w.start}..${w.end}`;
-	for (const w of ledger) ranges.set(key(w), (await shas(`git rev-list ${sq(w.start)}..${sq(w.end)}`)) ?? []);
+	for (const w of impl) ranges.set(key(w), (await shas(`git rev-list ${sq(w.start)}..${sq(w.end)}`)) ?? []);
 	const windowCommits = (w: DelegationWindow) => ranges.get(key(w)) ?? [];
-	const impl = ledger.filter((w) => w.stage === "implement");
 	const covered = new Set<string>();
 	for (const w of impl) for (const sha of windowCommits(w)) covered.add(sha);
 	return { ledger, branchCommits, windowCommits, covered: covered.size, windows: impl.filter((w) => windowCommits(w).length).length };

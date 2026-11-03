@@ -460,7 +460,7 @@ test("verify refuses a branch with nothing committed, and names what a passing v
 	assert.match(ok.content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 0 uncommitted path\(s\)/, "the operator sees the committed state they are approving");
 });
 
-test("the verify gate proves the implement work was delegated — inline commits refuse, a recorded window carries, docs is exempt", async () => {
+test("the verify gate proves the implement work was delegated — inline commits refuse, a recorded window carries, docs and patch are exempt", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
@@ -496,6 +496,18 @@ test("the verify gate proves the implement work was delegated — inline commits
 	const docs = await flow(["verify", "--confirmed"]);
 	assert.match(docs.content[0].text, /docs mode: project commands skipped/);
 	assert.match(docs.content[0].text, /entering pre-release stage/, "a docs flow verifies with no ledger at all");
+	// A patch flow is exempt the same way — and it is the exemption that runs the FULL gate: patch is not
+	// docs mode, so the tier-1 checks, the verify PASS and the commit proof all still apply, and only the
+	// delegation proof is skipped. Proving it at the gate matters because core.test.ts proves the patch
+	// exemption as a pure function: nothing there shows a real flow reaching pre-release with no ledger.
+	await start("patchy", ["--patch", "--confirmed"]);
+	commitWtUndelegated(repo, "patchy");
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "patchy", "stage-sessions", DELEGATIONS_FILE)), "no worker ever ran for it, so there is no ledger to consult");
+	await verifyPass(pi, ctx);
+	const patchy = await flow(["verify", "--confirmed"]);
+	assert.ok(!patchy.isError, `an undelegated patch flow must verify: ${patchy.content[0].text}`);
+	assert.match(patchy.content[0].text, /entering pre-release stage/, "a patch flow verifies with no ledger at all");
+	assert.ok(!/delegat/i.test(patchy.content[0].text), "and the gate says nothing about delegation about a mode it exempts");
 });
 
 test("a verify re-run at pre-release answers with the stage, never with a delegation claim", async () => {
