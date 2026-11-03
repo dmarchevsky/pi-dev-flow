@@ -94,6 +94,7 @@ import {
 	roadmapTidy,
 	verifyGate,
 	versionTagGate,
+	widgetLines,
 	writeGuard,
 	stageGuidance,
 	DEFAULT_STAGE_GUIDANCE,
@@ -738,6 +739,29 @@ test("statusFor: bound flow renders as before; unbound shows only the count", ()
 	asked.yolo = true;
 	assert.deepEqual(statusFor(asked, 1), { text: "📝 f 🎱 💬" }, "💬 rides after the mode markers");
 	assert.deepEqual(statusFor(newState("f", false), 1), { text: "📝 f" }, "no pendingAsk, no glyph — an open flow reads exactly as before");
+});
+
+test("widgetLines: one lean line per flow, → marks the session's bound one (pi-web chip panel)", () => {
+	assert.deepEqual(widgetLines(null, []), [], "no flows, no lines — the caller clears the widget");
+	const a = newState("alpha", false);
+	const b = newState("beta", false);
+	b.stage = "pre-release";
+	assert.deepEqual(
+		widgetLines(null, [a, b]),
+		["  📝 alpha · plan", "  🔍 beta · pre-release"],
+		"unbound: nobody gets the →, stage word spelled out",
+	);
+	assert.deepEqual(widgetLines(a, [a, b]), ["→ 📝 alpha · plan", "  🔍 beta · pre-release"], "only the bound slug earns the →");
+	b.patch = true;
+	b.yolo = true;
+	b.pendingAsk = "Verified?";
+	assert.deepEqual(
+		widgetLines(null, [b]),
+		["  🔍 beta ⚡ 🎱 💬 · pre-release"],
+		"markers ride exactly as in the footer — one vocabulary, no drift",
+	);
+	b.checks.test = { ok: false, at: "2026-01-01T10:00:00Z" };
+	assert.deepEqual(widgetLines(null, [b]), ["  🔍 beta ⚡ 🎱 💬 · pre-release ⚠️"], "⚠️ rides on the flow's own failing checks");
 });
 
 test("applyAnswer: dot paths, deletion, empty-object pruning", () => {
