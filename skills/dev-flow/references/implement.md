@@ -23,8 +23,8 @@ feature).
 2. Write tests as you go (project framework: the `test` key / `flow-check`
    blocks).
 3. `flow check` runs every tier-1 check (test, health, named `flow-check`
-   blocks) and records each; any later worktree edit invalidates checks and
-   the tier-2 confirmation — rerun before verify.
+   blocks) and records each against a fingerprint of the worktree; any later
+   worktree change makes them stale — verify reruns stale checks itself.
 4. UI flag set? An actual browser visual pass (screenshot or the project's
    automated pass) — not just a typecheck.
 5. Done means **running and healthy with pre-existing data**, not "compiles":
@@ -83,8 +83,7 @@ Verify lands the feature in **pre-release**.
 Mid-stage additions — do not bounce the flow, do not grow it silently:
 **this feature grew** → stay at implement, append a `**Added mid-stage:**` line
 to `plan.md` (what was asked and how), implement, `flow check` again — edits
-invalidate checks and the tier-2 confirmation, so verify re-covers the
-addition. **Different problem** → finish this feature first, then a new flow
+make the checks stale, so verify re-covers the addition. **Different problem** → finish this feature first, then a new flow
 (`flow start <new-slug>` after this one ships); never fold two features into
 one plan, PR and verify — the
 audit trail is the point. **Heavily amended plan** → show it and have the

@@ -35,13 +35,6 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		forge: "forge",
 		"versioning.file": "versioning.file",
 		"versioning.pattern": "versioning.pattern",
-		"release.review": "release.review",
-		"release.changelog": "release.changelog",
-		"release.github": "release.releases",
-		"release.releases": "release.releases",
-		"release.artifact": "release.artifact",
-		"release.preflight": "release.preflight",
-		"release.merge": "release.merge",
 	},
 	plan: {},
 	implement: {
@@ -59,7 +52,6 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		versionTag: "versioning.pattern",
 		review: "release.review",
 		changelog: "release.changelog",
-		github: "release.releases", // legacy alias for `releases` — parse warns about the rename
 		releases: "release.releases",
 		artifact: "release.artifact",
 		preflight: "release.preflight", // run in the worktree at flow release, before anything ships (e.g. docker build .)
@@ -159,7 +151,6 @@ export function parseProjectMd(text: string): ParsedMd {
 					const mapped = KEYMAP[stage][m[1]];
 					if (!mapped) p.warn.push(`${where}: unknown key "${m[1]}" in ## ${stage} — ignored`);
 					else {
-						if (mapped === "release.releases" && m[1].endsWith("github")) p.warn.push(`${where}: key "${m[1]}" is renamed "releases" — rename it`);
 						// the only enum-valued key: a junk mode must not silently mean "block every shell call"
 						if (m[1] === "bashTimeout" && !/^(require|inject)$/i.test(m[2].trim())) {
 							p.warn.push(`${where}: bashTimeout = "${m[2]}" — expected require or inject, keeping inject`);
@@ -217,7 +208,7 @@ export function mdToConfig(p: ParsedMd): Config {
 	const c: Config = structuredClone(DEFAULTS);
 	const raw: Record<string, unknown> = {};
 	for (const stage of MD_STAGES) for (const [key, val] of Object.entries(p.flow[stage])) applyAnswer(raw, key, val);
-	// boolean/key normalization identical to project.json semantics
+	// playbook values arrive as strings: normalize the boolean and list keys
 	if (typeof raw.mainHook === "string") raw.mainHook = /^(yes|true)$/i.test(raw.mainHook);
 	if (typeof raw.mockupGlobs === "string") raw.mockupGlobs = String(raw.mockupGlobs).split(",").map((s) => s.trim()).filter(Boolean);
 	// flow keys were mapped to dot paths (commands.x, versioning.y, release.z) — rebuild nested
@@ -228,9 +219,11 @@ export function mdToConfig(p: ParsedMd): Config {
 	mergeInto(c, nested);
 	// a flow-guard block is the whole rule set; with none in project.md the DEFAULTS (empty) stand
 	if (GUARD_VERBS.some((v) => p.guard[v].length)) c.guard = structuredClone(p.guard);
+	// one check per name: an explicit flow-check block wins over the `test =` / `health =` shorthand
+	const named = new Set(p.checks.map((x) => x.name));
 	c.checkList = [
-		...(c.commands.test ? [{ name: "test", cmd: c.commands.test }] : []),
-		...(c.commands.health ? [{ name: "health", cmd: c.commands.health }] : []),
+		...(c.commands.test && !named.has("test") ? [{ name: "test", cmd: c.commands.test }] : []),
+		...(c.commands.health && !named.has("health") ? [{ name: "health", cmd: c.commands.health }] : []),
 		...p.checks.map((x) => ({ name: x.name, cmd: x.cmd })),
 	];
 	c.checklist = p.checklist;
@@ -290,7 +283,7 @@ export function setPlaybookKey(text: string, stage: MdStage, key: string, value:
 	return { text: lines.join("\n"), where: `## ${stage} — opened a flow block for it` };
 }
 
-/** Load the project config: project.md alone — the legacy project.json is no longer read. */
+/** Load the project config: project.md is the only source. */
 export function loadProject(dfDir: string): { cfg: Config; md: ParsedMd | null } {
 	const mdFile = path.join(dfDir, "project.md");
 	let mdText: string | null = null;
@@ -330,7 +323,6 @@ export function ghostFeatureDirs(root: string): string[] {
  */
 export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): string[] {
 	const f: string[] = [];
-	if (existsSync(path.join(root, ".dev-flow", "project.json"))) f.push(".dev-flow/project.json is no longer read — fold its values into project.md and delete it");
 	const gi = path.join(root, ".dev-flow", ".gitignore");
 	if (existsSync(gi) && !readFileSync(gi, "utf8").includes("!project.md")) f.push(".dev-flow/.gitignore still hides project.md from git — re-run flow init to heal it");
 	if (cfg.forge && !["github", "gitlab", "self"].includes(cfg.forge)) f.push(`forge "${cfg.forge}" is invalid — use github, gitlab or self`);
@@ -386,7 +378,7 @@ export function mdDigest(text: string): string {
 		const keys: Record<string, string> = {};
 		for (const [k, v] of Object.entries(p.flow[s] as Record<string, string>)) keys[k.split(".").pop()!] = v; // config dot-paths → display keys
 		for (const [k, v] of Object.entries(keys)) {
-			if (relStage && ["file", "pattern", "github", "artifact"].includes(k)) continue; // rendered specially below
+			if (relStage && ["file", "pattern", "artifact"].includes(k)) continue; // rendered specially below
 			bits.push(DIGEST_CMDS[k] ? `${DIGEST_CMDS[k]}: ${JSON.stringify(v)}` : `${DIGEST_WORDS[k] ?? k}: ${v}`);
 		}
 		if (s === "implement" && p.checks.length) bits.push(`named checks: ${p.checks.map((c) => c.name).join(", ")}`);
@@ -403,40 +395,26 @@ export function mdDigest(text: string): string {
 	return `${rows.join("\n") || "(empty)"}\n\nnothing is executed or uploaded now — gates only run later inside the flow`;
 }
 
-/** Draft project.md: fresh = pure detection (first init, --force); otherwise a refresh keeping configured values. */
-export function buildDraft(det: { report: string[]; partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string }; forge?: string } }, cfg?: Config): string {
-	const fresh = cfg === undefined;
-	const c = cfg ?? structuredClone(DEFAULTS);
-	const cmd = (k: string) => (fresh ? undefined : (c.commands as Record<string, string>)[k]) || det.partial.commands[k];
-	const branch = fresh ? det.partial.defaultBranch : c.defaultBranch;
-	const verFile = (fresh ? undefined : c.versioning.file) || det.partial.versioning?.file || "package.json";
+/** Draft project.md from detection (first init, --force). Never a regeneration of an existing playbook:
+ *  a draft cannot reproduce hand-written prose, checklist items and keys. */
+export function buildDraft(det: { report: string[]; partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string }; forge?: string } }): string {
+	const cmd = (k: string) => det.partial.commands[k];
 	const L: string[] = [];
 	L.push("# dev-flow", "", "<!-- Operator-owned playbook. Regenerate with: flow init --draft -->", "");
-	L.push("## global", "", "```flow", `defaultBranch = ${branch}`);
+	L.push("## global", "", "```flow", `defaultBranch = ${det.partial.defaultBranch}`);
 	if (det.partial.forge) L.push(`forge = ${det.partial.forge}`); // from the origin URL — confirm or correct
 	L.push("```", "");
-	L.push("## plan", "", "- [ ] rendered mockups attached for every changed screen", "", "<!-- what the plan must contain, UI expectations -->", "");
+	L.push("## plan", "", "- [ ] (ui) rendered mockups attached for every changed screen", "", "<!-- what the plan must contain, UI expectations -->", "");
 	L.push("## implement", "", "```flow");
 	for (const k of ["setup", "test", "build", "run", "seedData", "dev"]) if (cmd(k)) L.push(`${k} = ${cmd(k)}`);
-	// a hand-set wait budget is a real setting: a refresh that dropped it would silently make the probe single-shot again
-	if (!fresh && c.healthWait !== DEFAULTS.healthWait) L.push(`healthWait = ${c.healthWait}`);
 	L.push("```", "");
-	const healthCmd = cmd("health") || (fresh ? undefined : c.checkList.find((x) => x.name === "health")?.cmd);
 	// never invent a health check: a placeholder that can't pass blocks verify forever (dogfooded: curl localhost:3000 in a library repo)
-	if (healthCmd) L.push("```flow-check health", healthCmd, "```", "");
+	if (cmd("health")) L.push("```flow-check health", cmd("health"), "```", "");
 	else L.push("<!-- optional tier-1: add a flow-check 'health' block once the app exposes a health endpoint -->", "");
-	// carry every other explicit check through a refresh, or regeneration would silently drop teeth
-	for (const x of fresh ? [] : c.checkList) {
-		if (x.name === "test" || x.name === "health") continue; // implicit ones ride the flow key block / healthCmd above
-		L.push("```flow-check " + x.name, x.cmd, "```", "");
-	}
 	L.push("- [ ] app runs locally with real data; visual pass: no overflows or stray scrollbars", "", "<!-- tier-3: standing guidance for this stage -->", "");
-	L.push("## pre-release", "", "<!-- e.g. review policy, docs expectations, who picks the version -->", "", "```flow", `versionFile = ${verFile}`, "versionTag = v{version}", "```", "");
-	// the merge policy is never invented by detection: a refresh carries the operator's answer over, a fresh
-	// draft asks. It is the one knob that decides the shape of the default branch, so it gets its own block.
-	L.push("## release", "");
-	if (c.release.merge) L.push("```flow", `merge = ${c.release.merge}`, "```", "");
-	else L.push("<!-- merge = squash | merge | rebase — how a merged PR lands on the default branch (`any` = no policy). flow start also asks and writes it. -->", "");
+	L.push("## pre-release", "", "<!-- e.g. review policy, docs expectations, who picks the version -->", "", "```flow", `versionFile = ${det.partial.versioning?.file || "package.json"}`, "versionTag = v{version}", "```", "");
+	// the merge policy is never invented by detection: flow start asks and writes it
+	L.push("## release", "", "<!-- merge = squash | merge | rebase — how a merged PR lands on the default branch (`any` = no policy). flow start also asks and writes it. -->", "");
 	L.push("<!-- e.g. tag policy, who publishes artifacts -->", "");
 	return L.join("\n") + "\n";
 }

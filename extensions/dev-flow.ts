@@ -40,13 +40,11 @@ import {
 	pickReleaseNotes,
 	checklistHash,
 	checklistPending,
-	checkoutTarget,
+	checkoutInvocation,
 	claimBlocks,
 	classifyMergeHistory,
 	cmpVersions,
-	cleanupAssess,
-	closedReflectionCount,
-	compactionReflectionLine,
+	doneItemCount,
 	detectForge,
 	extractSkillCore,
 	featureBranchPrefix,
@@ -92,11 +90,9 @@ import {
 	newState,
 	nextHint,
 	openChecklistItems,
-	openReflections,
 	releaseGate,
 	parseVersion,
 	roadmapDone,
-	roadmapDoneCount,
 	roadmapDoneForSlug,
 	roadmapOpenCount,
 	roadmapPick,
@@ -123,7 +119,6 @@ import {
 	WORKER_NUDGES,
 	type WorkerOp,
 	releaseOrderInvocation,
-	branchCreateTarget,
 	type BranchState,
 	type Config,
 	type FeatureRef,
@@ -159,6 +154,14 @@ function checkoutBuild(root: string): { version: string | null; dir: string; rep
 	return isSelfRepo(root)
 		? { ...pluginVersion(root), label: "this checkout" }
 		: { ...SELF_BUILD, label: "the dev-flow install" };
+}
+
+/** The build this session runs vs the one the disk ships: `behind` is the loaded version when they differ
+ *  ("" when current or unknown), `line` the one warning every surface prints for it. */
+function buildSkew(root: string): { disk: ReturnType<typeof checkoutBuild>; behind: string; line: string } {
+	const disk = checkoutBuild(root);
+	const behind = sessionRunsOlderBuild(loadedVersion(), disk.version);
+	return { disk, behind, line: behind ? `this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version ?? "?"} — /reload rebinds session state; only restarting the host swaps the code it runs` : "" };
 }
 
 /** Cross-copy registry: one process can register dev-flow more than once (the documented
@@ -208,8 +211,6 @@ export const testSeams = { copies: COPIES, skillCore: { value: undefined as stri
 interface Ui {
 	hasUI: boolean;
 	confirm: (title: string, message: string) => Promise<boolean>;
-	/** Multi-line review/edit dialog where the client has one (TUI); undefined elsewhere. */
-	editor?: (title: string, prefill?: string) => Promise<string | undefined>;
 }
 
 const now = () => new Date().toISOString();
@@ -224,6 +225,27 @@ async function sh(command: string, cwd: string, timeoutMs = 15 * 60_000): Promis
 		const err = e as { stdout?: string; stderr?: string; message?: string };
 		return { ok: false, out: `${err.stdout ?? ""}\n${err.stderr ?? ""}`.trim() || String(err.message) };
 	}
+}
+
+/** origin's URL, or null when the repo has no origin. */
+async function originUrl(root: string): Promise<string | null> {
+	const r = await sh("git remote get-url origin", root, 10_000);
+	return r.ok && r.out.trim() ? r.out.trim() : null;
+}
+
+/** The forge the release machinery targets: the playbook's `forge`, else detected from origin ("self" without one). */
+const forgeOf = (cfg: Config, origin: string | null): string => cfg.forge || detectForge(origin ?? "");
+
+/** The branch's merge base with the default branch (origin's when fetched), or "" when git cannot say. */
+async function mergeBase(cwd: string, defaultBranch: string): Promise<string> {
+	const mb = await sh(`git merge-base origin/${sq(defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(defaultBranch)} HEAD 2>/dev/null || true`, cwd);
+	return mb.ok ? mb.out.trim() : "";
+}
+
+/** The published pi-dev-flow version (`--check-upstream`), or "" when the registry cannot be asked. */
+async function publishedVersion(root: string): Promise<string> {
+	const pub = await sh("npm view pi-dev-flow version", root);
+	return pub.ok ? (pub.out.trim().split("\n").pop() ?? "") : "";
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
@@ -327,14 +349,14 @@ async function runHealthProbe(cmd: string, cwd: string, waitSec: number): Promis
  *  decide what is already tagged (#52). Local tags only when there is no remote to ask; null when an
  *  origin exists but could not be asked (offline, no ssh agent) — then local tags must not stand in. */
 async function releaseTags(root: string): Promise<string[] | null> {
-	if (!(await sh("git remote get-url origin", root)).ok) return (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
+	if (!(await originUrl(root))) return (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
 	const remote = await sh("git ls-remote --tags origin", root);
 	if (!remote.ok) return null;
 	return parseLsRemoteTags(remote.out);
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|list|tidy|move <n> --plugin|--playbook] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build than the disk ships (in the dev-flow repo, an older build than this checkout's own manifest), and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the build the disk says to run (this checkout's own manifest in the dev-flow repo, the installed package's elsewhere) and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there; --plugin / --playbook / --both state the section instead of leaving it to the wording, and the echo prints why the note landed where it did); reflect list numbers the open items with their section; reflect move <n> --plugin|--playbook re-files one of them; reflect tidy drops the closed (`- [x]`) items from reflections.md — every surface that queues or reviews reflections nudges when the checked-off pile grows; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --ui/--patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|list|tidy|move <n> --plugin|--playbook] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a suggestion in reflections.md (--plugin/--playbook/--both state the section); bare reflect prints the session-reflection protocol; list numbers open items, move <n> re-files one, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> stamps an item for flow start, finish checks it off — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -379,9 +401,8 @@ const compacting = new Set<string>();
 const coreInjected = new Set<string>();
 /** Sessions whose last compaction dropped the core out of context — the next run pays it once more. */
 const coreStale = new Set<string>();
-/** The skill dir of THIS loaded copy. Since 0.57.1 dropped the `.pi/extensions` dogfood shim, the
- *  copy a session runs and a development checkout are different installs, so playbook paths
- *  resolve from the code actually loaded — never from cwd. */
+/** The skill dir of THIS loaded copy: the copy a session runs and a development checkout can be
+ *  different installs, so playbook paths resolve from the code actually loaded — never from cwd. */
 const SKILL_DIR = path.join(import.meta.dirname, "..", "skills", "dev-flow");
 let skillCoreCache: string | null | undefined;
 /** The core block between SKILL.md's markers, read once per process (/reload reloads the module
@@ -406,12 +427,13 @@ export const compactionTakeover: { run: typeof compact } = { run: compact };
 /** Marks the before_agent_start pass that already wrote this run's [dev-flow] line — see the claim in that handler. */
 const CONTEXT_EMITTED = Symbol.for("pi-dev-flow.context-emitted");
 
+/** Every feature with a state file — finish deletes the state, so whatever is on disk is unfinished. */
 function unfinishedStates(root: string): FlowState[] {
 	if (!existsSync(dfDir(root))) return [];
 	return readdirSync(dfDir(root), { withFileTypes: true })
 		.filter((d) => d.isDirectory())
 		.map((d) => readState(root, d.name))
-		.filter((s): s is FlowState => !!s && s.stage !== "done");
+		.filter((s): s is FlowState => !!s);
 }
 
 /** Open items of the agent's suggestion queue (.dev-flow/reflections.md), each with its section. */
@@ -442,7 +464,7 @@ function boundFeature(root: string, key: string): FlowState | null {
 	const bound = bindings.get(key);
 	if (bound) {
 		const s = readState(root, bound);
-		if (s && s.stage !== "done") return s;
+		if (s) return s;
 	}
 	return unfinishedStates(root).find((s) => readClaim(root, s.slug)?.key === key) ?? null;
 }
@@ -492,12 +514,12 @@ const flowCompactInstructions = (st: FlowState) =>
  * (computed with the *effective* reserveTokens — settings + model overrides, like pi does) and
  * never while chat-only state is pending (open dialog, undigested plan) — see shouldSelfCompact.
  */
-function maybeCompactNow(ctx: ExtensionContext): void {
-	if (!initiated(ctx.cwd)) return;
+function maybeCompactNow(ctx: ExtensionContext, root: string): void {
+	if (!initiated(root)) return;
 	const u = ctx.getContextUsage?.(); // minimal/fake contexts may lack usage info — treat as unknown
 	if (!u || u.tokens === null) return;
 	const key = sessionKey(ctx);
-	const st = boundFeature(ctx.cwd, key);
+	const st = boundFeature(root, key);
 	if (!st) return;
 	let reserve: number;
 	try {
@@ -507,27 +529,23 @@ function maybeCompactNow(ctx: ExtensionContext): void {
 	} catch {
 		return;
 	}
-	const cfg = loadProject(dfDir(ctx.cwd)).cfg;
+	const cfg = loadProject(dfDir(root)).cfg;
 	const decision = {
 		tokens: u.tokens,
 		contextWindow: u.contextWindow,
 		stage: st.stage,
-		planFiles: listFiles(path.join(featDir(ctx.cwd, st.slug), "plan")).length,
+		planFiles: listFiles(path.join(featDir(root, st.slug), "plan")).length,
 		checklistPending: checklistPending(cfg, st, st.stage),
 		compacting: compacting.has(key),
 	};
 	if (!shouldSelfCompact(decision, reserve)) return;
-			compacting.add(key);
-			const done = () => compacting.delete(key);
-			try {
-				ctx.compact({
-					customInstructions: flowCompactInstructions(st),
-					onComplete: done,
-					onError: done,
-				});
-			} catch {
-				done(); // a throw before the run started must not leave the flag set: that switched off self-compaction and the takeover for the rest of the session
-			}
+	compacting.add(key);
+	const done = () => compacting.delete(key);
+	try {
+		ctx.compact({ customInstructions: flowCompactInstructions(st), onComplete: done, onError: done });
+	} catch {
+		done(); // a throw before the run started must not leave the flag set: that switched off self-compaction and the takeover for the rest of the session
+	}
 }
 
 function featureRefs(root: string): FeatureRef[] {
@@ -569,13 +587,6 @@ async function gitConsistency(root: string, cfg: Config): Promise<string[]> {
 
 /** Where feature commands run: the feature worktree once it exists (that is where the
  *  code under test lives), else the main checkout. Keeps gates off the main branch. */
-
-/** Lines the current project.md has that a regenerated draft cannot reproduce. */
-function droppableLines(current: string, draft: string): string[] {
-	const keep = new Set(draft.split("\n").map((l) => l.trim()).filter(Boolean));
-	return current.split("\n").map((l) => l.trim()).filter((l) => l && !keep.has(l));
-}
-
 function gateCwd(root: string, state: FlowState): string {
 	const wt = worktreeAbs(root, state);
 	return wt && existsSync(wt) ? wt : root;
@@ -595,18 +606,17 @@ async function runChecks(root: string, state: FlowState, cfg: Config, checks: St
 	let failed = false;
 	const ran: string[] = [];
 	for (const c of checks) {
-		if (c.name === "health" && cfg.commands.seedData) {
-			const seed = await sh(cfg.commands.seedData, gateCwd(root, state));
-			if (!seed.ok) {
-				lines.push(`seedData FAILED:\n${tail(seed.out)}`);
-				failed = true;
-				break;
-			}
+		// health is the same probe `flow health` runs: seeded first, retried within healthWait
+		const res = c.name === "health" ? await seededProbe(root, state, cfg, c.cmd) : await sh(c.cmd, gateCwd(root, state));
+		if ("seedFail" in res) {
+			lines.push(res.seedFail.text);
+			failed = true;
+			break;
 		}
-		const res = await sh(c.cmd, gateCwd(root, state));
 		state.checks[c.name] = { ok: res.ok, at: now() };
 		ran.push(c.name);
-		lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd})${res.ok ? "" : `\n${tail(res.out)}`}`);
+		const tried = triedNote((res as { attempts?: number }).attempts ?? 1);
+		lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd}${tried})${res.ok ? "" : `\n${tail(res.out)}`}`);
 		if (!res.ok) failed = true;
 	}
 	await stampChecks(root, state, ran);
@@ -627,6 +637,27 @@ async function seedStep(root: string, state: FlowState, cfg: Config): Promise<{ 
 	writeState(root, state);
 	return seed.ok ? null : { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
 }
+
+type HealthRun = { ok: boolean; out: string; attempts: number } | { seedFail: RunResult };
+
+/** Seed (when configured), then run the health probe within the playbook's wait budget. */
+async function seededProbe(root: string, state: FlowState, cfg: Config, probe: string): Promise<HealthRun> {
+	const seedFail = await seedStep(root, state, cfg);
+	return seedFail ? { seedFail } : runHealthProbe(probe, gateCwd(root, state), cfg.healthWait);
+}
+
+/** seededProbe, recorded and stamped as the `health` check — `flow health` and both verify probes. */
+async function probeHealth(root: string, state: FlowState, cfg: Config, probe: string): Promise<HealthRun> {
+	const res = await seededProbe(root, state, cfg, probe);
+	if ("seedFail" in res) return res;
+	state.checks.health = { ok: res.ok, at: now() };
+	await stampChecks(root, state, ["health"]);
+	writeState(root, state);
+	return res;
+}
+
+/** A probe that needed the wait budget says so — "it passed on the 9th try" is the operator's business (#42). */
+const triedNote = (attempts: number) => (attempts > 1 ? `, ${attempts} attempts` : "");
 
 /** Fingerprint of the working-tree state the checks ran against: paths (`status --porcelain`),
  *  tracked content (a hash of the uncommitted diff) and HEAD. Null when git cannot answer — a
@@ -653,9 +684,8 @@ async function stampChecks(root: string, state: FlowState, names: string[]): Pro
  *  question. Local refs only — same offline-safe stance as the changelog proof — and an
  *  unanswerable merge base reports null instead of refusing on a measurement failure. */
 async function branchState(cwd: string, defaultBranch: string): Promise<BranchState> {
-	const mb = await sh(`git merge-base origin/${sq(defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(defaultBranch)} HEAD 2>/dev/null || true`, cwd);
-	const base = mb.out.trim();
-	if (!mb.ok || !base) return { commitsAhead: null, uncommitted: 0 };
+	const base = await mergeBase(cwd, defaultBranch);
+	if (!base) return { commitsAhead: null, uncommitted: 0 };
 	const ahead = await sh(`git rev-list --count ${sq(base)}..HEAD`, cwd);
 	const n = Number.parseInt(ahead.out.trim(), 10);
 	const dirty = await sh("git status --porcelain", cwd);
@@ -725,7 +755,7 @@ function reflectNote(root: string, sess: Session, note: string[], forced: Reflec
 	if (next === text) return { text: `already reflected (duplicate): ${line}` };
 	writeFileSync(file, next);
 	// queueing is exactly when the operator hears about the checked-off pile — nudge instead of letting it grow
-	const closed = closedReflectionCount(next);
+	const closed = doneItemCount(next);
 	const why = forced ? "as told" : guess.why;
 	return { text: `reflected (${sections.join(" + ")} — ${why}): ${line}` + (closed ? `\n${reflectionsTidyHint(closed)}` : "") };
 }
@@ -740,8 +770,7 @@ const GH_FOLD_TTL_MS = 5 * 60_000;
  *  with the reason, never a guess), ok (the parsed list). */
 async function fetchUpstream(root: string): Promise<{ slug: string; issues: GhIssue[] } | { skipped: string } | { absent: true }> {
 	if (process.env.DEV_FLOW_NO_ISSUES) return { skipped: "disabled (DEV_FLOW_NO_ISSUES)" };
-	const origin = await sh("git remote get-url origin", root, 10_000);
-	const slug = origin.ok ? githubSlug(origin.out) : "";
+	const slug = githubSlug((await originUrl(root)) ?? "");
 	if (!slug) return { absent: true };
 	const hit = ghFoldCache.get(slug);
 	if (hit && Date.now() - hit.at < GH_FOLD_TTL_MS) return { slug, issues: hit.issues };
@@ -755,7 +784,7 @@ async function fetchUpstream(root: string): Promise<{ slug: string; issues: GhIs
 
 type FoldView = { state: "absent" } | { state: "skipped"; why: string } | { state: "ok"; slug: string; result: FoldResult; open: number };
 
-async function foldView(root: string, items: ReflectItem[], selfRepo: boolean): Promise<FoldView> {
+async function foldView(root: string, items: ReflectItem[]): Promise<FoldView> {
 	const up = await fetchUpstream(root);
 	if ("absent" in up) return { state: "absent" };
 	if ("skipped" in up) return { state: "skipped", why: up.skipped };
@@ -780,7 +809,7 @@ function foldRows(fold: FoldView, selfRepo: boolean): string[] {
  *  addressable by move: each item keeps the home it is resolved in. */
 async function reflectList(root: string): Promise<RunResult> {
 	const items = readReflections(root);
-	const fold = await foldView(root, items, isSelfRepo(root));
+	const fold = await foldView(root, items);
 	const local = items.length
 		? [
 				`reflections — ${items.length} open:`,
@@ -819,8 +848,8 @@ function reflectTidy(root: string): RunResult {
 	const file = path.join(dfDir(root), "reflections.md");
 	if (!existsSync(file)) return { text: "reflections: nothing to tidy (no queue yet)" };
 	const text = readFileSync(file, "utf8");
-	const closed = closedReflectionCount(text);
-	const open = openReflections(text).length;
+	const closed = doneItemCount(text);
+	const open = openChecklistItems(text).length;
 	if (!closed) return { text: `reflections: nothing to tidy (${open} open, 0 closed)` };
 	writeFileSync(file, reflectionsTidy(text));
 	return { text: `reflections: dropped ${closed} closed item(s) — ${open} open` };
@@ -910,11 +939,6 @@ function markPendingAsk(root: string, state: FlowState, word: string): void {
 	writeState(root, state);
 }
 
-/** The pending checkpoint is answered either way — the 💬 leaves the footer with it. */
-function clearPendingAsk(state: FlowState): void {
-	delete state.pendingAsk;
-}
-
 async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg, takeYoloWord } = o;
 	const { state, err } = needState(root, sess, slugArg);
@@ -963,32 +987,21 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 			// the worktree cwd, so it can compare the served build stamp with `git rev-parse HEAD`.
 			if (!probe) did.push("health: none configured");
 			else {
-				const seedFail = await seedStep(root, state!, cfg);
-				if (seedFail) return seedFail;
-				const probed = await runHealthProbe(probe, gateCwd(root, state!), cfg.healthWait);
-				state!.checks.health = { ok: probed.ok, at: now() };
-				await stampChecks(root, state!, ["health"]);
-				writeState(root, state!);
-				// a probe that needed the wait budget says so — "it passed on the 9th try" is the operator's business (#42)
-				const tried = probed.attempts > 1 ? `, ${probed.attempts} attempts` : "";
+				const probed = await probeHealth(root, state!, cfg, probe);
+				if ("seedFail" in probed) return probed.seedFail;
 				if (!probed.ok) return { text: `post-deploy probe FAILED (${probe}) — the deploy is not healthy / not serving this build (gave up after ${probed.attempts} attempt(s), healthWait ${cfg.healthWait}s):\n${tail(probed.out)}`, isError: true };
-				did.push(`health: PASS (${probe}${tried})`);
+				did.push(`health: PASS (${probe}${triedNote(probed.attempts)})`);
 			}
 		} else if (!probe) did.push("dev: none configured");
 		else {
 			// no deploy to prove, but the operator still reviews a live app — and a green health record
 			// survives a killed server (process death dirties no worktree fingerprint), so the record
 			// cannot stand for liveness: re-probe, before anyone is asked.
-			const seedFail = await seedStep(root, state!, cfg);
-			if (seedFail) return seedFail;
-			const probed = await runHealthProbe(probe, gateCwd(root, state!), cfg.healthWait);
-			state!.checks.health = { ok: probed.ok, at: now() };
-			await stampChecks(root, state!, ["health"]);
-			writeState(root, state!);
-			const tried = probed.attempts > 1 ? `, ${probed.attempts} attempts` : "";
+			const probed = await probeHealth(root, state!, cfg, probe);
+			if ("seedFail" in probed) return probed.seedFail;
 			if (!probed.ok)
 				return { text: `live probe FAILED (${probe}) — nothing is answering and no dev deploy is configured: the app the operator must review has to be running before verify — start it and rerun (gave up after ${probed.attempts} attempt(s), healthWait ${cfg.healthWait}s):\n${tail(probed.out)}`, isError: true };
-			did.push(`health: live re-probe PASS (${probe}${tried})`);
+			did.push(`health: live re-probe PASS (${probe}${triedNote(probed.attempts)})`);
 		}
 	}
 	const ran = [branchLine, ...did].join("; ");
@@ -1005,7 +1018,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		}
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 		if (!ok) {
-			clearPendingAsk(state!);
+			delete state!.pendingAsk;
 			writeState(root, state!);
 			return { text: "verification declined — stay in implement and fix what failed" };
 		}
@@ -1015,7 +1028,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	if (final.length) return { text: `verify gate FAILED:\n- ${final.join("\n- ")}`, isError: true };
 	state!.approvals.verify = now();
 	state!.stage = "pre-release";
-	clearPendingAsk(state!);
+	delete state!.pendingAsk;
 	writeState(root, state!);
 	return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${nextHint(state!, cfg)}` };
 }
@@ -1025,7 +1038,8 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
 	const items = applicableItems(cfg, state!, "pre-release");
-	if (flag("no-version")) state!.noVersion = true; // operator's word at Release?: this flow ships without a version bump or tag
+	// operator's word at Release?: this flow ships without a version bump or tag — recorded only once Release? is answered
+	const noVersion = flag("no-version") || !!state!.noVersion;
 	// yolo is the operator's word at Release? — pre-confirms Finish?; publishing guardrails stay enforced
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
@@ -1044,7 +1058,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 		? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
 		: null;
 	// tags are only needed on the versioned path; a project without versioning must not be held up by an offline origin
-	const remoteTags = cfg.versioning.file && !state!.noVersion ? await releaseTags(root) : [];
+	const remoteTags = cfg.versioning.file && !noVersion ? await releaseTags(root) : [];
 	if (remoteTags === null) return { text: "release gate FAILED:\n- cannot list tags on origin (offline?) — retry; local tags do not decide what is already released", isError: true };
 	const changelog =
 		cfg.release.changelog && existsSync(path.join(wtCwd, cfg.release.changelog))
@@ -1057,14 +1071,13 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const changelogBase: { pending: string[]; source: "tag" | "merge-base" | "none" } = { pending: [], source: "none" };
 	if (changelog) {
 		const p = sq(cfg.release.changelog!);
-		const mb = await sh(`git merge-base origin/${sq(cfg.defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(cfg.defaultBranch)} HEAD 2>/dev/null || true`, wtCwd);
-		const mbRef = mb.ok ? mb.out.trim() : "";
+		const mbRef = await mergeBase(wtCwd, cfg.defaultBranch);
 		// proof the branch touched the changelog: local refs only, so the check stays offline-safe
 		if (mbRef) {
 			const changes = await sh(`git diff --name-only ${sq(mbRef)} -- ${p} 2>/dev/null; git ls-files --others --exclude-standard -- ${p}`, wtCwd);
 			changelogChanged = changes.out.split("\n").some((l) => l.trim());
 		}
-		const newest = !state!.noVersion && cfg.versioning.file ? newestTaggedVersion(cfg.versioning.pattern, remoteTags) : null;
+		const newest = !noVersion && cfg.versioning.file ? newestTaggedVersion(cfg.versioning.pattern, remoteTags) : null;
 		// tag first, merge base as the understudy: `releaseTags` asks origin, so a clone that has not
 		// fetched the tag yet must still get a baseline instead of losing the fold proof
 		const bases: { ref: string; source: "tag" | "merge-base" }[] = [];
@@ -1083,7 +1096,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// same freshness rule as verify: a green predating a worktree write may not stand for the tree this gate blesses
 	if (freshenChecks(state!, await worktreeFingerprint(wtCwd)).length) writeState(root, state!);
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
-	const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
+	const preGate = preReleaseGate({ ...state!, noVersion, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 	if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
 	// the build the tag will trigger, proven before anything ships: a broken artifact build found after the
 	// tag costs follow-up PRs and a re-cut tag
@@ -1095,8 +1108,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// legitimate choice (hotfix, offline reload), and refusing would close exactly the emergency the relaxed
 	// modes exist for. The gate names both builds, lists what the running code is missing, and folds the
 	// update-or-proceed question into the Release? checkpoint — the operator's word, recorded in state.
-	const selfBuild = checkoutBuild(root);
-	const behind = sessionRunsOlderBuild(loadedVersion(), selfBuild.version);
+	const { disk: selfBuild, behind } = buildSkew(root);
 	// truly behind, not merely different: a session whose loaded build is NEWER than the checkout's manifest
 	// has every proof the checkout would run, and asking about it would be noise.
 	const stale = !!behind && !!selfBuild.version && cmpVersions(behind, selfBuild.version) < 0;
@@ -1120,13 +1132,14 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 		if (!ui.hasUI) {
 			return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}`, "Release?"), isError: true };
 		}
-		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${state!.noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${state!.noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
+		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
 		if (!ok) {
-			clearPendingAsk(state!);
+			delete state!.pendingAsk;
 			writeState(root, state!);
 			return { text: "release declined — keep preparing in pre-release" };
 		}
 	}
+	if (noVersion) state!.noVersion = true;
 	state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
 	state!.approvals["pre-release"] = now();
 	state!.stage = "release";
@@ -1142,7 +1155,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// re-read a checkout that may still be behind (#52)
 	if (!state!.noVersion && manifestVer) state!.releaseVersion = manifestVer;
 	if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
-	clearPendingAsk(state!);
+	delete state!.pendingAsk;
 	writeState(root, state!);
 	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${nextHint(state!, cfg)}` };
 }
@@ -1152,20 +1165,13 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
 	const errs = releaseGate(state!);
-	let manifestVer: string | null = state!.releaseVersion ?? null;
-	if (cfg.versioning.file && !state!.noVersion && !manifestVer) {
-		// a flow approved before releaseVersion existed: the worktree copy is what the release gate
-		// validated, the main checkout is the last resort (#52)
-		for (const dir of [gateCwd(root, state!), root]) {
-			const p = path.join(dir, cfg.versioning.file);
-			if (!existsSync(p)) continue;
-			manifestVer = parseVersion(cfg.versioning.file, readFileSync(p, "utf8"));
-			if (manifestVer) break;
-		}
-		if (!manifestVer) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — fix the playbook`);
-	}
+	// the version of record is what flow release approved (#52) — never a re-read of a checkout that may be behind
+	const manifestVer: string | null = state!.releaseVersion ?? null;
+	if (cfg.versioning.file && !state!.noVersion && !manifestVer) errs.push(`flow release approved no version (versioning.file "${cfg.versioning.file}" was set after it?) — fix the playbook, or ship this flow unversioned`);
 	const expectedTag = manifestVer ? cfg.versioning.pattern.replace("{version}", manifestVer) : null;
-	const hasOrigin = (await sh("git remote get-url origin", root)).ok;
+	const origin = await originUrl(root);
+	const hasOrigin = origin !== null;
+	const forgeName = forgeOf(cfg, origin);
 	// one round-trip answers both questions about the tag: is it there, and did it leave this laptop (#52)
 	const tags = expectedTag ? await releaseTags(root) : [];
 	if (tags === null) errs.push("cannot list tags on origin (offline?) — retry: local tags must not decide what is already released");
@@ -1207,25 +1213,23 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 		// ancestry proves "not squashed, not rebased"; a squash and a rebase look identical here, so when it
 		// fails the forge itself is asked which one it was (gh/glab; self-hosted stays an advisory)
 		const ancestor = refsOk ? (await sh(`git merge-base --is-ancestor origin/${sq(br)} origin/${sq(cfg.defaultBranch)}`, root)).ok : null;
-		const forgeProof = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
-		const proof = mergeShapeProof(cfg.release.merge, { ancestor, forgeStyle: ancestor === false ? await forgeMergeStyle(gateCwd(root, state!), forgeProof, br) : null, branch: br, defaultBranch: cfg.defaultBranch });
+		const proof = mergeShapeProof(cfg.release.merge, { ancestor, forgeStyle: ancestor === false ? await forgeMergeStyle(gateCwd(root, state!), forgeName, br) : null, branch: br, defaultBranch: cfg.defaultBranch });
 		if (proof.errors.length) errs.push(...proof.errors);
 		else mergeNote = proof.note;
 	}
 	if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 	// no checkpoint here — the operator's Release? answer covered the whole publication; everything left is objective checks
-	const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;			let ghNote = "";
+	const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;
+	let ghNote = "";
 	let bodyOfRecord: string | null = null; // the changelog entry the forge body must match (#97)
 	let bodyNote = "";
-	const forgeName = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
 	if (manifestVer && flag("no-release-create")) ghNote = "Forge release skipped (--no-release-create).";
 	else if (manifestVer && !releasesWanted) ghNote = "no forge release created (release.releases = false — the playbook says publication is manual; a stale key is how a repo ends up with tags and an empty Releases page #85).";
 	else if (manifestVer && releasesWanted) {
 		// forge release for the verified tag — gh for GitHub, glab for GitLab. A failed create is no
 		// longer the end of the story: the proof below asks the forge whether anything is there (#63, #85)
 		const tag = expectedTag!;
-		const forge = forgeName;
-		if (forge === "self") ghNote = "Forge release skipped (forge=self — publication stays manual).";
+		if (forgeName === "self") ghNote = "Forge release skipped (forge=self — publication stays manual).";
 		else {
 			// the body is the changelog entry for this version (#97); the tag annotation only stands in
 			// when the changelog has no entry for it — and never the output of a failed command, which
@@ -1246,18 +1250,17 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 			else if (!notesRes.ok) notesNote = `no release notes (the tag command failed: ${tail(notesRes.out)}). `;
 			else if (annotation && looksLikeShellError(annotation)) notesNote = "no release notes (the tag command returned a shell error, not a body). ";
 			else notesNote = `no release notes (tag ${tag} carries no annotation${cfg.release.changelog ? ` and ${cfg.release.changelog} has no ${manifestVer} entry` : ""} — tag with git tag -a). `;
-			const cmd = forge === "gitlab"
+			const cmd = forgeName === "gitlab"
 				? `glab release create ${sq(tag)} --name ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`
 				: `gh release create ${sq(tag)} --title ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`;
 			const gr = await sh(cmd, root);
 			// a failed create is the operator's call to decline, never a choice we make for them — stamp it so finish names it (#63)
 			if (gr.ok) delete state!.forgeReleaseSkipped; // a successful retry lifts the stamp
 			else state!.forgeReleaseSkipped = tail(gr.out);
-			ghNote = gr.ok ? `${forge} release ${tag} created. ${notesNote}`.trim() : `${forge} release skipped: ${tail(gr.out)}`;
+			ghNote = gr.ok ? `${forgeName} release ${tag} created. ${notesNote}`.trim() : `${forgeName} release skipped: ${tail(gr.out)}`;
 		}
 	}
-	const diskBuild = checkoutBuild(root);
-	const behind = sessionRunsOlderBuild(loadedVersion(), diskBuild.version);
+	const skew = buildSkew(root);
 	const openRelease = checklistPending(cfg, state!, "release");
 	// release-stage items have no gate of their own: the operator's Finish? answer is what closes them, so
 	// name them at the last objective gate — on the way out too, or the refusal hides half the story
@@ -1293,10 +1296,10 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 		// a session that shipped from behind: the code it runs is not the code the checkout just released
 		state!.staleBuild
 			? `stale build acknowledged at release gate: this session ran dev-flow ${state!.staleBuild} — proofs newer than it did not run.`
-			: behind
+			: skew.behind
 				// #117: the pair (session vs what the disk ships) makes the warning actionable where it prints;
 				// a second registered copy is what made the skew confusing on the report — name it too
-				? `warning: this session runs dev-flow ${behind}, ${diskBuild.label} ships ${diskBuild.version ?? "?"} — /reload before trusting what it printed.${copyWarning() ? ` ${copyWarning()}` : ""}`
+				? `warning: ${skew.line}.${copyWarning() ? ` ${copyWarning()}` : ""}`
 			: "",
 		mergeNote,
 		openNote,
@@ -1317,7 +1320,8 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// after this the flow state is gone: nothing may sit uncommitted or unpushed
 	const dirty = await sh("git status --porcelain", root);
 	if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
-	const hasOriginF = (await sh("git remote get-url origin", root)).ok;
+	const origin = await originUrl(root);
+	const hasOriginF = origin !== null;
 	if (hasOriginF) {
 		const pushed = await sh(`git merge-base --is-ancestor HEAD ${sq(`origin/${cfg.defaultBranch}`)}`, root);
 		if (!pushed.ok) return { text: `HEAD is not on origin/${cfg.defaultBranch} — push the release (git push origin ${cfg.defaultBranch}) before finish`, isError: true };
@@ -1345,25 +1349,25 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	if (wt && existsSync(wt)) {
 		const status = await sh(`git -C ${sq(wt)} status --porcelain`, root);
 		const unmerged = await sh(`git -C ${sq(wt)} log origin/${cfg.defaultBranch}..HEAD --oneline 2>/dev/null || git -C ${sq(wt)} log ${cfg.defaultBranch}..HEAD --oneline`, root);
-		const assess = cleanupAssess(status.out, unmerged.out.split("\n"));
+		const unmergedLines = unmerged.out.split("\n").filter(Boolean);
 		// the refusal names the paths, not just the count — same proof verify and release print (gh#131)
-		if (assess.errors.length) return { text: `finish blocked:\n- ${assess.errors.join("\n- ")}${status.out.trim() ? `:\n${tail(status.out)}` : ""}`, isError: true };
-		if (assess.unmerged.length) {
+		if (status.out.trim()) return { text: `finish blocked:\n- worktree has uncommitted changes — commit or discard them first:\n${tail(status.out)}`, isError: true };
+		if (unmergedLines.length) {
 			const policy = cfg.release.merge;
 			// "not on the default branch" is only a violation when the ancestry is measurable: with no origin,
 			// or a branch that was never pushed, the same count describes a local-only repo, not a squash
 			const measurable = hasOriginF && !!state!.branch && (await sh(`git show-ref --quiet --verify ${sq(`refs/remotes/origin/${state!.branch}`)} ${sq(`refs/remotes/origin/${cfg.defaultBranch}`)}`, root)).ok;
 			unmergedNote =
 				policy && policy !== "merge" && policy !== "any"
-					? ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} — expected, the playbook merges with ${policy}.`
+					? ` ${unmergedLines.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} — expected, the playbook merges with ${policy}.`
 					: policy === "merge" && measurable
-						? ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} although the playbook says merge = merge — that PR did not land as a merge commit`
-						: ` ${assess.unmerged.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?)`;
+						? ` ${unmergedLines.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} although the playbook says merge = merge — that PR did not land as a merge commit`
+						: ` ${unmergedLines.length} commit(s) in ${state!.worktree} are not on ${cfg.defaultBranch} (squash merge?)`;
 			// under a merge-commit policy this is a violation, not a routine cleanup note: yolo does not
 			// answer it, only the operator does
 			if (policy === "merge" && measurable && !flag("confirmed")) {
 				markPendingAsk(root, state!, "Merge policy violation?");
-				return { text: needsOperator(`the playbook says merge = merge, but ${assess.unmerged.length} commit(s) of ${state!.slug} are not on ${cfg.defaultBranch} — the PR landed as a squash or a rebase. Ask the operator how to proceed, then re-run with --confirmed`, "Merge policy violation?"), isError: true };
+				return { text: needsOperator(`the playbook says merge = merge, but ${unmergedLines.length} commit(s) of ${state!.slug} are not on ${cfg.defaultBranch} — the PR landed as a squash or a rebase. Ask the operator how to proceed, then re-run with --confirmed`, "Merge policy violation?"), isError: true };
 			}
 		}
 	}
@@ -1381,7 +1385,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 		}
 		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 		if (!ok) {
-			clearPendingAsk(state!);
+			delete state!.pendingAsk;
 			writeState(root, state!);
 			return { text: "finish declined" };
 		}
@@ -1401,24 +1405,14 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// remote cleanup: origin/<branch> is deleted only on proof it was released — being an ancestor of
 	// origin/<default> (merge-commit merges) or a merged PR via gh (squash merges); else it stays.
 	let remoteNote = "";
-	if (state!.branch && (await sh("git remote get-url origin", root)).ok) {
+	if (state!.branch && hasOriginF) {
 		const br = state!.branch;
 		const onRemote = await sh("git ls-remote --heads origin", root);
 		if (onRemote.out.split("\n").some((l) => l.endsWith(`\trefs/heads/${br}`))) {
 			await sh(`git fetch -q origin ${sq(br)}`, root);
 			let merged = (await sh(`git merge-base --is-ancestor origin/${sq(br)} origin/${sq(cfg.defaultBranch)}`, root)).ok;
-			if (!merged) {
-				// squash merges leave no ancestry — ask the forge: gh pr list, or the GitLab API via glab; self-hosted stays on ancestry proof
-				const originUrl = await sh("git remote get-url origin", root);
-				const forge = cfg.forge || detectForge(originUrl.out);
-				if (forge === "gitlab") {
-					const mr = await sh(`glab api ${sq(`projects/:id/merge_requests?source_branch=${br}&state=merged&per_page=1`)}`, root);
-					merged = mr.ok && mr.out.trim() !== "[]";
-				} else if (forge === "github") {
-					const pr = await sh(`gh pr list --state merged --head ${sq(br)} --json number --jq length`, root);
-					merged = pr.ok && pr.out.trim() !== "0";
-				}
-			}
+			// squash merges leave no ancestry — ask the forge (gh/glab); self-hosted stays on ancestry proof
+			if (!merged) merged = (await forgeMergeStyle(root, forgeOf(cfg, origin), br)) !== null;
 			if (merged) remoteNote = (await sh(`git push origin --delete ${sq(`refs/heads/${br}`)}`, root)).ok
 				? ` origin/${br} deleted (verified merged)`
 				: ` origin/${br} delete failed — git push origin --delete ${br}`;
@@ -1440,7 +1434,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 }
 
 async function gateInit(o: GateCtx): Promise<RunResult> {
-	const { root, ui, cfg, rest, flag } = o;
+	const { root, ui, rest, flag } = o;
 	// a recursive mkdir is silent about whether it created anything, and `flow init --write` is the
 	// only sanctioned agent path to the playbook: claiming "created" when the folder was already
 	// there sends the agent diffing its own config for damage that never happened (#39).
@@ -1449,20 +1443,16 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 	const notes: string[] = dfExisted ? [] : [`.dev-flow/ created in ${root}`];
 	// self-ignoring folder with one exception: the playbook is the only file under .dev-flow/ that lives in git
 	writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n!project.md\n");
-	rmSync(path.join(dfDir(root), ".current"), { force: true }); // migrate away the legacy repo-global pointer
 	const mdFile = path.join(dfDir(root), "project.md");
 	const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
 	const curBr = await currentBranch(root);
 	// never propose a feature branch (contains "/") as the default branch
 	const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
 	const det = detectProject(root, branch);
-	const origin = await sh("git remote get-url origin", root);
-	det.partial.forge = origin.ok && origin.out.trim() ? detectForge(origin.out) : undefined; // confirmed or corrected by the operator during setup; absent = no origin to detect from
+	const origin = await originUrl(root);
+	det.partial.forge = origin ? detectForge(origin) : undefined; // confirmed or corrected by the operator during setup; absent = no origin to detect from
 	det.partial.merge = (await mergeHistoryEvidence(root, branch))?.note; // "what do you actually do when a PR merges", read off the log
-	const loaded = loadProject(dfDir(root));
 	const draftFresh = buildDraft(det);
-	const draftRefresh = buildDraft(det, loaded.cfg);
-	const editHint = "to change anything: edit .dev-flow/project.md directly (flow init = doctor revalidates), or from an agent session: flow init --draft → discuss → --write";
 	if (flag("draft")) return { text: existsSync(mdFile) ? readFileSync(mdFile, "utf8") : draftFresh }; // read path: prints content, writes nothing (and offers no deletions)
 	// ghosts: feature dirs whose state.json is gone — inert, invisible to status and guards, and only findable by eye
 	const ghosts = ghostFeatureDirs(root);
@@ -1473,22 +1463,21 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 			notes.push(`removed ${ghosts.length} ghost feature dir(s): ${ghosts.map((g) => g.slice(".dev-flow/".length)).join(", ")}`);
 		} else notes.push(`kept ${ghosts.length} ghost feature dir(s) — inert, remove them whenever you like`);
 	}
-	const writeMd = (text: string): RunResult | null => {
+	/** Validate, back up what was there (the operator's rules are not regenerable), write. */
+	const writeMd = (text: string): { rej: RunResult } | { warn: string[] } => {
 		const parsed = parseProjectMd(text);
-		if (parsed.hard.length) return { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true };
-		// the operator's rules are not regenerable — keep what was there before any overwrite
+		if (parsed.hard.length) return { rej: { text: `project.md REJECTED:\n- ${parsed.hard.join("\n- ")}`, isError: true } };
 		if (existsSync(mdFile)) copyFileSync(mdFile, `${mdFile}.bak`);
 		writeFileSync(mdFile, text.endsWith("\n") ? text : `${text}\n`);
-		return null;
+		return { warn: parsed.warn };
 	};
 	if (flag("write")) {
 		const content = rest[rest.indexOf("--write") + 1];
 		if (!content || content.startsWith("--")) return { text: 'usage: flow init --write "<full project.md content>"', isError: true };
-		const parsed = parseProjectMd(content);
-		const rej = writeMd(content);
-		if (rej) return rej;
+		const w = writeMd(content);
+		if ("rej" in w) return w.rej;
 		notes.push("project.md written (operator-owned playbook)", GIT_TRACK_NOTE);
-		if (parsed.warn.length) notes.push("warnings:", ...parsed.warn.map((w) => `  ${w}`));
+		if (w.warn.length) notes.push("warnings:", ...w.warn.map((x) => `  ${x}`));
 	} else if (!existsSync(mdFile)) {
 		// first init: never write silently. The setup brief lists what detection could not decide;
 		// the agent relays the questions to the operator and applies the answers via flow init --write
@@ -1504,8 +1493,8 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 		if (ui.hasUI) {
 			const ok = await ui.confirm("Write project.md draft?", `${mdDigest(draftFresh)}\n\nWrite this detection draft now? Declining leaves the setup questions open for chat clarification.`);
 			if (ok) {
-				const rej = writeMd(draftFresh);
-				if (rej) return rej;
+				const w = writeMd(draftFresh);
+				if ("rej" in w) return w.rej;
 				notes.push("wrote .dev-flow/project.md from detection — review it and adjust as needed", GIT_TRACK_NOTE);
 			} else notes.push("draft not written — answer the setup questions, then flow init --write");
 		}
@@ -1517,44 +1506,12 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 		copyFileSync(mdFile, `${mdFile}.bak`);
 		writeFileSync(mdFile, draftFresh);
 		notes.push("project.md OVERWRITTEN (--force; previous copy kept as project.md.bak):", ...det.report.map((r) => `  ${r}`), GIT_TRACK_NOTE);
-	} else if (!ui.hasUI) {
-		// the CI/agent path: the doctor's findings have to be printed, not just promised
+	} else {
+		// re-init is the doctor's file-level check: findings are printed, the playbook is never regenerated —
+		// a draft cannot reproduce hand-written prose, items and keys. Edit the file, or flow init --write.
+		const loaded = loadProject(dfDir(root));
 		const findings = doctorFindings(root, loaded.cfg, loaded.md);
-		notes.push("project.md already exists — kept (flow init --force to overwrite, --write to edit)", findings.length ? `doctor: ${findings.length} finding(s):` : "doctor: no findings", ...findings.map((x) => `  ${x}`));
-	} else if (existsSync(mdFile)) {
-		// doctor mode: cheap consistency probes only — never runs project commands
-		const findings = doctorFindings(root, loaded.cfg, loaded.md);
-		findings.push(...(await gitConsistency(root, loaded.cfg)));
-		// a repo that never said how a PR merges gets the evidence next to the finding, so the answer is a choice and not a guess
-		if (!loaded.cfg.release.merge) {
-			const ev = await mergeHistoryEvidence(root, loaded.cfg.defaultBranch);
-			if (ev?.recent) findings.push(`${ev.note} — write it into the playbook: merge = ${ev.recent} under ## release (or let the next flow start ask and write it)`);
-		}
-		for (const it of readReflections(root)) findings.push(`open reflection [${it.section}]: ${it.line.slice(6)}`);
-		if (!findings.length) notes.push("doctor: project.md OK — no drift, no inconsistencies");
-		else {
-			// a refresh is regenerated from detection + config: lines it cannot reproduce are
-			// hand-written (prose, checklist items, hand-set keys) and would vanish silently.
-			const dropped = droppableLines(readFileSync(mdFile, "utf8"), draftRefresh);
-			let edited: string | undefined;
-			if (dropped.length)
-				notes.push(`doctor: refresh refused — a regenerated draft would drop ${dropped.length} hand-written line(s):`, ...dropped.slice(0, 8).map((l) => `  ${l}`), ...(dropped.length > 8 ? [`  …(${dropped.length - 8} more)`] : []));
-			else
-				edited = ui.editor
-					? await ui.editor(`flow init — doctor: ${findings.length} finding(s) — edit & save to apply, Esc skips`, draftRefresh)
-					: (await ui.confirm(`flow init — doctor: ${findings.length} finding(s)`, `${findings.join("\n")}
-
-Write refreshed project.md? Your file; cancel writes nothing.
-${mdDigest(draftRefresh)}`))
-						? draftRefresh
-						: undefined;
-			if (edited === undefined) notes.push(dropped.length ? "findings — fix them by editing the file:" : "declined — project.md unchanged", ...findings.map((f) => `  ${f}`));
-			else {
-				const rej = writeMd(edited);
-				if (rej) return rej;
-				notes.push("project.md refreshed — findings addressed:", ...findings.map((f) => `  ${f}`), editHint);
-			}
-		}
+		notes.push("project.md already exists — kept (edit it directly, flow init --write to replace it, --force to redraft)", findings.length ? `doctor: ${findings.length} finding(s):` : "doctor: no findings", ...findings.map((x) => `  ${x}`));
 	}
 	const initCfg = loadProject(dfDir(root)).cfg;
 	if (initCfg.mainHook) {
@@ -1575,7 +1532,7 @@ ${mdDigest(draftRefresh)}`))
 }
 
 async function gateStart(o: GateCtx): Promise<RunResult> {
-	const { root, ui, sess, cfg, rest, flag, slugArg } = o;
+	const { root, sess, cfg, rest, flag, slugArg } = o;
 	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --ui/--patch/--docs are operator-granted — ask the operator in chat, then add --confirmed", isError: true };
 	if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
 	// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
@@ -1589,14 +1546,12 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 	if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
 	// --- preflight: is this session running the current build, and is the playbook complete? ---
 	const notes: string[] = [];
-	const disk = checkoutBuild(root);
-	const behind = sessionRunsOlderBuild(loadedVersion(), disk.version);
-	if (behind) notes.push(`warning: this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version} — /reload rebinds session state; only restarting the host swaps the code it runs`);
+	const skew = buildSkew(root);
+	if (skew.line) notes.push(`warning: ${skew.line}`);
 	const dupStart = copyWarning();
 	if (dupStart) notes.push(dupStart);
 	if (flag("check-upstream")) {
-		const pub = await sh("npm view pi-dev-flow version", root);
-		const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
+		const newest = await publishedVersion(root);
 		notes.push(newest ? `published dev-flow: ${newest} (this build: ${loadedVersion() ?? "?"})${loadedVersion() && newest !== loadedVersion() ? " — an update is available" : ""}` : "could not read the published dev-flow version (offline?)");
 	}
 	// missing playbook parameters are printed at the moment they start to matter, not promised to a later doctor run
@@ -1607,11 +1562,7 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 	const styleArg = flagValue(rest, "merge");
 	const style = styleArg === null ? null : parseMergeStyle(styleArg);
 	if (styleArg !== null && !style) return { text: `--merge=${styleArg} is not a policy — use squash, merge, rebase or any`, isError: true };
-	// with no playbook at all there is nothing to ask about: writing the playbook is `flow init`'s job, and
-	// a repo that never ran init must not be refused a feature by a merge-policy question
-	const hasPlaybook = existsSync(path.join(dfDir(root), "project.md"));
-	if (!hasPlaybook) notes.push("no .dev-flow/project.md yet — flow init writes the playbook (it now asks for the merge policy too)");
-	if (hasPlaybook && (!cfg.release.merge || (style && style !== cfg.release.merge))) {
+	if (!cfg.release.merge || (style && style !== cfg.release.merge)) {
 		if (!style) {
 			const ev = await mergeHistoryEvidence(root, cfg.defaultBranch);
 			return {
@@ -1650,7 +1601,6 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	const errs = approveGate(state!, cfg, listFiles(planDir), existsSync(planMd) ? readFileSync(planMd, "utf8") : undefined);
 	if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 	const planItems = applicableItems(cfg, state!, "plan");
-	if (flag("yolo")) state!.yolo = true; // operator's word at Approve? — every later gate question is pre-confirmed; checks and guardrails stay
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 	const askPending = !flag("confirmed");
 	if (askPending) {
@@ -1659,8 +1609,14 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 			return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
 		}
 		const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
-		if (!ok) return { text: "approval declined — keep iterating on the plan" };
+		if (!ok) {
+			delete state!.pendingAsk;
+			writeState(root, state!);
+			return { text: "approval declined — keep iterating on the plan" };
+		}
 	}
+	// the operator's word at Approve?, recorded only once given: every later gate question is pre-confirmed; checks and guardrails stay
+	if (flag("yolo")) state!.yolo = true;
 	if (planItems.length) state!.confirmations = { ...state!.confirmations, plan: { hash: checklistHash(planItems), at: now() } };
 	const branch = subst(cfg.branchPattern, state!.slug);
 	const wtRel = subst(cfg.worktreeDir, state!.slug);
@@ -1688,26 +1644,25 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	state!.worktree = wtRel;
 	state!.stage = "implement";
 	state!.approvals.plan = now();
-	clearPendingAsk(state!);
+	delete state!.pendingAsk;
 	writeState(root, state!);
 	return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
 }
 
 async function gateStatus(o: GateCtx): Promise<RunResult> {
-	const { root, ui, sess, cfg, flag, slugArg } = o;
+	const { root, sess, cfg, flag, slugArg } = o;
 	const df = dfDir(root);
 	const { md } = loadProject(df);
 	// cheap fs probes only (no git subprocesses) — status is a glance, `flow doctor` is the full list
 	const findings = md ? doctorFindings(root, cfg, md) : [];
 	// a session running an older build than the disk ships is the one thing a glance must say: every
 	// gate proof printed since the drift began belongs to the older code.
-	const disk = checkoutBuild(root);
-	const staleBuild = sessionRunsOlderBuild(loadedVersion(), disk.version);
-	const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(staleBuild ? [`⚠ this session runs dev-flow ${staleBuild}, ${disk.label} ships ${disk.version} — /reload rebinds; restart swaps code`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
+	const skew = buildSkew(root);
+	const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(skew.line ? [`⚠ ${skew.line}`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
 	// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
 	const rmap = roadmapOpenCount(readRoadmap(root));
 	const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
-	const slugs = slugArg ? [slugArg] : existsSync(df) ? (await listDirs(df)).filter((s) => readState(root, s)) : [];
+	const slugs = slugArg ? [slugArg] : unfinishedStates(root).map((s) => s.slug);
 	const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
 	if (flag("json")) {
 		const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
@@ -1753,14 +1708,14 @@ async function gateReflect(o: GateCtx): Promise<RunResult> {
 	if (words.length) return reflectNote(root, sess, words, forced);
 	// upstream for the update probe: the manifest's repository field; the dev-flow checkout itself falls back to its origin
 	const self = pluginVersion(import.meta.dirname);
-	const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
+	const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await originUrl(root)) ?? "") : "");
 	const refl = readReflections(root);
-	const fold = await foldView(root, refl, isSelfRepo(root));
+	const fold = await foldView(root, refl);
 	return {
 		text: reflectProtocol(refl, isSelfRepo(root), {
 			version: self.version,
 			upstream,
-			closed: closedReflectionCount(readReflectionsText(root)),
+			closed: doneItemCount(readReflectionsText(root)),
 			ghFold: fold.state === "ok" && fold.open ? { repo: fold.slug, open: fold.open, similar: fold.result.similar.length } : undefined,
 		}).join("\n"),
 	};
@@ -1773,7 +1728,7 @@ async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 	const [verb = "list", ...args] = words;
 	const text = readRoadmap(root);
 	const open = roadmapOpenCount(text);
-	const done = roadmapDoneCount(text);
+	const done = doneItemCount(text);
 	const save = (next: string) => writeFileSync(roadmapFile(root), next); // .dev-flow/ existence is runFlow's precondition
 	const idx = Number(args[0]);
 	const validIdx = Number.isInteger(idx) && idx >= 1 && idx <= open;
@@ -1811,14 +1766,14 @@ async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 }
 
 async function gateDoctor(o: GateCtx): Promise<RunResult> {
-	const { root, cfg, rest } = o;
+	const { root, rest } = o;
 	// read-only findings on demand — never writes, never asks, safe for agents and CI at any stage
 	const df = dfDir(root);
 	const loaded = loadProject(df);
 	const findings = doctorFindings(root, loaded.cfg, loaded.md);
 	findings.push(...(await gitConsistency(root, loaded.cfg)));
 	const refl = readReflections(root);
-	const fold = await foldView(root, refl, isSelfRepo(root));
+	const fold = await foldView(root, refl);
 	if (refl.length) {
 		findings.push(`reflection review — ${refl.length} open item(s); doctor never implements: investigate each, present the fix, the operator confirms, then the routed flow implements it:`);
 		// labelled from the heading each item sits under — the file is the record, re-guessing from the
@@ -1831,15 +1786,14 @@ async function gateDoctor(o: GateCtx): Promise<RunResult> {
 	findings.push(...foldRows(fold, isSelfRepo(root)));
 	const unfiled = reflectUnfiledCount(readReflectionsText(root));
 	if (unfiled) findings.push(`  reflections: ${unfiled} open item(s) sit outside ## playbook / ## plugin — flow reflect list shows them, flow reflect move <n> --plugin|--playbook files them`);
-	const closedRefl = closedReflectionCount(readReflectionsText(root));
+	const closedRefl = doneItemCount(readReflectionsText(root));
 	if (closedRefl) findings.push(reflectionsTidyHint(closedRefl));
 	if (!rest.length) return { text: findings.length ? `doctor: ${findings.length} finding(s)\n${findings.map((f) => `  ${f}`).join("\n")}` : "doctor: no findings — playbook, flow state and git layout are consistent" };
 	// flow doctor <note>: a fresh observation gets an investigation brief and a fix route
 	return { text: investigationBrief(rest.filter((a) => !a.startsWith("--")).join(" "), isSelfRepo(root)).join("\n") };
 }
 
-/** What a gate handler needs from the runFlow preamble. Bodies moved verbatim destructure
- *  their own names back, so the bodies needed zero edits. */
+/** What a gate handler needs from the runFlow preamble. */
 interface GateCtx {
 	root: string;
 	ui: Ui;
@@ -1854,16 +1808,14 @@ interface GateCtx {
 async function gateVersion(o: GateCtx): Promise<RunResult> {
 	const { root, flag } = o;
 	// the plugin's own version — separate from the project's versioning.file version the release gates use
-	const self = checkoutBuild(root);
-	const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
+	const { disk: self, behind } = buildSkew(root);
 	const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
 	// in the dev-flow repo head names the checkout, so name where the stale code actually lives
 	const from = SELF_BUILD.dir !== self.dir ? ` (from ${SELF_BUILD.dir})` : "";
 	const dupNote = copyWarning();
 	// --check-upstream is the one that asks the registry; plain flow version stays offline and instant
 	if (flag("check-upstream")) {
-		const pub = await sh("npm view pi-dev-flow version", root);
-		const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
+		const newest = await publishedVersion(root);
 		return { text: newest ? `${head} — published: ${newest}${self.version && newest !== self.version ? " (update available)" : ""}` : `${head} — could not read the published version (offline?)` };
 	}
 	return { text: `${behind ? `${head} — but this session runs ${behind}${from}; /reload to run ${self.version} \u2014 in a shared-process host (pi-web) reload cannot swap loaded code: only a host restart does` : head}${dupNote ? `\n${dupNote}` : ""}` };
@@ -1900,22 +1852,19 @@ async function gateHealth(o: GateCtx): Promise<RunResult> {
 	const { root, sess, cfg, slugArg } = o;
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
-	if (!cfg.commands.health) return { text: "no commands.health configured — add `health = <command>` (or a flow-check health block) under ## implement in .dev-flow/project.md", isError: true };
-	const seedFail = await seedStep(root, state!, cfg);
-	if (seedFail) return seedFail;
-	const res = await runHealthProbe(cfg.commands.health, gateCwd(root, state!), cfg.healthWait);
-	state!.checks.health = { ok: res.ok, at: now() };
-	await stampChecks(root, state!, ["health"]);
-	writeState(root, state!);
-	const tried = res.attempts > 1 ? `, ${res.attempts} attempts` : "";
-	return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${cfg.commands.health}${tried})\n${tail(res.out)}` };
+	// commands.health and a flow-check named health are the same probe (healthProbe reads both)
+	const probe = healthProbe(cfg);
+	if (!probe) return { text: "no health check configured — add `health = <command>` (or a flow-check health block) under ## implement in .dev-flow/project.md", isError: true };
+	const res = await probeHealth(root, state!, cfg, probe);
+	if ("seedFail" in res) return res.seedFail;
+	return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${probe}${triedNote(res.attempts)})\n${tail(res.out)}` };
 }
 
 async function gateUse(o: GateCtx): Promise<RunResult> {
 	const { root, sess, slugArg } = o;
 	if (!slugArg) return { text: "usage: flow use <slug>", isError: true };
 	const st = readState(root, slugArg);
-	if (!st || st.stage === "done") return { text: `no unfinished feature ${slugArg}`, isError: true };
+	if (!st) return { text: `no unfinished feature ${slugArg}`, isError: true };
 	const prior = readClaim(root, slugArg);
 	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
 	sess.bind(slugArg);
@@ -1923,14 +1872,14 @@ async function gateUse(o: GateCtx): Promise<RunResult> {
 	// a checkpoint that was still unanswered belongs to whoever asked; a session taking the feature over
 	// must not inherit a 💬 for a question it never posed
 	if (st.pendingAsk) {
-		clearPendingAsk(st);
+		delete st.pendingAsk;
 		writeState(root, st);
 	}
 	return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}; session renamed to ${slugArg}${takeover}` };
 }
 
 async function gateAbort(o: GateCtx): Promise<RunResult> {
-	const { root, sess, slugArg } = o;
+	const { root, ui, sess, flag, slugArg } = o;
 	// Unbinds the session only; state and worktree stay for manual recovery.
 	const target = slugArg ?? sess.slug;
 	if (!target) return { text: "nothing bound — pass a slug", isError: true };
@@ -1939,13 +1888,20 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 	// that works it erases the plan that session is still writing (same rule needState applies)
 	const claim = readClaim(root, target);
 	if (claimBlocks(claim, sess.key)) return { text: `${target} is claimed by another live session (pid ${claim!.pid}) — flow use ${target} takes it over explicitly`, isError: true };
-	if (sess.slug === target) sess.bind(null);
 	if (st && !st.worktree) {
 		// plan-stage abort = drop: no worktree/branch exists, so the state dir would linger
-		// as a ghost the doctor flags (a plan/ whose state.json is gone)
+		// as a ghost the doctor flags (a plan/ whose state.json is gone). A written plan is the
+		// operator's work too — it is not dropped without their word.
+		const written = listFiles(path.join(featDir(root, target), "plan"));
+		if (written.length && !flag("confirmed")) {
+			const ok = ui.hasUI && (await ui.confirm("Drop plan?", `Abort ${target}? Its plan/ (${written.join(", ")}) is deleted for good.`));
+			if (!ok) return { text: needsOperator(`aborting ${target} deletes its written plan (${written.join(", ")}) — ask the operator, then re-run with --confirmed`, "Drop plan?"), isError: true };
+		}
+		if (sess.slug === target) sess.bind(null);
 		rmSync(featDir(root, target), { recursive: true, force: true });
 		return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
 	}
+	if (sess.slug === target) sess.bind(null);
 	if (st?.worktree) { st.aborted = now(); writeState(root, st); } // the doctor skips the removed worktree for stamped states (gh#138)
 	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.aborted ? " (marked aborted — the doctor leaves it alone once you clean the worktree up)" : "") + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
 }
@@ -1973,31 +1929,23 @@ export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: 
 	},
 };
 
-async function isLinkedWorktree(root: string): Promise<boolean> {
-	const r = await sh("git rev-parse --path-format=absolute --git-dir --git-common-dir", root);
-	if (!r.ok) return false;
-	const [gitDir, common] = r.out.split("\n").map((l) => l.trim());
-	return !!gitDir && !!common && path.resolve(gitDir) !== path.resolve(common);
-}
-
-/** Per-cwd cache for flowRoot — the tool_call hook consults it on every call. */
-const flowRootCache = new Map<string, string>();
+/** Per-cwd cache of the main checkout a linked worktree belongs to (null = not a linked worktree) —
+ *  every hook resolves its root through flowRoot, so git is asked once per directory. */
+const mainCheckoutCache = new Map<string, string | null>();
 
 /** The root whose .dev-flow/ is the flow truth for a session cwd. A feature worktree is a linked git
  *  worktree whose tracked .dev-flow/ holds only project.md — state, claims and plans live in the main
  *  checkout. Judging a session by its own cwd found no features and every guard answered "no active
  *  flow". So a linked worktree resolves to its main checkout when that checkout is initiated. */
 async function flowRoot(cwd: string): Promise<string> {
-	const hit = flowRootCache.get(cwd);
-	if (hit !== undefined) return hit;
-	let root = cwd;
-	if (await isLinkedWorktree(cwd)) {
-		const r = await sh("git rev-parse --path-format=absolute --git-common-dir", cwd);
-		const main = mainCheckoutRoot(cwd, r.ok ? r.out.trim() : null);
-		if (main && initiated(main)) root = main;
+	if (!mainCheckoutCache.has(cwd)) {
+		const r = await sh("git rev-parse --path-format=absolute --git-dir --git-common-dir", cwd);
+		const [gitDir, common] = r.ok ? r.out.split("\n").map((l) => l.trim()) : [];
+		const linked = !!gitDir && !!common && path.resolve(gitDir) !== path.resolve(common);
+		mainCheckoutCache.set(cwd, linked ? mainCheckoutRoot(cwd, common) : null);
 	}
-	flowRootCache.set(cwd, root);
-	return root;
+	const main = mainCheckoutCache.get(cwd);
+	return main && initiated(main) ? main : cwd;
 }
 
 async function currentBranch(root: string): Promise<string> {
@@ -2024,11 +1972,6 @@ function needState(root: string, sess: Session, slugArg?: string): { state: Flow
 	return { state };
 }
 
-async function listDirs(dir: string): Promise<string[]> {
-	const { readdirSync } = await import("node:fs");
-	return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-}
-
 function tail(out: string, n = 15): string {
 	const lines = out.split("\n").filter(Boolean);
 	return lines.length > n ? `…(${lines.length - n} lines)…\n${lines.slice(-n).join("\n")}` : out;
@@ -2039,13 +1982,13 @@ function tail(out: string, n = 15): string {
 /** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
  *  unfinished-flow count, or `💬 no flows` — an initiated repo always carries the footer. An uninitiated
  *  folder gets nothing: the status is cleared. Pure read — rendering never binds or claims anything. */
-function refreshStatus(ctx: ExtensionContext): void {
+function refreshStatus(ctx: ExtensionContext, root: string): void {
 	if (!ctx.hasUI) return;
-	if (!initiated(ctx.cwd)) {
+	if (!initiated(root)) {
 		ctx.ui.setStatus("dev-flow", undefined);
 		return;
 	}
-	const s = statusFor(boundFeature(ctx.cwd, sessionKey(ctx)), unfinishedStates(ctx.cwd).length);
+	const s = statusFor(boundFeature(root, sessionKey(ctx)), unfinishedStates(root).length);
 	ctx.ui.setStatus("dev-flow", s.text);
 }
 
@@ -2068,10 +2011,9 @@ export default function devFlow(pi: ExtensionAPI) {
 	const uiFrom = (ctx: ExtensionContext): Ui => ({
 		hasUI: ctx.hasUI,
 		confirm: async (title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
-		editor: ctx.mode === "tui" ? (title: string, prefill?: string) => ctx.ui.editor(title, prefill) : undefined,
 	});
 
-	const sessFor = (ctx: ExtensionContext): Session => {
+	const sessFor = (ctx: ExtensionContext, root: string): Session => {
 		const key = sessionKey(ctx);
 		return {
 			key,
@@ -2081,8 +2023,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				bindings.set(key, slug);
 				pi.appendEntry("dev-flow-bind", { slug });
 				// claims track the binding: claim what you bind, release what you drop.
-				if (prev && prev !== slug && readClaim(ctx.cwd, prev)?.key === key) rmSync(claimFile(ctx.cwd, prev), { force: true });
-				if (slug) writeClaim(ctx.cwd, slug, key);
+				if (prev && prev !== slug && readClaim(root, prev)?.key === key) rmSync(claimFile(root, prev), { force: true });
+				if (slug) writeClaim(root, slug, key);
 			},
 			rename: (slug) => {
 				// pi's public session-name API, kept defensive: an older host without it must not fail a gate.
@@ -2097,7 +2039,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	};
 
 	/** Restore this session's binding from its branch history (survives resume/fork). */
-	const rebuildSession = (ctx: ExtensionContext) => {
+	const rebuildSession = (ctx: ExtensionContext, root: string) => {
 		let slug: string | null = null;
 		let sawCore = false;
 		let coreStaleHere = false;
@@ -2122,7 +2064,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		// A reload ends the old session, which released its claim; the restored one must reclaim what its own
 		// branch says it holds, or the repo answers "claimed by another live session" to the session that
 		// holds it. A foreign live claim wins — restoring is not a takeover.
-		if (slug && readState(ctx.cwd, slug) && !claimBlocks(readClaim(ctx.cwd, slug), key)) writeClaim(ctx.cwd, slug, key);
+		if (slug && readState(root, slug) && !claimBlocks(readClaim(root, slug), key)) writeClaim(root, slug, key);
 	};
 
 	/** The run's playbook preamble: the skill's always-on core, once per session. Later runs come back
@@ -2143,13 +2085,14 @@ export default function devFlow(pi: ExtensionAPI) {
 		description: `dev-flow gates: ${GATE_HELP}`,
 		handler: async (args, ctx) => {
 			const cmd = parse(args);
-			const res = await runFlow(cmd, ctx.cwd, uiFrom(ctx), sessFor(ctx));
+			const root = await flowRoot(ctx.cwd);
+			const res = await runFlow(cmd, root, uiFrom(ctx), sessFor(ctx, root));
 			// gate output belongs to the conversation, not a toast: display:true renders a [flow] box (TUI + web), no triggerTurn so no model turn fires.
 			// bare reflect is the exception: its whole output is instructions for the agent — displayed without a turn, they would never execute.
 			const wake = cmd.length === 1 && cmd[0] === "reflect";
 			pi.sendMessage({ customType: "flow", content: res.text, display: true }, wake ? { triggerTurn: true } : undefined);
-			refreshStatus(ctx);
-			if (!res.isError) maybeCompactNow(ctx);
+			refreshStatus(ctx, root);
+			if (!res.isError) maybeCompactNow(ctx, root);
 		},
 	});
 
@@ -2162,8 +2105,9 @@ export default function devFlow(pi: ExtensionAPI) {
 			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug"]' }),
 		}),
 		execute: async (_id, params, _signal, _onUpdate, ctx) => {
-			const res = await runFlow(params.args, ctx.cwd, uiFrom(ctx), sessFor(ctx));
-			if (!res.isError) maybeCompactNow(ctx);
+			const root = await flowRoot(ctx.cwd);
+			const res = await runFlow(params.args, root, uiFrom(ctx), sessFor(ctx, root));
+			if (!res.isError) maybeCompactNow(ctx, root);
 			return { content: [{ type: "text", text: res.text }], details: undefined, isError: res.isError };
 		},
 	});
@@ -2187,18 +2131,19 @@ export default function devFlow(pi: ExtensionAPI) {
 		execute: async (_id, params, signal, onUpdate, ctx) => {
 			const err = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
 			const op = String(params.op ?? "").trim().toLowerCase();
-			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
+			const root = await flowRoot(ctx.cwd);
+			if (!initiated(root)) return err("dev-flow is not initiated here — run flow init first");
 			const key = sessionKey(ctx);
-			const st = boundFeature(ctx.cwd, key);
+			const st = boundFeature(root, key);
 			if (!st) return err("this session is not bound to a feature — flow start <slug> or flow use <slug> first");
 			const why = workerOpError(op, st.stage);
 			if (why) return err(why);
 			const wop = op as WorkerOp;
-			const work = worktreeAbs(ctx.cwd, st);
+			const work = worktreeAbs(root, st);
 			if (!work || !existsSync(work)) return err(`feature ${st.slug} has no worktree on disk — nothing for a worker to work in`);
 			if (runningWorkers.has(key)) return err("a worker is already running for this session — wait for it to return");
 			runningWorkers.add(key);
-			const cfg = loadProject(dfDir(ctx.cwd)).cfg;
+			const cfg = loadProject(dfDir(root)).cfg;
 			const budgetMin = clampBudgetMin(params.budgetMin, wop);
 			const label = String(params.label ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 40);
 			const glyph = wop === "implement" ? "🔨" : "🔍";
@@ -2208,7 +2153,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const headBefore = (await git("git rev-parse HEAD")).trim();
 			const brief = buildWorkerBrief({
 				op: wop, slug: st.slug, workDir: work,
-				planFile: path.join(featDir(ctx.cwd, st.slug), "plan", "plan.md"),
+				planFile: path.join(featDir(root, st.slug), "plan", "plan.md"),
 				defaultBranch: cfg.defaultBranch,
 				commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
 				status: await git("git status --short"),
@@ -2256,6 +2201,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const newCommits = headBefore && headAfter && headBefore !== headAfter ? await git(`git log --oneline ${sq(headBefore)}..HEAD`) : "";
 			const dirty = (await git("git status --short")).trim();
 			const outcome = crash ? `crashed: ${crash}` : timedOut ? `interrupted at the ${budgetMin}-min budget` : report.found ? "reported" : `ended without REPORT after ${nudges} nudge(s)`;
+			try { if (child) workerSessions.delete(child.sessionManager.getSessionId()); } catch { /* id-less session: nothing was registered */ }
 			try { child?.setSessionName(`${report.found && !crash && !timedOut ? "✓" : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
 			const parts = [
 				`${glyph} ${wop} worker ${outcome} (${Math.round((Date.now() - started) / 60_000)} min)`,
@@ -2264,7 +2210,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				`uncommitted: ${dirty ? `\n${dirty}` : "clean"}`,
 			];
 			if (wop === "implement") {
-				const check = await runFlow(["check"], ctx.cwd, uiFrom(ctx), sessFor(ctx));
+				const check = await runFlow(["check"], root, uiFrom(ctx), sessFor(ctx, root));
 				parts.push(`flow check after the worker: ${check.text.replace(/\s+/g, " ").trim().slice(0, 1500)}`);
 			} else if (newCommits.trim() || dirty) {
 				parts.push("note: the reviewer changed the tree — treat its verdict with suspicion and inspect the change");
@@ -2279,30 +2225,33 @@ export default function devFlow(pi: ExtensionAPI) {
 	// Agent-run gates refresh at turn_end (tool ctx lacks setStatus; turn_end catches them).
 	pi.on("session_start", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		rebuildSession(ctx);
-		refreshStatus(ctx);
+		const root = await flowRoot(ctx.cwd);
+		rebuildSession(ctx, root);
+		refreshStatus(ctx, root);
 	});
 	pi.on("session_tree", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		rebuildSession(ctx);
+		rebuildSession(ctx, await flowRoot(ctx.cwd));
 	});
 	// The session, not the process, owns the binding and the claim: pi-web keeps serving other sessions
 	// after one ends, and a stale claim there is a permanent lock (its pid is the server's, always alive).
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		if (!existsSync(dfDir(ctx.cwd))) return;
-		releaseSession(ctx.cwd, sessionKey(ctx));
+		const root = await flowRoot(ctx.cwd);
+		if (!existsSync(dfDir(root))) return;
+		releaseSession(root, sessionKey(ctx));
 	});
 	pi.on("turn_end", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		refreshStatus(ctx);
+		const root = await flowRoot(ctx.cwd);
+		refreshStatus(ctx, root);
 		// pi checks its compaction threshold between every turn; our safe points must be as frequent.
-		maybeCompactNow(ctx);
+		maybeCompactNow(ctx, root);
 	});
 	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
 	pi.on("agent_settled", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		maybeCompactNow(ctx);
+		maybeCompactNow(ctx, await flowRoot(ctx.cwd));
 	});
 	// pi forcing a threshold compaction while a flow is bound means our safe-point pacing missed — rebuild the
 	// summary here with flow-aware instructions and hand it back through the event's custom-compaction channel.
@@ -2312,9 +2261,10 @@ export default function devFlow(pi: ExtensionAPI) {
 	// overflow is never taken over (cancelling it would drop pi's compact-and-retry); manual is the operator's or ours.
 	pi.on("session_before_compact", async (event, ctx) => {
 		if (!guardsAreMine()) return undefined;
-		if (!initiated(ctx.cwd)) return undefined;
+		const root = await flowRoot(ctx.cwd);
+		if (!initiated(root)) return undefined;
 		const key = sessionKey(ctx);
-		const st = boundFeature(ctx.cwd, key);
+		const st = boundFeature(root, key);
 		if (!shouldTakeOverCompaction({ reason: event.reason, bound: !!st, inFlight: compacting.has(key) })) return undefined;
 		const model = ctx.model;
 		if (!model) return undefined;
@@ -2333,24 +2283,15 @@ export default function devFlow(pi: ExtensionAPI) {
 			compacting.delete(key);
 		}
 	});
-	// pi forcing its own compaction while a flow is bound means the pacing was wrong — park a note for the operator.
-	pi.on("session_compact", async (event, ctx) => {
+	// Whatever the reason, the summary replaced the transcript — the core the first run injected is gone
+	// from context, so the next run pays it once more (manual compactions included: our own safe-point
+	// compaction is the common one). Durable too: a branch whose newest skill entry is stale tells a
+	// reloaded session to pay the core again.
+	pi.on("session_compact", async (_event, ctx) => {
 		if (!guardsAreMine()) return;
-		if (!initiated(ctx.cwd)) return;
-		// Whatever the reason, the summary replaced the transcript — the core the first run injected is
-		// gone from context, so the next run pays it once more (manual compactions included: our own
-		// safe-point compaction is the common one).
+		if (!initiated(await flowRoot(ctx.cwd))) return;
 		coreStale.add(sessionKey(ctx));
-		// Durable too: a compaction the session survives a reload outlives the in-memory flag, and a
-		// branch whose newest skill entry is stale tells the restored run to pay the core again.
 		pi.appendEntry("dev-flow-skill", { core: true, stale: true });
-		if (event.reason === "manual") return;
-		const st = boundFeature(ctx.cwd, sessionKey(ctx));
-		if (!st) return;
-		const f = path.join(dfDir(ctx.cwd), "reflections.md");
-		const text = existsSync(f) ? readFileSync(f, "utf8") : "";
-		const line = compactionReflectionLine(st.slug, st.stage, event.reason, new Date().toISOString().slice(0, 10));
-		writeFileSync(f, appendReflection(text, ["plugin"], line));
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -2389,15 +2330,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				if (why) return { block: true, reason: why };
 			}
 			const reason = writeGuard({ abs, dfDir: dfDir(guardRoot), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd });
-			if (reason) return { block: true, reason };
-			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
-			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
-			if (owner && (owner.state.stage === "implement" || owner.state.stage === "pre-release") && (Object.keys(owner.state.checks).length || owner.state.confirmations?.implement)) {
-				owner.state.checks = {};
-				delete owner.state.confirmations?.implement;
-				writeState(guardRoot, owner.state);
-			}
-			return undefined;
+			// a stale green is caught where it matters: verify and release fingerprint the worktree (freshenChecks)
+			return reason ? { block: true, reason } : undefined;
 		}
 
 		if (isToolCallEventType("bash", event)) {
@@ -2480,15 +2414,13 @@ export default function devFlow(pi: ExtensionAPI) {
 				if (reason) return { block: true, reason };
 				// A feature worktree stays on its feature branch: a side branch cut inside it repurposes the
 				// worktree (and leaves it off its branch for the next gate); out-of-flow fixes get their own flow.
-				const created = branchCreateTarget(g.seg);
+				const co = checkoutInvocation(g.seg);
+				if (!co) continue;
 				const homeWt = worktrees.find((w) => gitDir === w || gitDir.startsWith(w + path.sep));
-				if (created && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${created} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch --confirmed)` };
+				if (co.creates && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${co.target} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch --confirmed)` };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
-				const target = checkoutTarget(g.seg);
-				if (target && target.startsWith(featureBranchPrefix(cfg))) {
-					const inWorktree = worktrees.some((w) => gitDir === w || gitDir.startsWith(w + path.sep));
-					if (!inWorktree) return { block: true, reason: `branch ${target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };
-				}
+				if (!homeWt && co.target.startsWith(featureBranchPrefix(cfg)))
+					return { block: true, reason: `branch ${co.target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };
 			}
 		}
 		return undefined;
@@ -2496,34 +2428,34 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!guardsAreMine()) return undefined;
-		// One [dev-flow] line per run, whatever number of copies of this package are installed.
-		// The same package reaches one runtime twice all the time (a project pin beside the npm install,
-		// or this checkout's .pi/extensions pointer beside it) and pi dedupes extensions by file path
-		// only, so both copies answer and the line lands twice in the prompt. pi hands every handler of
-		// a run the same ctx object, so the first pass claims the run and the rival stays silent.
+		// One [dev-flow] line per run, whatever number of copies of this package are installed. The same
+		// package can reach one runtime twice (a project pin beside the npm install) and pi dedupes
+		// extensions by file path only; equal-version copies both pass the election, so the first pass
+		// claims the run (pi hands every handler of a run the same ctx object) and the rival stays silent.
 		const run = ctx as unknown as Record<symbol, boolean | undefined>;
 		if (run[CONTEXT_EMITTED]) return undefined;
 		run[CONTEXT_EMITTED] = true;
 		// repaint the footer at the start of every run: the session_start push can land before a web
 		// client attaches, and this is the earliest point the client is certainly listening
-		refreshStatus(ctx);
-		if (!initiated(ctx.cwd)) return undefined;
+		const root = await flowRoot(ctx.cwd);
+		refreshStatus(ctx, root);
+		if (!initiated(root)) return undefined;
 		try { if (workerSessions.has(ctx.sessionManager.getSessionId())) return undefined; } catch { /* not a worker */ }
 		const key = sessionKey(ctx);
 		// The playbook core rides along on the message this run writes anyway — once per session.
 		const core = corePreamble(key);
-		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
-		const state = boundFeature(ctx.cwd, key);
-		if (!state || state.stage === "done") {
+		const cfg = loadProject(dfDir(root)).cfg;
+		const state = boundFeature(root, key);
+		if (!state) {
 			// Default posture for an unbound session in a dev-flow repo (guards make it stick; this makes it understood).
 			let content = "[dev-flow] no flow bound. Every request goes through flow. New work: flow start <slug>; unfinished feature: flow use <slug>.";
-			const cb = claimBlocker(ctx.cwd, key);
+			const cb = claimBlocker(root, key);
 			if (cb) content += ` Also: ${cb.state.slug} is claimed by another live session (pid ${cb.claim.pid}) — flow use ${cb.state.slug} takes it over explicitly.`;
-			const curBr = await currentBranch(ctx.cwd);
+			const curBr = await currentBranch(root);
 			if (curBr && curBr !== cfg.defaultBranch) content += ` Also: main checkout is on ${curBr}, not ${cfg.defaultBranch} — surface this to the operator before starting work.`;
-			const refl0 = readReflections(ctx.cwd);
+			const refl0 = readReflections(root);
 			if (refl0.length) content += ` Also: ${refl0.length} reflection(s) open — run flow doctor.`;
-			const rmap0 = roadmapOpenCount(readRoadmap(ctx.cwd));
+			const rmap0 = roadmapOpenCount(readRoadmap(root));
 			if (rmap0) content += ` Also: ${rmap0} roadmap item(s) open — flow roadmap lists them, flow roadmap pick <n> <slug> hands one to flow start.`;
 			content += ` Also: the playbook map is ${path.join(SKILL_DIR, "SKILL.md")} — per-stage detail sits in references/ beside it (start: flow init, modes, ownership).`;
 			return { message: { customType: "dev-flow-context", display: false, content: `${core}${content}` } };
@@ -2539,9 +2471,9 @@ export default function devFlow(pi: ExtensionAPI) {
 		guidance.push("Stage reports: open every report with the stage line (statusbar glyph + slug + provenance-marked decision fields); close a checkpoint with an event title and `Done:` / `Next steps:` on own lines — italic verbs, recommended first, yolo last. See Stage reports in the ground rules.");
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
-		const refl = readReflections(ctx.cwd);
+		const refl = readReflections(root);
 		if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — mention to the operator; run flow doctor to review and route them (fold in only on request).`);
-		const rmap = roadmapOpenCount(readRoadmap(ctx.cwd));
+		const rmap = roadmapOpenCount(readRoadmap(root));
 		if (rmap) guidance.push(`◇ ${rmap} roadmap item(s) open — flow roadmap lists them (pick only on the operator's word).`);
 		return {
 			message: {

@@ -67,5 +67,4 @@ Playbook ownership, in full:
   rules): read freely, **never edit** — changes go through `flow init --write`
   on the operator's word. In-life playbook updates run as a docs flow:
   project.md is editable only inside a docs/patch flow's worktree and is
-  committed to git like any file. A leftover `project.json` is never read; the
-  doctor flags it.
+  committed to git like any file.

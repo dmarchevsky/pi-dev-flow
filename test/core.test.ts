@@ -11,16 +11,14 @@ import {
 	bashSegments,
 	bashFlowGuard,
 	checklistHash,
-	checkoutTarget,
+	checkoutInvocation,
 	claimBlocks,
 	classifyMergeHistory,
 	mergeShapeProof,
 	mergeStyleInvocation,
 	parseMergeStyle,
 	changelogEntry,
-	cleanupAssess,
 	cmpVersions,
-	compactionReflectionLine,
 	DEFAULTS,
 	detectForge,
 	featureBranchPrefix,
@@ -66,12 +64,10 @@ import {
 	clampBudgetMin,
 	tagCreates,
 	releaseOrderInvocation,
-	branchCreateTarget,
 	guessReflectSections,
 	reflectItems,
 	reflectMove,
 	reflectProtocol,
-	reflectSections,
 	reflectUnfiledCount,
 	reflectionLine,
 	reflectionRoutes,
@@ -86,13 +82,12 @@ import {
 	DF_ADVISORY_FILES,
 	sq,
 	tagNotesCommand,
-	openReflections,
-	closedReflectionCount,
+	openChecklistItems,
+	doneItemCount,
 	reflectionsTidy,
 	reflectionsTidyHint,
 	appendRoadmapItem,
 	roadmapDone,
-	roadmapDoneCount,
 	roadmapDoneForSlug,
 	roadmapOpenCount,
 	roadmapPick,
@@ -145,7 +140,6 @@ test("stageReference: every stage names its own playbook file", () => {
 	assert.equal(stageReference("implement"), "references/implement.md");
 	assert.equal(stageReference("pre-release"), "references/pre-release.md");
 	assert.equal(stageReference("release"), "references/release.md", "the release stage reads release.md, which hands over to finish.md");
-	assert.equal(stageReference("done"), null, "a finished feature has nothing left to read");
 });
 
 test("healthRetry: the wait budget becomes attempts at the probe interval (#42)", () => {
@@ -475,7 +469,7 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/reflections.md", dfDir: df, features: [], boundSlug: null }), null, "reflections.md is the agent's queue — editable even with no flow bound");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/a/claim.json", dfDir: df, features: [], boundSlug: null }) ?? "", /claim\.json is dev-flow-owned/, "the claim is the concurrency lock — dev-flow owns it, flow use takes over");
-	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
+	assert.ok(writeGuard({ abs: "/repo/.dev-flow/notes.md", dfDir: df, features: [], boundSlug: null }), "an unbound session may not drop files into .dev-flow/");
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/project.md", dfDir: df, features: [], boundSlug: null }) ?? "", /operator playbook/, "the main-checkout playbook is never an agent edit target");
 	const docsF = { state: { ...newState("d", false, false, true), stage: "implement" as const, worktree: ".wt/d" }, worktreeAbs: "/repo/.wt/d" };
 	const normF = { state: { ...newState("n", false), stage: "implement" as const, worktree: ".wt/n" }, worktreeAbs: "/repo/.wt/n" };
@@ -487,10 +481,11 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: [], boundSlug: null }), "and that reaches nested paths too");
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: feats, boundSlug: "b" }), null, "a bound session keeps the folder as it had it — flow-owned paths inside it are refused by their own rules");
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: [{ state: { ...impl, stage: "release" as const }, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores keep the folder");
-	assert.equal(checkoutTarget("git checkout feat/x"), "feat/x");
-	assert.equal(checkoutTarget("git switch -c feat/y && make"), "feat/y");
-	assert.equal(checkoutTarget("git checkout -- src/app.ts"), "--");
-	assert.equal(checkoutTarget("git commit -m x"), null);
+	assert.deepEqual(checkoutInvocation("git checkout feat/x"), { target: "feat/x", creates: false });
+	assert.deepEqual(checkoutInvocation("git switch -c feat/y && make"), { target: "feat/y", creates: true });
+	assert.deepEqual(checkoutInvocation("git checkout -f feat/z"), { target: "feat/z", creates: false }, "a leading flag does not hide the branch");
+	assert.equal(checkoutInvocation("git checkout -- src/app.ts"), null, "paths after -- are not a branch");
+	assert.equal(checkoutInvocation("git commit -m x"), null);
 	assert.equal(featureBranchPrefix({ ...DEFAULTS, branchPattern: "feat/{slug}" }), "feat/");
 });
 
@@ -544,9 +539,9 @@ test("writeGuard: a symlink in the worktree is judged where the bytes land", () 
 	assert.match(g(path.join(wt, "dflink", "e", "state.json")) ?? "", /dev-flow-owned/, "state.json reached through a symlink is still state.json");
 });
 
-test("openReflections: unchecked items only", () => {
-	assert.deepEqual(openReflections("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
-	assert.deepEqual(openReflections(""), []);
+test("openChecklistItems: unchecked items only", () => {
+	assert.deepEqual(openChecklistItems("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
+	assert.deepEqual(openChecklistItems(""), []);
 });
 
 test("roadmap: append mints the header once and adds open items", () => {
@@ -556,7 +551,7 @@ test("roadmap: append mints the header once and adds open items", () => {
 	const two = appendRoadmapItem(one, "  roadmap tidy  \n");
 	assert.ok(two.includes("- [ ] roadmap tidy\n"), "text is trimmed into the item");
 	assert.equal(roadmapOpenCount(two), 2);
-	assert.equal(roadmapDoneCount(two), 0);
+	assert.equal(doneItemCount(two), 0);
 });
 
 test("roadmap: pick stamps the nth open item, idempotent per slug", () => {
@@ -573,7 +568,7 @@ test("roadmap: done checks the nth open item with a stamp", () => {
 	const src = "- [ ] a\n- [x] old\n- [ ] b\n";
 	assert.match(roadmapDone(src, 2, "2025-10-19 fin")!, /- \[x\] b — done: 2025-10-19 fin/);
 	assert.equal(roadmapDone(src, 3, "x"), null);
-	assert.equal(roadmapDoneCount(roadmapDone(src, 1, "d")!), 2);
+	assert.equal(doneItemCount(roadmapDone(src, 1, "d")!), 2);
 });
 
 test("roadmap: finish hook checks off every item stamped (slug)", () => {
@@ -593,8 +588,8 @@ test("roadmap: tidy drops done items and keeps preamble and open items", () => {
 });
 
 test("reflections: closed count; tidy drops closed items and headings left empty", () => {
-	assert.equal(closedReflectionCount("# h\n## playbook\n\n- [ ] open\n- [x] done — fixed: v1\n## plugin\n\n- [X] gone\n"), 2);
-	assert.equal(closedReflectionCount(""), 0);
+	assert.equal(doneItemCount("# h\n## playbook\n\n- [ ] open\n- [x] done — fixed: v1\n## plugin\n\n- [X] gone\n"), 2);
+	assert.equal(doneItemCount(""), 0);
 	const src = "# dev-flow reflections\n\n<!-- note -->\n\n## playbook\n\n- [ ] keep me — a 2025-01-01\n- [x] done — fixed: v1\n\n## plugin \n\n- [x] all gone — fixed: v2\n";
 	const out = reflectionsTidy(src);
 	assert.ok(out.includes("- [ ] keep me — a 2025-01-01\n"), "open item stays verbatim");
@@ -610,7 +605,9 @@ test("reflections: closed count; tidy drops closed items and headings left empty
 	assert.match(reflectionsTidyHint(3), /↻ 3 closed reflection\(s\) — flow reflect tidy drops them/);
 });
 
-test("reflectSections: one primary home, named signals, the attribution tail never classified", () => {
+const reflectSections = (note: string) => guessReflectSections(note).sections;
+
+test("guessReflectSections: one primary home, named signals, the attribution tail never classified", () => {
 	assert.deepEqual(reflectSections("the gate prompt asks twice, that is wrong"), ["plugin"]);
 	assert.deepEqual(reflectSections("the checklist item about seeded data is stale"), ["playbook"]);
 	// a note that names dev-flow's own surface is a plugin issue even when it also mentions project.md:
@@ -663,19 +660,17 @@ test("reflectMove re-files an item under the other section", () => {
 	// an old --both filing: moving one copy onto the other merges it, it does not duplicate
 	const both = "## playbook\n\n- [ ] same note — s 1\n\n## plugin\n\n- [ ] same note — s 2\n";
 	const merged = reflectMove(both, 1, "plugin") ?? "";
-	assert.equal(openReflections(merged).length, 1, "the duplicate merges away instead of being copied");
+	assert.equal(openChecklistItems(merged).length, 1, "the duplicate merges away instead of being copied");
 	assert.match(merged, /## plugin\n\n- \[ \] same note — s 2\n$/);
 });
 
-test("appendReflection writes the two sections and migrates a legacy flat file", () => {
-	const legacy = "# dev-flow reflections\n\n<!-- note -->\n- [ ] (plugin) old plugin note — x 2025-10-01\n- [ ] (playbook) old playbook note — y 2025-10-01\n";
-	const out = appendReflection(legacy, ["plugin"], "- [ ] new note — z 2025-10-02");
-	assert.match(out, /## playbook\n\n- \[ \] old playbook note — y 2025-10-01\n\n## plugin\n/);
-	assert.match(out, /- \[ \] old plugin note — x 2025-10-01\n- \[ \] new note — z 2025-10-02\n$/);
-	assert.ok(!out.includes("(plugin)"), "inline target markers go away once the section carries them");
-	assert.equal(openReflections(out).length, 3);
+test("appendReflection writes the two sections; an item under no heading files under playbook", () => {
+	const flat = "# dev-flow reflections\n\n<!-- note -->\n- [ ] old note — y 2025-10-01\n";
+	const out = appendReflection(flat, ["plugin"], "- [ ] new note — z 2025-10-02");
+	assert.match(out, /## playbook\n\n- \[ \] old note — y 2025-10-01\n\n## plugin\n\n- \[ \] new note — z 2025-10-02\n$/);
+	assert.equal(openChecklistItems(out).length, 2);
 	const both = appendReflection("", ["playbook", "plugin"], "- [ ] both — z 2025-10-02");
-	assert.equal(openReflections(both).length, 2, "a both-sections note is written to each");
+	assert.equal(openChecklistItems(both).length, 2, "a both-sections note is written to each");
 	const noted = "# my notes\n\noperator: triage on Fridays\n\n- [ ] item one\n";
 	assert.equal(
 		appendReflection(noted, ["plugin"], "- [ ] item two"),
@@ -737,9 +732,6 @@ test("statusFor: bound flow renders as before; unbound shows only the count", ()
 	assert.deepEqual(statusFor(null, 1), { text: "💬 1 flow open" }, "unbound names nobody — count only, under the pre-flow glyph");
 	assert.deepEqual(statusFor(null, 2), { text: "💬 2 flows open" });
 	assert.deepEqual(statusFor(null, 0), { text: "💬 no flows" }, "an initiated repo always carries the footer");
-	const done = newState("f", false);
-	done.stage = "done";
-	assert.deepEqual(statusFor(done, 0), { text: "💬 no flows" }, "a done bound feature falls back to the idle line");
 	const asked = newState("f", false);
 	asked.pendingAsk = "Approve?";
 	assert.deepEqual(statusFor(asked, 1), { text: "📝 f 💬" }, "an unanswered checkpoint is the operator's turn — 💬 is the legend's glyph for it");
@@ -858,15 +850,9 @@ test("reflectProtocol: closed items add the tidy hint next to the queue line", (
 test("versionTagGate: manifest and tag must agree", () => {
 	assert.deepEqual(versionTagGate("1.2.3", "v{version}", ["v1.2.3", "v1.2.2"]), []);
 	assert.match(versionTagGate("1.2.3", "v{version}", ["v1.2.2"])[0], /expected release tag "v1\.2\.3"/);
-	assert.ok(versionTagGate(null, "v{version}", []).length === 1);
 	assert.deepEqual(versionTagGate("0.13.1-letta_0.34.9", "{version}", ["0.13.1-letta_0.34.9"]), [], "suffix-style patterns");
 });
 
-test("cleanupAssess flags dirty worktree and lists unmerged", () => {
-	assert.deepEqual(cleanupAssess("", []), { errors: [], unmerged: [] });
-	assert.ok(cleanupAssess(" M file.ts", []).errors.length === 1);
-	assert.deepEqual(cleanupAssess("", ["abc msg", ""]).unmerged, ["abc msg"]);
-});
 
 test("approveGate: patch features skip the plan document, gates stay", () => {
 	const p = newState("p", false, true);
@@ -898,7 +884,6 @@ test("shouldSelfCompact: only near pi's threshold and only when no chat-only sta
 	assert.equal(shouldSelfCompact({ ...base, tokens: 167_233 }), true, "one over threshold-minus-margin triggers");
 	assert.equal(shouldSelfCompact({ ...base, tokens: null }), false, "unknown usage");
 	assert.equal(shouldSelfCompact({ ...base, stage: null }), false, "no flow bound");
-	assert.equal(shouldSelfCompact({ ...base, stage: "done" }), false, "finished feature");
 	assert.equal(shouldSelfCompact({ ...base, checklistPending: 2 }), false, "operator dialog in flight — chat is the state");
 	assert.equal(shouldSelfCompact({ ...base, stage: "plan", planFiles: 0 }), false, "undigested plan discussion");
 	assert.equal(shouldSelfCompact({ ...base, stage: "plan", planFiles: 1 }), true, "plan on disk is safe to summarize");
@@ -920,11 +905,6 @@ test("shouldTakeOverCompaction: only pi's threshold path, only when bound and id
 	assert.equal(shouldTakeOverCompaction({ reason: "threshold", bound: true, inFlight: true }), false, "no stacked compactions");
 });
 
-test("compactionReflectionLine is a valid open reflection item", () => {
-	const line = compactionReflectionLine("compact-aware", "implement", "threshold", "2025-10-13");
-	assert.deepEqual(openReflections(line).length, 1);
-	assert.match(line, /^- \[ \] pi auto-compacted \(threshold\) at stage implement .* — compact-aware 2025-10-13$/);
-});
 
 // ---------------------------------------------------------------- flow-guard rules
 
@@ -1354,12 +1334,11 @@ test("release order: tags and forge shipping wait for the release stage", () => 
 	assert.equal(releaseOrderInvocation("gh pr merge 1", null), null, "unbound: no stage to judge");
 });
 
-test("branchCreateTarget: the branch a checkout/switch creates, through leading flags", () => {
-	assert.equal(branchCreateTarget("git checkout -q -b fix/dockerfile"), "fix/dockerfile");
-	assert.equal(branchCreateTarget("git switch -c fix/x"), "fix/x");
-	assert.equal(branchCreateTarget("git checkout -q -B fix/y origin/main"), "fix/y");
-	assert.equal(branchCreateTarget("git checkout feat/x"), null, "switching to an existing branch creates nothing");
-	assert.equal(branchCreateTarget("git checkout -- src/a.ts"), null);
+test("checkoutInvocation: the branch a checkout/switch creates, through leading flags", () => {
+	assert.deepEqual(checkoutInvocation("git checkout -q -b fix/dockerfile"), { target: "fix/dockerfile", creates: true });
+	assert.deepEqual(checkoutInvocation("git switch -c fix/x"), { target: "fix/x", creates: true });
+	assert.deepEqual(checkoutInvocation("git checkout -q -B fix/y origin/main"), { target: "fix/y", creates: true });
+	assert.equal(checkoutInvocation("git checkout feat/x")?.creates, false, "switching to an existing branch creates nothing");
 });
 
 test("worker helpers: op legality, budget clamp, REPORT parsing", () => {

@@ -9,12 +9,12 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
-export type Stage = "plan" | "implement" | "pre-release" | "release" | "done";
+/** A feature's stage. There is no "done": flow finish deletes the feature's state outright. */
+export type Stage = "plan" | "implement" | "pre-release" | "release";
 
 export interface Check {
 	ok: boolean;
 	at: string;
-	note?: string;
 	/** The worktree state this check actually ran against (see checkFingerprint). A record whose
 	 *  fingerprint differs from the current tree at gate time was measured against code that no
 	 *  longer exists — green is not enough when the tree moved under it. Absent = recorded by an
@@ -101,7 +101,7 @@ export interface Config {
 	versioning: Versioning;
 	/** Seconds the post-deploy health probe may keep retrying before the gate gives up (0 = single shot). */
 	healthWait: number;
-	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any" };
+	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
@@ -168,17 +168,11 @@ export function extractSkillCore(md: string): string | null {
 	return core || null;
 }
 
-/** The playbook file carrying one stage's detail, relative to the skill directory. `done` has
- *  none (nothing left to read). The state machine has no finish stage — closing out happens inside
- *  `release`, and release.md hands over to finish.md there. The pre-flow brief is `start`. */
-const STAGE_REFERENCE: Partial<Record<Stage, string>> = {
-	plan: "references/plan.md",
-	implement: "references/implement.md",
-	"pre-release": "references/pre-release.md",
-	release: "references/release.md",
-};
-export function stageReference(stage: Stage): string | null {
-	return STAGE_REFERENCE[stage] ?? null;
+/** The playbook file carrying one stage's detail, relative to the skill directory. The state machine
+ *  has no finish stage — closing out happens inside `release`, and release.md hands over to finish.md
+ *  there. The pre-flow brief is `start`. */
+export function stageReference(stage: Stage): string {
+	return `references/${stage}.md`;
 }
 
 /** The project's own "running and healthy" probe — `commands.health` or a flow-check block named
@@ -568,9 +562,8 @@ export function githubSlug(ref: string): string {
 	return m ? m[1].replace(/\.git$/, "") : "";
 }
 
-/** Gate: the tag derived from the manifest version must exist among local tags. */
-export function versionTagGate(manifestVersion: string | null, tagPattern: string, tags: string[]): string[] {
-	if (!manifestVersion) return ["versioning.file is set but its version could not be parsed — fix versioning config"];
+/** Gate: the tag derived from the manifest version must exist among the given tags. */
+export function versionTagGate(manifestVersion: string, tagPattern: string, tags: string[]): string[] {
 	const expected = tagPattern.replace("{version}", manifestVersion);
 	if (tags.includes(expected)) return [];
 	return [`expected release tag "${expected}" (from manifest version ${manifestVersion}) not found; recent tags: ${tags.slice(0, 5).join(", ") || "none"}`];
@@ -653,16 +646,6 @@ export function changelogEntry(content: string, version: string): string {
 		out.push(l);
 	}
 	return out.join("\n").trim();
-}
-
-/**
- * Cleanup safety for `flow finish`. Returns { errors, unmerged }: errors hard-block;
- * unmerged is a warning list the operator can confirm through (e.g. squash merges).
- */
-export function cleanupAssess(porcelain: string, unmerged: string[]): { errors: string[]; unmerged: string[] } {
-	const errors: string[] = [];
-	if (porcelain.trim()) errors.push("worktree has uncommitted changes — commit or discard them first");
-	return { errors, unmerged: unmerged.filter(Boolean) };
 }
 
 /* -------------------------------------------------------------- merge policy */
@@ -1073,13 +1056,17 @@ export function releaseOrderInvocation(command: string, stage: Stage | null): st
 	return null;
 }
 
-/** Name of a branch a `git checkout -b/-B` / `git switch -c/-C` creates, or null. */
-export function branchCreateTarget(command: string): string | null {
+/** The branch a `git checkout` / `git switch` targets, and whether it creates it (`-b/-B/-c/-C/--create/
+ *  --force-create/--orphan`), or null. Leading flags are skipped; `--` ends the branch part (paths follow). */
+export function checkoutInvocation(command: string): { target: string; creates: boolean } | null {
 	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\b([^;|&\n]*)/);
 	if (!m) return null;
-	const tok = m[1].trim().split(/\s+/).filter(Boolean);
+	const all = m[1].trim().split(/\s+/).filter(Boolean);
+	const tok = all.includes("--") ? all.slice(0, all.indexOf("--")) : all;
 	const i = tok.findIndex((t) => /^(-[bBcC]|--create|--force-create|--orphan)$/.test(t));
-	return i >= 0 && tok[i + 1] ? unquote(tok[i + 1]) : null;
+	if (i >= 0) return tok[i + 1] ? { target: unquote(tok[i + 1]), creates: true } : null;
+	const target = tok.find((t) => !t.startsWith("-"));
+	return target ? { target: unquote(target), creates: false } : null;
 }
 
 // ------------------------------------------------------- project safety rules
@@ -1237,7 +1224,7 @@ function compile(source: string): RegExp | null {
 		try {
 			regexCache.set(source, new RegExp(source));
 		} catch {
-			regexCache.set(source, null); // unreachable through project.md (parse validates); project.json is not
+			regexCache.set(source, null); // unreachable through project.md (parse validates) — kept so a bad rule never throws in a hook
 		}
 	}
 	return regexCache.get(source)!;
@@ -1361,7 +1348,6 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	// a brand-new file under a real directory resolves right, and a never-existing one is stable).
 	const abs = realAbs(o.abs);
 	const dfDir = realAbs(o.dfDir);
-	if (abs === path.join(dfDir, "project.json")) return ".dev-flow/project.json is legacy — it is no longer read; fold its values into project.md and delete it";
 	if (abs === path.join(dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (abs.endsWith("state.json") && abs.includes(dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
 	if (abs.endsWith("claim.json") && abs.includes(dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
@@ -1370,7 +1356,6 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	const owner = o.features.find((f) => within(abs, f.worktreeAbs ? realAbs(f.worktreeAbs) : null));
 	if (owner) {
 		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
-		if (owner.state.stage === "done") return `feature ${owner.state.slug} is done`;
 		// the playbook copy inside a worktree: only operator-granted lightweight modes may change it
 		if (path.basename(abs) === "project.md" && abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
 			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
@@ -1403,12 +1388,6 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	return `unfinished features: ${o.features.map((f) => f.state.slug).join(", ")} — bind this session with flow use <slug> (or pass an explicit slug to gates)`;
 }
 
-/** Branch targeted by a `git checkout`/`git switch` in the command, or null. */
-export function checkoutTarget(command: string): string | null {
-	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\s+(?:-[bBc]\s+)?([^\s;|&]+)/);
-	return m ? m[1] : null;
-}
-
 /** Prefix feature branches match: branchPattern up to `{slug}` — used to keep feature branches out of the main checkout. */
 export function featureBranchPrefix(cfg: Config): string {
 	return cfg.branchPattern.split("{")[0];
@@ -1437,7 +1416,7 @@ export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (p
 }
 
 /** Footer glyph per stage: the footer has no room for stage words and no legend of its own (README:Status bar is the legend). */
-export const STAGE_EMOJI: Record<Stage, string> = { plan: "📝", implement: "🔨", "pre-release": "🔍", release: "🚀", done: "🏁" };
+export const STAGE_EMOJI: Record<Stage, string> = { plan: "📝", implement: "🔨", "pre-release": "🔍", release: "🚀" };
 
 export function statusCompact(state: FlowState): { text: string; failed: boolean } {
 	const failed = Object.values(state.checks).some((c) => !c.ok);
@@ -1453,7 +1432,7 @@ export function statusCompact(state: FlowState): { text: string; failed: boolean
  *  💬 is the legend's "operator, your turn": an unbound session is parked on the operator by definition (an
  *  answer to start, or nothing to do until they say), so the pre-flow glyph is the honest one there too. */
 export function statusFor(bound: FlowState | null, openCount: number): { text: string } {
-	if (bound && bound.stage !== "done") {
+	if (bound) {
 		const { text, failed } = statusCompact(bound);
 		return { text: failed ? `${text} ⚠️` : text };
 	}
@@ -1466,13 +1445,8 @@ export function openChecklistItems(text: string): string[] {
 	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));
 }
 
-/** Open (unchecked) reflection items in reflections.md content — the agent's suggestion queue. */
-export function openReflections(text: string): string[] {
-	return openChecklistItems(text);
-}
-
-/** Closed (checked-off) reflection items — what `flow reflect tidy` drops (roadmap shares the checkbox test). */
-export const closedReflectionCount = (text: string) => text.split("\n").filter(isDoneItem).length;
+/** Checked-off (`- [x]`) items — what `flow reflect tidy` and `flow roadmap tidy` drop. */
+export const doneItemCount = (text: string) => text.split("\n").filter(isDoneItem).length;
 
 /** Drop the closed (`- [x]`) reflection items: the preamble and the open lines stay verbatim
  *  (a line filter — no re-bucketing like appendReflection's rewrite), and a `## section` heading
@@ -1607,11 +1581,6 @@ export function guessReflectSections(note: string): ReflectGuess {
 	return { sections: ["playbook"], why: "nothing plugin-shaped in the note — if it is a dev-flow bug: flow reflect move <n> --plugin" };
 }
 
-/** The section(s) a note belongs to, decided from its wording (primary home only — see guessReflectSections). */
-export function reflectSections(note: string): ReflectSection[] {
-	return guessReflectSections(note).sections;
-}
-
 /** Where a fix must be implemented: every fix runs through a flow whose gates confirm it —
  *  playbook-only change → docs flow; code in the dev-flow repo → patch/normal flow;
  *  plugin feedback in someone else's repo → upstream issue (dev-flow files nothing itself). */
@@ -1704,10 +1673,9 @@ export function reflectProtocol(items: ReflectItem[], selfRepo: boolean, facts: 
  * Rewrite reflections.md as a preamble + one section per non-empty bucket, with `line` appended to
  * the end of each named section. Everything above the first item (title, comment, operator notes) is
  * kept verbatim. Below the first item a `## section` heading owns the lines under it, so an existing
- * line never changes section. Legacy flat lines carry their target inline (`- [ ] (plugin) …`,
- * `— to playbook`); that marker buckets them and is then dropped, so an old file migrates on next
- * write. A note already in a section is not written there again — an all-duplicate call returns the
- * content untouched so the caller can say so.
+ * line never changes section; an item under no known heading files under `## playbook` (where the
+ * operator reads it — `flow reflect move` re-files it). A note already in a section is not written
+ * there again — an all-duplicate call returns the content untouched so the caller can say so.
  */
 export function appendReflection(text: string, sections: ReflectSection[], line: string): string {
 	const lines = text.split("\n");
@@ -1732,9 +1700,7 @@ export function appendReflection(text: string, sections: ReflectSection[], line:
 			continue;
 		}
 		if (!l.startsWith("- [")) continue;
-		// items above every heading come from a legacy flat file, where the inline marker is the only clue.
-		const key: ReflectSection = section ?? (/\((plugin|doctor)\)/.test(l) || /\bto plugin\b/.test(l) ? "plugin" : "playbook");
-		buckets[key].push(l.replace(/\((plugin|playbook|doctor)\)/, "").replace(/\s*[—-]\s*to\s+(playbook|plugin|doctor)/, "").replace(/\s{2,}/g, " ").trim());
+		buckets[section ?? "playbook"].push(l);
 	}
 	const note = line.trim();
 	const body = reflectionBody(note);
@@ -1760,8 +1726,6 @@ export function appendRoadmapItem(text: string, item: string): string {
 
 /** Number of open roadmap items. */
 export const roadmapOpenCount = (text: string) => openChecklistItems(text).length;
-/** Number of done roadmap items (tidy removes them). */
-export const roadmapDoneCount = (text: string) => text.split("\n").filter(isDoneItem).length;
 
 /** Stamp the nth open item (1-based, open items only) with `(slug)` — the pick→finish handshake.
  *  Returns null when n is out of range. Re-picking the same slug is a no-op stamp. */
@@ -1824,7 +1788,7 @@ export function shouldSelfCompact(
 	reserve = PI_RESERVE_DEFAULT,
 ): boolean {
 	if (d.compacting || d.tokens === null) return false;
-	if (!d.stage || d.stage === "done") return false;
+	if (!d.stage) return false;
 	if (d.checklistPending > 0) return false;
 	if (d.stage === "plan" && d.planFiles === 0) return false;
 	return d.tokens > d.contextWindow - reserve - COMPACT_MARGIN;
@@ -1838,18 +1802,13 @@ export function shouldTakeOverCompaction(d: { reason: "manual" | "threshold" | "
 	return d.reason === "threshold" && d.bound && !d.inFlight;
 }
 
-/** reflections.md line for a forced (non-manual) pi compaction while a flow is bound — advisory, never gates. */
-export function compactionReflectionLine(slug: string, stage: Stage, reason: string, today: string): string {
-	return `- [ ] pi auto-compacted (${reason}) at stage ${stage} — pace gates so work lands on disk before compaction; draft plan discussion into plan/ early — ${slug} ${today}`;
-}
-
-/** What the agent/user should do next, per stage. */
 /** The playbook's merge style spelled for a hint: "" when the project has no policy. */
 function mergeHintFor(cfg: Config): string {
 	const m = cfg.release.merge;
 	return m && m !== "any" ? ` (the playbook says merge = ${m} — gh pr merge <n> --${m === "merge" ? "merge" : m}, number before the flag: a trailing one reads as the PR selector)` : "";
 }
 
+/** What the agent/user should do next, per stage. */
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
@@ -1867,8 +1826,6 @@ export function nextHint(state: FlowState, cfg: Config): string {
 				: state.noVersion
 					? `publish: commit and push the branch, open the PR, merge only once CI is green (gh pr checks <n> --watch — a locally-green branch can still fail CI-only jobs)${mergeHintFor(cfg)} — unversioned release: no manifest bump, no tag, your changelog entry rides under Unreleased; then run flow release-done (no further question)`
 					: `publish: commit and push the branch, open the PR, merge only once CI is green (gh pr checks <n> --watch — a locally-green branch can still fail CI-only jobs)${mergeHintFor(cfg)}, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)`;
-		default:
-			return "feature finished";
 	}
 }
 
@@ -1929,7 +1886,7 @@ export function gateHelpJson(gateHelp: string, version: string | null): string {
 	);
 }
 
-/** Write (or delete, on null) a dot-path value in a partial project.json object. */
+/** Write (or delete, on null) a dot-path value in a nested config object. */
 export function applyAnswer(partial: Record<string, unknown>, key: string, value: string | boolean | null): void {
 	const segs = key.split(".");
 	const leaf = segs.pop()!;

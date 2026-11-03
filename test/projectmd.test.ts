@@ -97,8 +97,6 @@ test("doctorFindings: drift, missing manifest, no health check", () => {
 	assert.ok(f.some((x) => x.includes("missing file scripts/check-overflow.mjs")));
 	assert.ok(f.some((x) => x.includes("no tier-1 health check")), "run configured, health absent");
 	assert.ok(!f.some((x) => x.includes("versioning.file")), "VERSION exists → no finding");
-	const legacy = fixtureRoot({ "package.json": '{"name":"x","scripts":{"test":"vitest"},"version":"1.0.0"}', VERSION: "9.9.9", ".dev-flow/project.json": "{}", ".dev-flow/project.md": MD });
-	assert.ok(doctorFindings(legacy, cfg, md).some((x) => x.includes("project.json is no longer read")), "a leftover legacy file is called out");
 	const broken = doctorFindings(fixtureRoot({ "package.json": "{}" }), { ...cfg }, md);
 	assert.ok(broken.some((x) => x.includes("does not exist")), "VERSION missing in second fixture");
 });
@@ -111,30 +109,23 @@ test("doctorFindings: a dev deploy with no health probe cannot be proven by veri
 	assert.equal(probed.some((f) => f.includes("dev deploy configured but no health check")), false, "a configured probe satisfies it");
 });
 
-test("loadProject: project.md is the only config source; a legacy project.json is ignored", () => {
-	const root = fixtureRoot({ ".dev-flow/project.json": '{"defaultBranch":"jsonbranch","commands":{"build":"make"}}', ".dev-flow/project.md": MD });
-	const { cfg } = loadProject(path.join(root, ".dev-flow"));
-	assert.equal(cfg.defaultBranch, "trunk", "md drives config");
-	assert.equal(cfg.commands.build, undefined, "json is no longer read");
-	const plain = fixtureRoot({ ".dev-flow/project.json": '{"defaultBranch":"jsonbranch"}' });
+test("loadProject: project.md is the only config source", () => {
+	const root = fixtureRoot({ ".dev-flow/project.md": MD });
+	assert.equal(loadProject(path.join(root, ".dev-flow")).cfg.defaultBranch, "trunk", "md drives config");
+	const plain = fixtureRoot({ ".dev-flow/other.txt": "x" });
 	assert.equal(loadProject(path.join(plain, ".dev-flow")).cfg.defaultBranch, "main", "without project.md the defaults stand");
 });
 
-test("buildDraft: fresh is detection-driven; refresh keeps configured values", () => {
+test("buildDraft: detection-driven", () => {
 	const det = { report: [], partial: { defaultBranch: "master", commands: { test: "detected-test" }, versioning: { file: "Cargo.toml" } } };
 	const fresh = buildDraft(det);
 	assert.match(fresh, /defaultBranch = master/);
 	assert.match(fresh, /test = detected-test/);
 	assert.match(fresh, /versionFile = Cargo.toml/);
-	const kept = buildDraft(det, mdToConfig(parseProjectMd(MD)));
-	assert.match(kept, /defaultBranch = trunk/);
-	assert.match(kept, /test = npm test/);
-	assert.match(kept, /versionFile = VERSION/);
 	assert.ok(!fresh.includes("```flow-check"), "no phantom health placeholder in fresh drafts");
 	assert.match(fresh, /optional tier-1/, "hint where a health check would go");
-	assert.match(kept, /```flow-check overflow\nnode scripts\/check-overflow\.mjs/, "refresh carries explicit checks");
-	const withHealth = mdToConfig(parseProjectMd(`${MD.replace("## release", "```flow-check health\ncurl -sf :4000/health\n```\n\n## release")}`));
-	assert.match(buildDraft(det, withHealth), /```flow-check health\ncurl -sf :4000\/health/, "health check carried, exactly once");
+	const withHealth = buildDraft({ ...det, partial: { ...det.partial, commands: { health: "curl -sf :4000/health" } } });
+	assert.match(withHealth, /```flow-check health\ncurl -sf :4000\/health/, "a detected health probe becomes the health block");
 });
 
 test("parseProjectMd: (ui) marker splits tier-2 items", () => {
@@ -155,23 +146,18 @@ test("## pre-release parses like release: keys, checklist, prose", () => {
 	assert.match(buildDraft({ report: [], partial: { defaultBranch: "main", commands: {}, forge: "gitlab" } }), /forge = gitlab/, "the detected forge rides into the draft");
 });
 
-test("healthWait: the playbook knob parses to a number and survives a draft refresh (#42)", () => {
+test("healthWait: the playbook knob parses to a number (#42)", () => {
 	const md = "## implement\n```flow\ntest = npm test\nhealthWait = 45\n```\n";
 	assert.equal(mdToConfig(parseProjectMd(md)).healthWait, 45);
 	assert.equal(mdToConfig(parseProjectMd("## implement\n```flow\nhealthWait = soon\n```\n")).healthWait, 30, "junk falls back to the default");
-	const draft = buildDraft({ report: [], partial: { defaultBranch: "main", commands: {} } }, mdToConfig(parseProjectMd(md)));
-	assert.match(draft, /healthWait = 45/, "a refresh must not silently drop the wait budget");
-	assert.equal(mdToConfig(parseProjectMd(draft)).healthWait, 45, "and the draft re-reads");
 });
 
-test("mdToConfig: release.releases toggles forge release creation; the legacy github key still maps", () => {
+test("mdToConfig: release.releases toggles forge release creation", () => {
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nversionFile = package.json\nreleases = false\n```\n")).release.releases, false);
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nreleases = no\n```\n")).release.releases, false);
 	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\nreleases = yes\n```\n")).release.releases, true);
 	assert.equal(mdToConfig(parseProjectMd("# dev-flow\n")).release.releases, true);
-	const legacy = parseProjectMd("## release\n```flow\ngithub = false\n```\n");
-	assert.equal(mdToConfig(legacy).release.releases, false, "the old key keeps working");
-	assert.ok(legacy.warn.some((w) => w.includes('renamed "releases"')), "and the rename is warned");
+	assert.ok(parseProjectMd("## release\n```flow\ngithub = false\n```\n").warn.some((w) => w.includes('unknown key "github"')), "the retired alias is an unknown key");
 	const bogus = mdToConfig(parseProjectMd("## global\n```flow\nforge = bitbucket\n```\n"));
 	assert.ok(doctorFindings(mkdtempSync(path.join(tmpdir(), "forge-")), bogus, null).some((x) => x.includes('forge "bitbucket" is invalid')), "an unknown forge is a doctor finding");
 });
@@ -315,10 +301,12 @@ test("bashTimeout knob: require opts into the refusal, junk keeps the silent def
 
 /* ------------------------------------------------------------- merge policy */
 
-test("merge policy parses under release and pre-release, and through the global alias", () => {
+test("merge policy parses under release and pre-release; ## global does not take release keys", () => {
 	assert.equal(mdToConfig(parseProjectMd("# d\n\n## release\n\n```flow\nmerge = squash\n```\n")).release.merge, "squash");
 	assert.equal(mdToConfig(parseProjectMd("# d\n\n## pre-release\n\n```flow\nmerge = rebase\n```\n")).release.merge, "rebase", "the release keys are accepted under both sections");
-	assert.equal(mdToConfig(parseProjectMd("# d\n\n## global\n\n```flow\nrelease.merge = any\n```\n")).release.merge, "any");
+	const global = parseProjectMd("# d\n\n## global\n\n```flow\nrelease.merge = any\n```\n");
+	assert.equal(mdToConfig(global).release.merge, undefined);
+	assert.ok(global.warn.some((w) => w.includes('unknown key "release.merge"')), "the retired alias warns");
 });
 
 test("a junk merge value warns instead of silently meaning no policy", () => {
@@ -328,11 +316,9 @@ test("a junk merge value warns instead of silently meaning no policy", () => {
 	assert.equal(mdToConfig(p).release.merge, undefined, "nothing is stored, so the doctor and flow start keep asking");
 });
 
-test("mdDigest renders the merge policy, buildDraft keeps it and asks when unset", () => {
+test("mdDigest renders the merge policy; buildDraft asks instead of inventing one", () => {
 	assert.match(mdDigest("# d\n\n## release\n\n```flow\nmerge = squash\n```\n"), /merge policy: squash/);
 	const det = { report: [], missing: [], partial: { defaultBranch: "main", commands: {}, versioning: { file: "package.json" } } };
-	const kept = buildDraft(det as never, { ...structuredClone(DEFAULTS), release: { ...DEFAULTS.release, merge: "merge" } });
-	assert.match(kept, /## release\n\n```flow\nmerge = merge\n```/);
 	const fresh = buildDraft(det as never);
 	assert.match(fresh, /<!-- merge = squash \| merge \| rebase/);
 	assert.doesNotMatch(fresh, /```flow\nmerge = /, "detection never invents a policy");
@@ -365,4 +351,15 @@ test("setPlaybookKey inserts, replaces and opens a block — and never touches a
 	const created = setPlaybookKey("# d\n\n## implement\n\nprose\n", "release", "merge", "squash") as { text: string; where: string };
 	assert.match(created.text, /prose\n\n## release\n\n```flow\nmerge = squash\n```\n$/);
 	assert.match(created.where, /section was created/);
+});
+
+test("mdToConfig: one check per name — an explicit flow-check block wins over the shorthand key", () => {
+	const cfg = mdToConfig(parseProjectMd("# dev-flow\n\n## implement\n\n```flow\ntest = npm test\nhealth = curl -sf :1/a\n```\n\n```flow-check health\ncurl -sf :2/b\n```\n"));
+	assert.deepEqual(cfg.checkList.map((c) => `${c.name}=${c.cmd}`), ["test=npm test", "health=curl -sf :2/b"]);
+});
+
+test("buildDraft: the mockup item applies to --ui features only", () => {
+	const draft = buildDraft({ report: [], partial: { defaultBranch: "main", commands: {} } });
+	assert.match(draft, /- \[ \] \(ui\) rendered mockups attached/);
+	assert.equal(mdToConfig(parseProjectMd(draft)).checklist.plan?.[0]?.uiOnly, true);
 });

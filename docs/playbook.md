@@ -17,9 +17,9 @@ executable checks and hard safety rules:
 
 | Tier | Notation | Enforcement |
 |---|---|---|
-| 1 — executable | ` ```flow` (`key = value`) config blocks; ` ```flow-check <name>` command blocks | gates run every check, record pass/fail, worktree edits invalidate — hard |
+| 1 — executable | ` ```flow` (`key = value`) config blocks; ` ```flow-check <name>` command blocks | gates run every check, record pass/fail against a worktree fingerprint, a changed tree makes them stale — hard |
 | 1 — guard | ` ```flow-guard ` (`deny`/`confirm`/`protect`/`forbid`) rules in `## global` | enforced on every bash command and every edit/write path, at every stage — hard block or operator confirmation |
-| 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features) | gate confirms cover them as a set (hashed, invalidated on edits); `(ui)` items never appear for non-UI features |
+| 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features) | gate confirms cover them as a set (hashed: changing the items asks again); `(ui)` items never appear for non-UI features |
 | 3 — prose | any other text | injected to the agent when its stage begins — advisory |
 
 Example `## implement` section:
@@ -121,8 +121,7 @@ gate prints `health: none configured` and `flow doctor` flags the combination. T
 `forge = github | gitlab | self` — the release machinery's target; when unset it is detected from the
 `origin` URL at the moment of use (GitHub gets `gh`, GitLab gets `glab`, self-hosted stays forge-neutral:
 no automatic release creation, merge proof by ancestry only), and `release.releases = false` skips
-automatic release creation entirely (the legacy `github` key still parses, with a rename warning).
-A leftover `project.json` is no longer read — the doctor tells you to fold it in and delete it.
+automatic release creation entirely.
 
 ### The merge policy (`merge = squash | merge | rebase | any`)
 
@@ -162,10 +161,8 @@ the agent asks you each question, fills the draft and writes your answers back v
 interactive init may also confirm the draft with you on the spot and write it then); **existing file** → doctor mode (drift, dead commands/scripts,
 unparseable manifest, dual configs, **ghost feature dirs** (a `.dev-flow/<slug>/` whose `state.json`
 is gone — it offers to delete those, on your confirm, and says so instead when no UI is present) —
-it never runs your commands) offering a refresh — which it
-**refuses** whenever your file has lines a regenerated draft cannot reproduce (prose, your own
-checklist items, hand-set keys): it prints the findings and the lines it would drop instead of
-overwriting them. `--force` remains the deliberate overwrite — with your word (`--confirmed`, or one
+it never runs your commands). It prints the findings and never regenerates your file — a draft
+cannot reproduce your prose, checklist items and hand-set keys. `--force` is the deliberate overwrite — with your word (`--confirmed`, or one
 confirm dialog) and a `project.md.bak` of what was there. At any time
 you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doctor) validates and
 flags problems, and `flow doctor` runs the same probes on demand without offering to change

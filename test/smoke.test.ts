@@ -178,7 +178,7 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	const hj = JSON.parse((await pi.tools.flow.execute("id", { args: ["help", "--json"] }, undefined, undefined, ctx)).content[0].text);
 	assert.ok(hj.gates.includes("approve [--yolo]"), "gate contract is structured data");
 	assert.equal(hj.protocol.refusalMarker, "NEEDS-OPERATOR");
-	await pi.cmds.flow.handler("abort demo-feature", ctx); // the empty case must stay parseable too
+	await pi.cmds.flow.handler("abort demo-feature --confirmed", ctx); // the empty case must stay parseable too
 	const empty = JSON.parse((await pi.tools.flow.execute("id", { args: ["status", "--json"] }, undefined, undefined, ctx)).content[0].text);
 	assert.deepEqual(empty, { bound: null, features: [] }, "no features still answers JSON, not prose");
 });
@@ -588,7 +588,6 @@ test("session binding: use/abort/ambiguity", async () => {
 	await pi.cmds.flow.handler("init", ctx);
 	initPlaybook(repo);
 	await pi.cmds.flow.handler("start a-one", ctx);
-	assert.ok(!existsSync(path.join(repo, ".dev-flow", ".current")), "no legacy .current file");
 	await pi.cmds.flow.handler("start b-two", ctx); // start binds b-two
 	await pi.cmds.flow.handler("use nope", ctx);
 	assert.ok(ctx.notices.at(-1)?.includes("no unfinished feature"), "use validates slug");
@@ -1371,7 +1370,7 @@ test("pending checkpoint: 💬 rides the footer until the word arrives, and is n
 	assert.equal((await flow(["status"])).content[0].text.includes("💬 Approve?"), true, "flow status names the pending checkpoint");
 	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, uiCtx);
 	assert.equal(seen.at(-1), "📝 plan-gate 💬", "the footer carries the checkpoint glyph on a bound flow");
-	await flow(["abort", "plan-gate"]);
+	await flow(["abort", "plan-gate", "--confirmed"]);
 	await flow(["start", "other"]);
 	writeFileSync(path.join(repo, ".dev-flow", "other", "plan", "plan.md"), "# plan\n\n- do it\n");
 	await flow(["approve"]);
@@ -1512,18 +1511,18 @@ test("approve runs commands.setup in the fresh worktree; a failing setup fails t
 	assert.ok(bad.isError && bad.content[0].text.includes("setup failed"), "a broken worktree must not be approved as ready");
 });
 
-test("init doctor refuses a refresh that would drop hand-written project.md", async () => {
+test("re-init never regenerates a hand-written project.md — it prints the doctor's findings", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	// confirm always answers yes: the point is that the refresh cannot be talked into destroying anything
+	// confirm always answers yes: the point is that re-init cannot be talked into rewriting anything
 	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const mdFile = path.join(repo, ".dev-flow", "project.md");
 	const hand = ["# dev-flow\n## release\n\n```flow\nmerge = merge\n```\n", "", "## global", "", "Only ship from a green main.", "", "## implement", "", "```flow", "test = node --version", "```", "", "```flow-check overflow", "node scripts/check-overflow.mjs", "```", "", "## release", "", "```flow", "versionFile = package.json", "versionTag = {version}", "```", ""].join("\n");
 	await pi.cmds.flow.handler("init", ctx);
 	writeFileSync(mdFile, hand);
 	await pi.cmds.flow.handler("init", ctx);
-	assert.match(ctx.notices.at(-1) ?? "", /refresh refused/, "doctor must not overwrite a hand-written playbook");
-	assert.match(ctx.notices.at(-1) ?? "", /Only ship from a green main/, "it names what a draft cannot reproduce");
+	assert.match(ctx.notices.at(-1) ?? "", /project\.md already exists — kept/);
+	assert.match(ctx.notices.at(-1) ?? "", /doctor: (no findings|\d+ finding\(s\))/, "the findings are printed");
 	const after = readFileSync(mdFile, "utf8");
 	assert.match(after, /Only ship from a green main/, "tier-3 prose survives");
 	assert.match(after, /versionTag = \{version\}/, "a hand-set tag pattern survives");
@@ -1560,10 +1559,10 @@ test("flow init without a UI prints the findings; flow status reports them even 
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
 	await flow(["init", "--write", TEST_MD]);
-	writeFileSync(path.join(repo, ".dev-flow", "project.json"), JSON.stringify({ defaultBranch: "main" }));
+	mkdirSync(path.join(repo, ".dev-flow", "ghosty", "plan"), { recursive: true });
 	await pi.cmds.flow.handler("init", ctx); // the no-UI path: no dialogs, findings printed
 	assert.match(ctx.notices.at(-1) ?? "", /doctor: 1 finding\(s\):/);
-	assert.match(ctx.notices.at(-1) ?? "", /project\.json is no longer read/);
+	assert.match(ctx.notices.at(-1) ?? "", /ghosty has a plan\/ but no state\.json/);
 	const st = await flow(["status"]);
 	assert.match(st.content[0].text, /no features/);
 	assert.match(st.content[0].text, /⚠ doctor: 1 finding\(s\) — run flow doctor/);
@@ -2317,11 +2316,6 @@ test("a session inside a feature worktree is judged by the main checkout's flow 
 	const session = (id: string) => ({ ...makeCtx(wt), sessionManager: { getSessionId: () => id, getBranch: () => [] } });
 	const editInWt = (id: string) => pi.handlers.tool_call[0]({ toolName: "write", input: { path: path.join(wt, "src", "app.ts") } }, session(id)) as Promise<{ block?: boolean; reason?: string } | undefined>;
 	assert.equal(await editInWt("wt-worker"), undefined, "a session in the worktree writes it at implement — owner attribution, not 'no active flow'");
-	await flow(["check"]);
-	const st = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "wtguard", "state.json"), "utf8")) as { checks: Record<string, unknown> };
-	assert.ok(st().checks.test, "tier-1 PASS recorded");
-	await editInWt("wt-worker");
-	assert.deepEqual(st().checks, {}, "the edit invalidated the records in the MAIN checkout's state file");
 	assert.ok(!existsSync(path.join(wt, ".dev-flow", "wtguard", "state.json")), "nothing was written into the worktree's own .dev-flow/");
 	const checkout = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/wtguard", timeout: 60 } }, session("wt-worker")) as { block?: boolean; reason?: string } | undefined;
 	assert.equal(checkout, undefined, "checking the feature branch out inside its own worktree is allowed");
@@ -2477,4 +2471,82 @@ test("release.preflight runs at flow release and a failure refuses the gate befo
 	execFileSync("git", ["-C", repo, "merge", "-q", "--ff", "feat/pf"]);
 	assert.ok(!(await flow(["check"])).isError);
 	assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/, "a passing preflight lets the gate through");
+});
+
+test("a refused checkpoint persists nothing the operator did not answer: approve --yolo, release --no-version", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo); // headless: every unanswered checkpoint is a NEEDS-OPERATOR refusal
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "ask"]);
+	mkdirSync(path.join(repo, ".dev-flow", "ask", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "ask", "plan", "plan.md"), "# plan\n");
+	const st = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ask", "state.json"), "utf8")) as { yolo?: boolean; noVersion?: boolean; pendingAsk?: string };
+	const yo = await flow(["approve", "--yolo"]);
+	assert.ok(yo.isError && /NEEDS-OPERATOR Approve\?/.test(yo.content[0].text));
+	assert.equal(st().yolo, undefined, "an unanswered --yolo must not pre-confirm later gates");
+	assert.equal(st().pendingAsk, "Approve?");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "ask");
+	await flow(["check"]);
+	await flow(["verify", "--confirmed"]);
+	const nv = await flow(["release", "--no-version"]);
+	assert.ok(nv.isError, nv.content[0].text);
+	assert.equal(st().noVersion, undefined, "an unanswered --no-version must not change how release-done publishes");
+});
+
+test("a session opened inside a feature worktree drives the main checkout's flow", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (c: unknown, args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, c) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(ctx, ["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(ctx, ["start", "inwt"]);
+	mkdirSync(path.join(repo, ".dev-flow", "inwt", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "inwt", "plan", "plan.md"), "# plan\n");
+	await flow(ctx, ["approve", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "inwt", "worktree");
+	const inWt = { ...makeCtx(wt), sessionManager: { getSessionId: () => "wt-session", getBranch: () => [] } };
+	assert.match((await flow(inWt, ["status"])).content[0].text, /inwt: stage=implement/, "the worktree session sees the main checkout's features");
+	assert.match((await flow(inWt, ["use", "inwt"])).content[0].text, /now bound to inwt/);
+	const claim = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "inwt", "claim.json"), "utf8")) as { key: string };
+	assert.equal(claim.key, "sid:wt-session", "the claim lands in the main checkout");
+	assert.ok(!existsSync(path.join(wt, ".dev-flow", "inwt")), "nothing is written into the worktree's own .dev-flow/");
+});
+
+test("flow health runs a flow-check health block, retried within healthWait", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	// passes on the second attempt: the first call leaves a marker behind
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\nhealthWait = 10\n```\n\n```flow-check health\ntest -f probed || (touch probed; exit 1)\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "hp"]);
+	mkdirSync(path.join(repo, ".dev-flow", "hp", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "hp", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const h = await flow(["health"]);
+	assert.match(h.content[0].text, /health: PASS \(.*, 2 attempts\)/, h.content[0].text);
+	rmSync(path.join(repo, ".dev-flow", "hp", "worktree", "probed"));
+	const c = await flow(["check"]);
+	assert.match(c.content[0].text, /health: PASS \(.*, 2 attempts\)/, "flow check retries health the same way");
+});
+
+test("aborting a plan-stage feature with a written plan needs the operator's word", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	await flow(["start", "drafted"]);
+	writeFileSync(path.join(repo, ".dev-flow", "drafted", "plan", "plan.md"), "# plan\n");
+	const refused = await flow(["abort", "drafted"]);
+	assert.ok(refused.isError && /NEEDS-OPERATOR Drop plan\?/.test(refused.content[0].text), refused.content[0].text);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "drafted", "plan", "plan.md")), "the plan survives a refused abort");
+	assert.match((await flow(["status"])).content[0].text, /→ drafted/, "the session stays bound");
+	assert.match((await flow(["abort", "drafted", "--confirmed"])).content[0].text, /feature removed/);
 });

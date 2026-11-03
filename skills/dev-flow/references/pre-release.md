@@ -34,7 +34,7 @@ invent one mid-release. Sequence:
    (move the lines as they are and reword afterwards in a follow-up), and
    refuses a changelog this branch never touched. `--no-fold-check` skips only
    the line proofs, on the operator's word.
-4. `flow check` — the prep edits invalidated the implement checks; the release
+4. `flow check` — the prep edits made the implement checks stale; the release
    gate demands them green again.
 5. State what the PR will contain, present version and changelog entry,
    **stop** — **Release?** → `flow release --confirmed`. Checkpoint report:
