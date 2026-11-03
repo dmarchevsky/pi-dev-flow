@@ -1242,7 +1242,11 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	// must fall inside a worker's run window, as recorded in stage-sessions/delegations.log. Refused
 	// before any command runs, like the stamp — and judged only here, because the driver's own commits
 	// after this gate (changelog, bump) are pre-release work and belong to the session by design.
-	const deleg = await delegationProof(root, state!, cfg.defaultBranch);
+	// Coverage is an implement-stage claim. The stage check is verifyGate's and it sits AFTER this one,
+	// so a re-run at pre-release would otherwise answer "verify only applies to implement" with a
+	// delegation accusation about the driver's own changelog and bump commits — commits that are
+	// in-session work by design. Measuring only at implement keeps the refusal honest.
+	const deleg = state!.stage === "implement" ? await delegationProof(root, state!, cfg.defaultBranch) : null;
 	const delegErrs = deleg ? delegationErrors(state!, deleg.ledger, deleg.branchCommits, deleg.windowCommits) : [];
 	if (delegErrs.length) return { text: `verify gate FAILED:\n- ${delegErrs.join("\n- ")}\n${branchLine}`, isError: true };
 	const pending = pendingChecks(state!, cfg);

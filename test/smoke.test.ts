@@ -498,6 +498,31 @@ test("the verify gate proves the implement work was delegated — inline commits
 	assert.match(docs.content[0].text, /entering pre-release stage/, "a docs flow verifies with no ledger at all");
 });
 
+test("a verify re-run at pre-release answers with the stage, never with a delegation claim", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	await flow(["start", "rerun"]);
+	mkdirSync(path.join(repo, ".dev-flow", "rerun", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "rerun", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "rerun");
+	await flow(["check"]);
+	await verifyPass(pi, ctx);
+	assert.ok(!(await flow(["verify", "--confirmed"])).isError, "a covered branch verifies into pre-release");
+	// A feature that reached pre-release before the ledger existed has no delegations.log — and neither
+	// does one whose stage-sessions dir was cleaned. Coverage is an implement-stage claim, so re-running
+	// verify here must answer with the stage; the old ordering ran the proof first and told the operator
+	// "the implement work was not delegated" about a feature that had already been verified.
+	rmSync(path.join(repo, ".dev-flow", "rerun", "stage-sessions", DELEGATIONS_FILE));
+	const re = await flow(["verify"]);
+	assert.ok(re.isError, "verify still refuses — it only applies to implement");
+	assert.match(re.content[0].text, /verify only applies to/, "the stage check is the one that speaks");
+	assert.ok(!/delegat/i.test(re.content[0].text), "no delegation claim is spent on a stage that has nothing to delegate");
+});
+
 test("the verify gate owes its PASS to a verify worker over the current tree", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
