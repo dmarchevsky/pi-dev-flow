@@ -27,6 +27,10 @@ import {
 	cmpVersions,
 	compactionReflectionLine,
 	DEFAULTS,
+	DELEGATIONS_FILE,
+	delegationErrors,
+	delegationLine,
+	DELEGATION_REFUSAL,
 	detectForge,
 	featureBranchPrefix,
 	FLOW_SHELL_HINT,
@@ -39,6 +43,8 @@ import {
 	githubSlug,
 	guardBash,
 	guardPath,
+	type DelegationWindow,
+	type FlowState,
 	type GuardRules,
 	healthRetry,
 	investigationBrief,
@@ -58,6 +64,7 @@ import {
 	pickReleaseNotes,
 	newState,
 	newestTaggedVersion,
+	parseDelegationLedger,
 	parseLsRemoteTags,
 	parseVersion,
 	pidAlive,
@@ -65,6 +72,7 @@ import {
 	sessionRunsOlderBuild,
 	changelogVersionsBetween,
 	inScratchDir,
+	mainCheckoutRoot,
 	guessReflectSections,
 	reflectItems,
 	reflectMove,
@@ -377,6 +385,16 @@ test("parsePushRefs: what does each push actually write", () => {
 	assert.deepEqual(parsePushRefs([["origin", "v1.0", "v1.1"]]), [{ kind: "branch", name: "v1.0" }, { kind: "branch", name: "v1.1" }]);
 });
 
+test("stateTamper: the delegation ledger is state too — the bash half of the same rule", () => {
+	// writeGuard refuses the ledger to the edit/write tools; a `echo >>` around it would leave the
+	// honest session guarded and every other one free, so the ledger rides with state.json here.
+	assert.ok(stateTamper("echo x >> .dev-flow/b/stage-sessions/delegations.log"), "appending a hand-made window is a forgery, not a write to a log");
+	assert.ok(stateTamper("echo x > /repo/.dev-flow/b/stage-sessions/delegations.log"), "also at an absolute path");
+	assert.ok(stateTamper("rm .dev-flow/b/stage-sessions/delegations.log"), "deleting the proof is tampering with it");
+	assert.equal(stateTamper("cat .dev-flow/b/stage-sessions/delegations.log"), false, "reading the ledger is what flow status does");
+	assert.equal(stateTamper("git add .dev-flow/b/stage-sessions/delegations.log"), false, "git is not a write to the file it names");
+});
+
 test("stateTamper catches direct state.json writes", () => {
 	assert.ok(stateTamper("echo x > .dev-flow/f/state.json"));
 	assert.ok(stateTamper("rm .dev-flow/f/state.json"));
@@ -497,7 +515,9 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/b/plan/plan.md", dfDir: df, features: feats, boundSlug: "a" }) ?? "", /write only inside its own/, "one session may not write another feature's plan");
 	assert.ok(writeGuard({ abs: "/repo/wt-a/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/wt-a" }], boundSlug: "b" }), "plan-owned worktree stays closed even when bound elsewhere");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/worktree/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/.dev-flow/a/worktree" }], boundSlug: null }), "default worktreeDir inside .dev-flow is still stage-gated by its owner");
-	assert.equal(writeGuard({ abs: `${wtB}/src/app.ts`, dfDir: df, features: feats, boundSlug: "a" }), null, "b implement worktree open even when bound to a");
+	// byWorker here is not a concession: this line is about attribution (whose worktree decides the
+	// verdict, not who is holding the pen). The driver's own write at implement is its own test below.
+	assert.equal(writeGuard({ abs: `${wtB}/src/app.ts`, dfDir: df, features: feats, boundSlug: "a", byWorker: true }), null, "b implement worktree open even when bound to a");
 	assert.ok(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: feats, boundSlug: "b" }), "implement-bound session confined to its worktree");
 	const rel = { ...impl, stage: "release" as const };
 	assert.equal(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: [{ state: rel, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores may touch main checkout");
@@ -569,12 +589,87 @@ test("writeGuard: a symlink in the worktree is judged where the bytes land", () 
 	symlinkSync(path.join(repo, "src"), path.join(wt, "linked"));
 	const impl = { ...newState("e", false), stage: "implement" as const, worktree: "wt", branch: "feat/e" };
 	const feats = [{ state: impl, worktreeAbs: wt }];
-	const g = (abs: string) => writeGuard({ abs, dfDir: df, features: feats, boundSlug: "e", repoRoot: repo });
+	// byWorker: this test is about where the bytes land, not about who writes (the delegation nudge
+	// refusing a driver at implement has its own test).
+	const g = (abs: string) => writeGuard({ abs, dfDir: df, features: feats, boundSlug: "e", repoRoot: repo, byWorker: true });
 	assert.match(g(path.join(wt, "linked", "app.ts")) ?? "", /edit its worktree/, "bytes written through the link land in the main checkout — the link's path must not launder them");
 	assert.equal(g(path.join(wt, "app.ts")), null, "a plain worktree path stays the working area");
 	// and the main-checkout dev-flow files stay owned through a link too
 	symlinkSync(df, path.join(wt, "dflink"));
 	assert.match(g(path.join(wt, "dflink", "e", "state.json")) ?? "", /dev-flow-owned/, "state.json reached through a symlink is still state.json");
+});
+
+test("parseDelegationLedger: run windows parse, everything else is skipped", () => {
+	const a = "a".repeat(40);
+	const b = "b".repeat(40);
+	const line = delegationLine("2026-10-30T12:00:00Z", "implement", a, b, 3);
+	assert.equal(line, `[2026-10-30T12:00:00Z] run (implement): ${a}..${b} 3 commit(s)`);
+	assert.deepEqual(parseDelegationLedger(line), [{ stage: "implement", start: a, end: b }]);
+	assert.equal(parseDelegationLedger(`${line}\n${line}`).length, 2, "the log is history: the same range twice reads as two runs, not one");
+	assert.deepEqual(parseDelegationLedger(delegationLine("t", "pre-release", a, b, 1)), [{ stage: "pre-release", start: a, end: b }], "the stage rides along — coverage counts implement windows only");
+	assert.deepEqual(parseDelegationLedger(""), []);
+	assert.deepEqual(parseDelegationLedger("\n\nnot a ledger line\n[t] run (implement): zzz..yyy 1 commit(s)\n[t] run ():\n"), [], "prose and a short or missing sha range are not windows");
+	assert.deepEqual(parseDelegationLedger(`[t] run: ${a}..${b} 2 commit(s)`), [{ stage: "run", start: a, end: b }], "a line with no stage is still a window, just nobody's implement work");
+});
+
+test("mainCheckoutRoot: git's common dir names the main checkout a worktree borrows its history from", () => {
+	// The pure half of dev-flow's flowRoot: a feature worktree's .dev-flow/ holds only the tracked
+	// playbook, so every guard has to be judged from the checkout the state actually lives in.
+	assert.equal(mainCheckoutRoot("/repo/.dev-flow/x/worktree", "/repo/.git"), "/repo", "a linked worktree resolves to the checkout owning its objects");
+	assert.equal(mainCheckoutRoot("/elsewhere/wt", "/repo/.git"), "/repo", "a worktree parked anywhere off the repo still points home");
+	assert.equal(mainCheckoutRoot("/repo/.dev-flow/x/worktree", "/repo/wt/.git"), "/repo/wt", "a worktree of a worktree resolves to that worktree's own main checkout");
+	assert.equal(mainCheckoutRoot("/repo", "/repo/.git"), null, "a main checkout is its own flow truth: nothing to remap");
+	assert.equal(mainCheckoutRoot("/tmp/scratch", null), null, "no git answer is never a remap");
+	assert.equal(mainCheckoutRoot("/wt", ".git"), null, "a relative answer resolves against cwd and says cwd is the main checkout");
+});
+
+test("delegationErrors: every branch commit falls inside an implement-stage run window", () => {
+	const impl = { ...newState("b", false), stage: "implement" as const };
+	const w1 = { stage: "implement", start: "s1", end: "e1" };
+	const w2 = { stage: "implement", start: "s3", end: "e4" };
+	const pre = { stage: "pre-release", start: "s2", end: "e2" };
+	const cover = (map: Record<string, string[]>) => (w: DelegationWindow) => map[`${w.start}..${w.end}`] ?? [];
+	assert.deepEqual(delegationErrors(impl, [], ["c1"], cover({})), [DELEGATION_REFUSAL], "no ledger is no proof, and the refusal names the call that fixes it");
+	assert.match(DELEGATION_REFUSAL, /flow_stage \{ stage: "implement" \}/);
+	assert.deepEqual(delegationErrors(impl, [w1], ["c1", "c2"], cover({ "s1..e1": ["c1", "c2"] })), [], "full coverage passes");
+	assert.deepEqual(delegationErrors(impl, [w1, w2], ["c1", "c2", "c3"], cover({ "s1..e1": ["c1"], "s3..e4": ["c2", "c3"] })), [], "sequential workers pool their coverage");
+	assert.match(delegationErrors(impl, [w1], ["c1", "c2", "c3"], cover({ "s1..e1": ["c1", "c2"] })).join("\n"), /1 commit\(s\) on the branch were made outside a worker run/, "a stray is named by count");
+	assert.deepEqual(delegationErrors({ ...impl, docs: true }, [], ["c1"], cover({})), [], "a docs flow is exempt");
+	assert.deepEqual(delegationErrors({ ...impl, patch: true }, [], ["c1"], cover({})), [], "a patch flow is exempt");
+	assert.deepEqual(delegationErrors(impl, [], null, cover({})), [], "git not answering is never proof of a violation");
+	assert.deepEqual(delegationErrors(impl, [], [], cover({})), [], "nothing on the branch is nothing to attribute — verifyGate refuses the empty branch by name");
+	assert.deepEqual(delegationErrors(impl, [pre], ["c1"], cover({ "s2..e2": ["c1"] })), [DELEGATION_REFUSAL], "a pre-release window proves nothing about who implemented");
+	assert.deepEqual(delegationErrors(impl, [w1], ["c1"], cover({ "s1..e1": [] })), [DELEGATION_REFUSAL], "a window that committed nothing delivered nothing");
+});
+
+test("writeGuard: at implement the driver drives, a worker writes", () => {
+	const df = "/repo/.dev-flow";
+	const wt = "/repo/.wt/b";
+	const impl = { ...newState("b", false), stage: "implement" as const, worktree: ".wt/b" };
+	const w = (over: object = {}, byWorker?: boolean) => writeGuard({ abs: `${wt}/src/app.ts`, dfDir: df, features: [{ state: { ...impl, ...over } as FlowState, worktreeAbs: wt }], boundSlug: "b", byWorker });
+	assert.match(w() ?? "", /implement work is delegated/, "the driver's own write at implement is the one thing the ledger can never show — the guard says it at the write");
+	assert.equal(w({}, true), null, "the worker session is allowed here: that is what it was sent for");
+	assert.equal(w({ docs: true }), null, "a docs flow stays inline");
+	assert.equal(w({ patch: true }), null, "a patch flow stays inline");
+	assert.equal(w({ stage: "pre-release" as const }), null, "pre-release prep is the driver's own work by design");
+});
+
+test("writeGuard: the delegation ledger is dev-flow-owned — the session it constrains cannot sign it", () => {
+	// the forgeability finding: writeGuard refused state.json and claim.json but let a bound session
+	// write its own .dev-flow/<slug>/stage-sessions/delegations.log, and one hand-written line
+	// covering the driver's own shas collapses the gate's "zero bypass".
+	const df = "/repo/.dev-flow";
+	const wt = "/repo/.wt/b";
+	const impl = { ...newState("b", false), stage: "implement" as const, worktree: ".wt/b" };
+	const feats = [{ state: impl, worktreeAbs: wt }];
+	const ledger = `${df}/b/stage-sessions/${DELEGATIONS_FILE}`;
+	const g = (abs: string, byWorker?: boolean) => writeGuard({ abs, dfDir: df, features: feats, boundSlug: "b", byWorker });
+	assert.match(g(ledger) ?? "", /delegations\.log is dev-flow-owned/, "the ledger is the proof the gate trusts — its subject may not write it");
+	assert.match(g(ledger, true) ?? "", /dev-flow-owned/, "not even a worker signs its own window: flow_stage appends the ledger itself, outside the guard");
+	assert.match(g(ledger) ?? "", /cannot sign its own proof/, "and the refusal says why");
+	assert.equal(g(`${df}/b/stage-sessions/transcripts.log`), null, "the sibling worker index in the same folder stays writable — the rule is the ledger, not the folder");
+	assert.equal(g(`${df}/b/plan/plan.md`), null, "the feature dir's other files are untouched");
+	assert.equal(g(`${wt}/delegations.log`, true), null, "a source file that merely shares the name is no ledger (and it sits outside stage-sessions/)");
 });
 
 test("openReflections: unchecked items only", () => {
@@ -1375,6 +1470,19 @@ test("nextHint: the UI clause appends to the plan path instead of replacing it",
 	const ui = newState("u", true);
 	assert.match(nextHint(ui, DEFAULTS), /plan\/plan\.md and render mockups to plan\/mockups\/ \(\*\.png\) with headless chromium/);
 	assert.match(nextHint({ ...ui, ui: false }, DEFAULTS), /plan\/plan\.md, then ask the operator Approve\?/);
+});
+
+test("nextHint: the implement hint delegates the work — it must not order inline authoring", () => {
+	const impl = { ...newState("d", false), stage: "implement" as const, worktree: ".dev-flow/d/worktree" };
+	const hint = nextHint(impl, DEFAULTS);
+	assert.match(hint, /flow_stage \{ stage: "implement" \}/, "the hint sends the work through a worker session");
+	assert.doesNotMatch(hint, /^implement in the worktree/, "it no longer opens by telling the driver to author the work itself — the write guard refuses that and the verify gate refuses the branch it produces");
+	assert.match(hint, /rerun flow check \(tier-1 checks, incl\. health with seeded data\)/, "the driver keeps flow check");
+	assert.match(hint, /ask them Verified\? in chat and run flow verify --confirmed/, "and the checkpoint");
+	assert.match(hint, /keep the app running when you ask Verified\?/, "and running the app");
+	// docs mode is exempt from delegation, so its hint stays inline — it is the one that must NOT name flow_stage
+	assert.match(nextHint({ ...impl, docs: true }, DEFAULTS), /^implement in the worktree \.dev-flow\/d\/worktree — docs mode/, "the docs sibling keeps its inline wording");
+	assert.doesNotMatch(nextHint({ ...impl, docs: true }, DEFAULTS), /flow_stage/, "no delegation demand in docs mode");
 });
 
 test("nextHint names the playbook merge style at the release stage", () => {

@@ -9,10 +9,14 @@ or the injection line) — writes elsewhere are blocked; other sessions'
 worktrees are theirs (attribution guards judge every path by its owning
 feature).
 
-**Delegating the stage's work.** Non-trivial implement is **delegated by default**: run it in
-a disposable worker session with `flow_stage` (`stage: "implement"`) — this session keeps its
-context for the gates and the checkpoint; stay inline only for a tail you can finish in a
-handful of file edits. The
+**Delegating the stage's work.** Implement **is delegated**: this session does not write the
+feature at all — run the work in a disposable worker session with `flow_stage`
+(`stage: "implement"`). That is enforced, not advised: the guard refuses a driver's own edit
+inside its worktree at implement, and `flow verify` refuses a branch whose commits fall outside a
+worker's run window (`.dev-flow/<slug>/stage-sessions/delegations.log` is the record it reads), so
+inline work is work that cannot be verified. `--docs` and `--patch` flows are exempt and stay
+inline — the operator granted those modes for exactly that. What stays the driver's own: the gates,
+the checkpoint, `flow check`, running the app. The
 worker gets a fresh context holding the plan, live git and `flow status
 --json` — it keeps nothing from this conversation, so put every operator
 answer, decision, warning and the exact next action into `note`, and a short
@@ -22,11 +26,10 @@ instead of a column of identical rows. The worker
 may edit and commit in the worktree but holds no flow tool: gates,
 checkpoints and the claim stay with you. When it returns, digest its stage
 report (done/files/notes/blockers — a handoff, never a verification), rerun
-`flow check` (its edits invalidated tier-1 records), and close the remaining
-loose ends yourself. A missing report block or a crashed worker means the
+`flow check` (its edits invalidated tier-1 records), and delegate the remaining
+loose ends too — a second `run` worker is how a tail gets finished, there is no inline allowance to fall back to. A missing report block or a crashed worker means the
 worktree is mid-stage: read the transcript path and (if it names one) the
-snapshot `.diff` the result gives. Delegate a real slice, not the tail: do not
-delegate a stage you are about to finish anyway. One worker per session at a
+snapshot `.diff` the result gives. Every slice goes out, the small ones with the big ones. One worker per session at a
 time — but **sequential re-delegation is legal and often right**: a second
 worker whose `note` says what the first one proved is how a big stage is
 sliced. While one runs, the **tool card streams the worker's live output into
@@ -57,11 +60,12 @@ the worker is steered to commit and report rather than cut off.
 5. **The independent checker speaks before the operator does:** `flow_stage { op: "verify" }`
    runs a read-only reviewer (toolset read + bash, standing order *check, don't fix*) over the
    plan and the branch diff; it closes with a `VERIFY REPORT` verdict. Its **PASS is a
-   precondition of `flow verify`** and belongs to the tree it read: any edit after it — yours or
-   a delegated fixer's — drops it like a tier-1 record, so fix → a **fresh** verify worker;
-   a verdict from an interrupted or tree-touching worker never stamps (a reviewer that edits
-   voids its own report). FAIL means: fix (or delegate), then rerun a fresh one — the report is
-   a handoff, the gate's own rerun is the proof.
+   precondition of `flow verify`** and belongs to the tree it read: any edit after it drops it like
+   a tier-1 record, so the fix → a **fresh** verify worker; a verdict from an interrupted or
+   tree-touching worker never stamps (a reviewer that edits voids its own report). **FAIL means:
+   delegate the fix** — a fresh `flow_stage { stage: "implement" }` worker carries it out, because at
+   implement the guard refuses your own edit tool in your own worktree; then rerun a fresh verify
+   worker. The report is a handoff, the gate's own rerun is the proof.
 6. Done means **running and healthy with pre-existing data**, not "compiles":
    `commands.seedData` (if set) puts real data in place, the app starts with
    the `run` command, and the health check passes — `flow check` covers it
@@ -76,8 +80,9 @@ the worker is steered to commit and report rather than cut off.
    answered (with no `dev` deploy configured, `flow verify` live-re-probes
    `health` itself and refuses while nothing is answering). Checkpoint report: stage line **🔨 implement ·
    `<slug>`** — commits `N ahead, M uncommitted` · tier-1 · tier-2 · deploy/
-   health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = iterate and re-verify; that loop is
-   free — but every fix re-owes the verify worker's PASS.
+   health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = delegate,
+   iterate and re-verify; that loop is free — but every fix re-owes the verify worker's PASS, and a
+   fixer needs its own fresh worker: nothing at this stage comes off your own pen.
 
 `flow verify` re-runs build, runs the `dev` deploy when configured (the
 operator reviews the running app; the gate **prints what it ran** —

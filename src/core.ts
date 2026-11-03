@@ -885,11 +885,14 @@ export function parsePushRefs(pushes: string[][]): PushRef[] {
 	return out;
 }
 
-/** Flow control files by full path — state.json and claim.json — or a bare name when the command
- *  also touches `.dev-flow` (that is how `cd .dev-flow/<slug> && mv state.json …` reaches it).
- *  The claim is the live-session lock: deleting it is as much theft as forging a stage. */
-const STATE_PATH = /(^|[\s'"\/])(?:state|claim)\.json$/;
-const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:state|claim)\.json$/;
+/** Flow control files by full path — state.json, claim.json and the delegation ledger — or a bare
+ *  name when the command also touches `.dev-flow` (that is how `cd .dev-flow/<slug> && mv state.json …`
+ *  reaches it). The claim is the live-session lock: deleting it is as much theft as forging a stage.
+ *  `delegations.log` joins the two because the verify gate reads it as proof of WHO worked the stage:
+ *  refusing it to the edit/write tools only while `echo >>` still reaches it would guard the honest
+ *  session and none other (writeGuard is the same rule for the other half of the tool surface). */
+const STATE_PATH = /(^|[\s'"\/])(?:(?:state|claim)\.json|delegations\.log)$/;
+const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:(?:state|claim)\.json|delegations\.log)$/;
 const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
 const DF_ANYWHERE = /\.dev-flow\b/;
 /** The `.dev-flow/` folder itself or one feature directory under it — deleting either destroys the flow
@@ -1296,15 +1299,36 @@ export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
 	return real === tmp || real.startsWith(tmp + path.sep);
 }
 
+/** The main checkout a linked worktree shares its history with, from git's answer for the common dir
+ *  (`<main>/.git`), or null when there is nothing to remap: git did not answer, or cwd already is that
+ *  checkout (a plain clone answers its own dir). Pure — the caller decides whether to trust the root it
+ *  gets (dev-flow's `flowRoot` keeps cwd unless the main checkout is dev-flow-initiated). */
+export function mainCheckoutRoot(cwd: string, commonDir: string | null): string | null {
+	if (!commonDir) return null;
+	const main = path.resolve(path.dirname(path.resolve(cwd, commonDir)));
+	return main === path.resolve(cwd) ? null : main;
+}
+
+/** True when the path is a feature's delegation ledger (.dev-flow/<slug>/stage-sessions/delegations.log)
+ *  — the file the verify gate reads to prove a worker ran. Matched by shape, not just filename, so a
+ *  source file that merely happens to be named delegations.log stays writable anywhere, including inside
+ *  a worktree that lives under .dev-flow/. */
+export function isDelegationLedger(abs: string, dfDir: string): boolean {
+	return path.basename(abs) === DELEGATIONS_FILE && path.basename(path.dirname(abs)) === STAGE_SESSIONS_DIR && abs.includes(dfDir + path.sep);
+}
+
 /**
  * Write guard with per-path attribution: writes inside a worktree are judged by that
  * worktree's own feature; main-checkout writes are judged by the session's bound feature
  * (release+ may touch it; plan/implement may not); with no binding and unfinished features
  * the session must bind first (`flow use`). Flow-by-default: a session with no flow may not
  * touch the checkout at all — a bound feature is the only way in.
+ * `byWorker` says the writing session is a flow_stage worker: a normal feature's worktree stays
+ * closed to its driver at implement (implement work is delegated — see delegationErrors), open to
+ * the worker that was sent to do it.
  * Returns a reason or null (allowed).
  */
-export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null }): string | null {
+export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null; byWorker?: boolean }): string | null {
 	// Judge where the bytes land, not where the path pretends: a symlink inside the worktree pointing
 	// out of it is the same write as the target path (realAbs walks the deepest existing ancestor, so
 	// a brand-new file under a real directory resolves right, and a never-existing one is stable).
@@ -1314,6 +1338,12 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (abs === path.join(dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (abs.endsWith("state.json") && abs.includes(dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
 	if (abs.endsWith("claim.json") && abs.includes(dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
+	// The delegation ledger is the fact the verify gate trusts about *who* worked — and the session it
+	// constrains is the one holding the pen. Left writable, one hand-written line covering the driver's
+	// own shas collapses "zero bypass", so it is dev-flow-owned like state.json. Worker runs append it
+	// from flow_stage's completion code (appendFileSync, which never passes through this guard), and
+	// flow verify only ever reads it — no sanctioned channel needs it to be an edit target.
+	if (isDelegationLedger(abs, dfDir)) return `${DELEGATIONS_FILE} is dev-flow-owned — the delegation ledger is written by flow_stage worker runs and read by flow verify; a session cannot sign its own proof`;
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
 	const owner = o.features.find((f) => within(abs, f.worktreeAbs ? realAbs(f.worktreeAbs) : null));
@@ -1323,6 +1353,14 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 		// the playbook copy inside a worktree: only operator-granted lightweight modes may change it
 		if (path.basename(abs) === "project.md" && abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
 			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
+		// At implement the driver drives and a worker authors: the verify gate refuses a branch whose
+		// commits fall outside a worker's run window (delegationErrors), so an inline edit here is work
+		// that cannot be proven later. Saying it at the write is cheaper than letting a session author a
+		// branch and hitting the gate with it — and unlike the gate, this knows who is holding the pen:
+		// workers are registered sessions (byWorker), and --docs/--patch are the operator-granted inline
+		// modes. Pre-release stays in-session by design (review, changelog, bump are judgment calls).
+		if (owner.state.stage === "implement" && !owner.state.docs && !owner.state.patch && !o.byWorker)
+			return `implement work is delegated — ${owner.state.slug} is a normal feature at implement: a flow_stage { stage: "implement" } worker edits and commits in this worktree, not this session (the driver keeps the gates, the checkpoint, flow check and running the app)`;
 		return null; // implement/pre-release/release: own worktree is the working area
 	}
 	// Scratch outside the checkout is not a repo write: every stage (and an unbound session) may use it. It
@@ -1846,7 +1884,10 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask the operator Approve? in chat and run flow approve --confirmed when they answer`;
 		case "implement":
 			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
-			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
+			// The hint is what `flow status` and the per-turn injection hand the driver every turn, so it must
+			// not order work the write guard refuses and the verify gate refuses: at implement a worker authors,
+			// the driver drives. (docs mode above stays inline — it is exempt from the delegation gate.)
+			return `delegate the implement work: flow_stage { stage: "implement" } sends a worker to edit, test and commit in the worktree ${state.worktree} (your own edits there are guard-refused, and flow verify refuses a branch whose commits fall outside a worker run); when it reports, rerun flow check (tier-1 checks, incl. health with seeded data) and get a fresh verify-worker PASS; tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
 		case "pre-release":
 			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog} (a heading for the new version, carrying every pending Unreleased line over as it stands)` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":
@@ -2307,6 +2348,79 @@ export function parseWorkerTranscripts(text: string): { at: string; op: string; 
 		if (m) out.push({ at: m[1], op: m[2] ?? "run", path: m[3] });
 	}
 	return out;
+}
+
+/** The durable delegation ledger inside .dev-flow/<slug>/stage-sessions/ — one line per finished
+ *  `flow_stage` run worker, written by the same completion code that counts its commits. Read fresh
+ *  at the gate, never folded into state.checks: those records mean "this tree was checked", a window
+ *  means "this range was worked by a worker", and re-running a check must not erase the history the
+ *  branch rests on (transcripts.log rides outside state for the same reason). */
+export const DELEGATIONS_FILE = "delegations.log";
+
+/** The folder inside .dev-flow/<slug>/ that holds the worker logs (transcripts.log, delegations.log) —
+ *  also half of what makes a delegations.log a delegation ledger (see isDelegationLedger). */
+export const STAGE_SESSIONS_DIR = "stage-sessions";
+
+/** One finished worker run: the stage it worked and the commit range it left behind. */
+export interface DelegationWindow {
+	stage: string;
+	start: string;
+	end: string;
+}
+
+/** A delegations.log line. The line carries a **range**, not a count, because a range is what the
+ *  gate can re-check: an amend or a rebase after the fact moves the sha out of every recorded window,
+ *  which no write guard could ever see — bash-authored commits name no author, a rewritten sha does. */
+export function delegationLine(at: string, stage: string, start: string, end: string, commits: number): string {
+	return `[${at}] run (${stage}): ${start}..${end} ${commits} commit(s)`;
+}
+
+/** Parse delegations.log back into windows; anything unrecognised is skipped — the log is append-only
+ *  and hand-editable, and an index that throws would take the gate down with it (transcripts.log's
+ *  rule). Shas must look like shas so a typo'd line is simply not a window, rather than a window
+ *  whose `git rev-list` fails for a reason the gate could only guess at. */
+export function parseDelegationLedger(text: string): DelegationWindow[] {
+	const out: DelegationWindow[] = [];
+	for (const line of (text ?? "").split("\n")) {
+		const m = /^\s*\[(.*?)\]\s*run(?: \(([^)]*)\))?:\s*([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})/i.exec(line);
+		if (m) out.push({ stage: m[2] ?? "run", start: m[3], end: m[4] });
+	}
+	return out;
+}
+
+/** The verify gate's refusal when nobody did the stage's work — spelled out the way
+ *  VERIFY_STAMP_REFUSAL spells its fix, so the driver reads its next action off the refusal line. */
+export const DELEGATION_REFUSAL = `the implement work was not delegated — run flow_stage { stage: "implement" } and let the worker session do the edits and commits (this session keeps the gates, the checkpoint and flow check)`;
+
+/** Was the implement stage worked, or merely driven? The rule `flow verify` enforces: at least one
+ *  implement-stage run window carries a commit, and every commit the branch holds over its default
+ *  branch falls inside some implement-stage window. `windowCommits` resolves a window to its shas —
+ *  git lives on the caller's side, so this stays a pure function under test.
+ *  `branchCommits === null` (git could not answer) returns no errors: an unprovable answer is never
+ *  proof of a violation, the BranchState.commitsAhead rule. `--docs` and `--patch` are exempt exactly
+ *  like the verify stamp and the tier-1 checks — those two modes are the work the operator granted
+ *  inline. Coverage is judged only here: commits the driver makes after verify (changelog, bump) are
+ *  pre-release work and belong to the session by design. */
+export function delegationErrors(
+	state: FlowState,
+	ledger: DelegationWindow[],
+	branchCommits: string[] | null,
+	windowCommits: (w: DelegationWindow) => string[],
+): string[] {
+	if (state.docs || state.patch) return [];
+	if (branchCommits === null) return [];
+	// Nothing on the branch to attribute: coverage is a claim about commits, and an empty branch has
+	// none. verifyGate already refuses a branch with nothing committed — one refusal per fact.
+	if (!branchCommits.length) return [];
+	const covered = new Set<string>();
+	for (const w of ledger.filter((x) => x.stage === "implement")) for (const sha of windowCommits(w) ?? []) covered.add(sha);
+	// A window whose range holds nothing proves a worker ran and delivered nothing: the stage is still
+	// undelivered, and "N commit(s) outside a window" on top of that names the same fact twice with
+	// worse advice — there is nothing to redo, there is nothing yet.
+	if (!covered.size) return [DELEGATION_REFUSAL];
+	const strays = branchCommits.filter((sha) => !covered.has(sha));
+	if (!strays.length) return [];
+	return [`${strays.length} commit(s) on the branch were made outside a worker run — delegate a fixer that redoes them (or reset them)`];
 }
 
 /** How many live lines the card and `op: "status"` show: enough to see what the worker is doing,
