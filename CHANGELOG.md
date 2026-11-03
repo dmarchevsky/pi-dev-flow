@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.79.0] - 2026-11-03
+
+**Scratch files live in the feature folder and go away at finish.**
+
 ### Changed
 - **Scratch files now go in the feature folder, not `/tmp`.** A bound session's bash calls, and every project command a gate runs (`flow test`, checks, build, dev, seed, health), now run with `TMPDIR` set to `.dev-flow/<slug>/tmp/`. Throwaway scripts, `mktemp` output and test fixtures created with `os.tmpdir()` (the smoke suite alone makes about 40 per run) land there instead of piling up in the OS temp dir. `flow finish` removes the folder with the feature, and `flow abort` drops it when it unbinds. The prefix goes on after the guards have judged the command, so no guard ever sees it. Unbound sessions are unchanged.
 
