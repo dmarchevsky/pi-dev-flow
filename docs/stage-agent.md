@@ -16,7 +16,7 @@ is identical, and a second mechanism would drift.
 **The ledger proves who worked.** Every finished `run` worker appends its stage and its commit
 range to `.dev-flow/<slug>/stage-sessions/delegations.log` — one line, `[<iso>] run (<stage>):
 <start>..<end> <n> commit(s)` — written by the same completion code that renames the worker with
-its commit count. `flow verify` reads it fresh and refuses when it shows no implement-stage
+its commit count. The file is dev-flow-owned — the write guard refuses it to a session, the bash tamper patterns refuse a write, move or delete of it, and only a worker run's completion appends it, in-process — precisely so the session whose work it proves cannot sign its own proof. `flow verify` reads it fresh and refuses when it shows no implement-stage
 delivery, or when a commit on the branch falls outside every implement window (the refusal counts
 the strays and names the fix: delegate a fixer that redoes them, or reset them). A range, not a
 count, is what makes it hold: an amend or a rebase after the fact moves the sha out of every window
