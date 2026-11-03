@@ -2528,16 +2528,20 @@ test("flow_stage workers stamp pi-web subagent entries — visible in the Agents
 test("the pi-web meta is the session file's first data entry — placement is the classification contract", () => {
 	// pi-web's scanner (lib/session-reader.ts) reads header + ONE line looking for pi-web:subagent;
 	// anything else in slot one and it classifies the child as a fork. The real spawn stamps the meta
-	// between SessionManager.create and createAgentSession — this proves later entries never displace it.
+	// between SessionManager.create and createAgentSession; this reproduces that append order against
+	// the real file — the deferred first flush must not reorder anything.
 	const dir = mkdtempSync(path.join(tmpdir(), "piweb-stamp-"));
 	try {
 		const sm = SessionManager.create(dir, dir);
 		testSeams.piweb.stamp(sm, "pi-web:subagent", testSeams.piweb.meta({ parentId: "p", parentFile: "/tmp/p.jsonl", toolCallId: "tc", profile: "flow-implement", description: "🔨 x", task: "t" }));
-		sm.appendSessionInfo("🔨 x"); // what the real spawn appends next — naming must not take slot one
-		const branch = sm.getBranch();
-		const first = branch[0] as { type?: string; customType?: string; data?: Record<string, unknown> };
+		// everything a real spawn appends after the stamp — model_change, naming, the first prompt
+		sm.appendModelChange("test", "test-model");
+		sm.appendSessionInfo("🔨 x");
+		sm.appendMessage({ role: "user", content: [{ type: "text", text: "go" }], timestamp: Date.now() } as never);
+		const lines = readFileSync(sm.getSessionFile()!, "utf8").trimEnd().split("\n");
+		const first = JSON.parse(lines[1]!) as { type?: string; customType?: string; data?: Record<string, unknown> };
 		assert.equal(first?.type, "custom");
-		assert.equal(first?.customType, "pi-web:subagent");
+		assert.equal(first?.customType, "pi-web:subagent", "slot one of the FILE — the scanner never reads past it for classification");
 		assert.equal(first?.data?.version, 1);
 		assert.equal(first?.data?.parentSessionId, "p", "hard-validated by pi-web's reader: a string id");
 		assert.equal(first?.data?.parentSessionPath, "/tmp/p.jsonl", "hard-validated by pi-web's reader: a string path");
