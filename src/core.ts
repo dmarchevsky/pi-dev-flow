@@ -1440,6 +1440,18 @@ export function statusFor(bound: FlowState | null, openCount: number): { text: s
 	return { text: `💬 ${openCount} flow${openCount === 1 ? "" : "s"} open` };
 }
 
+/** The pi-web widget panel's lines: one lean line per unfinished flow — `→` marks this session's bound
+ *  flow, glyph + markers ride on statusCompact so the panel and the footer never drift in vocabulary —
+ *  plus the spelled-out stage word and the `⚠️` on failing checks the compact footer cannot show. The
+ *  panel is the glance surface; `flow status` stays the detailed one. Empty in, empty out (the caller
+ *  clears the widget — no chip with nothing to expand). */
+export function widgetLines(bound: FlowState | null, states: FlowState[]): string[] {
+	return states.map((st) => {
+		const { text, failed } = statusCompact(st);
+		return `${st.slug === bound?.slug ? "→" : " "} ${text} · ${st.stage}${failed ? " ⚠️" : ""}`;
+	});
+}
+
 /** `- [ ]` checklist items of a markdown document (reflections.md and roadmap.md share the format). */
 export function openChecklistItems(text: string): string[] {
 	return text.split("\n").map((l) => l.trim()).filter((l) => l.startsWith("- [ ] "));

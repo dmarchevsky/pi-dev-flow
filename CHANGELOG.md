@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.76.0] - 2026-11-03
+
+**The status bar now lists the flows.** In pi-web the footer was text — nothing to click, and no way to see what was in flight without asking the agent.
+
+### Added
+- In pi-web, dev-flow carries a collapsible flow-list widget beside the footer: a `dev-flow` chip in the status shelf whose panel shows one line per unfinished flow — `→` marks the session's bound flow, the stage word is spelled out, footer markers (`⚡ 📚 🎱 💬`) and `⚠️` on failing checks read exactly as in the footer. It repaints at session start, at every run start and after every gate, and hides while nothing is open. The terminal keeps the footer as its only surface.
+
 ## [0.75.0] - 2026-11-03
 
 **`flow_stage` workers are now visible in pi-web.** A delegated worker used to be a session pi-web never mentioned — the operator watched the driving session go quiet.

@@ -109,6 +109,7 @@ import {
 	validSlug,
 	verifyGate,
 	versionTagGate,
+	widgetLines,
 	writeGuard,
 	mainCheckoutRoot,
 	buildWorkerBrief,
@@ -2025,15 +2026,22 @@ function tail(out: string, n = 15): string {
 
 /** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
  *  unfinished-flow count, or `💬 no flows` — an initiated repo always carries the footer. An uninitiated
- *  folder gets nothing: the status is cleared. Pure read — rendering never binds or claims anything. */
+ *  folder gets nothing: the status is cleared. In pi-web the footer text is not clickable, so the same
+ *  snapshot also feeds a flow-list widget (a `dev-flow` chip whose panel lists every open flow, one lean
+ *  line each). Pure read — rendering never binds or claims anything. */
 function refreshStatus(ctx: ExtensionContext, root: string): void {
 	if (!ctx.hasUI) return;
 	if (!initiated(root)) {
 		ctx.ui.setStatus("dev-flow", undefined);
+		if (ctx.mode !== "tui") ctx.ui.setWidget("dev-flow", undefined);
 		return;
 	}
-	const s = statusFor(boundFeature(root, sessionKey(ctx)), unfinishedStates(root).length);
-	ctx.ui.setStatus("dev-flow", s.text);
+	const un = unfinishedStates(root);
+	const bound = boundFeature(root, sessionKey(ctx));
+	ctx.ui.setStatus("dev-flow", statusFor(bound, un.length).text);
+	// TUI keeps the footer as its only surface: a lines-widget there is an always-present block above the
+	// editor (no click to collapse), which competes with "the footer is the legend". pi-web gets the chip.
+	if (ctx.mode !== "tui") ctx.ui.setWidget("dev-flow", un.length ? widgetLines(bound, un) : undefined);
 }
 
 
