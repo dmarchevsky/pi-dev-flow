@@ -1419,11 +1419,16 @@ export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (p
 /** Footer glyph per stage: the footer has no room for stage words and no legend of its own (README:Status bar is the legend). */
 export const STAGE_EMOJI: Record<Stage, string> = { plan: "📝", implement: "🔨", "pre-release": "🔍", release: "🚀" };
 
-export function statusCompact(state: FlowState): { text: string; failed: boolean } {
-	const failed = Object.values(state.checks).some((c) => !c.ok);
+/** Mode markers in footer order: ⚡ patch / 📚 docs, 🎱 yolo, 💬 unanswered checkpoint. */
+function modeMarkers(state: FlowState): string[] {
 	// 💬 is the legend's "operator, your turn" (docs/playbook.md stage lines): a bound flow whose checkpoint
 	// is unanswered is parked on the operator, and the footer is the only thing they see.
-	return { text: `${STAGE_EMOJI[state.stage]} ${state.slug}${state.patch ? " ⚡" : state.docs ? " 📚" : ""}${state.yolo ? " 🎱" : ""}${state.pendingAsk ? " 💬" : ""}`, failed };
+	return [state.patch ? "⚡" : state.docs ? "📚" : "", state.yolo ? "🎱" : "", state.pendingAsk ? "💬" : ""].filter(Boolean);
+}
+
+export function statusCompact(state: FlowState): { text: string; failed: boolean } {
+	const failed = Object.values(state.checks).some((c) => !c.ok);
+	return { text: [STAGE_EMOJI[state.stage], state.slug, ...modeMarkers(state)].join(" "), failed };
 }
 
 /** Footer decision for any session in an initiated repo: a bound feature renders as statusCompact, its ⚠️
@@ -1439,6 +1444,19 @@ export function statusFor(bound: FlowState | null, openCount: number): { text: s
 	}
 	if (openCount < 1) return { text: "💬 no flows" };
 	return { text: `💬 ${openCount} flow${openCount === 1 ? "" : "s"} open` };
+}
+
+/** The pi-web footer chip's label: pi-web chips are a fixed ~108px and ellipsize anything longer, so the
+ *  unbound count drops the word "flows" (`💬 2 open`; the panel spells the flows out), and a bound flow
+ *  packs every glyph up front with no spaces — stage, markers, ⚠️ — then the slug (`🔨⚡⚠️my-feature`):
+ *  the state survives the ellipsis, only the slug's tail clips (the hover tooltip shows it whole). */
+export function chipLabel(bound: FlowState | null, openCount: number): string {
+	if (bound) {
+		const failed = Object.values(bound.checks).some((c) => !c.ok);
+		return `${STAGE_EMOJI[bound.stage]}${modeMarkers(bound).join("")}${failed ? "⚠️" : ""}${bound.slug}`;
+	}
+	if (openCount < 1) return statusFor(bound, openCount).text;
+	return `💬 ${openCount} open`;
 }
 
 /** The pi-web footer chip's panel lines: the chip's label already is this session's footer (the bound

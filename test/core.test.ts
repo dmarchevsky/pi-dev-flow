@@ -103,6 +103,7 @@ import {
 	verifyGate,
 	versionTagGate,
 	widgetLines,
+	chipLabel,
 	writeGuard,
 	stageGuidance,
 	DEFAULT_STAGE_GUIDANCE,
@@ -777,6 +778,20 @@ test("statusFor: bound flow renders as before; unbound shows only the count", ()
 	asked.yolo = true;
 	assert.deepEqual(statusFor(asked, 1), { text: "📝 f 🎱 💬" }, "💬 rides after the mode markers");
 	assert.deepEqual(statusFor(newState("f", false), 1), { text: "📝 f" }, "no pendingAsk, no glyph — an open flow reads exactly as before");
+});
+
+test("chipLabel: the unbound count fits pi-web's fixed-width chip; bound and idle read as the footer", () => {
+	assert.equal(chipLabel(null, 0), "💬 no flows");
+	assert.equal(chipLabel(null, 1), "💬 1 open");
+	assert.equal(chipLabel(null, 12), "💬 12 open");
+	const a = newState("alpha", false);
+	assert.equal(chipLabel(a, 3), "📝alpha", "bound: glyph then slug, no space");
+	a.stage = "implement";
+	a.patch = true;
+	a.yolo = true;
+	a.pendingAsk = "Verified?";
+	a.checks.test = { ok: false, at: "2026-01-01T10:00:00Z" };
+	assert.equal(chipLabel(a, 1), "🔨⚡🎱💬⚠️alpha", "every glyph up front, so a clipped slug never hides the state");
 });
 
 test("widgetLines: one lean line per OTHER flow — the chip label already is the bound one (pi-web chip panel)", () => {
