@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.75.0] - 2026-11-03
+
+**`flow_stage` workers are now visible in pi-web.** A delegated worker used to be a session pi-web never mentioned — the operator watched the driving session go quiet.
+
+### Added
+- `flow_stage` workers register themselves as pi-web subagents: the worker's session file carries the `pi-web:subagent` meta where pi-web's scanner looks for it (first data entry) and a terminal result when the run ends, so the worker appears in the session's Agents menu under profile `flow-implement` / `flow-review` — ✓ with its REPORT, ✗ failed, or interrupted. The row settles when the run ends; while it runs pi-web displays it as interrupted, because only pi-web's own sessions can prove liveness. Plain pi is unchanged, and a stamp that cannot write never breaks a worker.
+
 ## [0.74.0] - 2026-11-03
 
 **Audit: gaps closed, dead code out.** A full read of the extension, core and playbook parser after 0.73.0's reset.

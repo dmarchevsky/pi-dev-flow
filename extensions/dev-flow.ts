@@ -2165,7 +2165,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		label: "Stage worker",
 		description:
 			'Optional: hand a slice of work to a fresh pi session so this conversation stays lean. op "implement" (stage implement) — the worker edits and commits a slice on the feature branch; op "review" (implement or pre-release) — a fresh read-only reviewer that returns findings and a PASS/FAIL verdict (advisory: no gate depends on it). The plan path, branch, commits so far and the project checks are added to the brief automatically — `note` is just the slice: what to do, operator answers and decisions the worker cannot see. The worker holds no flow tool; gates and checkpoints stay with you. Small work and small fixes are fine to do inline. In pi-web the worker appears in the session\'s Agents menu as a subagent; the row carries its final status, the opened transcript its report.',
-		promptSnippet: 'flow_stage(op: "implement"|"review", note, label?) — optional fresh-session worker for a big implement slice, or an independent review; gates stay with you',
+		promptSnippet: 'flow_stage(op: "implement"|"review", note, label?) — optional fresh-session worker for a big implement slice, or an independent review; gates stay with you; in pi-web workers show up as subagents in the Agents menu',
 		parameters: Type.Object({
 			op: Type.String({ description: '"implement" (a worker edits + commits a slice) or "review" (read-only reviewer, findings + verdict)' }),
 			note: Type.String({ description: "The slice: what to do and anything from this conversation the worker must know (operator answers, decisions). Facts (plan path, commits, checks) are added for you." }),
