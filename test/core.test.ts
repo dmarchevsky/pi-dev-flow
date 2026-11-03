@@ -27,6 +27,7 @@ import {
 	cmpVersions,
 	compactionReflectionLine,
 	DEFAULTS,
+	DELEGATIONS_FILE,
 	delegationErrors,
 	delegationLine,
 	DELEGATION_REFUSAL,
@@ -629,6 +630,24 @@ test("writeGuard: at implement the driver drives, a worker writes", () => {
 	assert.equal(w({ docs: true }), null, "a docs flow stays inline");
 	assert.equal(w({ patch: true }), null, "a patch flow stays inline");
 	assert.equal(w({ stage: "pre-release" as const }), null, "pre-release prep is the driver's own work by design");
+});
+
+test("writeGuard: the delegation ledger is dev-flow-owned — the session it constrains cannot sign it", () => {
+	// the forgeability finding: writeGuard refused state.json and claim.json but let a bound session
+	// write its own .dev-flow/<slug>/stage-sessions/delegations.log, and one hand-written line
+	// covering the driver's own shas collapses the gate's "zero bypass".
+	const df = "/repo/.dev-flow";
+	const wt = "/repo/.wt/b";
+	const impl = { ...newState("b", false), stage: "implement" as const, worktree: ".wt/b" };
+	const feats = [{ state: impl, worktreeAbs: wt }];
+	const ledger = `${df}/b/stage-sessions/${DELEGATIONS_FILE}`;
+	const g = (abs: string, byWorker?: boolean) => writeGuard({ abs, dfDir: df, features: feats, boundSlug: "b", byWorker });
+	assert.match(g(ledger) ?? "", /delegations\.log is dev-flow-owned/, "the ledger is the proof the gate trusts — its subject may not write it");
+	assert.match(g(ledger, true) ?? "", /dev-flow-owned/, "not even a worker signs its own window: flow_stage appends the ledger itself, outside the guard");
+	assert.match(g(ledger) ?? "", /cannot sign its own proof/, "and the refusal says why");
+	assert.equal(g(`${df}/b/stage-sessions/transcripts.log`), null, "the sibling worker index in the same folder stays writable — the rule is the ledger, not the folder");
+	assert.equal(g(`${df}/b/plan/plan.md`), null, "the feature dir's other files are untouched");
+	assert.equal(g(`${wt}/delegations.log`, true), null, "a source file that merely shares the name is no ledger (and it sits outside stage-sessions/)");
 });
 
 test("openReflections: unchecked items only", () => {

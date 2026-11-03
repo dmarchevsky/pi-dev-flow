@@ -49,6 +49,7 @@ import {
 	checklistHash,
 	checklistPending,
 	DELEGATIONS_FILE,
+	STAGE_SESSIONS_DIR,
 	delegationErrors,
 	delegationLine,
 	parseDelegationLedger,
@@ -944,7 +945,7 @@ async function delegationProof(root: string, state: FlowState, defaultBranch: st
 	const work = gateCwd(root, state);
 	let ledger: DelegationWindow[] = [];
 	try {
-		ledger = parseDelegationLedger(readFileSync(path.join(featDir(root, state.slug), "stage-sessions", DELEGATIONS_FILE), "utf8"));
+		ledger = parseDelegationLedger(readFileSync(path.join(featDir(root, state.slug), STAGE_SESSIONS_DIR, DELEGATIONS_FILE), "utf8"));
 	} catch { /* no ledger yet: nobody delegated, which the gate reports rather than throwing on */ }
 	const shas = async (cmd: string) => {
 		const r = await sh(cmd, work);
@@ -2566,7 +2567,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				const inFlow = !!boundState;
 				const fam = inFlow ? await workerFamilyLines(ctx, run?.transcript, run ? BUCKET_FRESH_MS : 0) : null;
 				// the picker's rows when we have them; the ledger when the host gave us no file to be a parent of
-				const familyLines = fam ?? (boundState ? ledgerFamilyLines(path.join(featDir(ctx.cwd, boundState.slug), "stage-sessions", TRANSCRIPTS_FILE), run?.transcript) : null);
+				const familyLines = fam ?? (boundState ? ledgerFamilyLines(path.join(featDir(ctx.cwd, boundState.slug), STAGE_SESSIONS_DIR, TRANSCRIPTS_FILE), run?.transcript) : null);
 				const familySection = inFlow ? [familyHeading({ live: !!run, ledger: fam === null && !!familyLines?.length }), ...(familyLines && familyLines.length ? familyLines : ["(none yet)"])] : [];
 				if (!run) {
 					return { content: [{ type: "text", text: ["no stage worker is running in this session", ...familySection].join("\n") }], details: { running: false, ...(inFlow ? { workers: workerFamilyCount(familyLines) } : {}) } };
@@ -2616,8 +2617,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			stageRuns.set(key, run);
 			const cfg = loadProject(dfDir(ctx.cwd)).cfg;
 			const logFile = path.join(featDir(ctx.cwd, st.slug), "stage-live.log");
-			const transcriptLog = path.join(featDir(ctx.cwd, st.slug), "stage-sessions", TRANSCRIPTS_FILE);
-			const delegationLog = path.join(featDir(ctx.cwd, st.slug), "stage-sessions", DELEGATIONS_FILE);
+			const transcriptLog = path.join(featDir(ctx.cwd, st.slug), STAGE_SESSIONS_DIR, TRANSCRIPTS_FILE);
+			const delegationLog = path.join(featDir(ctx.cwd, st.slug), STAGE_SESSIONS_DIR, DELEGATIONS_FILE);
 			// read once, used twice: the worker's header links to this file and lands in this bucket,
 			// and the reflect brief names this session's own transcript to the reviewer
 			const lineage = lineageOf(ctx);
@@ -2788,7 +2789,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				let snapshot: string | null = null;
 				const dirty = await sh("git status --porcelain", work);
 				if (dirty.ok && dirty.out.trim()) {
-					const snapDir = path.join(featDir(ctx.cwd, st.slug), "stage-sessions");
+					const snapDir = path.join(featDir(ctx.cwd, st.slug), STAGE_SESSIONS_DIR);
 					mkdirSync(snapDir, { recursive: true });
 					const stamp = Date.now();
 					const diffFile = path.join(snapDir, `${op}-${stamp}.diff`);

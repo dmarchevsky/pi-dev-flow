@@ -1296,6 +1296,14 @@ export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
 	return real === tmp || real.startsWith(tmp + path.sep);
 }
 
+/** True when the path is a feature's delegation ledger (.dev-flow/<slug>/stage-sessions/delegations.log)
+ *  — the file the verify gate reads to prove a worker ran. Matched by shape, not just filename, so a
+ *  source file that merely happens to be named delegations.log stays writable anywhere, including inside
+ *  a worktree that lives under .dev-flow/. */
+export function isDelegationLedger(abs: string, dfDir: string): boolean {
+	return path.basename(abs) === DELEGATIONS_FILE && path.basename(path.dirname(abs)) === STAGE_SESSIONS_DIR && abs.includes(dfDir + path.sep);
+}
+
 /**
  * Write guard with per-path attribution: writes inside a worktree are judged by that
  * worktree's own feature; main-checkout writes are judged by the session's bound feature
@@ -1317,6 +1325,12 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (abs === path.join(dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (abs.endsWith("state.json") && abs.includes(dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
 	if (abs.endsWith("claim.json") && abs.includes(dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
+	// The delegation ledger is the fact the verify gate trusts about *who* worked — and the session it
+	// constrains is the one holding the pen. Left writable, one hand-written line covering the driver's
+	// own shas collapses "zero bypass", so it is dev-flow-owned like state.json. Worker runs append it
+	// from flow_stage's completion code (appendFileSync, which never passes through this guard), and
+	// flow verify only ever reads it — no sanctioned channel needs it to be an edit target.
+	if (isDelegationLedger(abs, dfDir)) return `${DELEGATIONS_FILE} is dev-flow-owned — the delegation ledger is written by flow_stage worker runs and read by flow verify; a session cannot sign its own proof`;
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
 	const owner = o.features.find((f) => within(abs, f.worktreeAbs ? realAbs(f.worktreeAbs) : null));
@@ -2329,6 +2343,10 @@ export function parseWorkerTranscripts(text: string): { at: string; op: string; 
  *  means "this range was worked by a worker", and re-running a check must not erase the history the
  *  branch rests on (transcripts.log rides outside state for the same reason). */
 export const DELEGATIONS_FILE = "delegations.log";
+
+/** The folder inside .dev-flow/<slug>/ that holds the worker logs (transcripts.log, delegations.log) —
+ *  also half of what makes a delegations.log a delegation ledger (see isDelegationLedger). */
+export const STAGE_SESSIONS_DIR = "stage-sessions";
 
 /** One finished worker run: the stage it worked and the commit range it left behind. */
 export interface DelegationWindow {
