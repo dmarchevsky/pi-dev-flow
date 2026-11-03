@@ -2,6 +2,39 @@
 
 The operator-owned file that says how *your* project is tested, run, versioned and guarded. Written once per repo with `flow init`, edited by you.
 
+## Quickstart
+
+1. `/flow init`. dev-flow reads the repo and prints what it found, then one numbered question per knob. Each question shows what was detected (`detected:`), the answer that keeps it (`accept: merge=squash`), and why it matters. Nothing is written yet.
+2. Answer in chat. Saying "keep these" is enough for every question that has an `accept` line.
+3. The agent applies all your answers in one call, `flow init --answers merge=squash versionFile=VERSION check.lint="npm run lint" …`. That shows a summary and a diff and writes nothing.
+4. You confirm. The agent re-runs the same call with `--confirmed --track`, which validates and writes the playbook, then commits it.
+5. Anything detection can't know goes in later through `flow init --write-file <path>` with the whole file: checklist items, standing guidance, guard rules. You can also run `flow init --answers key=value` for a single knob at any time.
+
+In a TUI, one dialog shows the summary with every detected value already accepted ("Accept the detected setup?"), followed by a commit offer. Decline it to answer the questions in chat first.
+
+**What detection reads** (deterministic, files and git only, never runs your commands):
+- the language manifest (package.json, Cargo.toml, go.mod, pyproject/requirements), the package manager and its scripts (`npm run build`, never `npm build`)
+- lint, typecheck and format scripts, ruff and mypy config → extra `flow-check` blocks
+- Makefile, justfile and Taskfile targets when no manifest decides
+- CI workflows (the commands they run, which your checks should match) and publish steps (npm, crates, container image) → a suggested `artifact` check
+- Dockerfile and compose files → suggested `preflight` and `dev`
+- `.env` and `secrets/` on disk → drafted `protect`/`forbid` guard rules; an `.env.example` → a reminder that `setup` must copy it
+- the version manifest, existing tags (the `versionTag` convention), the changelog, the merge style seen in history, monorepo workspaces
+- CLAUDE.md, AGENTS.md and CONTRIBUTING.md (named, so their rules can be proposed as guidance; never copied silently)
+
+Anything detection can't find is left out and asked about, never invented. No health check, no version file, no merge style is ever guessed.
+
+**Typical playbooks.** These are minimal; add to them as the project teaches you:
+
+| Project | `## implement` | `## pre-release` / `## release` |
+|---|---|---|
+| library (npm) | `test`, `build`, `flow-check lint` / `typecheck` | `versionFile = package.json`, `artifact = npm view --prefer-online <name>@{version} version`, `merge = …` |
+| CLI (go/rust) | `test`, `build`, `flow-check vet` / `clippy` | `versionFile = VERSION`, `releases = true`, `merge = …` |
+| web service | `setup` (install + copy `.env`), `test`, `run`, `flow-check health`, `(ui)` checklist items | `versionFile`, `merge = …` |
+| Docker app | `dev = docker compose up -d --build`, `flow-check health` | `preflight = docker build .`, `artifact = docker buildx imagetools inspect <image>:{version}` |
+
+The rest of this page is the reference.
+
 `.dev-flow/` ignores itself — its own `.dev-flow/.gitignore` is `*` with the single exception
 `!project.md`, so no state, plan or worktree path is ever tracked by accident. Tracking the playbook
 in a repo that ignores the folder is a deliberate one-off:
@@ -154,15 +187,24 @@ needs to know which one the release contains. Three things read the key:
 What it cannot do is bind a human clicking the merge button in the Web UI: only the forge's own
 require-a-merge-strategy setting does that, and setting it stays your step in the forge, not dev-flow's.
 
-`flow init` is the dialogue around this file: **fresh repo** → prints the setup brief (detection report
-plus one question per undetected knob — forge, version convention, releases, artifacts, checks, prose),
-the agent asks you each question, fills the draft and writes your answers back validated
-(`--write <content>`; `--draft` prints the draft or current file whenever you'd rather read raw — an
-interactive init may also confirm the draft with you on the spot and write it then); **existing file** → doctor mode (drift, dead commands/scripts,
-unparseable manifest, dual configs, **ghost feature dirs** (a `.dev-flow/<slug>/` whose `state.json`
-is gone — it offers to delete those, on your confirm, and says so instead when no UI is present) —
-it never runs your commands). It prints the findings and never regenerates your file — a draft
-cannot reproduce your prose, checklist items and hand-set keys. `--force` is the deliberate overwrite — with your word (`--confirmed`, or one
+`flow init` is the dialogue around this file (see the Quickstart above).
+
+On a **fresh repo** it prints the setup brief: the detection report, plus one question per knob, each with `detected:` / `accept:` / `why:` lines. It writes nothing.
+
+`--answers key=value …` (or `--answers-file <path>`, one pair per line, `#` for comments) applies answers as targeted edits onto the fresh draft, or onto the current file if one exists:
+- Keys: `forge`, `defaultBranch`, `setup`/`test`/`build`/`run`/`dev`/`health`, `versionFile`/`versionTag`/`changelog`, `releases`/`artifact`/`preflight`/`merge`, and `check.<name>` for a `flow-check` block. An empty value removes a check.
+- Hand-written lines survive, and a key already written under one release section stays there.
+- It previews the summary and the diff, and writes only with `--confirmed` (or on a dialog yes).
+
+`--write "<content>"` / `--write-file <path>` replace the whole file. The content is hard-validated, and the result shows the diff.
+
+`--track` commits the playbook as a playbook chore (`git add -f` + the main-hook prefix). `--draft` prints the draft, or the current file, without writing.
+
+On an **existing file** init is doctor mode. It reports drift, dead commands and scripts, an unparseable manifest, dual configs, and **ghost feature dirs** (a `.dev-flow/<slug>/` whose `state.json` is gone). It offers to delete ghost dirs on your confirm, and says so instead when no UI is present. It never runs your commands.
+
+When a hook manager sets `core.hooksPath` (husky, lefthook…), git ignores `.git/hooks`, so init prints the main-branch guard lines for you to add to that hook instead of installing one that would never run. An existing foreign `pre-commit` gets the same printout.
+
+Init prints its findings and never regenerates your file: a draft cannot reproduce your prose, checklist items and hand-set keys. `--force` is the deliberate overwrite — with your word (`--confirmed`, or one
 confirm dialog) and a `project.md.bak` of what was there. At any time
 you can just edit `.dev-flow/project.md` yourself — the next `flow init` (doctor) validates and
 flags problems, and `flow doctor` runs the same probes on demand without offering to change

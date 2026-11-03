@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { DEFAULTS } from "../src/core.ts";
 import { buildConfig } from "./util/config.ts";
-import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, mdToConfig, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
+import { applyAnswers, buildDraft, doctorFindings, lineDiff, parseAnswers, setPlaybookCheck, ghostFeatureDirs, loadProject, mdDigest, mdToConfig, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
 
 const MD = `# dev-flow
 
@@ -362,4 +362,65 @@ test("buildDraft: the mockup item applies to --ui features only", () => {
 	const draft = buildDraft({ report: [], partial: { defaultBranch: "main", commands: {} } });
 	assert.match(draft, /- \[ \] \(ui\) rendered mockups attached/);
 	assert.equal(mdToConfig(parseProjectMd(draft)).checklist.plan?.[0]?.uiOnly, true);
+});
+
+test("buildDraft never invents a version file, and the run-locally item is UI-only", () => {
+	const draft = buildDraft({ report: [], partial: { defaultBranch: "main", commands: {} } });
+	assert.doesNotMatch(draft, /^versionFile = /m, "no manifest detected → no versionFile key pointing at a missing file");
+	assert.match(draft, /<!-- versionFile = /);
+	assert.match(draft, /- \[ \] \(ui\) app runs locally/);
+	assert.equal(doctorFindings(process.cwd(), mdToConfig(parseProjectMd(draft)), parseProjectMd(draft)).filter((f) => f.includes("versioning.file")).length, 0);
+});
+
+test("buildDraft carries detected checks, guards, tag pattern and changelog", () => {
+	const draft = buildDraft({ report: [], partial: { defaultBranch: "main", commands: { test: "npm test" }, versioning: { file: "package.json" }, versionTag: "{version}", changelog: "CHANGES.md", checks: { lint: "npm run lint" }, guards: ["protect .env* :: secrets"] } });
+	const p = parseProjectMd(draft);
+	assert.equal(p.hard.length, 0, p.hard.join("; "));
+	assert.ok(p.checks.some((c) => c.name === "lint" && c.cmd === "npm run lint"));
+	assert.equal(p.guard.protect[0]?.pattern, ".env*");
+	assert.equal(mdToConfig(p).versioning.pattern, "{version}");
+	assert.equal(mdToConfig(p).release.changelog, "CHANGES.md");
+	assert.match(mdDigest(draft), /safety rules: protect \.env\*/);
+});
+
+test("parseAnswers + applyAnswers: targeted edits, unknown keys refused, draft hints dropped", () => {
+	assert.match(parseAnswers(["bogus=1"]).errors[0], /unknown answer key "bogus"/);
+	assert.match(parseAnswers(["no-equals"]).errors[0], /not key=value/);
+	const draft = buildDraft({ report: [], partial: { defaultBranch: "main", commands: { test: "npm test" } } });
+	const { answers } = parseAnswers(["merge=squash", "forge=github", "versionFile=VERSION", "check.lint=npm run lint", "# a comment", "test=npm run test:unit"]);
+	const r = applyAnswers(draft, answers);
+	const cfg = mdToConfig(parseProjectMd(r.text));
+	assert.equal(cfg.release.merge, "squash");
+	assert.equal(cfg.forge, "github");
+	assert.equal(cfg.versioning.file, "VERSION");
+	assert.equal(cfg.commands.test, "npm run test:unit");
+	assert.ok(cfg.checkList.some((c) => c.name === "lint"));
+	assert.doesNotMatch(r.text, /<!-- merge = /, "the 'flow start asks' hint is gone once answered");
+	assert.doesNotMatch(r.text, /<!-- versionFile = /);
+	assert.match(r.text, /- \[ \] \(ui\) rendered mockups/, "hand-written lines survive");
+	assert.equal(r.changes.length, 5);
+	// a version key already under ## release stays there instead of being duplicated under ## pre-release
+	const legacy = "# d\n\n## release\n\n```flow\nversionFile = package.json\n```\n";
+	const moved = applyAnswers(legacy, [["versionFile", "VERSION"]]).text;
+	assert.equal(moved.split("versionFile").length - 1, 1);
+	assert.equal(mdToConfig(parseProjectMd(moved)).versioning.file, "VERSION");
+});
+
+test("setPlaybookCheck replaces, appends and removes a named block", () => {
+	const md = "# d\n\n## implement\n\n```flow\ntest = t\n```\n\n- [ ] item\n\n## release\n";
+	const add = setPlaybookCheck(md, "lint", "eslint .").text;
+	assert.match(add, /```flow\ntest = t\n```\n\n```flow-check lint\neslint \.\n```/);
+	const rep = setPlaybookCheck(add, "lint", "biome check").text;
+	assert.equal(rep.split("flow-check lint").length - 1, 1);
+	assert.match(rep, /flow-check lint\nbiome check\n/);
+	const del = setPlaybookCheck(rep, "lint", "").text;
+	assert.doesNotMatch(del, /flow-check lint/);
+	assert.match(del, /- \[ \] item/);
+});
+
+test("lineDiff shows only what changed", () => {
+	assert.equal(lineDiff("a\nb", "a\nb"), "(no changes)");
+	const d = lineDiff("a\nb\nc\nd\ne", "a\nb\nX\nd\ne", 0);
+	assert.match(d, /- c\n\+ X/);
+	assert.doesNotMatch(d, /  a/);
 });

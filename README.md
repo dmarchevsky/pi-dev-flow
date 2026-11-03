@@ -71,9 +71,12 @@ Then, once per project repo, `/flow init`. It reads the repo (default branch and
 package manager, test/build/run conventions, version manifest) and writes **`.dev-flow/project.md`
 — your playbook**: the commands that count as checks, the manual checklist, the version and tag
 convention, how a merged PR lands (`merge = squash | merge | rebase`), and any hard safety rules of your
-own. It asks about everything detection could not
-decide (self-hosted forge? Docker artifacts? what "healthy" means?) and installs a `pre-commit` hook
-that blocks direct main commits. Run `/flow init` again later and it becomes a **doctor**: drift in
+own. It also reads lint/typecheck scripts, CI workflows, Makefiles, Docker files, secrets on disk and your existing
+tags. Every question shows what was detected and why it matters, so "keep these" answers most of
+them. Your answers land as targeted edits (`flow init --answers key=value …`), previewed as a diff
+before anything is written. It asks about everything detection could not decide (self-hosted forge?
+Docker artifacts? what "healthy" means?) and installs a `pre-commit` hook that blocks direct main
+commits (or prints the lines for husky/lefthook when they own the hooks). Run `/flow init` again later and it becomes a **doctor**: drift in
 your playbook, dead commands, config problems — it never rewrites your hand edits without asking.
 The flow is completely inert in repos with no `.dev-flow/`.
 
