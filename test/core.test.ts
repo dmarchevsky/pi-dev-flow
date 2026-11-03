@@ -1431,6 +1431,19 @@ test("nextHint: the UI clause appends to the plan path instead of replacing it",
 	assert.match(nextHint({ ...ui, ui: false }, DEFAULTS), /plan\/plan\.md, then ask the operator Approve\?/);
 });
 
+test("nextHint: the implement hint delegates the work — it must not order inline authoring", () => {
+	const impl = { ...newState("d", false), stage: "implement" as const, worktree: ".dev-flow/d/worktree" };
+	const hint = nextHint(impl, DEFAULTS);
+	assert.match(hint, /flow_stage \{ stage: "implement" \}/, "the hint sends the work through a worker session");
+	assert.doesNotMatch(hint, /^implement in the worktree/, "it no longer opens by telling the driver to author the work itself — the write guard refuses that and the verify gate refuses the branch it produces");
+	assert.match(hint, /rerun flow check \(tier-1 checks, incl\. health with seeded data\)/, "the driver keeps flow check");
+	assert.match(hint, /ask them Verified\? in chat and run flow verify --confirmed/, "and the checkpoint");
+	assert.match(hint, /keep the app running when you ask Verified\?/, "and running the app");
+	// docs mode is exempt from delegation, so its hint stays inline — it is the one that must NOT name flow_stage
+	assert.match(nextHint({ ...impl, docs: true }, DEFAULTS), /^implement in the worktree \.dev-flow\/d\/worktree — docs mode/, "the docs sibling keeps its inline wording");
+	assert.doesNotMatch(nextHint({ ...impl, docs: true }, DEFAULTS), /flow_stage/, "no delegation demand in docs mode");
+});
+
 test("nextHint names the playbook merge style at the release stage", () => {
 	const st = { ...newState("x", false), stage: "release" as const };
 	const cfg = { ...DEFAULTS, release: { ...DEFAULTS.release, merge: "squash" as const } };
