@@ -187,7 +187,7 @@ test("init → start → guards → gate ordering, end to end", async () => {
 test("worktree isolation: commit guards follow the command's directory", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	await pi.cmds.flow.handler("init", ctx);
 	await pi.cmds.flow.handler("start wt-feature", ctx);
 	mkdirSync(path.join(repo, ".dev-flow", "wt-feature", "plan"), { recursive: true });
@@ -223,7 +223,7 @@ test("a forced push is confirmed with the operator; the prefix the refusal print
 	const pi = makePi();
 	const repo = makeRepo();
 	let answer = false;
-	const ctx = { cwd: repo, hasUI: true, ui: { notify: () => {}, confirm: async () => answer, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, ui: { notify: () => {}, confirm: async () => answer, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	await pi.cmds.flow.handler("init", ctx);
 	initPlaybook(repo);
 	const guard = pi.handlers.tool_call[0];
@@ -636,16 +636,20 @@ test("status bar: compact refresh follows the gates", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const statuses: (string | undefined)[] = [];
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (_m: string) => {}, confirm: async () => true, select: async (_t: string, opts: string[]) => opts.find((o) => o === "keep") ?? opts.find((o) => o === "leave unset") ?? opts.find((o) => o === "(none)") ?? opts[0], input: async () => "", setStatus: (_k: string, t?: string) => statuses.push(t), theme: { fg: (_c: string, s: string) => s } } };
+	const widgets: (string[] | undefined)[] = [];
+	const ctx = { cwd: repo, hasUI: true, mode: "rpc", notices: [] as string[], ui: { notify: (_m: string) => {}, confirm: async () => true, select: async (_t: string, opts: string[]) => opts.find((o) => o === "keep") ?? opts.find((o) => o === "leave unset") ?? opts.find((o) => o === "(none)") ?? opts[0], input: async () => "", setStatus: (_k: string, t?: string) => statuses.push(t), setWidget: (_k: string, l?: string[]) => widgets.push(l), theme: { fg: (_c: string, s: string) => s } } };
 	await pi.cmds.flow.handler("init", ctx);
 	// the interactive init draft has no merge policy yet, so the first start answers it (--merge writes it into the playbook)
 	await pi.cmds.flow.handler("start demo-feature --merge=merge --confirmed", ctx);
 	assert.equal(statuses.at(-1), "📝 demo-feature");
+	// pi-web gets the clickable chip beside the footer: one lean line per open flow, → on the bound one
+	assert.deepEqual(widgets.at(-1), ["→ 📝 demo-feature · plan"], "the widget panel lists the flow the gate just started");
 	// a second session that never bound sees only the open-flow count — never the slug
 	const seenB: (string | undefined)[] = [];
 	const b = { ...ctx, sessionManager: { getSessionId: () => "sess-foot-B", getBranch: () => [] as never[] }, ui: { ...ctx.ui, setStatus: (_k: string, t?: string) => seenB.push(t) } };
 	await pi.cmds.flow.handler("status", b);
 	assert.equal(seenB.at(-1), "💬 1 flow open", "unbound footer shows the count, not the slug");
+	assert.deepEqual(widgets.at(-1), ["  📝 demo-feature · plan"], "the chip lists every open flow — the → only follows this session's binding");
 });
 
 test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {
@@ -654,7 +658,7 @@ test("initiated repos always carry the footer, repainted at run start; uninitiat
 		cwd: repo,
 		hasUI: true,
 		notices: [] as string[],
-		ui: { notify: () => {}, confirm: async () => true, select: async (_t: string, o: string[]) => o[0], input: async () => "", setStatus: (_k: string, t?: string) => seen.push(t), theme: { fg: (_c: string, s: string) => s } },
+		ui: { notify: () => {}, confirm: async () => true, select: async (_t: string, o: string[]) => o[0], input: async () => "", setStatus: (_k: string, t?: string) => seen.push(t), setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } },
 	});
 	// uninitiated: no injection at all, and any stale footer push is cleared
 	const bare = makeRepo();
@@ -826,7 +830,7 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	const pi = makePi();
 	const repo = makeRepo();
 	let dialogs = 0;
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\ndev = touch dev-up\n```\n\n- [ ] operator item\n- [ ] (ui) mockup item\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
@@ -973,7 +977,7 @@ test("guard: a scratch file outside the checkout is stage-free while the worktre
 test("release tail: a dirty worktree fails the release gate; finish refuses and names paths too (gh#131)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo); // keep the main checkout clean — finish's first wall is the main-checkout dirty check
@@ -1209,7 +1213,7 @@ test("release gate (#97): the entry is prepared on the branch and pending lines 
 test("release opt-out: per-release flag and per-project config skip forge release creation", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	const versioned = async (slug: string, ver: string, mdTail: string, mdAfter = "") => {
 		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nversionFile = package.json\nversionTag = v{version}\nmerge = merge\n${mdTail}\`\`\`\n${mdAfter}`]);
@@ -1262,7 +1266,7 @@ test("release-teeth: tag must reach origin; release.artifact verifies the publis
 	const origin = mkdtempSync(path.join(tmpdir(), "devflow-origin-"));
 	execFileSync("git", ["init", "-q", "--bare", origin]);
 	execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n\`\`\`flow\nversionFile = package.json\nversionTag = v{version}\nartifact = test -f published.txt\n\`\`\`\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	await flow(["start", "teeth"]);
@@ -1316,7 +1320,7 @@ test("a release gate refuses to guess when origin cannot be asked (offline)", as
 test("abort at plan stage drops the feature; approved features keep recoverable state", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	await flow(["start", "ghost"]);
@@ -1361,7 +1365,7 @@ test("pending checkpoint: 💬 rides the footer until the word arrives, and is n
 	const repo = makeRepo();
 	const seen: string[] = [];
 	const ctx = { cwd: repo, hasUI: false, notices: [] as string[], ui: { notify: () => {}, setStatus: (_k: string, s?: string) => seen.push(s ?? ""), theme: { fg: (_c: string, s: string) => s } }, mode: "rpc" };
-	const uiCtx = { ...ctx, hasUI: true, ui: { ...ctx.ui, confirm: async () => true } };
+	const uiCtx = { ...ctx, hasUI: true, ui: { ...ctx.ui, confirm: async () => true, setWidget: () => {} } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
@@ -1382,7 +1386,7 @@ test("pending checkpoint: 💬 rides the footer until the word arrives, and is n
 test("patch feature: no plan file, same gates end to end", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
@@ -1403,7 +1407,7 @@ test("patch feature: no plan file, same gates end to end", async () => {
 test("docs feature: no plan file, no tier-1 checks, full release end to end", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => true, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
@@ -1454,12 +1458,12 @@ test("init finds ghost feature dirs and removes them only on the operator's word
 	assert.match(noUI.notices.at(-1) ?? "", /1 ghost feature dir\(s\).*closed/, "reported when no operator is present");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "closed")), "nothing is deleted without a confirmation");
 
-	const declined = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => declined.notices.push(m), confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const declined = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => declined.notices.push(m), confirm: async () => false, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	await pi.cmds.flow.handler("init", declined);
 	assert.match(declined.notices.at(-1) ?? "", /kept 1 ghost feature dir/);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "closed")), "a declined offer deletes nothing");
 
-	const agreed = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => agreed.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const agreed = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => agreed.notices.push(m), confirm: async () => true, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	await pi.cmds.flow.handler("init", agreed);
 	assert.match(agreed.notices.at(-1) ?? "", /removed 1 ghost feature dir\(s\): closed/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "closed")), "the ghost is gone on the operator's yes");
@@ -1516,7 +1520,7 @@ test("re-init never regenerates a hand-written project.md — it prints the doct
 	const pi = makePi();
 	const repo = makeRepo();
 	// confirm always answers yes: the point is that re-init cannot be talked into rewriting anything
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const mdFile = path.join(repo, ".dev-flow", "project.md");
 	const hand = ["# dev-flow\n## release\n\n```flow\nmerge = merge\n```\n", "", "## global", "", "Only ship from a green main.", "", "## implement", "", "```flow", "test = node --version", "```", "", "```flow-check overflow", "node scripts/check-overflow.mjs", "```", "", "## release", "", "```flow", "versionFile = package.json", "versionTag = {version}", "```", ""].join("\n");
 	await pi.cmds.flow.handler("init", ctx);
@@ -1536,7 +1540,7 @@ test("flow doctor: findings without writing, deleting or asking", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	let dialogs = 0;
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => { dialogs++; return true; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => { dialogs++; return true; }, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", TEST_MD]);
 	mkdirSync(path.join(repo, ".dev-flow", "ghosty", "plan"), { recursive: true });
@@ -1572,7 +1576,7 @@ test("flow init without a UI prints the findings; flow status reports them even 
 test("flow doctor: a feature's own branch (checked out in its worktree) is not an orphan", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: (m: string) => ctx.notices.push(m), confirm: async () => true, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }] }>;
 	await flow(["init", "--write", TEST_MD]);
 	await flow(["start", "orphan-bait"]);
@@ -1833,7 +1837,7 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	const pi = makePi();
 	const repo = makeRepo();
 	let dialogs = 0;
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = exit 1\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
@@ -1860,7 +1864,7 @@ test("yolo at any gate: verify --yolo answers that question and pre-confirms the
 	const pi = makePi();
 	const repo = makeRepo();
 	let dialogs = 0;
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return false; }, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = exit 0\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
@@ -1917,7 +1921,7 @@ test("release-done publishes the version the release gate stamped, and refuses t
 	const origin = mkdtempSync(path.join(tmpdir(), "devflow-origin-"));
 	execFileSync("git", ["init", "-q", "--bare", origin]);
 	execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
-	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => false, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	const git = (args: string[], dir = repo) => execFileSync("git", ["-C", dir, ...args]);
 	const ship = async (slug: string, ver: string) => {
