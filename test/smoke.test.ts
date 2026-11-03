@@ -545,6 +545,30 @@ test("a worker session edits inside its own worktree: the guard resolves the flo
 	assert.equal(checkout, undefined, "checking the feature branch out inside its own worktree is not 'checking it out in the main checkout'");
 });
 
+test("the delegation the gate prints is the branch's — a reset that drops a covered commit shrinks the claim", async () => {
+	// A window's shas stay resolvable as loose objects after a reset, so an unfiltered count kept
+	// promising "delegation proven: 2 worker commit(s)" over a branch holding one. Refusal logic read
+	// the branch all along; this is the approval line learning the same discipline.
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	await flow(["start", "reset"]);
+	mkdirSync(path.join(repo, ".dev-flow", "reset", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "reset", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "reset");
+	commitWt(repo, "reset"); // two worker commits, two recorded windows
+	const wt = path.join(repo, ".dev-flow", "reset", "worktree");
+	execFileSync("git", ["-C", wt, "reset", "--hard", "HEAD~1"]); // the second sha is off the branch, still in the object store
+	await flow(["check"]);
+	await verifyPass(pi, ctx);
+	const ok = await flow(["verify", "--confirmed"]);
+	assert.ok(!ok.isError, `a covered branch still verifies: ${ok.content[0].text}`);
+	assert.match(ok.content[0].text, /delegation proven: 1 worker commit\(s\) in 1 window\(s\)/, "the gate counts what the branch holds");
+});
+
 test("a verify re-run at pre-release answers with the stage, never with a delegation claim", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

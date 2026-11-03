@@ -964,9 +964,16 @@ async function delegationProof(root: string, state: FlowState, defaultBranch: st
 	const key = (w: DelegationWindow) => `${w.start}..${w.end}`;
 	for (const w of impl) ranges.set(key(w), (await shas(`git rev-list ${sq(w.start)}..${sq(w.end)}`)) ?? []);
 	const windowCommits = (w: DelegationWindow) => ranges.get(key(w)) ?? [];
+	// What the gate prints as proven is what the operator is approving, so the count is intersected with
+	// the branch: a reset or an amend leaves the window's shas resolvable as loose objects while they are
+	// no longer on the branch, and "delegation proven: 2 worker commit(s)" over a branch of one is a
+	// claim about commits nobody is verifying. Coverage itself is delegationErrors' business — it reads
+	// the branch, so nothing here can widen it.
+	const onBranch = branchCommits ? new Set(branchCommits) : null;
+	const proves = (w: DelegationWindow) => windowCommits(w).some((sha) => !onBranch || onBranch.has(sha));
 	const covered = new Set<string>();
-	for (const w of impl) for (const sha of windowCommits(w)) covered.add(sha);
-	return { ledger, branchCommits, windowCommits, covered: covered.size, windows: impl.filter((w) => windowCommits(w).length).length };
+	for (const w of impl) for (const sha of windowCommits(w)) if (!onBranch || onBranch.has(sha)) covered.add(sha);
+	return { ledger, branchCommits, windowCommits, covered: covered.size, windows: impl.filter(proves).length };
 }
 
 function describeBranchState(b: BranchState, defaultBranch: string): string {
