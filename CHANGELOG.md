@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.76.1] - 2026-11-03
+
+**pi-web workers read Running while they run.** Since 0.75.0 a `flow_stage` worker's Agents-menu row read *Interrupted* for its whole run, and its label repeated the slug.
+
+### Fixed
+- While a `flow_stage` worker runs, its pi-web Agents row now reads running. pi-web shows a persisted `running` as interrupted unless it can confirm the run is alive in-process, so the worker now registers itself in pi-web's live run map for the run and leaves it only after its result entry is written. Plain pi is unchanged. Stop/steer from the Agents menu still answer "not running"; the driving session's Stop aborts the worker.
+- Worker labels read `<glyph> <slug> <what>`: a `label` that repeats the slug is trimmed (`🔍 flow-list-widget · flow-list-widget review` → `🔍 flow-list-widget review`), and with no label the op names the run.
+
 ## [0.76.0] - 2026-11-03
 
 **The status bar now lists the flows.** In pi-web the footer was text — nothing to click, and no way to see what was in flight without asking the agent.

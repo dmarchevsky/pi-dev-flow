@@ -2426,7 +2426,7 @@ test("flow_stage implement: the brief carries the facts, a prose-ending worker i
 		assert.match(text, /worker reported/);
 		assert.match(text, /add the module/, "the new commits are listed");
 		assert.match(text, /flow check after the worker: .*PASS/, "check reran");
-		assert.match(worker.names.at(-1) ?? "", /^✓ 🔨 wrk · module/);
+		assert.match(worker.names.at(-1) ?? "", /^✓ 🔨 wrk module/);
 	} finally {
 		stageWorkerSpawn.run = orig;
 	}
@@ -2486,7 +2486,7 @@ test("flow_stage workers stamp pi-web subagent entries — visible in the Agents
 		assert.equal(sub?.parentFile, "/tmp/driver.jsonl");
 		assert.equal(sub?.toolCallId, "id");
 		assert.equal(sub?.profile, "flow-implement");
-		assert.match(String(sub?.description), /^🔨 ags · menu$/);
+		assert.match(String(sub?.description), /^🔨 ags menu$/);
 		assert.match(String(sub?.task), /stamp me/, "the brief is the task the menu row carries");
 		assert.deepEqual(impl.entries.map((e) => e.type), ["pi-web:subagent-status", "pi-web:subagent-result"]);
 		assert.equal(impl.entries[0].data.status, "running");
@@ -2530,6 +2530,64 @@ test("flow_stage workers stamp pi-web subagent entries — visible in the Agents
 		assert.equal(plain.entries.length, 0, "without driver lineage nothing is stamped");
 	} finally {
 		stageWorkerSpawn.run = orig;
+	}
+});
+
+test("worker names read <glyph> <slug> <what> — a label repeating the slug is cut, no label names the op", () => {
+	const n = testSeams.piweb.workerName;
+	assert.equal(n("🔍", "flow-list-widget", "review", "flow-list-widget review"), "🔍 flow-list-widget review", "the live duplicate");
+	assert.equal(n("🔍", "flow-list-widget", "review", "flow-list-widget · flow-list-widget review"), "🔍 flow-list-widget review");
+	assert.equal(n("🔨", "wrk", "implement", "D4 parser"), "🔨 wrk D4 parser");
+	assert.equal(n("🔨", "wrk", "implement", undefined), "🔨 wrk implement");
+	assert.equal(n("🔨", "wrk", "implement", " WRK \n"), "🔨 wrk implement", "only the slug: the op names it");
+	assert.equal(n("🔨", "a.b", "implement", "axb fix"), "🔨 a.b axb fix", "the slug is matched literally, not as a regex");
+});
+
+test("a pi-web worker holds a live run-map slot while it runs — the Agents row reads running, not interrupted", async () => {
+	const g = globalThis as { __piSubagentRuns?: Map<string, { run: { status: string; parentSessionId: string; description: string } }> };
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { ...makeCtx(repo), sessionManager: { getSessionId: () => "driver-sid", getSessionFile: () => "/tmp/driver.jsonl", getSessionDir: () => repo } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "live"]);
+	mkdirSync(path.join(repo, ".dev-flow", "live", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "live", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const stage = (params: Record<string, unknown>) => pi.tools.flow_stage.execute("id", params, undefined, undefined, ctx) as Promise<{ isError?: boolean }>;
+	const orig = stageWorkerSpawn.run;
+	try {
+		// no pi-web: nothing is created
+		delete g.__piSubagentRuns;
+		stageWorkerSpawn.run = async () => fakeWorker([() => "Done.\n\nREPORT\n- done: x"]) as never;
+		await stage({ op: "review", note: "plain pi" });
+		assert.equal(g.__piSubagentRuns, undefined, "plain pi never gets pi-web's global");
+		// pi-web: running during the run, gone after, for every outcome
+		g.__piSubagentRuns = new Map();
+		const seen: string[] = [];
+		const peek = () => { const s = g.__piSubagentRuns!.get("fake-worker"); seen.push(s ? `${s.run.status}:${s.run.parentSessionId}:${s.run.description}` : "absent"); };
+		for (const turn of [
+			() => { peek(); return "Done.\n\nREPORT\n- done: x"; },
+			() => { peek(); throw new Error("boom"); },
+		]) {
+			stageWorkerSpawn.run = async () => fakeWorker([turn]) as never;
+			assert.ok(!(await stage({ op: "review", note: "live", label: "live check" })).isError);
+			assert.equal(g.__piSubagentRuns!.has("fake-worker"), false, "the slot is dropped once the result is stamped");
+		}
+		assert.deepEqual(seen, ["running:driver-sid:🔍 live check", "running:driver-sid:🔍 live check"]);
+		// a newer run that took the slot is not dropped by the older run's release
+		const claim = { getSessionId: () => "s1", getSessionFile: () => "/tmp/s1.jsonl" };
+		const meta = { parentId: "p", parentFile: "/tmp/p.jsonl", toolCallId: "tc", profile: "flow-review", description: "d", task: "t" };
+		const release = testSeams.piweb.liveClaim(claim, meta);
+		const newer = { run: { status: "running", parentSessionId: "p", description: "newer" } };
+		g.__piSubagentRuns.set("s1", newer);
+		release("completed");
+		release("completed");
+		assert.equal(g.__piSubagentRuns.get("s1"), newer);
+	} finally {
+		stageWorkerSpawn.run = orig;
+		delete g.__piSubagentRuns;
 	}
 });
 
