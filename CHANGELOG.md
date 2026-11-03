@@ -4,6 +4,21 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.77.0] - 2026-11-03
+
+**The finish reflection is done by a separate reviewer, and plugin feedback goes upstream.** The driving agent used to review its own session inline (biased, and blind to its workers' transcripts), wrote findings straight into the project's `reflections.md` — dev-flow complaints included — and reminded the operator about open reflections on every turn.
+
+### Added
+- `flow_stage` op `reflect`: a fresh read-only pi session reviews the driver's transcript and every `flow_stage` worker transcript (found by their `parentSession` header), re-checks the open items, dedupes against them and the upstream issues, and returns numbered findings — each **docs** / **code** / **plugin** with a **fold** or **drop** recommendation. It runs in the main checkout at any stage; finish is its standard moment. A reported run is recorded on the flow, and a finish question without one says so (advisory, never a block).
+- At finish the operator decides fold or drop per finding: fold docs → `## playbook` (docs flow), fold code → `## code` (patch flow), fold plugin → a GitHub issue on the dev-flow repo; drop records nothing.
+- `flow reflect --code "<note>"` and a `## code` section for fixes that touch project code.
+- Timed nudges: *fix the open reflections now?* fires when an item recurred this session, is ≥ 14 days old, ≥ 3 playbook items wait (one docs flow), or a code item waits between flows; *tidy* fires at ≥ 5 closed, closed ≥ open (≥ 3), or a closed item ≥ 30 days old.
+
+### Changed
+- `flow reflect --plugin` never writes `reflections.md`: it prints the upstream recipe (search, then `gh issue create` with the `— reflection from` tail the fold matches). A plugin-shaped note without a flag does the same. In the dev-flow repo itself plugin is code and files under `## code`. `--both` is gone; `reflect move` takes `--playbook|--code`.
+- Existing `## plugin` rows are kept verbatim, never added to, and flagged by `flow doctor` and `reflect list` to be filed upstream (or moved to `## code` in the dev-flow repo).
+- Open-reflection reminders left the per-turn stage context of a feature in progress; they surface at the release stage, at finish, in an unbound session, and in `flow status` / `flow doctor`.
+
 ## [0.76.1] - 2026-11-03
 
 **pi-web workers read Running while they run.** Since 0.75.0 a `flow_stage` worker's Agents-menu row read *Interrupted* for its whole run, and its label repeated the slug.

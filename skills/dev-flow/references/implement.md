@@ -62,6 +62,10 @@ asks who wrote a commit.
   no stamp, no gate waits on it. On a non-trivial feature, run one before
   Verified?. Fix what is real (inline is fine), and re-review only if the fix
   was large.
+- `flow_stage({ op: "reflect", note })` — a fresh **read-only** reviewer of this
+  session's transcripts (driver + every worker), at any stage; its standard
+  moment is finish (see Stage: finish). It returns classified reflection
+  findings with fold/drop recommendations and writes nothing.
 - One worker at a time per session. The worker holds no flow tool, so gates
   and checkpoints stay with you. Its transcript nests under this session in
   pi's picker.
