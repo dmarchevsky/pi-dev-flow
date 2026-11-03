@@ -24,7 +24,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
-import { compact, defineTool, isToolCallEventType, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { compact, createAgentSession, DefaultResourceLoader, defineTool, getAgentDir, isToolCallEventType, SessionManager, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	ALLOW_REWRITE,
@@ -115,6 +115,13 @@ import {
 	versionTagGate,
 	writeGuard,
 	mainCheckoutRoot,
+	buildWorkerBrief,
+	clampBudgetMin,
+	parseWorkerReport,
+	workerOpError,
+	WORKER_NUDGE,
+	WORKER_NUDGES,
+	type WorkerOp,
 	releaseOrderInvocation,
 	branchCreateTarget,
 	type BranchState,
@@ -1938,6 +1945,28 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 }
 
 
+/** Sessions spawned by flow_stage in this process: they get no [dev-flow] driver context injected
+ *  (their brief is their whole context) — the guards still judge them like any session. */
+const workerSessions = new Set<string>();
+
+/** Toolset per worker op: an implementer codes, a reviewer reads and runs commands only. */
+const WORKER_TOOLS: Record<WorkerOp, string[]> = { implement: ["read", "bash", "edit", "write"], review: ["read", "bash"] };
+
+/** Seam that spawns a worker as a real pi session — tests replace `.run`. With the driver's session
+ *  file and directory known, the worker's header links back to the driver (`parentSession`), so pi's
+ *  picker nests it under the driver. */
+export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string; tools: string[]; parent?: string; dir?: string }) => Promise<AgentSession> } = {
+	run: async ({ work, model, name, tools, parent, dir }) => {
+		const loader = new DefaultResourceLoader({ cwd: work, agentDir: getAgentDir() });
+		await loader.reload();
+		const sessionManager = parent && dir ? SessionManager.create(work, dir, { parentSession: parent }) : undefined;
+		const { session } = await createAgentSession({ cwd: work, model: model as never, tools, excludeTools: ["flow", "flow_stage"], resourceLoader: loader, sessionManager });
+		try { workerSessions.add(session.sessionManager.getSessionId()); } catch { /* an id-less session just gets the default context */ }
+		try { session.setSessionName(name); } catch { /* naming is visibility, not function */ }
+		return session;
+	},
+};
+
 async function isLinkedWorktree(root: string): Promise<boolean> {
 	const r = await sh("git rev-parse --path-format=absolute --git-dir --git-common-dir", root);
 	if (!r.ok) return false;
@@ -2133,6 +2162,113 @@ export default function devFlow(pi: ExtensionAPI) {
 		},
 	});
 	pi.registerTool(flowTool);
+
+	/** Driver sessions with a worker running right now — one worker per session at a time. */
+	const runningWorkers = new Set<string>();
+
+	const stageWorkerTool = defineTool({
+		name: "flow_stage",
+		label: "Stage worker",
+		description:
+			'Optional: hand a slice of work to a fresh pi session so this conversation stays lean. op "implement" (stage implement) — the worker edits and commits a slice on the feature branch; op "review" (implement or pre-release) — a fresh read-only reviewer that returns findings and a PASS/FAIL verdict (advisory: no gate depends on it). The plan path, branch, commits so far and the project checks are added to the brief automatically — `note` is just the slice: what to do, operator answers and decisions the worker cannot see. The worker holds no flow tool; gates and checkpoints stay with you. Small work and small fixes are fine to do inline.',
+		promptSnippet: 'flow_stage(op: "implement"|"review", note, label?) — optional fresh-session worker for a big implement slice, or an independent review; gates stay with you',
+		parameters: Type.Object({
+			op: Type.String({ description: '"implement" (a worker edits + commits a slice) or "review" (read-only reviewer, findings + verdict)' }),
+			note: Type.String({ description: "The slice: what to do and anything from this conversation the worker must know (operator answers, decisions). Facts (plan path, commits, checks) are added for you." }),
+			label: Type.Optional(Type.String({ description: "A few words naming this delegation, shown in the worker's session name." })),
+			budgetMin: Type.Optional(Type.Number({ description: "Wall-clock budget in minutes (5-180; default 60 implement, 30 review). Past it the worker is interrupted." })),
+		}),
+		execute: async (_id, params, signal, onUpdate, ctx) => {
+			const err = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
+			const op = String(params.op ?? "").trim().toLowerCase();
+			if (!initiated(ctx.cwd)) return err("dev-flow is not initiated here — run flow init first");
+			const key = sessionKey(ctx);
+			const st = boundFeature(ctx.cwd, key);
+			if (!st) return err("this session is not bound to a feature — flow start <slug> or flow use <slug> first");
+			const why = workerOpError(op, st.stage);
+			if (why) return err(why);
+			const wop = op as WorkerOp;
+			const work = worktreeAbs(ctx.cwd, st);
+			if (!work || !existsSync(work)) return err(`feature ${st.slug} has no worktree on disk — nothing for a worker to work in`);
+			if (runningWorkers.has(key)) return err("a worker is already running for this session — wait for it to return");
+			runningWorkers.add(key);
+			const cfg = loadProject(dfDir(ctx.cwd)).cfg;
+			const budgetMin = clampBudgetMin(params.budgetMin, wop);
+			const label = String(params.label ?? "").replace(/[\r\n]+/g, " ").trim().slice(0, 40);
+			const glyph = wop === "implement" ? "🔨" : "🔍";
+			const name = `${glyph} ${st.slug}${label ? ` · ${label}` : ""}`;
+			const started = Date.now();
+			const git = async (cmd: string) => { const r = await sh(cmd, work); return r.ok ? r.out : ""; };
+			const headBefore = (await git("git rev-parse HEAD")).trim();
+			const brief = buildWorkerBrief({
+				op: wop, slug: st.slug, workDir: work,
+				planFile: path.join(featDir(ctx.cwd, st.slug), "plan", "plan.md"),
+				defaultBranch: cfg.defaultBranch,
+				commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
+				status: await git("git status --short"),
+				checks: cfg.checkList.map((c) => ({ name: c.name, command: c.cmd })),
+				note: String(params.note ?? ""),
+			});
+			let lineage: { file?: string; dir?: string } = {};
+			try { lineage = { file: ctx.sessionManager.getSessionFile() ?? undefined, dir: ctx.sessionManager.getSessionDir() ?? undefined }; } catch { /* unbacked driver: the worker is unlinked */ }
+			let child: AgentSession | undefined;
+			let timedOut = false;
+			let crash: string | null = null;
+			let nudges = 0;
+			let report = parseWorkerReport("");
+			const abortChild = () => void Promise.resolve(child?.abort()).catch(() => {});
+			const timer = setTimeout(() => { timedOut = true; abortChild(); }, budgetMin * 60_000);
+			signal?.addEventListener("abort", abortChild);
+			let unsub: (() => void) | undefined;
+			try {
+				child = await stageWorkerSpawn.run({ work, model: ctx.model, name: `⏳ ${name}`, tools: WORKER_TOOLS[wop], parent: lineage.file, dir: lineage.dir });
+				unsub = child.subscribe((ev: unknown) => {
+					const e = ev as { type?: string; toolName?: string };
+					if (e.type === "tool_execution_start") {
+						const min = Math.floor((Date.now() - started) / 60_000);
+						onUpdate?.({ content: [{ type: "text", text: `⏳ ${name} — ${min}/${budgetMin} min · ${e.toolName ?? "?"}` }], details: { running: true } });
+					}
+				});
+				await child.prompt(brief);
+				report = parseWorkerReport(child.getLastAssistantText() ?? "");
+				// a turn that ends in prose ("now let me write D4…") ends the session: tell it to keep going
+				while (!report.found && !timedOut && !signal?.aborted && nudges < WORKER_NUDGES) {
+					nudges++;
+					await child.prompt(WORKER_NUDGE);
+					report = parseWorkerReport(child.getLastAssistantText() ?? "");
+				}
+			} catch (e) {
+				crash = e instanceof Error ? e.message : String(e);
+			} finally {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", abortChild);
+				unsub?.();
+				runningWorkers.delete(key);
+			}
+			const transcript = (() => { try { return child?.sessionManager.getSessionFile() ?? ""; } catch { return ""; } })();
+			const headAfter = (await git("git rev-parse HEAD")).trim();
+			const newCommits = headBefore && headAfter && headBefore !== headAfter ? await git(`git log --oneline ${sq(headBefore)}..HEAD`) : "";
+			const dirty = (await git("git status --short")).trim();
+			const outcome = crash ? `crashed: ${crash}` : timedOut ? `interrupted at the ${budgetMin}-min budget` : report.found ? "reported" : `ended without REPORT after ${nudges} nudge(s)`;
+			try { child?.setSessionName(`${report.found && !crash && !timedOut ? "✓" : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
+			const parts = [
+				`${glyph} ${wop} worker ${outcome} (${Math.round((Date.now() - started) / 60_000)} min)`,
+				report.found ? `REPORT:\n${report.body.slice(0, 6000)}` : `no REPORT — last words:\n${report.body}`,
+				`new commits:\n${newCommits.trim() || "(none)"}`,
+				`uncommitted: ${dirty ? `\n${dirty}` : "clean"}`,
+			];
+			if (wop === "implement") {
+				const check = await runFlow(["check"], ctx.cwd, uiFrom(ctx), sessFor(ctx));
+				parts.push(`flow check after the worker: ${check.text.replace(/\s+/g, " ").trim().slice(0, 1500)}`);
+			} else if (newCommits.trim() || dirty) {
+				parts.push("note: the reviewer changed the tree — treat its verdict with suspicion and inspect the change");
+			}
+			parts.push(`transcript: ${transcript || "(unknown)"}`);
+			parts.push(wop === "implement" ? "Next: read the report, decide what is left, and drive the gates yourself." : "Advisory review: fix what is real (inline is fine for small things), then carry on — no gate waits on this verdict.");
+			return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: report.verdict, commits: newCommits.trim().split("\n").filter(Boolean).length } };
+		},
+	});
+	pi.registerTool(stageWorkerTool);
 
 	// Agent-run gates refresh at turn_end (tool ctx lacks setStatus; turn_end catches them).
 	pi.on("session_start", async (_event, ctx) => {
@@ -2366,6 +2502,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		// client attaches, and this is the earliest point the client is certainly listening
 		refreshStatus(ctx);
 		if (!initiated(ctx.cwd)) return undefined;
+		try { if (workerSessions.has(ctx.sessionManager.getSessionId())) return undefined; } catch { /* not a worker */ }
 		const key = sessionKey(ctx);
 		// The playbook core rides along on the message this run writes anyway — once per session.
 		const core = corePreamble(key);

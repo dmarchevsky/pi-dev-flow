@@ -1951,3 +1951,94 @@ export function applyAnswer(partial: Record<string, unknown>, key: string, value
 	}
 }
 
+
+// ------------------------------------------------------------- stage worker (flow_stage)
+
+export type WorkerOp = "implement" | "review";
+
+/** Stages where each worker op is legal: implement edits only while the flow is at implement; a review
+ *  (read-only, advisory) is useful before verify and again before release. */
+export const WORKER_OP_STAGES: Record<WorkerOp, Stage[]> = { implement: ["implement"], review: ["implement", "pre-release"] };
+
+/** Default wall-clock budget per op, in minutes. */
+export const WORKER_BUDGET_MIN: Record<WorkerOp, number> = { implement: 60, review: 30 };
+
+/** Times a worker that stopped without its REPORT is told to keep going before the run gives up. */
+export const WORKER_NUDGES = 2;
+
+export const clampBudgetMin = (n: unknown, op: WorkerOp): number => {
+	const v = typeof n === "number" && Number.isFinite(n) ? n : WORKER_BUDGET_MIN[op];
+	return Math.min(180, Math.max(5, Math.round(v)));
+};
+
+/** Why an op is not legal for a feature at this stage, or null. */
+export function workerOpError(op: string, stage: Stage): string | null {
+	if (op !== "implement" && op !== "review") return `unknown op "${op}" — flow_stage ops: implement (a worker edits and commits a slice), review (a fresh read-only reviewer)`;
+	const ok = WORKER_OP_STAGES[op];
+	return ok.includes(stage) ? null : `op "${op}" runs at ${ok.join(" or ")} — the feature is at ${stage}`;
+}
+
+export interface WorkerBriefInput {
+	op: WorkerOp;
+	slug: string;
+	workDir: string;
+	planFile: string;
+	defaultBranch: string;
+	commits: string; // `git log --oneline <base>..HEAD`
+	status: string; // `git status --short`
+	checks: { name: string; command: string }[];
+	note: string;
+}
+
+/** The facts every worker needs, so the driver's note can be just the slice. The plan path is absolute:
+ *  it lives in the MAIN checkout's gitignored .dev-flow/, never inside the worktree. */
+export function buildWorkerBrief(o: WorkerBriefInput): string {
+	const checks = o.checks.length ? o.checks.map((c) => `- ${c.name}: \`${c.command}\``).join("\n") : "- (the playbook defines no tier-1 commands)";
+	const head = [
+		`You are a ${o.op === "implement" ? "stage worker implementing a slice" : "fresh, independent reviewer"} for dev-flow feature \`${o.slug}\`.`,
+		"",
+		"## Facts",
+		`- Worktree (your cwd; work only here): ${o.workDir}`,
+		`- Approved plan (read it first; it is outside the worktree): ${o.planFile}`,
+		`- Branch base: ${o.defaultBranch}`,
+		`- Commits on the branch so far:\n${o.commits.trim() ? o.commits.trim().split("\n").map((l) => `  ${l}`).join("\n") : "  (none)"}`,
+		`- Uncommitted now: ${o.status.trim() ? `\n${o.status.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "clean"}`,
+		`- Project checks (run them before you report):\n${checks}`,
+		"- You hold no flow tool: gates, checkpoints and the operator stay with the driving session.",
+		"",
+		"## Your task",
+		o.note.trim() || "(no note — do what the plan's next unfinished step asks)",
+		"",
+	];
+	const contract =
+		o.op === "implement"
+			? [
+					"## Contract",
+					"- Use the edit/write tools for source changes. Commit as you go on the feature branch (small, meaningful commits).",
+					"- Do not stop to narrate — keep working until the slice is done or you are blocked.",
+					"- Finish with a final message whose last section starts with a line `REPORT` followed by: done, commits, open items, risks.",
+				]
+			: [
+					"## Contract",
+					"- Check, don't fix: read the plan, the diff (`git diff " + o.defaultBranch + "...HEAD`) and the code; run the checks and any probe that proves a claim. Change no files, make no commits.",
+					"- Look for correctness bugs, claims in docs/changelog the code does not back, missing tests for risky paths, and plan items not delivered.",
+					"- Finish with a final message whose last section starts with a line `REPORT` followed by: `verdict: PASS` or `verdict: FAIL`, then findings (most severe first, each with file:line and how you proved it).",
+				];
+	return [...head, ...contract].join("\n");
+}
+
+/** The REPORT section of a worker's final message: everything after the last `REPORT` heading line. */
+export function parseWorkerReport(text: string): { found: boolean; body: string; verdict: "PASS" | "FAIL" | null } {
+	const lines = (text ?? "").split("\n");
+	let at = -1;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (/^\s*[#*_>\s]*REPORT[*_:\s]*$/i.test(lines[i])) { at = i; break; }
+	}
+	if (at < 0) return { found: false, body: lines.slice(-12).join("\n").slice(-800), verdict: null };
+	const body = lines.slice(at + 1).join("\n").trim();
+	const v = /verdict\s*[:=]\s*\**\s*(PASS|FAIL)/i.exec(body);
+	return { found: true, body, verdict: v ? (v[1].toUpperCase() as "PASS" | "FAIL") : null };
+}
+
+/** The nudge a worker gets when its turn ended without the REPORT block. */
+export const WORKER_NUDGE = "You stopped before finishing and without the REPORT section. Continue the task now (keep using tools; commit as you go). When it is done — or you are truly blocked — end with the `REPORT` section the contract asks for.";

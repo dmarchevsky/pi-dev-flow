@@ -182,7 +182,10 @@ expects, at most 20 ranked findings, changes nothing. The operative sibling **`/
 makes the cuts audit and review only name: dead code, no-op subsystems, duplication,
 speculative layers — removed in a risk-ascending order, one verified commit per cut, green
 tests as contract, and a structural-vs-cheap self-audit so the diff shrank because the system
-got smaller, not because comments got deleted. And while a flow writes code, the
+got smaller, not because comments got deleted. For a big implement slice the session can hand
+the work to **`flow_stage`**: a fresh pi session in the worktree that edits, commits and reports,
+or a fresh read-only reviewer (`op: "review"`) whose PASS/FAIL is advice, not a gate. Both are
+optional, and the plan path, commits and checks are briefed automatically. And while a flow writes code, the
 implement stage injects a compact senior-discipline guidance — smallest complete change, no
 speculative abstraction, finish what your change breaks, a failing-first test for risky logic —
 your playbook's `prose.implement` replaces it wholesale whenever you write your own. (The review

@@ -61,6 +61,9 @@ import {
 	changelogVersionsBetween,
 	inScratchDir,
 	mainCheckoutRoot,
+	parseWorkerReport,
+	workerOpError,
+	clampBudgetMin,
 	tagCreates,
 	releaseOrderInvocation,
 	branchCreateTarget,
@@ -1357,4 +1360,23 @@ test("branchCreateTarget: the branch a checkout/switch creates, through leading 
 	assert.equal(branchCreateTarget("git checkout -q -B fix/y origin/main"), "fix/y");
 	assert.equal(branchCreateTarget("git checkout feat/x"), null, "switching to an existing branch creates nothing");
 	assert.equal(branchCreateTarget("git checkout -- src/a.ts"), null);
+});
+
+test("worker helpers: op legality, budget clamp, REPORT parsing", () => {
+	assert.equal(workerOpError("implement", "implement"), null);
+	assert.match(workerOpError("implement", "pre-release") ?? "", /runs at implement/);
+	assert.equal(workerOpError("review", "pre-release"), null);
+	assert.match(workerOpError("review", "plan") ?? "", /runs at implement or pre-release/);
+	assert.match(workerOpError("verify", "implement") ?? "", /unknown op/);
+	assert.equal(clampBudgetMin(undefined, "implement"), 60);
+	assert.equal(clampBudgetMin(1000, "review"), 180);
+	assert.equal(clampBudgetMin(1, "review"), 5);
+	const r = parseWorkerReport("work...\n\n## REPORT\nverdict: **PASS**\n- fine");
+	assert.equal(r.found, true);
+	assert.equal(r.verdict, "PASS");
+	assert.match(r.body, /fine/);
+	const none = parseWorkerReport("Now let me write D4.");
+	assert.equal(none.found, false);
+	assert.match(none.body, /write D4/, "the tail is kept for the driver");
+	assert.equal(parseWorkerReport("REPORT mentioned inline is not a heading").found, false);
 });

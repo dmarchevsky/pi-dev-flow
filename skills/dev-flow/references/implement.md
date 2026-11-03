@@ -44,6 +44,28 @@ feature).
    health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = iterate and re-verify; that loop is
    free.
 
+### Optional: a fresh-session worker (`flow_stage`)
+
+Big slices can go to a worker so this conversation stays lean; small work and
+small fixes are fine inline. **Delegation is a tool, not a rule** — no gate
+asks who wrote a commit.
+
+- `flow_stage({ op: "implement", note, label })` — a fresh pi session in the
+  worktree, with read/bash/edit/write, edits and commits one slice. The tool
+  adds the facts itself: the absolute plan path, the branch's commits, the
+  uncommitted paths and the project checks. Your `note` is just the slice, plus
+  any operator answers the worker cannot see. A worker whose turn ends in prose
+  is nudged to continue, up to twice. On return the tool reruns `flow check` and
+  lists the new commits and anything uncommitted.
+- `flow_stage({ op: "review", note })` — a fresh **read-only** reviewer (at
+  implement or pre-release): findings plus `verdict: PASS|FAIL`. It is advisory:
+  no stamp, no gate waits on it. On a non-trivial feature, run one before
+  Verified?. Fix what is real (inline is fine), and re-review only if the fix
+  was large.
+- One worker at a time per session. The worker holds no flow tool, so gates
+  and checkpoints stay with you. Its transcript nests under this session in
+  pi's picker.
+
 `flow verify` re-runs build, runs the `dev` deploy when configured (the
 operator reviews the running app; the gate **prints what it ran** —
 `build ran (…)` / `dev ran (…)` / `dev: none configured`; the command must

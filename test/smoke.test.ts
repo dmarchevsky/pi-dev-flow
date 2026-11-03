@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import devFlow, { compactionTakeover, testSeams } from "../extensions/dev-flow.ts";
+import devFlow, { compactionTakeover, stageWorkerSpawn, testSeams } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -2358,4 +2358,97 @@ test("--ui is operator-granted: start refuses it without --confirmed", async () 
 	const granted = await flow(["start", "uifeat", "--ui", "--confirmed"]);
 	assert.ok(!granted.isError, granted.content[0].text);
 	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "uifeat", "state.json"), "utf8")).ui, true);
+});
+
+/** A scripted stand-in for the worker's pi session: each prompt runs the next scripted turn. */
+function fakeWorker(turns: ((prompt: string) => string)[]) {
+	const prompts: string[] = [];
+	let last = "";
+	const session = {
+		prompts,
+		names: [] as string[],
+		prompt: async (text: string) => { prompts.push(text); const t = turns.shift(); last = t ? t(text) : "(idle)"; },
+		getLastAssistantText: () => last,
+		subscribe: () => () => {},
+		abort: async () => {},
+		setSessionName(n: string) { this.names.push(n); },
+		sessionManager: { getSessionFile: () => "/tmp/worker.jsonl", getSessionId: () => "fake-worker" },
+	};
+	return session;
+}
+
+test("flow_stage implement: the brief carries the facts, a prose-ending worker is nudged, the result reruns check", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "wrk"]);
+	const stage = (params: Record<string, unknown>) => pi.tools.flow_stage.execute("id", params, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean; details?: { verdict?: string | null; commits?: number } }>;
+	assert.match((await stage({ op: "implement", note: "x" })).content[0].text, /runs at implement — the feature is at plan/, "no worker while the plan is open");
+	mkdirSync(path.join(repo, ".dev-flow", "wrk", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "wrk", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "wrk", "worktree");
+	const worker = fakeWorker([
+		() => "Now let me write the module.", // the audit-hardening failure: a turn that ends in prose
+		() => {
+			writeFileSync(path.join(wt, "mod.txt"), "x\n");
+			execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "add", "mod.txt"]);
+			execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "add the module"]);
+			return "All done.\n\nREPORT\n- done: module\n- risks: none";
+		},
+	]);
+	const orig = stageWorkerSpawn.run;
+	let spawned: { work: string; tools: string[] } | undefined;
+	stageWorkerSpawn.run = async (o) => { spawned = o; return worker as never; };
+	try {
+		const r = await stage({ op: "implement", note: "build the module", label: "module" });
+		assert.ok(!r.isError, r.content[0].text);
+		assert.equal(spawned?.work, wt, "the worker runs in the feature worktree");
+		assert.deepEqual(spawned?.tools, ["read", "bash", "edit", "write"]);
+		const brief = worker.prompts[0];
+		assert.ok(brief.includes(path.join(repo, ".dev-flow", "wrk", "plan", "plan.md")), "the absolute plan path in the main checkout is in the brief");
+		assert.match(brief, /build the module/, "the note is the task");
+		assert.match(brief, /node --version/, "the project checks are in the brief");
+		assert.equal(worker.prompts.length, 2, "one nudge after the prose-ending turn");
+		const text = r.content[0].text;
+		assert.match(text, /worker reported/);
+		assert.match(text, /add the module/, "the new commits are listed");
+		assert.match(text, /flow check after the worker: .*PASS/, "check reran");
+		assert.match(worker.names.at(-1) ?? "", /^✓ 🔨 wrk · module/);
+	} finally {
+		stageWorkerSpawn.run = orig;
+	}
+});
+
+test("flow_stage review: advisory verdict, read-only toolset, no gate state touched", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "rev"]);
+	mkdirSync(path.join(repo, ".dev-flow", "rev", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "rev", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const stateFile = path.join(repo, ".dev-flow", "rev", "state.json");
+	const before = readFileSync(stateFile, "utf8");
+	const worker = fakeWorker([() => "Checked.\n\n**REPORT**\nverdict: FAIL\n- src/a.ts:3 off by one (proved with a probe)"]);
+	const orig = stageWorkerSpawn.run;
+	let tools: string[] = [];
+	stageWorkerSpawn.run = async (o) => { tools = o.tools; return worker as never; };
+	try {
+		const r = await pi.tools.flow_stage.execute("id", { op: "review", note: "check it" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: { verdict?: string } };
+		assert.equal(r.details?.verdict, "FAIL");
+		assert.match(r.content[0].text, /off by one/);
+		assert.match(r.content[0].text, /no gate waits on this verdict/);
+		assert.deepEqual(tools, ["read", "bash"], "a reviewer gets no edit tools");
+		assert.match(worker.prompts[0], /Check, don't fix/);
+		assert.equal(readFileSync(stateFile, "utf8"), before, "a review changes no flow state");
+	} finally {
+		stageWorkerSpawn.run = orig;
+	}
 });
