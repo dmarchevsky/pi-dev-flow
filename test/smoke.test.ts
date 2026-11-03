@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import devFlow, { compactionTakeover, scanFamilyRows, sessionRowsScan, stageTimingOverride, stageWorkerSpawn, testSeams, workerSessionManager } from "../extensions/dev-flow.ts";
-import { delegationLine, DELEGATIONS_FILE, isWorkerSession, markWorkerSession, sessionBucketName, tagNotesCommand, workerFamily } from "../src/core.ts";
+import { delegationLine, DELEGATIONS_FILE, parseDelegationLedger, isWorkerSession, markWorkerSession, sessionBucketName, tagNotesCommand, workerFamily } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
@@ -212,6 +212,13 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	assert.ok(bash?.block, "commit on main must be blocked");
 	const stateTamperBlock = await guard({ toolName: "bash", input: { command: "echo x > .dev-flow/demo-feature/state.json", timeout: 60 } }, ctx);
 	assert.ok(stateTamperBlock?.block, "state tampering must be blocked");
+	// same ownership one file over: the delegation ledger is the proof of WHO worked the stage, and the
+	// session the gate judges is the one holding the pen — so it is not an edit target either.
+	const ledgerForge = await guard({ toolName: "write", input: { path: path.join(repo, ".dev-flow", "demo-feature", "stage-sessions", "delegations.log") } }, ctx);
+	assert.ok(ledgerForge?.block, "a hand-written delegations.log is a forged proof");
+	assert.match(ledgerForge?.reason ?? "", /dev-flow-owned/);
+	const ledgerSibling = await guard({ toolName: "write", input: { path: path.join(repo, ".dev-flow", "demo-feature", "stage-sessions", "transcripts.log") } }, ctx);
+	assert.equal(ledgerSibling, undefined, "the sibling worker index is advisory and stays writable");
 
 	// approve gate: missing plan file fails before the UI ask (no UI in this test)
 	const before = await guard({ toolName: "read", input: {} }, ctx);
@@ -709,6 +716,13 @@ test("worker session names announce role, purpose and outcome end to end", async
 		await stage({ op: "run", stage: "implement", label: "empty commit" });
 		assert.equal(spawnNames[1], "⏳ 🔨 #1 · empty commit", "run workers carry an ordinal (first of their kind here)");
 		assert.equal(renames[1], "✓ 🔨 #1 · 1 commit · empty commit", "a run names its commit count");
+		// The ledger's only writer is this completion code, and the writeGuard now refuses the file to
+		// every session — so prove the sanctioned append still lands, or the gate would starve on a
+		// green flow that delegated faithfully.
+		const ledgerText = readFileSync(path.join(repo, ".dev-flow", "naming", "stage-sessions", DELEGATIONS_FILE), "utf8");
+		const ledger = parseDelegationLedger(ledgerText);
+		assert.equal(ledger.length, 2, "the fixture window plus the one flow_stage appended for this run");
+		assert.match(ledgerText.trimEnd().split("\n").at(-1) ?? "", /run \(implement\): [0-9a-f]+\.\.[0-9a-f]+ 1 commit\(s\)/, "the run's own window — stage, range and count — lands as the last line");
 	} finally {
 		stageWorkerSpawn.run = real;
 	}
