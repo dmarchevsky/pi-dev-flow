@@ -50,6 +50,45 @@ Big slices can go to a worker so this conversation stays lean; small work and
 small fixes are fine inline. **Delegation is a tool, not a rule** — no gate
 asks who wrote a commit.
 
+**The rule of thumb:** delegate a slice when it is in the plan, provable by
+`flow check`, needs no operator input, and is large enough (≈4+ files or heavy
+reading) that doing it here would crowd out the context you need for verify;
+otherwise do it inline. The worker starts fresh and is briefed with the plan,
+commits and checks, but it cannot see this chat, cannot ask the operator and
+holds no gate.
+
+Delegate when most of these hold:
+- **Specifiable** — the slice fits a short `note`; its decisions are in
+  `plan.md`, not only in chat (write them there first if they are not).
+- **Mechanically done** — `flow check` green plus an acceptance criterion you
+  can state proves it.
+- **Broad** — ≈4+ files, a few hundred lines, or a lot of reading this session
+  will not need again (a mechanical sweep, a new module with its tests, a
+  migration).
+- **Clean boundary** — it does not overlap uncommitted work in progress.
+- **Context pressure** — this conversation is past ~40–50% of its window;
+  delegating beats compacting away detail.
+- **Hands-off** — nothing mid-slice needs the operator.
+
+Stay inline when any of these hold:
+- **Small** — one or two files, a review finding, a verify follow-up, an
+  operator tweak: the note would cost more than the change.
+- **Context already loaded** — mid-debug, you hold the failure; a handoff
+  throws that away.
+- **Still being decided** — the approach is still moving in chat.
+- **Operator-judged** — a UI pass, tier-2 items, anything that ends in a
+  question to the operator.
+- **Integration** — the final wiring and polish before Verified? is yours: you
+  own verify.
+- **Exploratory** — "find out why X": what you learn shapes the next step, and
+  a worker's summary is lossy.
+
+Running it: one slice per worker, in sequence — read each returned diff before
+briefing the next. Slice along the plan's steps, never into half-working
+commits. When workers wrote most of the code, run a `review` before Verified?.
+A worker that fails or stalls → take the slice over inline rather than
+resending the same note.
+
 - `flow_stage({ op: "implement", note, label })` — a fresh pi session in the
   worktree, with read/bash/edit/write, edits and commits one slice. The tool
   adds the facts itself: the absolute plan path, the branch's commits, the
