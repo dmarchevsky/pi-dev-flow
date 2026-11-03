@@ -206,7 +206,7 @@ function copyWarning(): string | null {
 }
 /** Test seam: the smoke suite cannot load a second copy of this module, so it plants registry
  * entries and asserts the warnings the real duplicate would print. */
-export const testSeams = { copies: COPIES, skillCore: { value: undefined as string | null | undefined } };
+export const testSeams = { copies: COPIES, skillCore: { value: undefined as string | null | undefined }, piweb: { meta: piwebWorkerMeta, stamp: piwebStamp } };
 
 interface Ui {
 	hasUI: boolean;
@@ -1914,14 +1914,58 @@ const workerSessions = new Set<string>();
 /** Toolset per worker op: an implementer codes, a reviewer reads and runs commands only. */
 const WORKER_TOOLS: Record<WorkerOp, string[]> = { implement: ["read", "bash", "edit", "write"], review: ["read", "bash"] };
 
+/** What makes a worker show up in pi-web's Agents menu: pi-web classifies a subagent from the
+ *  custom entries its own runtime writes into the child's session file (pi-web lib/subagents.ts
+ *  readSubagentRun, fed by lib/session-reader.ts). Two placement rules the reader enforces:
+ *  the meta entry must be the file's FIRST data entry (the scanner reads header + one line and
+ *  calls anything else a fork), and a persisted `running` the host cannot prove live displays as
+ *  `interrupted` — so the final result entry is what the menu really rests on.
+ *  Unknown entry types are inert in plain pi, so stamping is unconditional. */
+const PIWEB_SUBAGENT = { meta: "pi-web:subagent", status: "pi-web:subagent-status", result: "pi-web:subagent-result" } as const;
+
+interface WorkerSubagentMeta {
+	parentId: string;
+	parentFile: string;
+	toolCallId: string;
+	profile: string;
+	description: string;
+	task: string;
+}
+
+/** Only version 1 + the two lineage strings are hard-validated by pi-web's reader; the rest is
+ *  display. resourceSnapshot is deliberately absent: its presence pins the tool set strictly when
+ *  pi-web reopens the child, and these workers are never resumed by pi-web. */
+function piwebWorkerMeta(m: WorkerSubagentMeta): Record<string, unknown> {
+	return {
+		version: 1,
+		parentSessionId: m.parentId,
+		parentSessionPath: m.parentFile,
+		parentToolCallId: m.toolCallId,
+		profile: m.profile,
+		description: m.description,
+		task: m.task,
+		runInBackground: false,
+		createdAt: now(),
+	};
+}
+
+/** Best-effort by contract: a stamp that will not write must never break the worker run —
+ *  visibility, not function (same rule as the worker's setSessionName renames). */
+function piwebStamp(target: { appendCustomEntry?(customType: string, data?: unknown): unknown } | undefined, customType: string, data: unknown): void {
+	try { target?.appendCustomEntry?.(customType, data); } catch { /* visibility only */ }
+}
+
 /** Seam that spawns a worker as a real pi session — tests replace `.run`. With the driver's session
  *  file and directory known, the worker's header links back to the driver (`parentSession`), so pi's
- *  picker nests it under the driver. */
-export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string; tools: string[]; parent?: string; dir?: string }) => Promise<AgentSession> } = {
-	run: async ({ work, model, name, tools, parent, dir }) => {
+ *  picker nests it under the driver, and the pi-web meta lands as the file's first data entry. */
+export const stageWorkerSpawn: { run: (o: { work: string; model: unknown; name: string; tools: string[]; parent?: string; dir?: string; subagent?: WorkerSubagentMeta }) => Promise<AgentSession> } = {
+	run: async ({ work, model, name, tools, parent, dir, subagent }) => {
 		const loader = new DefaultResourceLoader({ cwd: work, agentDir: getAgentDir() });
 		await loader.reload();
 		const sessionManager = parent && dir ? SessionManager.create(work, dir, { parentSession: parent }) : undefined;
+		// The meta must be stamped here — before createAgentSession appends model_change/session_info,
+		// because pi-web's scanner classifies the child only from the first data entry after the header.
+		if (sessionManager && subagent) piwebStamp(sessionManager, PIWEB_SUBAGENT.meta, piwebWorkerMeta(subagent));
 		const { session } = await createAgentSession({ cwd: work, model: model as never, tools, excludeTools: ["flow", "flow_stage"], resourceLoader: loader, sessionManager });
 		try { workerSessions.add(session.sessionManager.getSessionId()); } catch { /* an id-less session just gets the default context */ }
 		try { session.setSessionName(name); } catch { /* naming is visibility, not function */ }
@@ -2120,15 +2164,15 @@ export default function devFlow(pi: ExtensionAPI) {
 		name: "flow_stage",
 		label: "Stage worker",
 		description:
-			'Optional: hand a slice of work to a fresh pi session so this conversation stays lean. op "implement" (stage implement) — the worker edits and commits a slice on the feature branch; op "review" (implement or pre-release) — a fresh read-only reviewer that returns findings and a PASS/FAIL verdict (advisory: no gate depends on it). The plan path, branch, commits so far and the project checks are added to the brief automatically — `note` is just the slice: what to do, operator answers and decisions the worker cannot see. The worker holds no flow tool; gates and checkpoints stay with you. Small work and small fixes are fine to do inline.',
-		promptSnippet: 'flow_stage(op: "implement"|"review", note, label?) — optional fresh-session worker for a big implement slice, or an independent review; gates stay with you',
+			'Optional: hand a slice of work to a fresh pi session so this conversation stays lean. op "implement" (stage implement) — the worker edits and commits a slice on the feature branch; op "review" (implement or pre-release) — a fresh read-only reviewer that returns findings and a PASS/FAIL verdict (advisory: no gate depends on it). The plan path, branch, commits so far and the project checks are added to the brief automatically — `note` is just the slice: what to do, operator answers and decisions the worker cannot see. The worker holds no flow tool; gates and checkpoints stay with you. Small work and small fixes are fine to do inline. In pi-web the worker appears in the session\'s Agents menu as a subagent; the row carries its final status, the opened transcript its report.',
+		promptSnippet: 'flow_stage(op: "implement"|"review", note, label?) — optional fresh-session worker for a big implement slice, or an independent review; gates stay with you; in pi-web workers show up as subagents in the Agents menu',
 		parameters: Type.Object({
 			op: Type.String({ description: '"implement" (a worker edits + commits a slice) or "review" (read-only reviewer, findings + verdict)' }),
 			note: Type.String({ description: "The slice: what to do and anything from this conversation the worker must know (operator answers, decisions). Facts (plan path, commits, checks) are added for you." }),
 			label: Type.Optional(Type.String({ description: "A few words naming this delegation, shown in the worker's session name." })),
 			budgetMin: Type.Optional(Type.Number({ description: "Wall-clock budget in minutes (5-180; default 60 implement, 30 review). Past it the worker is interrupted." })),
 		}),
-		execute: async (_id, params, signal, onUpdate, ctx) => {
+		execute: async (id, params, signal, onUpdate, ctx) => {
 			const err = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
 			const op = String(params.op ?? "").trim().toLowerCase();
 			const root = await flowRoot(ctx.cwd);
@@ -2160,8 +2204,11 @@ export default function devFlow(pi: ExtensionAPI) {
 				checks: cfg.checkList.map((c) => ({ name: c.name, command: c.cmd })),
 				note: String(params.note ?? ""),
 			});
-			let lineage: { file?: string; dir?: string } = {};
-			try { lineage = { file: ctx.sessionManager.getSessionFile() ?? undefined, dir: ctx.sessionManager.getSessionDir() ?? undefined }; } catch { /* unbacked driver: the worker is unlinked */ }
+			let lineage: { id?: string; file?: string; dir?: string } = {};
+			try { lineage = { id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? undefined, dir: ctx.sessionManager.getSessionDir() ?? undefined }; } catch { /* unbacked driver: the worker is unlinked */ }
+			// pi-web visibility needs both halves of the lineage: the id the Agents menu links the child
+			// to, the file the parentSession header points at — without either the worker stays unlinked.
+			const subagent = !lineage.id || !lineage.file ? undefined : { parentId: lineage.id, parentFile: lineage.file, toolCallId: id, profile: `flow-${wop}`, description: name, task: brief };
 			let child: AgentSession | undefined;
 			let timedOut = false;
 			let crash: string | null = null;
@@ -2172,7 +2219,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			signal?.addEventListener("abort", abortChild);
 			let unsub: (() => void) | undefined;
 			try {
-				child = await stageWorkerSpawn.run({ work, model: ctx.model, name: `⏳ ${name}`, tools: WORKER_TOOLS[wop], parent: lineage.file, dir: lineage.dir });
+				child = await stageWorkerSpawn.run({ work, model: ctx.model, name: `⏳ ${name}`, tools: WORKER_TOOLS[wop], parent: lineage.file, dir: lineage.dir, subagent });
+				if (subagent) piwebStamp(child.sessionManager, PIWEB_SUBAGENT.status, { version: 1, status: "running" });
 				unsub = child.subscribe((ev: unknown) => {
 					const e = ev as { type?: string; toolName?: string };
 					if (e.type === "tool_execution_start") {
@@ -2201,8 +2249,20 @@ export default function devFlow(pi: ExtensionAPI) {
 			const newCommits = headBefore && headAfter && headBefore !== headAfter ? await git(`git log --oneline ${sq(headBefore)}..HEAD`) : "";
 			const dirty = (await git("git status --short")).trim();
 			const outcome = crash ? `crashed: ${crash}` : timedOut ? `interrupted at the ${budgetMin}-min budget` : report.found ? "reported" : `ended without REPORT after ${nudges} nudge(s)`;
+			// the terminal entry is what settles the Agents menu row (a persisted `running` the host
+			// cannot prove live displays as `interrupted`); a no-REPORT run is a failure, not a ✓.
+			if (subagent) {
+				const doneAt = now();
+				piwebStamp(child?.sessionManager, PIWEB_SUBAGENT.result, crash
+					? { version: 1, status: "failed", completedAt: doneAt, error: crash }
+					: timedOut || signal?.aborted
+						? { version: 1, status: "aborted", completedAt: doneAt }
+						: report.found
+							? { version: 1, status: "completed", completedAt: doneAt, result: report.body }
+							: { version: 1, status: "failed", completedAt: doneAt, error: `ended without REPORT after ${nudges} nudge(s)`, result: report.body });
+			}
 			try { if (child) workerSessions.delete(child.sessionManager.getSessionId()); } catch { /* id-less session: nothing was registered */ }
-			try { child?.setSessionName(`${report.found && !crash && !timedOut ? "✓" : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
+			try { child?.setSessionName(`${report.found && !crash && !timedOut && !signal?.aborted ? "✓" : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
 			const parts = [
 				`${glyph} ${wop} worker ${outcome} (${Math.round((Date.now() - started) / 60_000)} min)`,
 				report.found ? `REPORT:\n${report.body.slice(0, 6000)}` : `no REPORT — last words:\n${report.body}`,

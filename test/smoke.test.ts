@@ -8,6 +8,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import devFlow, { compactionTakeover, stageWorkerSpawn, testSeams } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
 
@@ -2361,12 +2362,18 @@ function fakeWorker(turns: ((prompt: string) => string)[]) {
 	const session = {
 		prompts,
 		names: [] as string[],
+		// what the pi-web stamping writes (pi-web:subagent / -status / -result) — see the Agents-menu test
+		entries: [] as { type: string; data: Record<string, unknown> }[],
 		prompt: async (text: string) => { prompts.push(text); const t = turns.shift(); last = t ? t(text) : "(idle)"; },
 		getLastAssistantText: () => last,
 		subscribe: () => () => {},
 		abort: async () => {},
 		setSessionName(n: string) { this.names.push(n); },
-		sessionManager: { getSessionFile: () => "/tmp/worker.jsonl", getSessionId: () => "fake-worker" },
+		sessionManager: {
+			getSessionFile: () => "/tmp/worker.jsonl",
+			getSessionId: () => "fake-worker",
+			appendCustomEntry(type: string, data: unknown) { session.entries.push({ type, data: data as Record<string, unknown> }); return "entry"; },
+		},
 	};
 	return session;
 }
@@ -2444,6 +2451,103 @@ test("flow_stage review: advisory verdict, read-only toolset, no gate state touc
 		assert.equal(readFileSync(stateFile, "utf8"), before, "a review changes no flow state");
 	} finally {
 		stageWorkerSpawn.run = orig;
+	}
+});
+
+test("flow_stage workers stamp pi-web subagent entries — visible in the Agents menu", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { ...makeCtx(repo), sessionManager: { getSessionId: () => "driver-sid", getSessionFile: () => "/tmp/driver.jsonl", getSessionDir: () => repo } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "ags"]);
+	mkdirSync(path.join(repo, ".dev-flow", "ags", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "ags", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const stage = (params: Record<string, unknown>, signal?: AbortSignal) => pi.tools.flow_stage.execute("id", params, signal, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const orig = stageWorkerSpawn.run;
+	try {
+		// completed: the meta rides to the seam (it must land as the file's first data entry),
+		// the run stamps running before the prompt and the result entry after the REPORT
+		const impl = fakeWorker([() => "All done.\n\nREPORT\n- done: menu\n- risks: none"]);
+		let sub: Record<string, unknown> | undefined;
+		stageWorkerSpawn.run = async (o) => { sub = o.subagent as unknown as Record<string, unknown>; return impl as never; };
+		assert.ok(!(await stage({ op: "implement", note: "stamp me", label: "menu" })).isError);
+		assert.equal(sub?.parentId, "driver-sid", "the Agents menu links the worker to the driver session");
+		assert.equal(sub?.parentFile, "/tmp/driver.jsonl");
+		assert.equal(sub?.toolCallId, "id");
+		assert.equal(sub?.profile, "flow-implement");
+		assert.match(String(sub?.description), /^🔨 ags · menu$/);
+		assert.match(String(sub?.task), /stamp me/, "the brief is the task the menu row carries");
+		assert.deepEqual(impl.entries.map((e) => e.type), ["pi-web:subagent-status", "pi-web:subagent-result"]);
+		assert.equal(impl.entries[0].data.status, "running");
+		const done = impl.entries[1].data;
+		assert.equal(done.status, "completed");
+		assert.match(String(done.result), /done: menu/);
+		assert.equal(typeof done.completedAt, "string");
+		// failed: a crash stamps failed with the error, under the review profile — and a worker
+		// whose session cannot take custom entries must still finish cleanly (guard, not crash)
+		const bad = fakeWorker([() => { throw new Error("worker exploded"); }]);
+		(bad.sessionManager as Record<string, unknown>).appendCustomEntry = undefined;
+		stageWorkerSpawn.run = async () => bad as never;
+		assert.ok(!(await stage({ op: "review", note: "break" })).isError, "a crashed worker is a result, not a tool crash");
+		assert.equal(bad.entries.length, 0, "a stamp target without appendCustomEntry is skipped, not thrown through");
+		const crash = fakeWorker([() => { throw new Error("worker exploded"); }]);
+		stageWorkerSpawn.run = async (o) => { sub = o.subagent as unknown as Record<string, unknown>; return crash as never; };
+		await stage({ op: "review", note: "break" });
+		assert.equal(sub?.profile, "flow-review");
+		assert.deepEqual(crash.entries.map((e) => e.type), ["pi-web:subagent-status", "pi-web:subagent-result"]);
+		assert.equal(crash.entries.at(-1)?.data.status, "failed");
+		assert.equal(crash.entries.at(-1)?.data.error, "worker exploded");
+		// a run that never delivers a REPORT is a failure too — the menu row must not read ✓
+		const prose = fakeWorker([() => "Now let me write the module.", () => "Still writing."]);
+		stageWorkerSpawn.run = async () => prose as never;
+		await stage({ op: "review", note: "prose only" });
+		assert.equal(prose.entries.at(-1)?.data.status, "failed");
+		assert.match(String(prose.entries.at(-1)?.data.error), /without REPORT/);
+		// aborted: the operator stopping the tool call ends the run aborted, not completed
+		const ac = new AbortController();
+		const stop = fakeWorker([(p) => { ac.abort(); return "Stopped.\n\nREPORT\n- done: half"; }]);
+		stageWorkerSpawn.run = async () => stop as never;
+		await stage({ op: "review", note: "stop me" }, ac.signal);
+		assert.equal(stop.entries.at(-1)?.data.status, "aborted");
+		// an unbacked driver (ctx without a sessionManager) stamps nothing and still runs — the
+		// other flow_stage tests walk exactly that ctx and only now notice the recorder stays empty
+		const plain = fakeWorker([() => "Done.\n\nREPORT\n- done: plain"]);
+		stageWorkerSpawn.run = async () => plain as never;
+		const plainCtx = { ...makeCtx(repo), sessionManager: { getSessionId: () => "driver-sid", getSessionFile: () => { throw new Error("unbacked"); }, getSessionDir: () => { throw new Error("unbacked"); } } };
+		const pr = await pi.tools.flow_stage.execute("id", { op: "review", note: "no lineage" }, undefined, undefined, plainCtx) as { isError?: boolean };
+		assert.ok(!pr.isError);
+		assert.equal(plain.entries.length, 0, "without driver lineage nothing is stamped");
+	} finally {
+		stageWorkerSpawn.run = orig;
+	}
+});
+
+test("the pi-web meta is the session file's first data entry — placement is the classification contract", () => {
+	// pi-web's scanner (lib/session-reader.ts) reads header + ONE line looking for pi-web:subagent;
+	// anything else in slot one and it classifies the child as a fork. The real spawn stamps the meta
+	// between SessionManager.create and createAgentSession; this reproduces that append order against
+	// the real file — the deferred first flush must not reorder anything.
+	const dir = mkdtempSync(path.join(tmpdir(), "piweb-stamp-"));
+	try {
+		const sm = SessionManager.create(dir, dir);
+		testSeams.piweb.stamp(sm, "pi-web:subagent", testSeams.piweb.meta({ parentId: "p", parentFile: "/tmp/p.jsonl", toolCallId: "tc", profile: "flow-implement", description: "🔨 x", task: "t" }));
+		// everything a real spawn appends after the stamp — model_change, naming, the first prompt
+		sm.appendModelChange("test", "test-model");
+		sm.appendSessionInfo("🔨 x");
+		sm.appendMessage({ role: "user", content: [{ type: "text", text: "go" }], timestamp: Date.now() } as never);
+		const lines = readFileSync(sm.getSessionFile()!, "utf8").trimEnd().split("\n");
+		const first = JSON.parse(lines[1]!) as { type?: string; customType?: string; data?: Record<string, unknown> };
+		assert.equal(first?.type, "custom");
+		assert.equal(first?.customType, "pi-web:subagent", "slot one of the FILE — the scanner never reads past it for classification");
+		assert.equal(first?.data?.version, 1);
+		assert.equal(first?.data?.parentSessionId, "p", "hard-validated by pi-web's reader: a string id");
+		assert.equal(first?.data?.parentSessionPath, "/tmp/p.jsonl", "hard-validated by pi-web's reader: a string path");
+		assert.ok(!("resourceSnapshot" in (first?.data ?? {})), "no resourceSnapshot: it pins the tool set on reopen, which flow never asks for");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 

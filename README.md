@@ -185,7 +185,9 @@ tests as contract, and a structural-vs-cheap self-audit so the diff shrank becau
 got smaller, not because comments got deleted. For a big implement slice the session can hand
 the work to **`flow_stage`**: a fresh pi session in the worktree that edits, commits and reports,
 or a fresh read-only reviewer (`op: "review"`) whose PASS/FAIL is advice, not a gate. Both are
-optional, and the plan path, commits and checks are briefed automatically. And while a flow writes code, the
+optional, and the plan path, commits and checks are briefed automatically. In pi-web a worker also
+shows up in the session's Agents menu as a subagent, its final status on the row and its report in
+the opened transcript. And while a flow writes code, the
 implement stage injects a compact senior-discipline guidance — smallest complete change, no
 speculative abstraction, finish what your change breaks, a failing-first test for risky logic —
 your playbook's `prose.implement` replaces it wholesale whenever you write your own. (The review
