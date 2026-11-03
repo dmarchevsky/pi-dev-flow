@@ -1441,15 +1441,18 @@ export function statusFor(bound: FlowState | null, openCount: number): { text: s
 	return { text: `💬 ${openCount} flow${openCount === 1 ? "" : "s"} open` };
 }
 
-/** The pi-web widget panel's lines: one lean line per unfinished flow — `→` marks this session's bound
- *  flow, glyph + markers ride on statusCompact so the panel and the footer never drift in vocabulary —
- *  plus the spelled-out stage word and the `⚠️` on failing checks the compact footer cannot show. The
- *  panel is the glance surface; `flow status` stays the detailed one. Empty in, empty out (the caller
- *  clears the widget — no chip with nothing to expand). */
+/** The pi-web footer chip's panel lines: the chip's label already is this session's footer (the bound
+ *  flow, or the open count), so the panel lists only the OTHER unfinished flows, one lean line each —
+ *  glyph + markers ride on statusCompact so panel and footer never drift in vocabulary — plus the
+ *  spelled-out stage word and the `⚠️` on failing checks. A bound session alone in the repo gets one
+ *  "no other flows open" line (the chip still expands, never looks dead); unbound with nothing open
+ *  gets no lines (a plain `💬 no flows` chip). `flow status` stays the detailed surface. */
 export function widgetLines(bound: FlowState | null, states: FlowState[]): string[] {
-	return states.map((st) => {
+	const others = states.filter((st) => st.slug !== bound?.slug);
+	if (bound && !others.length) return ["no other flows open"];
+	return others.map((st) => {
 		const { text, failed } = statusCompact(st);
-		return `${st.slug === bound?.slug ? "→" : " "} ${text} · ${st.stage}${failed ? " ⚠️" : ""}`;
+		return `${text} · ${st.stage}${failed ? " ⚠️" : ""}`;
 	});
 }
 
