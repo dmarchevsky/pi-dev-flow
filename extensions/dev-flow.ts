@@ -40,7 +40,7 @@ import {
 	pickReleaseNotes,
 	checklistHash,
 	checklistPending,
-	checkoutTarget,
+	checkoutInvocation,
 	claimBlocks,
 	classifyMergeHistory,
 	cmpVersions,
@@ -119,7 +119,6 @@ import {
 	WORKER_NUDGES,
 	type WorkerOp,
 	releaseOrderInvocation,
-	branchCreateTarget,
 	type BranchState,
 	type Config,
 	type FeatureRef,
@@ -155,6 +154,14 @@ function checkoutBuild(root: string): { version: string | null; dir: string; rep
 	return isSelfRepo(root)
 		? { ...pluginVersion(root), label: "this checkout" }
 		: { ...SELF_BUILD, label: "the dev-flow install" };
+}
+
+/** The build this session runs vs the one the disk ships: `behind` is the loaded version when they differ
+ *  ("" when current or unknown), `line` the one warning every surface prints for it. */
+function buildSkew(root: string): { disk: ReturnType<typeof checkoutBuild>; behind: string; line: string } {
+	const disk = checkoutBuild(root);
+	const behind = sessionRunsOlderBuild(loadedVersion(), disk.version);
+	return { disk, behind, line: behind ? `this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version ?? "?"} — /reload rebinds session state; only restarting the host swaps the code it runs` : "" };
 }
 
 /** Cross-copy registry: one process can register dev-flow more than once (the documented
@@ -218,6 +225,27 @@ async function sh(command: string, cwd: string, timeoutMs = 15 * 60_000): Promis
 		const err = e as { stdout?: string; stderr?: string; message?: string };
 		return { ok: false, out: `${err.stdout ?? ""}\n${err.stderr ?? ""}`.trim() || String(err.message) };
 	}
+}
+
+/** origin's URL, or null when the repo has no origin. */
+async function originUrl(root: string): Promise<string | null> {
+	const r = await sh("git remote get-url origin", root, 10_000);
+	return r.ok && r.out.trim() ? r.out.trim() : null;
+}
+
+/** The forge the release machinery targets: the playbook's `forge`, else detected from origin ("self" without one). */
+const forgeOf = (cfg: Config, origin: string | null): string => cfg.forge || detectForge(origin ?? "");
+
+/** The branch's merge base with the default branch (origin's when fetched), or "" when git cannot say. */
+async function mergeBase(cwd: string, defaultBranch: string): Promise<string> {
+	const mb = await sh(`git merge-base origin/${sq(defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(defaultBranch)} HEAD 2>/dev/null || true`, cwd);
+	return mb.ok ? mb.out.trim() : "";
+}
+
+/** The published pi-dev-flow version (`--check-upstream`), or "" when the registry cannot be asked. */
+async function publishedVersion(root: string): Promise<string> {
+	const pub = await sh("npm view pi-dev-flow version", root);
+	return pub.ok ? (pub.out.trim().split("\n").pop() ?? "") : "";
 }
 
 const dfDir = (root: string) => path.join(root, ".dev-flow");
@@ -321,14 +349,14 @@ async function runHealthProbe(cmd: string, cwd: string, waitSec: number): Promis
  *  decide what is already tagged (#52). Local tags only when there is no remote to ask; null when an
  *  origin exists but could not be asked (offline, no ssh agent) — then local tags must not stand in. */
 async function releaseTags(root: string): Promise<string[] | null> {
-	if (!(await sh("git remote get-url origin", root)).ok) return (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
+	if (!(await originUrl(root))) return (await sh("git tag --sort=-creatordate", root)).out.split("\n").filter(Boolean);
 	const remote = await sh("git ls-remote --tags origin", root);
 	if (!remote.ok) return null;
 	return parseLsRemoteTags(remote.out);
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|list|tidy|move <n> --plugin|--playbook] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build than the disk ships (in the dev-flow repo, an older build than this checkout's own manifest), and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the build the disk says to run (this checkout's own manifest in the dev-flow repo, the installed package's elsewhere) and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there; --plugin / --playbook / --both state the section instead of leaving it to the wording, and the echo prints why the note landed where it did); reflect list numbers the open items with their section; reflect move <n> --plugin|--playbook re-files one of them; reflect tidy drops the closed (`- [x]`) items from reflections.md — every surface that queues or reviews reflections nudges when the checked-off pile grows; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --ui/--patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|list|tidy|move <n> --plugin|--playbook] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a suggestion in reflections.md (--plugin/--playbook/--both state the section); bare reflect prints the session-reflection protocol; list numbers open items, move <n> re-files one, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> stamps an item for flow start, finish checks it off — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -656,9 +684,8 @@ async function stampChecks(root: string, state: FlowState, names: string[]): Pro
  *  question. Local refs only — same offline-safe stance as the changelog proof — and an
  *  unanswerable merge base reports null instead of refusing on a measurement failure. */
 async function branchState(cwd: string, defaultBranch: string): Promise<BranchState> {
-	const mb = await sh(`git merge-base origin/${sq(defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(defaultBranch)} HEAD 2>/dev/null || true`, cwd);
-	const base = mb.out.trim();
-	if (!mb.ok || !base) return { commitsAhead: null, uncommitted: 0 };
+	const base = await mergeBase(cwd, defaultBranch);
+	if (!base) return { commitsAhead: null, uncommitted: 0 };
 	const ahead = await sh(`git rev-list --count ${sq(base)}..HEAD`, cwd);
 	const n = Number.parseInt(ahead.out.trim(), 10);
 	const dirty = await sh("git status --porcelain", cwd);
@@ -743,8 +770,7 @@ const GH_FOLD_TTL_MS = 5 * 60_000;
  *  with the reason, never a guess), ok (the parsed list). */
 async function fetchUpstream(root: string): Promise<{ slug: string; issues: GhIssue[] } | { skipped: string } | { absent: true }> {
 	if (process.env.DEV_FLOW_NO_ISSUES) return { skipped: "disabled (DEV_FLOW_NO_ISSUES)" };
-	const origin = await sh("git remote get-url origin", root, 10_000);
-	const slug = origin.ok ? githubSlug(origin.out) : "";
+	const slug = githubSlug((await originUrl(root)) ?? "");
 	if (!slug) return { absent: true };
 	const hit = ghFoldCache.get(slug);
 	if (hit && Date.now() - hit.at < GH_FOLD_TTL_MS) return { slug, issues: hit.issues };
@@ -913,11 +939,6 @@ function markPendingAsk(root: string, state: FlowState, word: string): void {
 	writeState(root, state);
 }
 
-/** The pending checkpoint is answered either way — the 💬 leaves the footer with it. */
-function clearPendingAsk(state: FlowState): void {
-	delete state.pendingAsk;
-}
-
 async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg, takeYoloWord } = o;
 	const { state, err } = needState(root, sess, slugArg);
@@ -997,7 +1018,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		}
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 		if (!ok) {
-			clearPendingAsk(state!);
+			delete state!.pendingAsk;
 			writeState(root, state!);
 			return { text: "verification declined — stay in implement and fix what failed" };
 		}
@@ -1007,7 +1028,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	if (final.length) return { text: `verify gate FAILED:\n- ${final.join("\n- ")}`, isError: true };
 	state!.approvals.verify = now();
 	state!.stage = "pre-release";
-	clearPendingAsk(state!);
+	delete state!.pendingAsk;
 	writeState(root, state!);
 	return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${nextHint(state!, cfg)}` };
 }
@@ -1050,8 +1071,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const changelogBase: { pending: string[]; source: "tag" | "merge-base" | "none" } = { pending: [], source: "none" };
 	if (changelog) {
 		const p = sq(cfg.release.changelog!);
-		const mb = await sh(`git merge-base origin/${sq(cfg.defaultBranch)} HEAD 2>/dev/null || git merge-base ${sq(cfg.defaultBranch)} HEAD 2>/dev/null || true`, wtCwd);
-		const mbRef = mb.ok ? mb.out.trim() : "";
+		const mbRef = await mergeBase(wtCwd, cfg.defaultBranch);
 		// proof the branch touched the changelog: local refs only, so the check stays offline-safe
 		if (mbRef) {
 			const changes = await sh(`git diff --name-only ${sq(mbRef)} -- ${p} 2>/dev/null; git ls-files --others --exclude-standard -- ${p}`, wtCwd);
@@ -1088,8 +1108,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// legitimate choice (hotfix, offline reload), and refusing would close exactly the emergency the relaxed
 	// modes exist for. The gate names both builds, lists what the running code is missing, and folds the
 	// update-or-proceed question into the Release? checkpoint — the operator's word, recorded in state.
-	const selfBuild = checkoutBuild(root);
-	const behind = sessionRunsOlderBuild(loadedVersion(), selfBuild.version);
+	const { disk: selfBuild, behind } = buildSkew(root);
 	// truly behind, not merely different: a session whose loaded build is NEWER than the checkout's manifest
 	// has every proof the checkout would run, and asking about it would be noise.
 	const stale = !!behind && !!selfBuild.version && cmpVersions(behind, selfBuild.version) < 0;
@@ -1115,7 +1134,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 		}
 		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
 		if (!ok) {
-			clearPendingAsk(state!);
+			delete state!.pendingAsk;
 			writeState(root, state!);
 			return { text: "release declined — keep preparing in pre-release" };
 		}
@@ -1136,7 +1155,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// re-read a checkout that may still be behind (#52)
 	if (!state!.noVersion && manifestVer) state!.releaseVersion = manifestVer;
 	if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
-	clearPendingAsk(state!);
+	delete state!.pendingAsk;
 	writeState(root, state!);
 	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${nextHint(state!, cfg)}` };
 }
@@ -1150,7 +1169,9 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 	const manifestVer: string | null = state!.releaseVersion ?? null;
 	if (cfg.versioning.file && !state!.noVersion && !manifestVer) errs.push(`flow release approved no version (versioning.file "${cfg.versioning.file}" was set after it?) — fix the playbook, or ship this flow unversioned`);
 	const expectedTag = manifestVer ? cfg.versioning.pattern.replace("{version}", manifestVer) : null;
-	const hasOrigin = (await sh("git remote get-url origin", root)).ok;
+	const origin = await originUrl(root);
+	const hasOrigin = origin !== null;
+	const forgeName = forgeOf(cfg, origin);
 	// one round-trip answers both questions about the tag: is it there, and did it leave this laptop (#52)
 	const tags = expectedTag ? await releaseTags(root) : [];
 	if (tags === null) errs.push("cannot list tags on origin (offline?) — retry: local tags must not decide what is already released");
@@ -1192,25 +1213,23 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 		// ancestry proves "not squashed, not rebased"; a squash and a rebase look identical here, so when it
 		// fails the forge itself is asked which one it was (gh/glab; self-hosted stays an advisory)
 		const ancestor = refsOk ? (await sh(`git merge-base --is-ancestor origin/${sq(br)} origin/${sq(cfg.defaultBranch)}`, root)).ok : null;
-		const forgeProof = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
-		const proof = mergeShapeProof(cfg.release.merge, { ancestor, forgeStyle: ancestor === false ? await forgeMergeStyle(gateCwd(root, state!), forgeProof, br) : null, branch: br, defaultBranch: cfg.defaultBranch });
+		const proof = mergeShapeProof(cfg.release.merge, { ancestor, forgeStyle: ancestor === false ? await forgeMergeStyle(gateCwd(root, state!), forgeName, br) : null, branch: br, defaultBranch: cfg.defaultBranch });
 		if (proof.errors.length) errs.push(...proof.errors);
 		else mergeNote = proof.note;
 	}
 	if (errs.length) return { text: `release gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 	// no checkpoint here — the operator's Release? answer covered the whole publication; everything left is objective checks
-	const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;			let ghNote = "";
+	const releasesWanted = !!manifestVer && !flag("no-release-create") && cfg.release.releases !== false;
+	let ghNote = "";
 	let bodyOfRecord: string | null = null; // the changelog entry the forge body must match (#97)
 	let bodyNote = "";
-	const forgeName = cfg.forge || detectForge((await sh("git remote get-url origin", root)).out);
 	if (manifestVer && flag("no-release-create")) ghNote = "Forge release skipped (--no-release-create).";
 	else if (manifestVer && !releasesWanted) ghNote = "no forge release created (release.releases = false — the playbook says publication is manual; a stale key is how a repo ends up with tags and an empty Releases page #85).";
 	else if (manifestVer && releasesWanted) {
 		// forge release for the verified tag — gh for GitHub, glab for GitLab. A failed create is no
 		// longer the end of the story: the proof below asks the forge whether anything is there (#63, #85)
 		const tag = expectedTag!;
-		const forge = forgeName;
-		if (forge === "self") ghNote = "Forge release skipped (forge=self — publication stays manual).";
+		if (forgeName === "self") ghNote = "Forge release skipped (forge=self — publication stays manual).";
 		else {
 			// the body is the changelog entry for this version (#97); the tag annotation only stands in
 			// when the changelog has no entry for it — and never the output of a failed command, which
@@ -1231,18 +1250,17 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 			else if (!notesRes.ok) notesNote = `no release notes (the tag command failed: ${tail(notesRes.out)}). `;
 			else if (annotation && looksLikeShellError(annotation)) notesNote = "no release notes (the tag command returned a shell error, not a body). ";
 			else notesNote = `no release notes (tag ${tag} carries no annotation${cfg.release.changelog ? ` and ${cfg.release.changelog} has no ${manifestVer} entry` : ""} — tag with git tag -a). `;
-			const cmd = forge === "gitlab"
+			const cmd = forgeName === "gitlab"
 				? `glab release create ${sq(tag)} --name ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`
 				: `gh release create ${sq(tag)} --title ${sq(tag)}${notes ? ` --notes ${sq(notes)}` : ""}`;
 			const gr = await sh(cmd, root);
 			// a failed create is the operator's call to decline, never a choice we make for them — stamp it so finish names it (#63)
 			if (gr.ok) delete state!.forgeReleaseSkipped; // a successful retry lifts the stamp
 			else state!.forgeReleaseSkipped = tail(gr.out);
-			ghNote = gr.ok ? `${forge} release ${tag} created. ${notesNote}`.trim() : `${forge} release skipped: ${tail(gr.out)}`;
+			ghNote = gr.ok ? `${forgeName} release ${tag} created. ${notesNote}`.trim() : `${forgeName} release skipped: ${tail(gr.out)}`;
 		}
 	}
-	const diskBuild = checkoutBuild(root);
-	const behind = sessionRunsOlderBuild(loadedVersion(), diskBuild.version);
+	const skew = buildSkew(root);
 	const openRelease = checklistPending(cfg, state!, "release");
 	// release-stage items have no gate of their own: the operator's Finish? answer is what closes them, so
 	// name them at the last objective gate — on the way out too, or the refusal hides half the story
@@ -1278,10 +1296,10 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 		// a session that shipped from behind: the code it runs is not the code the checkout just released
 		state!.staleBuild
 			? `stale build acknowledged at release gate: this session ran dev-flow ${state!.staleBuild} — proofs newer than it did not run.`
-			: behind
+			: skew.behind
 				// #117: the pair (session vs what the disk ships) makes the warning actionable where it prints;
 				// a second registered copy is what made the skew confusing on the report — name it too
-				? `warning: this session runs dev-flow ${behind}, ${diskBuild.label} ships ${diskBuild.version ?? "?"} — /reload before trusting what it printed.${copyWarning() ? ` ${copyWarning()}` : ""}`
+				? `warning: ${skew.line}.${copyWarning() ? ` ${copyWarning()}` : ""}`
 			: "",
 		mergeNote,
 		openNote,
@@ -1302,7 +1320,8 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// after this the flow state is gone: nothing may sit uncommitted or unpushed
 	const dirty = await sh("git status --porcelain", root);
 	if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
-	const hasOriginF = (await sh("git remote get-url origin", root)).ok;
+	const origin = await originUrl(root);
+	const hasOriginF = origin !== null;
 	if (hasOriginF) {
 		const pushed = await sh(`git merge-base --is-ancestor HEAD ${sq(`origin/${cfg.defaultBranch}`)}`, root);
 		if (!pushed.ok) return { text: `HEAD is not on origin/${cfg.defaultBranch} — push the release (git push origin ${cfg.defaultBranch}) before finish`, isError: true };
@@ -1366,7 +1385,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 		}
 		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 		if (!ok) {
-			clearPendingAsk(state!);
+			delete state!.pendingAsk;
 			writeState(root, state!);
 			return { text: "finish declined" };
 		}
@@ -1386,24 +1405,14 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// remote cleanup: origin/<branch> is deleted only on proof it was released — being an ancestor of
 	// origin/<default> (merge-commit merges) or a merged PR via gh (squash merges); else it stays.
 	let remoteNote = "";
-	if (state!.branch && (await sh("git remote get-url origin", root)).ok) {
+	if (state!.branch && hasOriginF) {
 		const br = state!.branch;
 		const onRemote = await sh("git ls-remote --heads origin", root);
 		if (onRemote.out.split("\n").some((l) => l.endsWith(`\trefs/heads/${br}`))) {
 			await sh(`git fetch -q origin ${sq(br)}`, root);
 			let merged = (await sh(`git merge-base --is-ancestor origin/${sq(br)} origin/${sq(cfg.defaultBranch)}`, root)).ok;
-			if (!merged) {
-				// squash merges leave no ancestry — ask the forge: gh pr list, or the GitLab API via glab; self-hosted stays on ancestry proof
-				const originUrl = await sh("git remote get-url origin", root);
-				const forge = cfg.forge || detectForge(originUrl.out);
-				if (forge === "gitlab") {
-					const mr = await sh(`glab api ${sq(`projects/:id/merge_requests?source_branch=${br}&state=merged&per_page=1`)}`, root);
-					merged = mr.ok && mr.out.trim() !== "[]";
-				} else if (forge === "github") {
-					const pr = await sh(`gh pr list --state merged --head ${sq(br)} --json number --jq length`, root);
-					merged = pr.ok && pr.out.trim() !== "0";
-				}
-			}
+			// squash merges leave no ancestry — ask the forge (gh/glab); self-hosted stays on ancestry proof
+			if (!merged) merged = (await forgeMergeStyle(root, forgeOf(cfg, origin), br)) !== null;
 			if (merged) remoteNote = (await sh(`git push origin --delete ${sq(`refs/heads/${br}`)}`, root)).ok
 				? ` origin/${br} deleted (verified merged)`
 				: ` origin/${br} delete failed — git push origin --delete ${br}`;
@@ -1440,8 +1449,8 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 	// never propose a feature branch (contains "/") as the default branch
 	const branch = (head.ok ? head.out.match(/refs\/remotes\/origin\/(.+)/)?.[1] : undefined) || (curBr.includes("/") ? undefined : curBr) || "main";
 	const det = detectProject(root, branch);
-	const origin = await sh("git remote get-url origin", root);
-	det.partial.forge = origin.ok && origin.out.trim() ? detectForge(origin.out) : undefined; // confirmed or corrected by the operator during setup; absent = no origin to detect from
+	const origin = await originUrl(root);
+	det.partial.forge = origin ? detectForge(origin) : undefined; // confirmed or corrected by the operator during setup; absent = no origin to detect from
 	det.partial.merge = (await mergeHistoryEvidence(root, branch))?.note; // "what do you actually do when a PR merges", read off the log
 	const draftFresh = buildDraft(det);
 	if (flag("draft")) return { text: existsSync(mdFile) ? readFileSync(mdFile, "utf8") : draftFresh }; // read path: prints content, writes nothing (and offers no deletions)
@@ -1537,14 +1546,12 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 	if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
 	// --- preflight: is this session running the current build, and is the playbook complete? ---
 	const notes: string[] = [];
-	const disk = checkoutBuild(root);
-	const behind = sessionRunsOlderBuild(loadedVersion(), disk.version);
-	if (behind) notes.push(`warning: this session runs dev-flow ${behind}, ${disk.label} ships ${disk.version} — /reload rebinds session state; only restarting the host swaps the code it runs`);
+	const skew = buildSkew(root);
+	if (skew.line) notes.push(`warning: ${skew.line}`);
 	const dupStart = copyWarning();
 	if (dupStart) notes.push(dupStart);
 	if (flag("check-upstream")) {
-		const pub = await sh("npm view pi-dev-flow version", root);
-		const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
+		const newest = await publishedVersion(root);
 		notes.push(newest ? `published dev-flow: ${newest} (this build: ${loadedVersion() ?? "?"})${loadedVersion() && newest !== loadedVersion() ? " — an update is available" : ""}` : "could not read the published dev-flow version (offline?)");
 	}
 	// missing playbook parameters are printed at the moment they start to matter, not promised to a later doctor run
@@ -1637,7 +1644,7 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	state!.worktree = wtRel;
 	state!.stage = "implement";
 	state!.approvals.plan = now();
-	clearPendingAsk(state!);
+	delete state!.pendingAsk;
 	writeState(root, state!);
 	return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
 }
@@ -1650,9 +1657,8 @@ async function gateStatus(o: GateCtx): Promise<RunResult> {
 	const findings = md ? doctorFindings(root, cfg, md) : [];
 	// a session running an older build than the disk ships is the one thing a glance must say: every
 	// gate proof printed since the drift began belongs to the older code.
-	const disk = checkoutBuild(root);
-	const staleBuild = sessionRunsOlderBuild(loadedVersion(), disk.version);
-	const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(staleBuild ? [`⚠ this session runs dev-flow ${staleBuild}, ${disk.label} ships ${disk.version} — /reload rebinds; restart swaps code`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
+	const skew = buildSkew(root);
+	const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(skew.line ? [`⚠ ${skew.line}`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
 	// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
 	const rmap = roadmapOpenCount(readRoadmap(root));
 	const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
@@ -1702,7 +1708,7 @@ async function gateReflect(o: GateCtx): Promise<RunResult> {
 	if (words.length) return reflectNote(root, sess, words, forced);
 	// upstream for the update probe: the manifest's repository field; the dev-flow checkout itself falls back to its origin
 	const self = pluginVersion(import.meta.dirname);
-	const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await sh("git remote get-url origin", root)).out) : "");
+	const upstream = self.repo || (isSelfRepo(root) ? githubSlug((await originUrl(root)) ?? "") : "");
 	const refl = readReflections(root);
 	const fold = await foldView(root, refl);
 	return {
@@ -1802,16 +1808,14 @@ interface GateCtx {
 async function gateVersion(o: GateCtx): Promise<RunResult> {
 	const { root, flag } = o;
 	// the plugin's own version — separate from the project's versioning.file version the release gates use
-	const self = checkoutBuild(root);
-	const behind = sessionRunsOlderBuild(loadedVersion(), self.version);
+	const { disk: self, behind } = buildSkew(root);
 	const head = self.version ? `dev-flow ${self.version} (pi-dev-flow at ${self.dir})` : `dev-flow version unknown — no pi-dev-flow package.json above ${self.dir}`;
 	// in the dev-flow repo head names the checkout, so name where the stale code actually lives
 	const from = SELF_BUILD.dir !== self.dir ? ` (from ${SELF_BUILD.dir})` : "";
 	const dupNote = copyWarning();
 	// --check-upstream is the one that asks the registry; plain flow version stays offline and instant
 	if (flag("check-upstream")) {
-		const pub = await sh("npm view pi-dev-flow version", root);
-		const newest = pub.ok ? pub.out.trim().split("\n").pop() : "";
+		const newest = await publishedVersion(root);
 		return { text: newest ? `${head} — published: ${newest}${self.version && newest !== self.version ? " (update available)" : ""}` : `${head} — could not read the published version (offline?)` };
 	}
 	return { text: `${behind ? `${head} — but this session runs ${behind}${from}; /reload to run ${self.version} \u2014 in a shared-process host (pi-web) reload cannot swap loaded code: only a host restart does` : head}${dupNote ? `\n${dupNote}` : ""}` };
@@ -1868,7 +1872,7 @@ async function gateUse(o: GateCtx): Promise<RunResult> {
 	// a checkpoint that was still unanswered belongs to whoever asked; a session taking the feature over
 	// must not inherit a 💬 for a question it never posed
 	if (st.pendingAsk) {
-		clearPendingAsk(st);
+		delete st.pendingAsk;
 		writeState(root, st);
 	}
 	return { text: `this session is now bound to ${slugArg} (stage ${st.stage})${st.worktree ? ` — work in its worktree: ${st.worktree} (branch ${st.branch})` : ""}; session renamed to ${slugArg}${takeover}` };
@@ -2410,15 +2414,13 @@ export default function devFlow(pi: ExtensionAPI) {
 				if (reason) return { block: true, reason };
 				// A feature worktree stays on its feature branch: a side branch cut inside it repurposes the
 				// worktree (and leaves it off its branch for the next gate); out-of-flow fixes get their own flow.
-				const created = branchCreateTarget(g.seg);
+				const co = checkoutInvocation(g.seg);
+				if (!co) continue;
 				const homeWt = worktrees.find((w) => gitDir === w || gitDir.startsWith(w + path.sep));
-				if (created && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${created} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch --confirmed)` };
+				if (co.creates && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${co.target} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch --confirmed)` };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
-				const target = checkoutTarget(g.seg);
-				if (target && target.startsWith(featureBranchPrefix(cfg))) {
-					const inWorktree = worktrees.some((w) => gitDir === w || gitDir.startsWith(w + path.sep));
-					if (!inWorktree) return { block: true, reason: `branch ${target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };
-				}
+				if (!homeWt && co.target.startsWith(featureBranchPrefix(cfg)))
+					return { block: true, reason: `branch ${co.target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };
 			}
 		}
 		return undefined;

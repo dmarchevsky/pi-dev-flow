@@ -11,7 +11,7 @@ import {
 	bashSegments,
 	bashFlowGuard,
 	checklistHash,
-	checkoutTarget,
+	checkoutInvocation,
 	claimBlocks,
 	classifyMergeHistory,
 	mergeShapeProof,
@@ -64,7 +64,6 @@ import {
 	clampBudgetMin,
 	tagCreates,
 	releaseOrderInvocation,
-	branchCreateTarget,
 	guessReflectSections,
 	reflectItems,
 	reflectMove,
@@ -470,7 +469,7 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/reflections.md", dfDir: df, features: [], boundSlug: null }), null, "reflections.md is the agent's queue — editable even with no flow bound");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/state.json", dfDir: df, features: [], boundSlug: null }));
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/a/claim.json", dfDir: df, features: [], boundSlug: null }) ?? "", /claim\.json is dev-flow-owned/, "the claim is the concurrency lock — dev-flow owns it, flow use takes over");
-	assert.ok(writeGuard({ abs: "/repo/.dev-flow/project.json", dfDir: df, features: [], boundSlug: null }));
+	assert.ok(writeGuard({ abs: "/repo/.dev-flow/notes.md", dfDir: df, features: [], boundSlug: null }), "an unbound session may not drop files into .dev-flow/");
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/project.md", dfDir: df, features: [], boundSlug: null }) ?? "", /operator playbook/, "the main-checkout playbook is never an agent edit target");
 	const docsF = { state: { ...newState("d", false, false, true), stage: "implement" as const, worktree: ".wt/d" }, worktreeAbs: "/repo/.wt/d" };
 	const normF = { state: { ...newState("n", false), stage: "implement" as const, worktree: ".wt/n" }, worktreeAbs: "/repo/.wt/n" };
@@ -482,10 +481,11 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: [], boundSlug: null }), "and that reaches nested paths too");
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: feats, boundSlug: "b" }), null, "a bound session keeps the folder as it had it — flow-owned paths inside it are refused by their own rules");
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: [{ state: { ...impl, stage: "release" as const }, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores keep the folder");
-	assert.equal(checkoutTarget("git checkout feat/x"), "feat/x");
-	assert.equal(checkoutTarget("git switch -c feat/y && make"), "feat/y");
-	assert.equal(checkoutTarget("git checkout -- src/app.ts"), "--");
-	assert.equal(checkoutTarget("git commit -m x"), null);
+	assert.deepEqual(checkoutInvocation("git checkout feat/x"), { target: "feat/x", creates: false });
+	assert.deepEqual(checkoutInvocation("git switch -c feat/y && make"), { target: "feat/y", creates: true });
+	assert.deepEqual(checkoutInvocation("git checkout -f feat/z"), { target: "feat/z", creates: false }, "a leading flag does not hide the branch");
+	assert.equal(checkoutInvocation("git checkout -- src/app.ts"), null, "paths after -- are not a branch");
+	assert.equal(checkoutInvocation("git commit -m x"), null);
 	assert.equal(featureBranchPrefix({ ...DEFAULTS, branchPattern: "feat/{slug}" }), "feat/");
 });
 
@@ -539,7 +539,7 @@ test("writeGuard: a symlink in the worktree is judged where the bytes land", () 
 	assert.match(g(path.join(wt, "dflink", "e", "state.json")) ?? "", /dev-flow-owned/, "state.json reached through a symlink is still state.json");
 });
 
-test("openReflections: unchecked items only", () => {
+test("openChecklistItems: unchecked items only", () => {
 	assert.deepEqual(openChecklistItems("# h\n- [ ] (playbook) a\n- [x] done\n  - [ ] indented\n"), ["- [ ] (playbook) a", "- [ ] indented"]);
 	assert.deepEqual(openChecklistItems(""), []);
 });
@@ -1334,12 +1334,11 @@ test("release order: tags and forge shipping wait for the release stage", () => 
 	assert.equal(releaseOrderInvocation("gh pr merge 1", null), null, "unbound: no stage to judge");
 });
 
-test("branchCreateTarget: the branch a checkout/switch creates, through leading flags", () => {
-	assert.equal(branchCreateTarget("git checkout -q -b fix/dockerfile"), "fix/dockerfile");
-	assert.equal(branchCreateTarget("git switch -c fix/x"), "fix/x");
-	assert.equal(branchCreateTarget("git checkout -q -B fix/y origin/main"), "fix/y");
-	assert.equal(branchCreateTarget("git checkout feat/x"), null, "switching to an existing branch creates nothing");
-	assert.equal(branchCreateTarget("git checkout -- src/a.ts"), null);
+test("checkoutInvocation: the branch a checkout/switch creates, through leading flags", () => {
+	assert.deepEqual(checkoutInvocation("git checkout -q -b fix/dockerfile"), { target: "fix/dockerfile", creates: true });
+	assert.deepEqual(checkoutInvocation("git switch -c fix/x"), { target: "fix/x", creates: true });
+	assert.deepEqual(checkoutInvocation("git checkout -q -B fix/y origin/main"), { target: "fix/y", creates: true });
+	assert.equal(checkoutInvocation("git checkout feat/x")?.creates, false, "switching to an existing branch creates nothing");
 });
 
 test("worker helpers: op legality, budget clamp, REPORT parsing", () => {

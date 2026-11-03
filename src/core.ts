@@ -1056,13 +1056,17 @@ export function releaseOrderInvocation(command: string, stage: Stage | null): st
 	return null;
 }
 
-/** Name of a branch a `git checkout -b/-B` / `git switch -c/-C` creates, or null. */
-export function branchCreateTarget(command: string): string | null {
+/** The branch a `git checkout` / `git switch` targets, and whether it creates it (`-b/-B/-c/-C/--create/
+ *  --force-create/--orphan`), or null. Leading flags are skipped; `--` ends the branch part (paths follow). */
+export function checkoutInvocation(command: string): { target: string; creates: boolean } | null {
 	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\b([^;|&\n]*)/);
 	if (!m) return null;
-	const tok = m[1].trim().split(/\s+/).filter(Boolean);
+	const all = m[1].trim().split(/\s+/).filter(Boolean);
+	const tok = all.includes("--") ? all.slice(0, all.indexOf("--")) : all;
 	const i = tok.findIndex((t) => /^(-[bBcC]|--create|--force-create|--orphan)$/.test(t));
-	return i >= 0 && tok[i + 1] ? unquote(tok[i + 1]) : null;
+	if (i >= 0) return tok[i + 1] ? { target: unquote(tok[i + 1]), creates: true } : null;
+	const target = tok.find((t) => !t.startsWith("-"));
+	return target ? { target: unquote(target), creates: false } : null;
 }
 
 // ------------------------------------------------------- project safety rules
@@ -1382,12 +1386,6 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	}
 	if (!o.features.length) return "no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature";
 	return `unfinished features: ${o.features.map((f) => f.state.slug).join(", ")} — bind this session with flow use <slug> (or pass an explicit slug to gates)`;
-}
-
-/** Branch targeted by a `git checkout`/`git switch` in the command, or null. */
-export function checkoutTarget(command: string): string | null {
-	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\s+(?:-[bBc]\s+)?([^\s;|&]+)/);
-	return m ? m[1] : null;
 }
 
 /** Prefix feature branches match: branchPattern up to `{slug}` — used to keep feature branches out of the main checkout. */

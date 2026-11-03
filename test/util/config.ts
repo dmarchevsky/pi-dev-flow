@@ -1,14 +1,13 @@
 /**
  * Test-only Config builder — the former `buildConfig` of src/core.ts.
  *
- * project.md is the only persisted config source (the legacy project.json
- * loader is gone); this helper stays so unit tests keep the partial-overrides
+ * project.md is the only persisted config source; this helper stays so unit tests keep the partial-overrides
  * shorthand. It is deliberately NOT in production code: nothing at runtime
  * builds a Config from a raw object.
  */
 import { type Config, DEFAULTS, toSeconds } from "../../src/core.ts";
 
-/** project.json may spell a rule as a bare pattern string. */
+/** A rule may be spelled as a bare pattern string. */
 function normalizeGuardRules(raw: unknown[]): Config["guard"]["deny"] {
 	const out: Config["guard"]["deny"] = [];
 	for (const e of raw) {
