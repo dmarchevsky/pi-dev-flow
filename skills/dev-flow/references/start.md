@@ -5,19 +5,19 @@
 ## Start
 
 **No `.dev-flow/`?** `flow init` analyzes the repo and prints a **setup
-brief**: what was detected plus one question per knob detection cannot decide
-(forge github/gitlab/self, version manifest and tag convention, automatic
-forge releases, registry artifacts like Docker Hub, the real
-test/build/lint/health commands, tier-2 items, prose). Relay the questions
-(one per knob, detected default shown, explain in a line when not obvious),
-fill `flow init --draft` with the answers, present it, then apply
-`flow init --write "<content>"` **only after the operator confirms** — never
-hand-edit, never write project.md before the confirmation. The playbook
-belongs in git; the chore is legal unbound:
-`git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md"`
-(force — a tracked file outranks a `.gitignore` of `.dev-flow/`; the env
-prefix lets the installed hook accept a main commit that only touches the
-playbook). **With existing config** `flow init` is a **doctor**: discuss
+brief**: what was detected plus one numbered question per knob, each with
+`detected:` (what was found), `accept:` (the answer that keeps it) and `why:`.
+Relay them: group the ones with an `accept` line as one "keep these?", and
+explain the rest in a line each. Apply **every** answer in one call:
+`flow init --answers key=value …` (targeted edits onto the draft; unknown
+keys are refused). It **previews** the summary and diff and writes nothing.
+Present that, and only after the operator confirms, re-run the same call with
+`--confirmed --track` (validated write + the playbook commit). Free-text
+additions (checklist items, prose, `flow-guard` rules) go through
+`flow init --write-file <path>` with the full file (`flow init --draft` prints
+it). Never hand-edit, and never write project.md before the confirmation.
+Detection names CLAUDE.md / AGENTS.md / CONTRIBUTING.md when present: propose
+their stage rules as prose, never copy them unasked. **With existing config** `flow init` is a **doctor**: discuss
 findings, fix via the same write path, never overwrite hand edits without
 confirming; ghost feature dirs (a `plan/` whose `state.json` is gone) come
 with a delete offer — surface the dialog, never delete on your own.

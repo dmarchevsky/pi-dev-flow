@@ -548,8 +548,9 @@ test("first init in a TUI reviews the draft with the operator and writes only on
 	let dialogs = 0;
 	const ctx = { cwd: repo, hasUI: true, mode: "tui", notices: [] as string[], ui: { notify: (_m: string) => {}, setStatus: (_k: string, _t?: string) => {}, confirm: async () => { dialogs++; return true; }, editor: async () => { dialogs++; return undefined; } } };
 	await pi.cmds.flow.handler("init", ctx);
-	assert.equal(dialogs, 1, "the detection draft is reviewed in one confirm, never written silently");
+	assert.equal(dialogs, 2, "the detection draft is reviewed in one confirm, never written silently — then the commit is offered");
 	assert.match(readFileSync(path.join(repo, ".dev-flow", "project.md"), "utf8"), /## implement/, "the confirmed draft lands on disk");
+	assert.match(execFileSync("git", ["-C", repo, "log", "-1", "--format=%s", "--", ".dev-flow/project.md"], { encoding: "utf8" }), /chore: add dev-flow playbook/, "the accepted commit offer tracks the playbook");
 });
 
 test("flow-by-default: unbound writes blocked; start needs default branch; feature checkouts stay in worktrees", async () => {
@@ -1473,7 +1474,9 @@ test("first init prints the setup questions and writes nothing until confirmed",
 	assert.match(text, /questions for the operator/);
 	assert.match(text, /forge/, "the forge question is asked with its detected default");
 	assert.match(text, /flow init --write/, "the agent learns the sanctioned write path");
-	assert.match(text, /git add -f \.dev-flow\/project\.md/, "and that the playbook belongs in git");
+	assert.match(text, /--track to commit the playbook/, "and that the playbook belongs in git");
+	assert.match(text, /flow init --answers key=value/, "answers are applied as targeted edits, not a hand-rebuilt file");
+	assert.match(text, /why: /, "every question says why it matters");
 });
 
 test("init finds ghost feature dirs and removes them only on the operator's word", async () => {

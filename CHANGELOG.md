@@ -4,6 +4,29 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+**`flow init` asks better questions and writes your answers itself.**
+
+### Fixed
+- npm drafts wrote `build = npm build` / `run = npm dev`, which npm rejects with "Unknown command". Scripts now run as `npm run <script>` (only `test`/`start` keep the shorthand), and bun's test is `bun run test`, because `bun test` is bun's own runner, not your script.
+- The draft no longer invents `versionFile = package.json` when no version file exists (doctor flagged it on day one).
+- The "app runs locally; visual pass" checklist item is now `(ui)`-only, so libraries and CLIs aren't asked about screens.
+- With a UI, the draft dialog no longer appears before the setup questions are shown.
+- With husky or lefthook setting `core.hooksPath`, init no longer installs a hook git never runs. It prints the lines to add to the manager's hook instead.
+
+### Added
+- `flow init --answers key=value …` / `--answers-file <path>` apply setup answers as targeted edits (merge, forge, version, artifact, preflight, commands, `check.<name>` blocks). They preview the summary and a diff, and write only with `--confirmed`. `--write-file <path>` writes a whole file. `--track` commits the playbook. Every write prints its diff.
+- Setup questions carry `detected:` / `accept:` / `why:` lines. The interactive first init accepts every detected value in one dialog, then offers the commit.
+- Detection reads:
+  - lint/typecheck/format scripts (and clippy, `go vet`, ruff/mypy) → `flow-check` blocks
+  - Makefile/justfile/Taskfile targets
+  - CI workflow commands and publish steps → a suggested `artifact` check
+  - Dockerfile/compose → suggested `preflight`/`dev`
+  - `.env`/`secrets/` on disk → drafted `protect`/`forbid` guard rules
+  - existing tags → `versionTag`
+  - the changelog file, monorepo workspaces, and CLAUDE.md/AGENTS.md/CONTRIBUTING.md
+- The summary shown in the init dialog lists safety rules, and says when no version file is set.
+- `docs/playbook.md` opens with a Quickstart and four typical playbooks.
+
 ## [0.77.3] - 2026-11-03
 
 ### Changed

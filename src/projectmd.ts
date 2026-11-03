@@ -283,6 +283,121 @@ export function setPlaybookKey(text: string, stage: MdStage, key: string, value:
 	return { text: lines.join("\n"), where: `## ${stage} — opened a flow block for it` };
 }
 
+/** Set one ` ```flow-check <name>` block under ## implement: replaces the body of an existing block of that
+ *  name, else inserts a new block right after the section's last fence (or under the heading). An empty
+ *  command removes the block — the operator's "no, we don't lint". */
+export function setPlaybookCheck(text: string, name: string, cmd: string): { text: string; where: string } {
+	const lines = text.split("\n");
+	let head = lines.findIndex((l) => /^##\s+implement\s*$/i.test(l));
+	if (head === -1) {
+		if (!cmd) return { text, where: `no flow-check ${name} to remove` };
+		const tail = `\n## implement\n\n` + "```flow-check " + name + "\n" + cmd + "\n```\n";
+		return { text: (text.endsWith("\n") ? text : text + "\n") + tail, where: "## implement — the section was created for it" };
+	}
+	let end = lines.length;
+	for (let i = head + 1; i < lines.length; i++) if (/^##\s/.test(lines[i])) { end = i; break; }
+	let lastClose = -1;
+	for (let i = head + 1; i < end; i++) {
+		if (!/^```/.test(lines[i]) || lines[i].trim() === "```") continue;
+		let close = end - 1;
+		for (let j = i + 1; j < end; j++) if (lines[j].trim() === "```") { close = j; break; }
+		if (lines[i].trim() === "```flow-check " + name) {
+			if (!cmd) {
+				lines.splice(i, close - i + 1 + (lines[close + 1] === "" ? 1 : 0));
+				return { text: lines.join("\n"), where: `## implement flow-check ${name} (removed)` };
+			}
+			lines.splice(i + 1, close - i - 1, cmd);
+			return { text: lines.join("\n"), where: `## implement flow-check ${name} (replaced its command)` };
+		}
+		lastClose = close;
+		i = close;
+	}
+	if (!cmd) return { text, where: `no flow-check ${name} to remove` };
+	const at = lastClose === -1 ? head + 1 : lastClose + 1;
+	lines.splice(at, 0, "", "```flow-check " + name, cmd, "```");
+	return { text: lines.join("\n"), where: `## implement flow-check ${name}` };
+}
+
+/** Where each setup answer lives. `check.<name>` is a flow-check block; everything else a flow key. */
+const ANSWER_STAGE: Record<string, MdStage> = {
+	defaultBranch: "global", forge: "global", worktreeDir: "global", branchPattern: "global", mainHook: "global", mockupGlobs: "global", bashTimeout: "global",
+	setup: "implement", test: "implement", build: "implement", run: "implement", seedData: "implement", health: "implement", dev: "implement", healthWait: "implement",
+	versionFile: "pre-release", versionTag: "pre-release", changelog: "pre-release", review: "pre-release",
+	releases: "release", artifact: "release", preflight: "release", merge: "release",
+};
+/** The draft's placeholder comment per key (buildDraft) — stale once the key has an answer. */
+const DRAFT_HINTS: Record<string, RegExp> = { versionFile: /<!-- versionFile = /, merge: /<!-- merge = /, changelog: /<!-- no changelog found/ };
+export const ANSWER_KEYS = [...Object.keys(ANSWER_STAGE), "check.<name>"];
+
+/** Parse `key=value` answer tokens (CLI args, or the lines of an answers file; `#` lines are comments). */
+export function parseAnswers(tokens: string[]): { answers: [string, string][]; errors: string[] } {
+	const answers: [string, string][] = [];
+	const errors: string[] = [];
+	for (const raw of tokens) {
+		const t = raw.trim();
+		if (!t || t.startsWith("#")) continue;
+		const m = t.match(/^([\w.-]+)\s*=\s*(.*)$/);
+		if (!m) { errors.push(`"${t}" is not key=value`); continue; }
+		const [, key, value] = m;
+		if (!(key in ANSWER_STAGE) && !/^check\.[\w-]+$/.test(key)) { errors.push(`unknown answer key "${key}" — known: ${ANSWER_KEYS.join(", ")}`); continue; }
+		answers.push([key, value.trim()]);
+	}
+	return { answers, errors };
+}
+
+/** Apply setup answers onto a playbook text — each a single targeted insert/replace, so hand-written lines
+ *  survive. The section a key is already written under wins (a versionFile under ## release stays there). */
+export function applyAnswers(text: string, answers: [string, string][]): { text: string; changes: string[] } {
+	let cur = text;
+	const changes: string[] = [];
+	for (const [key, value] of answers) {
+		if (key.startsWith("check.")) {
+			const r = setPlaybookCheck(cur, key.slice("check.".length), value);
+			cur = r.text;
+			changes.push(`${key} → ${r.where}`);
+			continue;
+		}
+		let stage = ANSWER_STAGE[key];
+		const parsed = parseProjectMd(cur);
+		const holder = MD_STAGES.find((s) => Object.keys(parsed.flow[s]).some((dot) => KEYMAP[s]?.[key] === dot));
+		if (holder && holder !== stage && (stage === "pre-release" || stage === "release") && (holder === "pre-release" || holder === "release")) stage = holder;
+		const r = setPlaybookKey(cur, stage, key, value);
+		if ("error" in r) { changes.push(`${key}: ${r.error}`); continue; }
+		cur = r.text;
+		// the draft's "not decided yet" hint for this key is now wrong: drop it (and the blank line after it)
+		const hint = DRAFT_HINTS[key];
+		if (hint) cur = cur.replace(new RegExp(`^${hint.source}.*\\n\\n?`, "m"), "");
+		changes.push(`${key} = ${value} → ${r.where}`);
+	}
+	return { text: cur, changes };
+}
+
+/** Minimal line diff (LCS) for showing the operator what a write changes — playbooks are small. */
+export function lineDiff(before: string, after: string, context = 1): string {
+	const a = before.split("\n");
+	const b = after.split("\n");
+	const n = a.length;
+	const m = b.length;
+	const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+	for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+	const ops: { t: " " | "-" | "+"; l: string }[] = [];
+	let i = 0;
+	let j = 0;
+	while (i < n || j < m) {
+		if (i < n && j < m && a[i] === b[j]) { ops.push({ t: " ", l: a[i] }); i++; j++; }
+		else if (i < n && (j >= m || dp[i + 1][j] >= dp[i][j + 1])) ops.push({ t: "-", l: a[i++] });
+		else ops.push({ t: "+", l: b[j++] });
+	}
+	const keep = ops.map((o, k) => o.t !== " " || ops.slice(Math.max(0, k - context), k + context + 1).some((x) => x.t !== " "));
+	const out: string[] = [];
+	let gap = false;
+	ops.forEach((o, k) => {
+		if (keep[k]) { out.push(`${o.t} ${o.l}`); gap = false; }
+		else if (!gap) { out.push("  …"); gap = true; }
+	});
+	return ops.some((o) => o.t !== " ") ? out.join("\n") : "(no changes)";
+}
+
 /** Load the project config: project.md is the only source. */
 export function loadProject(dfDir: string): { cfg: Config; md: ParsedMd | null } {
 	const mdFile = path.join(dfDir, "project.md");
@@ -382,11 +497,16 @@ export function mdDigest(text: string): string {
 			bits.push(DIGEST_CMDS[k] ? `${DIGEST_CMDS[k]}: ${JSON.stringify(v)}` : `${DIGEST_WORDS[k] ?? k}: ${v}`);
 		}
 		if (s === "implement" && p.checks.length) bits.push(`named checks: ${p.checks.map((c) => c.name).join(", ")}`);
+		if (s === "global") {
+			const rules = (["deny", "confirm", "protect", "forbid"] as const).flatMap((v) => p.guard[v].map((r) => `${v} ${r.pattern}`));
+			if (rules.length) bits.push(`safety rules: ${rules.join(" · ")}`);
+		}
 		if (relStage && keys.file) {
 			bits.push(`version in ${keys.file} → tag ${keys.pattern ?? "v{version}"}`);
 			bits.push(keys.releases === "false" || keys.releases === "no" ? "forge release: off" : "forge release: created automatically (gh/glab)");
 			bits.push(`artifact check: ${keys.artifact ?? "none set"}`);
 		}
+		if (s === "pre-release" && !keys.file && !p.flow.release["versioning.file"]) bits.push("version: no version file set — releases cannot bump or tag");
 		const items = p.checklist[s] ?? [];
 		if (items.length) bits.push(`manual check: ${items.map((i) => `${i.uiOnly ? "(UI only) " : ""}\"${i.text}\"`).join(" · ")}`);
 		if (p.prose[s]) bits.push(`guidance: "${p.prose[s].replace(/\s+/g, " ").trim()}"`);
@@ -397,23 +517,37 @@ export function mdDigest(text: string): string {
 
 /** Draft project.md from detection (first init, --force). Never a regeneration of an existing playbook:
  *  a draft cannot reproduce hand-written prose, checklist items and keys. */
-export function buildDraft(det: { report: string[]; partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string }; forge?: string } }): string {
+export function buildDraft(det: {
+	report: string[];
+	partial: { defaultBranch: string; commands: Record<string, string>; versioning?: { file: string }; forge?: string; versionTag?: string; changelog?: string; checks?: Record<string, string>; guards?: string[] };
+}): string {
 	const cmd = (k: string) => det.partial.commands[k];
 	const L: string[] = [];
 	L.push("# dev-flow", "", "<!-- Operator-owned playbook. Regenerate with: flow init --draft -->", "");
 	L.push("## global", "", "```flow", `defaultBranch = ${det.partial.defaultBranch}`);
 	if (det.partial.forge) L.push(`forge = ${det.partial.forge}`); // from the origin URL — confirm or correct
 	L.push("```", "");
+	// only secrets that exist on disk: a guard on a path the repo does not have guards nothing and reads as noise
+	if (det.partial.guards?.length) L.push("```flow-guard", ...det.partial.guards, "```", "");
 	L.push("## plan", "", "- [ ] (ui) rendered mockups attached for every changed screen", "", "<!-- what the plan must contain, UI expectations -->", "");
 	L.push("## implement", "", "```flow");
 	for (const k of ["setup", "test", "build", "run", "seedData", "dev"]) if (cmd(k)) L.push(`${k} = ${cmd(k)}`);
 	L.push("```", "");
+	for (const [name, c] of Object.entries(det.partial.checks ?? {})) L.push("```flow-check " + name, c, "```", "");
 	// never invent a health check: a placeholder that can't pass blocks verify forever (dogfooded: curl localhost:3000 in a library repo)
 	if (cmd("health")) L.push("```flow-check health", cmd("health"), "```", "");
 	else L.push("<!-- optional tier-1: add a flow-check 'health' block once the app exposes a health endpoint -->", "");
-	L.push("- [ ] app runs locally with real data; visual pass: no overflows or stray scrollbars", "", "<!-- tier-3: standing guidance for this stage -->", "");
-	L.push("## pre-release", "", "<!-- e.g. review policy, docs expectations, who picks the version -->", "", "```flow", `versionFile = ${det.partial.versioning?.file || "package.json"}`, "versionTag = v{version}", "```", "");
-	// the merge policy is never invented by detection: flow start asks and writes it
+	// (ui): a library or CLI has no screen to give a visual pass — the item would ask on every feature
+	L.push("- [ ] (ui) app runs locally with real data; visual pass: no overflows or stray scrollbars", "", "<!-- tier-3: standing guidance for this stage -->", "");
+	L.push("## pre-release", "", "<!-- e.g. review policy, docs expectations, who picks the version -->", "");
+	// never invent a manifest either: a versionFile naming a file the repo lacks is a doctor finding on day one
+	const rel: string[] = [];
+	if (det.partial.versioning?.file) rel.push(`versionFile = ${det.partial.versioning.file}`, `versionTag = ${det.partial.versionTag ?? "v{version}"}`);
+	if (det.partial.changelog) rel.push(`changelog = ${det.partial.changelog}`);
+	if (rel.length) L.push("```flow", ...rel, "```", "");
+	if (!det.partial.versioning?.file) L.push("<!-- versionFile = <the file that holds the version> — none was detected; flow init asks -->", "");
+	if (det.partial.changelog === "") L.push("<!-- no changelog found: create CHANGELOG.md, or set changelog = (empty) to opt out -->", "");
+	// the merge policy is never invented by detection: flow init / flow start ask and write it
 	L.push("## release", "", "<!-- merge = squash | merge | rebase — how a merged PR lands on the default branch (`any` = no policy). flow start also asks and writes it. -->", "");
 	L.push("<!-- e.g. tag policy, who publishes artifacts -->", "");
 	return L.join("\n") + "\n";

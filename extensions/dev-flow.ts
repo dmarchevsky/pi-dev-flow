@@ -138,10 +138,10 @@ import {
 	type PushRef,
 	type SessionClaim,
 } from "../src/core.ts";
-import { buildDraft, doctorFindings, ghostFeatureDirs, loadProject, mdDigest, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
+import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
 import { dedupeReflections, linkedTag, parseGhIssues, similarNote, type FoldResult, type GhIssue } from "../src/fold.ts";
 import { bashTimeout, requireTimeout } from "../src/timeouts.ts";
-import { detectProject } from "../src/detect.ts";
+import { detectProject, type Detection } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
 
@@ -367,7 +367,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|list|tidy|move <n> --playbook|--code] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> stamps an item for flow start, finish checks it off — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
+	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> stamps an item for flow start, finish checks it off — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -736,18 +736,72 @@ function isSelfRepo(root: string): boolean {
 	}
 }
 
-/** The questions `flow init` asks before writing a playbook — detection fills what it can, the operator answers the rest (the agent relays them). */
-function setupQuestions(det: { partial: { defaultBranch: string; versioning?: { file: string }; forge?: string; merge?: string }; missing: string[] }): string[] {
-	const q = [det.partial.forge ? `git forge: detected "${det.partial.forge}" from the origin URL — github, gitlab or self-hosted? (global key forge)` : "git forge: no origin remote to detect from — github, gitlab or self-hosted? (global key forge)"];
-	q.push(det.partial.versioning ? `version manifest: detected ${det.partial.versioning.file} — keep it? tag pattern v{version}?` : "versioning: no manifest found — which file holds the version (VERSION recommended), and the tag pattern?");
-	// the merge style is inferable from history and worth asking with that evidence: a repo almost always has one
-	q.push(`${det.partial.merge ? `${det.partial.merge} —` : "merge history: nothing to read a style from —"} how should a merged PR land on the default branch: squash, merge (a merge commit), rebase, or any (no policy)? it is written as merge = <style> under ## release and the gates enforce it.`);
-	q.push("releases: should release-done create the forge release automatically via gh/glab (releases = yes), or is publishing manual (no)?");
-	q.push("artifacts: do you publish anything to a registry (e.g. a container image to Docker Hub)? then release.artifact needs a verify command (e.g. docker buildx imagetools inspect <image>:{version}); the push itself belongs to ## release prose.");
-	q.push(`tier-1 checks: ${det.missing.length ? `not detected: ${det.missing.join(", ")} —` : "detected test/build/run —"} which commands run tests, the build? any lint/typecheck? each extra becomes a flow-check block under ## implement.`);
-	q.push("runtime: does the app expose a health endpoint (commands.health) and is there a dev deploy (commands.dev) the operator reviews before verify?");
-	q.push("manual checks: any per-stage items the operator must tick off (tier-2 checklist) or standing guidance (prose)?");
+/** Which tag convention the repo already uses — read off its newest tags, like the merge style is read off
+ *  its history. null = no version-like tags yet (the v{version} default stands, and is asked about). */
+async function tagPatternEvidence(root: string): Promise<{ pattern: string; note: string } | null> {
+	const r = await sh("git tag --list --sort=-creatordate", root, 10_000);
+	if (!r.ok) return null;
+	const tags = r.out.split("\n").map((t) => t.trim()).filter((t) => /\d+\.\d+\.\d+/.test(t)).slice(0, 20);
+	if (!tags.length) return null;
+	const prefix = (t: string) => t.slice(0, t.search(/\d+\.\d+\.\d+/));
+	const counts = new Map<string, number>();
+	for (const t of tags) counts.set(prefix(t), (counts.get(prefix(t)) ?? 0) + 1);
+	const [top] = [...counts.entries()].sort((x, y) => y[1] - x[1]);
+	return { pattern: `${top[0]}{version}`, note: `${tags.length} version tag(s), newest ${tags[0]}${counts.size > 1 ? ` (mixed prefixes: ${[...counts.keys()].map((k) => k || "none").join(", ")})` : ""}` };
+}
+
+/** One setup question: what to ask, what detection found, why it matters, and the answer that accepts it. */
+export interface SetupQuestion {
+	key: string;
+	ask: string;
+	detected?: string;
+	/** `flow init --answers` token(s) that accept the detected/suggested value */
+	accept?: string;
+	why: string;
+}
+
+/** The questions `flow init` asks before writing a playbook — detection fills what it can, the operator
+ *  answers the rest (the agent relays them). Every question says why it matters and what skipping costs,
+ *  so it is answerable without reading docs/playbook.md first. */
+function setupQuestions(det: Detection, ev: { merge?: { note: string; recent: string | null } | null; tag?: { pattern: string; note: string } | null }): SetupQuestion[] {
+	const sug = (k: string) => det.suggestions.filter((x) => x.key === k);
+	const q: SetupQuestion[] = [];
+	const forge = det.partial.forge;
+	q.push({ key: "forge", ask: "Where is the repo hosted: github, gitlab or self (plain git)?", detected: forge ? `${forge} (from the origin URL)` : "no origin remote", accept: forge ? `forge=${forge}` : undefined, why: "decides who creates the release and how dev-flow proves a PR really merged (gh/glab); self = git only, no automatic releases" });
+	const vf = det.partial.versioning?.file;
+	q.push({ key: "versionFile", ask: vf ? `Version lives in ${vf} — keep it?` : "Which file holds the version? (VERSION recommended for non-package repos; or answer that releases carry no version)", detected: vf, accept: vf ? `versionFile=${vf}` : undefined, why: "a release bumps this file and the tag must match it; without one, every release is merge-only (no bump, no tag)" });
+	const tag = ev.tag?.pattern ?? "v{version}";
+	q.push({ key: "versionTag", ask: `Tag pattern: ${tag}?`, detected: ev.tag ? `${ev.tag.note}` : "no version tags yet — default v{version}", accept: `versionTag=${tag}`, why: "release tags and the manifest are checked against each other; a pattern that differs from your existing tags breaks the last-release lookup" });
+	q.push({ key: "merge", ask: "How should a merged PR land on the default branch: squash, merge (a merge commit), rebase, or any (no policy)?", detected: ev.merge?.note ?? "no history to read a style from", accept: ev.merge?.recent ? `merge=${ev.merge.recent}` : undefined, why: "the guard blocks a PR merge in a different style and release-done proves what landed; flow start refuses until this is answered" });
+	q.push({ key: "releases", ask: "Should release-done create the forge release automatically (gh/glab release from the changelog entry)?", detected: forge === "self" ? "forge = self: no CLI to create one" : undefined, accept: forge === "self" ? "releases=false" : "releases=true", why: "off = the tag is pushed and publishing the release page stays your manual step" });
+	const art = sug("artifact");
+	q.push({ key: "artifact", ask: art.length ? "Verify the published artifact after release with this command?" : "Do you publish anything to a registry (npm, crates.io, a container image)? If so, which command proves the version is out?", detected: art.map((a) => a.why).join("; ") || undefined, accept: art[0] ? `artifact=${art[0].value}` : undefined, why: "release-done refuses to finish until the artifact is really there — catches a CI publish that silently failed; none = no check" });
+	const pre = sug("preflight");
+	if (pre.length) q.push({ key: "preflight", ask: `Run \`${pre[0].value}\` before anything ships?`, detected: pre[0].why, accept: `preflight=${pre[0].value}`, why: "flow release runs it in the worktree first — a build the tag would trigger, proven before the tag exists" });
+	const checks = det.partial.checks ?? {};
+	q.push({
+		key: "check.<name>",
+		ask: `Tier-1 checks: ${det.missing.length ? `not detected: ${det.missing.join(", ")}` : "test/build/run detected"}${Object.keys(checks).length ? `; drafted extra checks: ${Object.keys(checks).join(", ")}` : ""}. Correct? Anything CI runs that is missing (lint, typecheck, e2e)?`,
+		detected: Object.entries(det.partial.commands).filter(([k]) => k !== "setup").map(([k, v]) => `${k}: ${v}`).join(" · ") || undefined,
+		why: "flow check runs every one of these and the gates refuse while any fails — a check missing here is a failure only CI will see; answer test=… / build=… / check.<name>=<cmd> (empty value removes)",
+	});
+	const dev = sug("dev");
+	q.push({ key: "health", ask: `Does the app expose a health probe (e.g. curl -fs localhost:PORT/healthz)?${dev.length ? ` And use \`${dev[0].value}\` as the dev deploy reviewed before verify?` : " Is there a dev deploy reviewed before verify?"}`, detected: dev[0]?.why, accept: dev[0] ? `dev=${dev[0].value}` : undefined, why: "verify proves the running build is healthy only with a probe; none is fine for libraries and CLIs" });
+	if (det.partial.changelog === "") q.push({ key: "changelog", ask: "No changelog found — create CHANGELOG.md, or run without one?", accept: "changelog=", why: "the release gates fold the branch's entry into the version heading; empty = no changelog checks at all" });
+	q.push({ key: "guard", ask: `Any commands the agent must never run, or files it must never touch?${det.partial.guards?.length ? ` (drafted from disk: ${det.partial.guards.map((g) => g.split(" :: ")[0].replace(/\s+/g, " ")).join(", ")})` : ""}`, why: "flow-guard rules are hard blocks or operator confirmations on every shell call and edit; added with flow init --write-file (free text)" });
+	q.push({ key: "checklist", ask: "Anything you want to tick off by hand per stage (e.g. 'migration tested on a prod copy'), or standing guidance the agent should read at a stage?", why: "checklist items are confirmed as a set at the gate; prose is injected when the stage begins — both are free text: flow init --write-file" });
 	return q;
+}
+
+function renderQuestions(qs: SetupQuestion[]): string[] {
+	const out: string[] = [];
+	qs.forEach((x, i) => {
+		out.push(`  ${i + 1}. [${x.key}] ${x.ask}`);
+		if (x.detected) out.push(`     detected: ${x.detected}`);
+		if (x.accept) out.push(`     accept: ${x.accept}`);
+		out.push(`     why: ${x.why}`);
+	});
+	return out;
 }
 
 const GIT_TRACK_NOTE = 'the playbook belongs in git: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering; the env prefix is for the pre-commit hook, dev-flow itself lets a main commit whose only change is the playbook)';
@@ -1472,6 +1526,19 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 }
 
+/** The main-branch guard as a hook body — installed into .git/hooks, or printed for a hook manager to carry. */
+const mainHookBody = (branch: string) =>
+	`branch=$(git rev-parse --abbrev-ref HEAD)\nif [ "$branch" = "${branch}" ] && [ -z "$DEV_FLOW_ALLOW_MAIN" ]; then\n  echo "dev-flow: direct commits to ${branch} are forbidden — use a feature worktree and a PR" >&2\n  exit 1\nfi\n`;
+
+/** Value tokens of a multi-value flag: everything after `--name` up to the next `--flag`. */
+function flagValues(rest: string[], name: string): string[] {
+	const i = rest.indexOf(`--${name}`);
+	if (i === -1) return [];
+	const out: string[] = [];
+	for (let j = i + 1; j < rest.length && !rest[j].startsWith("--"); j++) out.push(rest[j]);
+	return out;
+}
+
 async function gateInit(o: GateCtx): Promise<RunResult> {
 	const { root, ui, rest, flag } = o;
 	// a recursive mkdir is silent about whether it created anything, and `flow init --write` is the
@@ -1490,8 +1557,15 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 	const det = detectProject(root, branch);
 	const origin = await originUrl(root);
 	det.partial.forge = origin ? detectForge(origin) : undefined; // confirmed or corrected by the operator during setup; absent = no origin to detect from
-	det.partial.merge = (await mergeHistoryEvidence(root, branch))?.note; // "what do you actually do when a PR merges", read off the log
+	const mergeEv = await mergeHistoryEvidence(root, branch); // "what do you actually do when a PR merges", read off the log
+	det.partial.merge = mergeEv?.note;
+	const tagEv = await tagPatternEvidence(root);
+	if (tagEv) {
+		det.partial.versionTag = tagEv.pattern;
+		det.report.push(`tags: ${tagEv.note} → versionTag = ${tagEv.pattern}`);
+	}
 	const draftFresh = buildDraft(det);
+	const questions = setupQuestions(det, { merge: mergeEv, tag: tagEv });
 	if (flag("draft")) return { text: existsSync(mdFile) ? readFileSync(mdFile, "utf8") : draftFresh }; // read path: prints content, writes nothing (and offers no deletions)
 	// ghosts: feature dirs whose state.json is gone — inert, invisible to status and guards, and only findable by eye
 	const ghosts = ghostFeatureDirs(root);
@@ -1502,6 +1576,7 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 			notes.push(`removed ${ghosts.length} ghost feature dir(s): ${ghosts.map((g) => g.slice(".dev-flow/".length)).join(", ")}`);
 		} else notes.push(`kept ${ghosts.length} ghost feature dir(s) — inert, remove them whenever you like`);
 	}
+	const current = existsSync(mdFile) ? readFileSync(mdFile, "utf8") : null;
 	/** Validate, back up what was there (the operator's rules are not regenerable), write. */
 	const writeMd = (text: string): { rej: RunResult } | { warn: string[] } => {
 		const parsed = parseProjectMd(text);
@@ -1510,34 +1585,82 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 		writeFileSync(mdFile, text.endsWith("\n") ? text : `${text}\n`);
 		return { warn: parsed.warn };
 	};
-	if (flag("write")) {
-		const content = rest[rest.indexOf("--write") + 1];
-		if (!content || content.startsWith("--")) return { text: 'usage: flow init --write "<full project.md content>"', isError: true };
+	/** After a write: the playbook belongs in git — commit it on the operator's word, else say how. */
+	const afterWrite = async (w: { warn: string[] }, before: string | null, after: string, offer = false): Promise<void> => {
+		notes.push(`changes:\n${lineDiff(before ?? "", after)}`);
+		if (w.warn.length) notes.push("warnings:", ...w.warn.map((x) => `  ${x}`));
+		// the dialog belongs to the human-driven first init only: an agent write (--write/--answers) follows a chat
+		// confirmation and must not open a second question — it commits on --track
+		const track = flag("track") || (offer && ui.hasUI && (await ui.confirm("Commit project.md?", "The playbook belongs in git. Commit .dev-flow/project.md now (only that file, as a playbook chore)?")));
+		if (!track) {
+			notes.push(GIT_TRACK_NOTE, "(or re-run the same call with --track on the operator's word)");
+			return;
+		}
+		const c = await sh(`git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -q -m ${sq(before ? "chore: update dev-flow playbook" : "chore: add dev-flow playbook")} -- .dev-flow/project.md`, root, 60_000);
+		notes.push(c.ok ? "project.md committed (git add -f + playbook chore)" : `commit failed — ${c.out.split("\n").find(Boolean) ?? "?"}; ${GIT_TRACK_NOTE}`);
+	};
+	const answerToks = [...flagValues(rest, "answers"), ...(flag("answers-file") ? (() => { const f = flagValues(rest, "answers-file")[0]; return f && existsSync(path.resolve(root, f)) ? readFileSync(path.resolve(root, f), "utf8").split("\n") : [`<missing answers file ${f ?? ""}>`]; })() : [])];
+	if (flag("answers") || flag("answers-file")) {
+		// the operator's answers, applied as targeted edits onto the draft (first init) or the current file —
+		// hand-written lines survive; the result is previewed until the operator's word anchors the write
+		const parsed = parseAnswers(answerToks);
+		if (parsed.errors.length) return { text: `answers REJECTED:\n- ${parsed.errors.join("\n- ")}`, isError: true };
+		if (!parsed.answers.length) return { text: "usage: flow init --answers key=value [key=value …] | --answers-file <path> (one key=value per line)", isError: true };
+		const base = current ?? draftFresh;
+		const applied = applyAnswers(base, parsed.answers);
+		const lint = parseProjectMd(applied.text);
+		if (lint.hard.length) return { text: `project.md REJECTED:\n- ${lint.hard.join("\n- ")}`, isError: true };
+		const preview = [`${current ? "playbook" : "draft"} with ${parsed.answers.length} answer(s):`, ...applied.changes.map((c) => `  ${c}`), "", mdDigest(applied.text)];
+		const ok = flag("confirmed") || (ui.hasUI && (await ui.confirm("Write project.md?", preview.join("\n"))));
+		if (!ok) {
+			const open = questions.filter((x) => !parsed.answers.some(([k]) => k === x.key || (x.key === "check.<name>" && (k.startsWith("check.") || ["test", "build", "run"].includes(k)))));
+			return { text: [...preview, "", `changes:\n${lineDiff(base, applied.text)}`, "", "not written — present this to the operator; on their confirmation re-run the same call with --confirmed", ...(open.length ? ["still unanswered:", ...renderQuestions(open)] : [])].join("\n") };
+		}
+		const w = writeMd(applied.text);
+		if ("rej" in w) return w.rej;
+		notes.push(`project.md written with ${parsed.answers.length} answer(s)`);
+		await afterWrite(w, current, applied.text);
+	} else if (flag("write") || flag("write-file")) {
+		let content: string | undefined;
+		if (flag("write-file")) {
+			const f = flagValues(rest, "write-file")[0];
+			if (!f || !existsSync(path.resolve(root, f))) return { text: `usage: flow init --write-file <path> — ${f ? `${f} does not exist` : "no path given"}`, isError: true };
+			content = readFileSync(path.resolve(root, f), "utf8");
+		} else {
+			content = rest[rest.indexOf("--write") + 1];
+			if (!content || content.startsWith("--")) return { text: 'usage: flow init --write "<full project.md content>" (or --write-file <path>)', isError: true };
+		}
 		const w = writeMd(content);
 		if ("rej" in w) return w.rej;
-		notes.push("project.md written (operator-owned playbook)", GIT_TRACK_NOTE);
-		if (w.warn.length) notes.push("warnings:", ...w.warn.map((x) => `  ${x}`));
-	} else if (!existsSync(mdFile)) {
-		// first init: never write silently. The setup brief lists what detection could not decide;
-		// the agent relays the questions to the operator and applies the answers via flow init --write
-		// (validated) after presenting the digest; an interactive init may confirm the draft right here.
+		notes.push("project.md written (operator-owned playbook)");
+		await afterWrite(w, current, content);
+	} else if (!current) {
+		// first init: never write silently. The questions come first — a dialog that offered the bare detection
+		// draft before them wrote a playbook with the merge style, forge and versioning still unanswered.
 		const brief = [
 			"setup — project.md not written yet; nothing is drafted to disk until the operator confirms.",
+			"detected:",
 			...det.report.map((r) => `  ${r}`),
-			"questions for the operator (one per unclear knob, with the detected default):",
-			...setupQuestions(det).map((line, i) => `  ${i + 1}. ${line}`),
-			"agent: ask these in chat, fill the draft (flow init --draft), then apply with flow init --write \"<content>\" (hard-validated) — present the digest and get the operator's confirmation before writing.",
-			GIT_TRACK_NOTE,
+			"questions for the operator (detected value shown; `accept` is the answer that keeps it):",
+			...renderQuestions(questions),
+			"agent: ask these in chat — group the ones with an `accept` line as \"keep these?\", explain the rest in a line each. Then apply every answer in one call: flow init --answers key=value … (previews the digest and diff, writes nothing); on the operator's confirmation re-run it with --confirmed (add --track to commit the playbook). Free-text additions — checklist items, prose, flow-guard rules — go in through flow init --write-file <path> with the full file (flow init --draft prints the current draft).",
 		];
+		let wrote = false;
 		if (ui.hasUI) {
-			const ok = await ui.confirm("Write project.md draft?", `${mdDigest(draftFresh)}\n\nWrite this detection draft now? Declining leaves the setup questions open for chat clarification.`);
+			const accepts = questions.filter((x) => x.accept).map((x) => x.accept!);
+			const withAccepts = applyAnswers(draftFresh, parseAnswers(accepts).answers).text;
+			const ok = await ui.confirm("Accept the detected setup?", `${mdDigest(withAccepts)}\n\nWrite this now, keeping every detected value? ${questions.length - accepts.length} question(s) have no detected answer (${questions.filter((x) => !x.accept).map((x) => x.key).join(", ")}) — decline to answer them in chat first.`);
 			if (ok) {
-				const w = writeMd(draftFresh);
+				const w = writeMd(withAccepts);
 				if ("rej" in w) return w.rej;
-				notes.push("wrote .dev-flow/project.md from detection — review it and adjust as needed", GIT_TRACK_NOTE);
-			} else notes.push("draft not written — answer the setup questions, then flow init --write");
+				wrote = true;
+				notes.push("wrote .dev-flow/project.md from detection with the detected values accepted — change any of them with flow init --answers key=value", ...det.report.map((r) => `  ${r}`));
+				const open = questions.filter((x) => !x.accept);
+				if (open.length) notes.push("still open (answer any time):", ...renderQuestions(open));
+				await afterWrite(w, null, withAccepts, true);
+			}
 		}
-		notes.push(...brief);
+		if (!wrote) notes.push(...brief);
 	} else if (flag("force")) {
 		// a destructive reset of the operator's own file needs their word: --confirmed for an agent, one dialog for a human
 		const ok = flag("confirmed") || (ui.hasUI && (await ui.confirm("Overwrite project.md?", `flow init --force replaces the operator playbook with a fresh detection draft. Hand-written rules, checklist items and guidance are lost (a copy is kept as project.md.bak).`)));
@@ -1550,21 +1673,26 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 		// a draft cannot reproduce hand-written prose, items and keys. Edit the file, or flow init --write.
 		const loaded = loadProject(dfDir(root));
 		const findings = doctorFindings(root, loaded.cfg, loaded.md);
-		notes.push("project.md already exists — kept (edit it directly, flow init --write to replace it, --force to redraft)", findings.length ? `doctor: ${findings.length} finding(s):` : "doctor: no findings", ...findings.map((x) => `  ${x}`));
+		notes.push("project.md already exists — kept (edit it directly, flow init --answers key=value for one knob, --write-file to replace it, --force to redraft)", findings.length ? `doctor: ${findings.length} finding(s):` : "doctor: no findings", ...findings.map((x) => `  ${x}`));
 	}
 	const initCfg = loadProject(dfDir(root)).cfg;
 	if (initCfg.mainHook) {
+		// a hook manager (husky, lefthook…) points core.hooksPath elsewhere: git never runs .git/hooks then,
+		// so a hook installed there would guard nothing — print the lines for the manager's own hook instead
+		const hp = await sh("git config --get core.hooksPath", root, 10_000);
+		const hooksPath = hp.ok ? hp.out.trim() : ""; // unset exits 1, and sh() then carries the error text
 		const hookDir = path.join(root, ".git", "hooks");
 		const hook = path.join(hookDir, "pre-commit");
-		if (existsSync(hookDir) && !existsSync(hook)) {
-			writeFileSync(
-				hook,
-				`#!/bin/sh\n# installed by dev-flow: direct commits to ${initCfg.defaultBranch} are forbidden (override: DEV_FLOW_ALLOW_MAIN=1)\nbranch=$(git rev-parse --abbrev-ref HEAD)\nif [ "$branch" = "${initCfg.defaultBranch}" ] && [ -z "$DEV_FLOW_ALLOW_MAIN" ]; then\n  echo "dev-flow: direct commits to ${initCfg.defaultBranch} are forbidden — use a feature worktree and a PR" >&2\n  exit 1\nfi\n`,
-				{ mode: 0o755 },
-			);
+		const body = mainHookBody(initCfg.defaultBranch);
+		if (hooksPath && path.resolve(root, hooksPath) !== hookDir) {
+			const theirs = path.join(hooksPath, "pre-commit");
+			const has = existsSync(path.resolve(root, theirs)) && readFileSync(path.resolve(root, theirs), "utf8").includes("DEV_FLOW_ALLOW_MAIN");
+			if (!has) notes.push(`core.hooksPath = ${hooksPath} — git runs hooks from there, not .git/hooks, so dev-flow installed none; to block main commits outside Pi, add to ${theirs}:\n${body}`);
+		} else if (existsSync(hookDir) && !existsSync(hook)) {
+			writeFileSync(hook, `#!/bin/sh\n# installed by dev-flow: direct commits to ${initCfg.defaultBranch} are forbidden (override: DEV_FLOW_ALLOW_MAIN=1)\n${body}`, { mode: 0o755 });
 			notes.push("pre-commit hook installed (blocks commits on main)");
-		} else if (existsSync(hook) && !readFileSync(hook, "utf8").includes("installed by dev-flow")) {
-			notes.push("existing pre-commit hook found — dev-flow hook NOT installed; main commits outside Pi are unguarded");
+		} else if (existsSync(hook) && !readFileSync(hook, "utf8").includes("installed by dev-flow") && !readFileSync(hook, "utf8").includes("DEV_FLOW_ALLOW_MAIN")) {
+			notes.push(`existing pre-commit hook found — dev-flow did not replace it; main commits outside Pi stay unguarded until you add to .git/hooks/pre-commit:\n${body}`);
 		}
 	}
 	return { text: notes.join("\n") };
