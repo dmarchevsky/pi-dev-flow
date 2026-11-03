@@ -60,6 +60,7 @@ import {
 	sessionRunsOlderBuild,
 	changelogVersionsBetween,
 	inScratchDir,
+	mainCheckoutRoot,
 	guessReflectSections,
 	reflectItems,
 	reflectMove,
@@ -1317,4 +1318,12 @@ test("pre-reference: the changelog writer reviews the branch, not its commits", 
 	assert.match(ref, /git diff/, "reading the branch diff is an explicit step");
 	assert.match(ref, /One entry per net change, never\s+one per commit/, "iteration commits collapse into one entry");
 	assert.match(ref, /fold-safe/, "consolidating one's own entry is stated as fold-proof-safe");
+});
+
+test("mainCheckoutRoot: git's common dir names the main checkout a worktree borrows its history from", () => {
+	assert.equal(mainCheckoutRoot("/repo/.dev-flow/x/worktree", "/repo/.git"), "/repo", "a linked worktree resolves to the checkout owning its objects");
+	assert.equal(mainCheckoutRoot("/elsewhere/wt", "/repo/.git"), "/repo", "a worktree parked anywhere off the repo still points home");
+	assert.equal(mainCheckoutRoot("/repo", "/repo/.git"), null, "a main checkout is its own flow truth: nothing to remap");
+	assert.equal(mainCheckoutRoot("/tmp/scratch", null), null, "no git answer is never a remap");
+	assert.equal(mainCheckoutRoot("/wt", ".git"), null, "a relative answer resolves against cwd and says cwd is the main checkout");
 });

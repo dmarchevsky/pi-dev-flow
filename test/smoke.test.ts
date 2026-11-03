@@ -2299,3 +2299,30 @@ test("the stage injection names the one playbook file the stage needs", async ()
 	assert.match(inj.message.content, /Stage playbook: read .*references\/plan\.md before gate work/, "the plan stage names plan.md outright, absolute");
 	assert.ok(existsSync(inj.message.content.match(/Stage playbook: read (\S+) before gate work/)![1]), "the named file is a real path, not a wish");
 });
+
+test("a session inside a feature worktree is judged by the main checkout's flow truth", async () => {
+	// A linked worktree's own .dev-flow/ holds only the tracked playbook; read from there, every guard
+	// answered "no active flow" and sessions working in the worktree (stage workers) could not edit.
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "wtguard"]);
+	mkdirSync(path.join(repo, ".dev-flow", "wtguard", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "wtguard", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "wtguard", "worktree");
+	const session = (id: string) => ({ ...makeCtx(wt), sessionManager: { getSessionId: () => id, getBranch: () => [] } });
+	const editInWt = (id: string) => pi.handlers.tool_call[0]({ toolName: "write", input: { path: path.join(wt, "src", "app.ts") } }, session(id)) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	assert.equal(await editInWt("wt-worker"), undefined, "a session in the worktree writes it at implement — owner attribution, not 'no active flow'");
+	await flow(["check"]);
+	const st = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "wtguard", "state.json"), "utf8")) as { checks: Record<string, unknown> };
+	assert.ok(st().checks.test, "tier-1 PASS recorded");
+	await editInWt("wt-worker");
+	assert.deepEqual(st().checks, {}, "the edit invalidated the records in the MAIN checkout's state file");
+	assert.ok(!existsSync(path.join(wt, ".dev-flow", "wtguard", "state.json")), "nothing was written into the worktree's own .dev-flow/");
+	const checkout = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/wtguard", timeout: 60 } }, session("wt-worker")) as { block?: boolean; reason?: string } | undefined;
+	assert.equal(checkout, undefined, "checking the feature branch out inside its own worktree is allowed");
+});

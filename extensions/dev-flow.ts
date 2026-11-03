@@ -114,6 +114,7 @@ import {
 	verifyGate,
 	versionTagGate,
 	writeGuard,
+	mainCheckoutRoot,
 	type BranchState,
 	type Config,
 	type FeatureRef,
@@ -1933,6 +1934,33 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 }
 
 
+async function isLinkedWorktree(root: string): Promise<boolean> {
+	const r = await sh("git rev-parse --path-format=absolute --git-dir --git-common-dir", root);
+	if (!r.ok) return false;
+	const [gitDir, common] = r.out.split("\n").map((l) => l.trim());
+	return !!gitDir && !!common && path.resolve(gitDir) !== path.resolve(common);
+}
+
+/** Per-cwd cache for flowRoot — the tool_call hook consults it on every call. */
+const flowRootCache = new Map<string, string>();
+
+/** The root whose .dev-flow/ is the flow truth for a session cwd. A feature worktree is a linked git
+ *  worktree whose tracked .dev-flow/ holds only project.md — state, claims and plans live in the main
+ *  checkout. Judging a session by its own cwd found no features and every guard answered "no active
+ *  flow". So a linked worktree resolves to its main checkout when that checkout is initiated. */
+async function flowRoot(cwd: string): Promise<string> {
+	const hit = flowRootCache.get(cwd);
+	if (hit !== undefined) return hit;
+	let root = cwd;
+	if (await isLinkedWorktree(cwd)) {
+		const r = await sh("git rev-parse --path-format=absolute --git-common-dir", cwd);
+		const main = mainCheckoutRoot(cwd, r.ok ? r.out.trim() : null);
+		if (main && initiated(main)) root = main;
+	}
+	flowRootCache.set(cwd, root);
+	return root;
+}
+
 async function currentBranch(root: string): Promise<string> {
 	const r = await sh("git branch --show-current", root);
 	return r.ok ? r.out.split("\n")[0] : "";
@@ -2194,7 +2222,9 @@ export default function devFlow(pi: ExtensionAPI) {
 		// an uninitiated folder hears nothing from dev-flow at all — flow init is the opt-in that arms
 		// the guards, the no-playbook bash-timeout default included
 		if (noDf) return undefined;
-		const cfg = loadProject(dfDir(ctx.cwd)).cfg;
+		// flow truth lives in the main checkout even when the session runs inside a feature worktree
+		const guardRoot = await flowRoot(ctx.cwd);
+		const cfg = loadProject(dfDir(guardRoot)).cfg;
 		const mustStateTimeout = shellCmd !== "" && explicitTimeout === undefined && cfg.bashTimeout === "require";
 		// for bash this verdict waits behind the operator's own deny/confirm rules further down;
 		// powershell meets no project rules at all, so it is answered here
@@ -2203,8 +2233,8 @@ export default function devFlow(pi: ExtensionAPI) {
 
 		if (isToolCallEventType("edit", event) || isToolCallEventType("write", event)) {
 			const abs = path.resolve(ctx.cwd, String(event.input.path ?? ""));
-			const feats = featureRefs(ctx.cwd);
-			const bound = boundFeature(ctx.cwd, key);
+			const feats = featureRefs(guardRoot);
+			const bound = boundFeature(guardRoot, key);
 			// operator safety rules from project.md run first — as in the bash guard, the operator's deny outranks flow discipline
 			const pv = guardPath(abs, ctx.cwd, cfg.guard);
 			if (pv.block) return { block: true, reason: pv.block };
@@ -2212,14 +2242,14 @@ export default function devFlow(pi: ExtensionAPI) {
 				const why = await askOperator(ctx, `Editing ${path.relative(ctx.cwd, abs) || abs}`, pv.confirm);
 				if (why) return { block: true, reason: why };
 			}
-			const reason = writeGuard({ abs, dfDir: dfDir(ctx.cwd), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd });
+			const reason = writeGuard({ abs, dfDir: dfDir(guardRoot), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd });
 			if (reason) return { block: true, reason };
 			// Editing a worktree invalidates that feature's tier-1 checks and tier-2 confirmation until they rerun.
 			const owner = feats.find((f) => f.worktreeAbs && abs.startsWith(f.worktreeAbs + path.sep));
 			if (owner && (owner.state.stage === "implement" || owner.state.stage === "pre-release") && (Object.keys(owner.state.checks).length || owner.state.confirmations?.implement)) {
 				owner.state.checks = {};
 				delete owner.state.confirmations?.implement;
-				writeState(ctx.cwd, owner.state);
+				writeState(guardRoot, owner.state);
 			}
 			return undefined;
 		}
@@ -2257,7 +2287,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			}
 			const inv = gitInvocation(command);
 			if (!inv.subs.length) return undefined; // git is not invoked as a command — nothing to guard
-			const bound = boundFeature(ctx.cwd, key);
+			const bound = boundFeature(guardRoot, key);
 			// judge EACH git segment by the branch of the directory it runs in — a chain may cd across
 			// directories; one last-cd-wins verdict misattributed mixed-dir chains and blocked legit worktree commits
 			const branchCache = new Map<string, string>();
@@ -2271,7 +2301,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				}
 				return branchCache.get(at)!;
 			};
-			const worktrees = featureRefs(ctx.cwd).map((f) => f.worktreeAbs).filter((w): w is string => !!w);
+			const worktrees = featureRefs(guardRoot).map((f) => f.worktreeAbs).filter((w): w is string => !!w);
 			for (const g of inv.gitSegs) {
 				const gitDir = g.dir ? path.resolve(ctx.cwd, g.dir) : ctx.cwd;
 				const seg = gitInvocation(g.seg); // parsed once per segment — this runs on every bash call of every session

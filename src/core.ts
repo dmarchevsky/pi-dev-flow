@@ -1283,6 +1283,15 @@ const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs
  * the guarded checkout, and `repoRoot` keeps a repository that merely lives under the temp dir (every
  * smoke-test repo) under the normal stage rules.
  */
+/** The main checkout a linked worktree shares its history with, from git's answer for the common dir
+ *  (`<main>/.git`), or null when there is nothing to remap: git did not answer, or cwd already is that
+ *  checkout (a plain clone answers its own dir). */
+export function mainCheckoutRoot(cwd: string, commonDir: string | null): string | null {
+	if (!commonDir) return null;
+	const main = path.resolve(path.dirname(path.resolve(cwd, commonDir)));
+	return main === path.resolve(cwd) ? null : main;
+}
+
 export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
 	const real = realAbs(abs);
 	if (repoRoot) {
