@@ -4,6 +4,8 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.78.0] - 2026-11-03
+
 **`flow init` asks better questions and writes your answers itself.**
 
 ### Fixed
