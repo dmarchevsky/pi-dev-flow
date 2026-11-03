@@ -2818,3 +2818,36 @@ test("aborting a plan-stage feature with a written plan needs the operator's wor
 	assert.match((await flow(["status"])).content[0].text, /→ drafted/, "the session stays bound");
 	assert.match((await flow(["abort", "drafted", "--confirmed"])).content[0].text, /feature removed/);
 });
+
+test("a bound feature's processes get TMPDIR in .dev-flow/<slug>/tmp/ — finish-scoped scratch, not the OS temp dir", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const bash = async (command: string) => {
+		const input = { command, timeout: 60 };
+		const res = await pi.handlers.tool_call[0]({ toolName: "bash", input }, ctx);
+		return { res, command: input.command };
+	};
+	const probe = `node -e "require('fs').writeFileSync(require('path').join(require('os').tmpdir(),'probe'),'')"`;
+	await flow(["init", "--write", `# dev-flow\n\n## implement\n\n\`\`\`flow\ntest = ${probe}\n\`\`\`\n\n## release\n\n\`\`\`flow\nmerge = any\n\`\`\`\n`]);
+	assert.equal((await bash("ls")).command, "ls", "an unbound session keeps the OS temp dir");
+	await flow(["start", "scratch"]);
+	const tmp = path.join(repo, ".dev-flow", "scratch", "tmp");
+	const ok = await bash("ls");
+	assert.equal(ok.res, undefined);
+	assert.equal(ok.command, `export TMPDIR='${tmp}'\nls`, "an allowed call runs with the feature's scratch dir");
+	assert.ok(existsSync(tmp), "and the dir exists before the command runs");
+	const blocked = await bash("echo x > .dev-flow/scratch/state.json");
+	assert.ok(blocked.res?.block, "a refused call is still refused");
+	assert.equal(blocked.command, "echo x > .dev-flow/scratch/state.json", "and never prefixed");
+	mkdirSync(path.join(repo, ".dev-flow", "scratch", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "scratch", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	rmSync(tmp, { recursive: true, force: true });
+	const t = await flow(["test"]);
+	assert.match(t.content[0].text, /test: PASS/);
+	assert.ok(existsSync(path.join(tmp, "probe")), "flow test runs the suite with the same TMPDIR — its fixtures land in the feature dir");
+	await flow(["abort"]);
+	assert.ok(!existsSync(tmp), "abort unbinds and drops the scratch with the binding");
+});

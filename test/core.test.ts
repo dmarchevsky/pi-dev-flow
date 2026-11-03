@@ -10,6 +10,8 @@ import {
 	approveGate,
 	bashSegments,
 	bashFlowGuard,
+	featureTmpDir,
+	withTmpDir,
 	checklistHash,
 	checkoutInvocation,
 	claimBlocks,
@@ -882,11 +884,12 @@ test("pluginVersion: dev-flow's own manifest, found by walking up from the modul
 	writeFileSync(path.join(root, "package.json"), '{"name":"pi-dev-flow"}');
 	assert.deepEqual(pluginVersion(path.join(root, "extensions")), { version: null, dir: root, repo: "" });
 
-	// some other package, and nothing of ours above it: unknown, naming where it looked
+	// some other package, and nothing of ours above it: unknown, naming where it looked. The name is one
+	// no ancestor carries — inside a flow TMPDIR is .dev-flow/<slug>/tmp/ of a dev-flow checkout itself
 	const other = mkdtempSync(path.join(tmpdir(), "devflow-pv-"));
 	mkdirSync(path.join(other, "lib"), { recursive: true });
 	writeFileSync(path.join(other, "package.json"), '{"name":"someone-else","version":"9.9.9"}');
-	assert.deepEqual(pluginVersion(path.join(other, "lib")), { version: null, dir: path.join(other, "lib"), repo: "" });
+	assert.deepEqual(pluginVersion(path.join(other, "lib"), "pv-fixture-nowhere"), { version: null, dir: path.join(other, "lib"), repo: "" });
 });
 
 test("githubSlug: owner/slug from manifest strings, URLs and scp-style remotes", () => {
@@ -1506,4 +1509,9 @@ test("worker helpers: op legality, budget clamp, REPORT parsing", () => {
 	assert.equal(none.found, false);
 	assert.match(none.body, /write D4/, "the tail is kept for the driver");
 	assert.equal(parseWorkerReport("REPORT mentioned inline is not a heading").found, false);
+});
+
+test("withTmpDir prefixes a shell-quoted TMPDIR and keeps the command as judged", () => {
+	assert.equal(featureTmpDir("/r/.dev-flow", "x"), path.join("/r/.dev-flow", "x", "tmp"));
+	assert.equal(withTmpDir("ls -la", "/r/a b/it's"), "export TMPDIR='/r/a b/it'\\''s'\nls -la");
 });
