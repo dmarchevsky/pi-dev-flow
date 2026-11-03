@@ -9,11 +9,6 @@ in a repo that ignores the folder is a deliberate one-off:
 env prefix is for dev-flow's `pre-commit` hook, which allows a main commit whose only change is the
 playbook.
 
-Inside, each `.dev-flow/<slug>/` folder holds one feature's whole world — its state, its `plan/`,
-its worktree. The plan lives in the *folder*, not the worktree, on purpose: a plan must exist (and
-stay amendable through implement) before the worktree exists at all — the worktree is created only
-when `approve` runs.
-
 It is **committed to git**; you edit it (the agent is blocked from writing the main-checkout copy
 and may edit it only inside a docs/patch flow's worktree, or apply it through `flow init --write`
 on your word, which validates). Content is organized per stage
@@ -106,9 +101,9 @@ here if your project wants that (per-sprint grouping, issue numbers, a strict Ke
 vocabulary).
 
 `## global` holds
-`defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = require`
-(default: every shell call must state its own timeout) `| inject`, `release.review`,
-`release.changelog` (default `CHANGELOG.md`; set it empty to opt out), `release.releases` and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
+`defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = inject`
+(default: the class timeout is armed silently on every shell call) `| require` (refuse calls that do not state one), `release.review`,
+`release.changelog` (default `CHANGELOG.md`; set it empty to opt out), `release.releases`, `release.preflight = <cmd>` (run in the worktree by `flow release` before anything ships — e.g. `docker build .`, so the build the tag triggers is proven first; a failure refuses the gate) and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
 `dev`. Of those, `setup` runs once inside a freshly created worktree at `approve` (where `cp .env` +
 `npm install` belong — a failing setup fails the gate), and `run` is advisory: the agent starts the app
 with it for the running-and-healthy walk, dev-flow never runs it itself. `dev` is the dev deploy run by

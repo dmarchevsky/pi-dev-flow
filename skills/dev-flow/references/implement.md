@@ -9,36 +9,6 @@ or the injection line) — writes elsewhere are blocked; other sessions'
 worktrees are theirs (attribution guards judge every path by its owning
 feature).
 
-**Delegating the stage's work.** Implement **is delegated**: this session does not write the
-feature at all — run the work in a disposable worker session with `flow_stage`
-(`stage: "implement"`). That is enforced, not advised: the guard refuses a driver's own edit
-inside its worktree at implement, and `flow verify` refuses a branch whose commits fall outside a
-worker's run window (`.dev-flow/<slug>/stage-sessions/delegations.log` is the record it reads), so
-inline work is work that cannot be verified. `--docs` and `--patch` flows are exempt and stay
-inline — the operator granted those modes for exactly that. What stays the driver's own: the gates,
-the checkpoint, `flow check`, running the app. The
-worker gets a fresh context holding the plan, live git and `flow status
---json` — it keeps nothing from this conversation, so put every operator
-answer, decision, warning and the exact next action into `note`, and a short
-`label` — a few words of purpose — so the picker reads `⏳ 🔨 #2 · wire ops` and,
-when it ends, `✓ 🔨 #2 · 3 commits · wire ops` (a verify: `✓ 🔍 #3 · PASS · <label>`)
-instead of a column of identical rows. The worker
-may edit and commit in the worktree but holds no flow tool: gates,
-checkpoints and the claim stay with you. When it returns, digest its stage
-report (done/files/notes/blockers — a handoff, never a verification), rerun
-`flow check` (its edits invalidated tier-1 records), and delegate the remaining
-loose ends too — a second `run` worker is how a tail gets finished, there is no inline allowance to fall back to. A missing report block or a crashed worker means the
-worktree is mid-stage: read the transcript path and (if it names one) the
-snapshot `.diff` the result gives. Every slice goes out, the small ones with the big ones. One worker per session at a
-time — but **sequential re-delegation is legal and often right**: a second
-worker whose `note` says what the first one proved is how a big stage is
-sliced. While one runs, the **tool card streams the worker's live output into
-your transcript** (current tool, last assistant line, ✓/✗ results, clock against budget,
-usage); the footer beats progress, the worker is visible as a
-named session in the picker, and `flow_stage { op: "status" }` answers “how’s it
-going?” without a model call on any host (the tail also mirrors to `stage-live.log`). Size `budgetMin` to the slice (default 45; verify/reflect default 30): at 75%
-the worker is steered to commit and report rather than cut off.
-
 1. Implement per the approved plan with project conventions and the **stage
    guidance injected at stage start** (tier-3 prose — your playbook's
    `prose.implement`, or dev-flow's built-in senior-discipline guidance when
@@ -57,16 +27,7 @@ the worker is steered to commit and report rather than cut off.
    the tier-2 confirmation — rerun before verify.
 4. UI flag set? An actual browser visual pass (screenshot or the project's
    automated pass) — not just a typecheck.
-5. **The independent checker speaks before the operator does:** `flow_stage { op: "verify" }`
-   runs a read-only reviewer (toolset read + bash, standing order *check, don't fix*) over the
-   plan and the branch diff; it closes with a `VERIFY REPORT` verdict. Its **PASS is a
-   precondition of `flow verify`** and belongs to the tree it read: any edit after it drops it like
-   a tier-1 record, so the fix → a **fresh** verify worker; a verdict from an interrupted or
-   tree-touching worker never stamps (a reviewer that edits voids its own report). **FAIL means:
-   delegate the fix** — a fresh `flow_stage { stage: "implement" }` worker carries it out, because at
-   implement the guard refuses your own edit tool in your own worktree; then rerun a fresh verify
-   worker. The report is a handoff, the gate's own rerun is the proof.
-6. Done means **running and healthy with pre-existing data**, not "compiles":
+5. Done means **running and healthy with pre-existing data**, not "compiles":
    `commands.seedData` (if set) puts real data in place, the app starts with
    the `run` command, and the health check passes — `flow check` covers it
    (seedData runs before health) and `flow verify` probes **the deployed app
@@ -80,9 +41,30 @@ the worker is steered to commit and report rather than cut off.
    answered (with no `dev` deploy configured, `flow verify` live-re-probes
    `health` itself and refuses while nothing is answering). Checkpoint report: stage line **🔨 implement ·
    `<slug>`** — commits `N ahead, M uncommitted` · tier-1 · tier-2 · deploy/
-   health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = delegate,
-   iterate and re-verify; that loop is free — but every fix re-owes the verify worker's PASS, and a
-   fixer needs its own fresh worker: nothing at this stage comes off your own pen.
+   health · `branch@sha`, then `Done:`/`Next steps:` per the Stage reports rule. Fixes = iterate and re-verify; that loop is
+   free.
+
+### Optional: a fresh-session worker (`flow_stage`)
+
+Big slices can go to a worker so this conversation stays lean; small work and
+small fixes are fine inline. **Delegation is a tool, not a rule** — no gate
+asks who wrote a commit.
+
+- `flow_stage({ op: "implement", note, label })` — a fresh pi session in the
+  worktree, with read/bash/edit/write, edits and commits one slice. The tool
+  adds the facts itself: the absolute plan path, the branch's commits, the
+  uncommitted paths and the project checks. Your `note` is just the slice, plus
+  any operator answers the worker cannot see. A worker whose turn ends in prose
+  is nudged to continue, up to twice. On return the tool reruns `flow check` and
+  lists the new commits and anything uncommitted.
+- `flow_stage({ op: "review", note })` — a fresh **read-only** reviewer (at
+  implement or pre-release): findings plus `verdict: PASS|FAIL`. It is advisory:
+  no stamp, no gate waits on it. On a non-trivial feature, run one before
+  Verified?. Fix what is real (inline is fine), and re-review only if the fix
+  was large.
+- One worker at a time per session. The worker holds no flow tool, so gates
+  and checkpoints stay with you. Its transcript nests under this session in
+  pi's picker.
 
 `flow verify` re-runs build, runs the `dev` deploy when configured (the
 operator reviews the running app; the gate **prints what it ran** —

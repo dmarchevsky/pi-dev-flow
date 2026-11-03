@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,11 +13,6 @@ import {
 	checklistHash,
 	checkoutTarget,
 	claimBlocks,
-	claimAge,
-	orphanWorktreeBuckets,
-	processStart,
-	sessionBucketName,
-	sessionHeaderParent,
 	classifyMergeHistory,
 	mergeShapeProof,
 	mergeStyleInvocation,
@@ -27,10 +22,6 @@ import {
 	cmpVersions,
 	compactionReflectionLine,
 	DEFAULTS,
-	DELEGATIONS_FILE,
-	delegationErrors,
-	delegationLine,
-	DELEGATION_REFUSAL,
 	detectForge,
 	featureBranchPrefix,
 	FLOW_SHELL_HINT,
@@ -43,8 +34,6 @@ import {
 	githubSlug,
 	guardBash,
 	guardPath,
-	type DelegationWindow,
-	type FlowState,
 	type GuardRules,
 	healthRetry,
 	investigationBrief,
@@ -64,7 +53,6 @@ import {
 	pickReleaseNotes,
 	newState,
 	newestTaggedVersion,
-	parseDelegationLedger,
 	parseLsRemoteTags,
 	parseVersion,
 	pidAlive,
@@ -73,6 +61,12 @@ import {
 	changelogVersionsBetween,
 	inScratchDir,
 	mainCheckoutRoot,
+	parseWorkerReport,
+	workerOpError,
+	clampBudgetMin,
+	tagCreates,
+	releaseOrderInvocation,
+	branchCreateTarget,
 	guessReflectSections,
 	reflectItems,
 	reflectMove,
@@ -112,43 +106,8 @@ import {
 	stageReference,
 	SKILL_CORE_START,
 	SKILL_CORE_END,
-	buildStageBrief,
-	clampStageBudgetMin,
-	isDelegableStage,
-	parseStageReport,
-	stageCardLines,
-	familyHeading,
-	stageElapsedLabel,
-	stageInterruptSteer,
-	stageLiveLine,
-	summarizeToolArgs,
-
-	renderStageReport,
-	buildReflectBrief,
-	buildVerifyBrief,
-	liveTail,
-	parseReflectFindings,
-	parseVerifyReport,
-	parseWorkerTranscripts,
-	planFingerprint,
-	workerName,
-	sanitizeWorkerLabel,
-	recordVerifyPass,
-	stageLiveAssistantLine,
-	stageLiveResultLine,
-	stageUsageLine,
-	verifyStampMissing,
-	VERIFY_STAMP,
-	workerOpError,
-
-	workerTranscriptLine,
-	workerFamily,
-	workerFamilyCount,
-	isFamilyFoldLine,
-	WORKER_FAMILY_ITEMS,
-	renderVerifyReport,
-	WORKER_OP_BUDGET_MIN,	WORKER_OP_TOOLS,
 } from "../src/core.ts";
+
 const cfg = structuredClone(DEFAULTS);
 
 test("buildConfig fills defaults and merges partial overrides", () => {
@@ -385,16 +344,6 @@ test("parsePushRefs: what does each push actually write", () => {
 	assert.deepEqual(parsePushRefs([["origin", "v1.0", "v1.1"]]), [{ kind: "branch", name: "v1.0" }, { kind: "branch", name: "v1.1" }]);
 });
 
-test("stateTamper: the delegation ledger is state too — the bash half of the same rule", () => {
-	// writeGuard refuses the ledger to the edit/write tools; a `echo >>` around it would leave the
-	// honest session guarded and every other one free, so the ledger rides with state.json here.
-	assert.ok(stateTamper("echo x >> .dev-flow/b/stage-sessions/delegations.log"), "appending a hand-made window is a forgery, not a write to a log");
-	assert.ok(stateTamper("echo x > /repo/.dev-flow/b/stage-sessions/delegations.log"), "also at an absolute path");
-	assert.ok(stateTamper("rm .dev-flow/b/stage-sessions/delegations.log"), "deleting the proof is tampering with it");
-	assert.equal(stateTamper("cat .dev-flow/b/stage-sessions/delegations.log"), false, "reading the ledger is what flow status does");
-	assert.equal(stateTamper("git add .dev-flow/b/stage-sessions/delegations.log"), false, "git is not a write to the file it names");
-});
-
 test("stateTamper catches direct state.json writes", () => {
 	assert.ok(stateTamper("echo x > .dev-flow/f/state.json"));
 	assert.ok(stateTamper("rm .dev-flow/f/state.json"));
@@ -515,9 +464,7 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/b/plan/plan.md", dfDir: df, features: feats, boundSlug: "a" }) ?? "", /write only inside its own/, "one session may not write another feature's plan");
 	assert.ok(writeGuard({ abs: "/repo/wt-a/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/wt-a" }], boundSlug: "b" }), "plan-owned worktree stays closed even when bound elsewhere");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/worktree/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/.dev-flow/a/worktree" }], boundSlug: null }), "default worktreeDir inside .dev-flow is still stage-gated by its owner");
-	// byWorker here is not a concession: this line is about attribution (whose worktree decides the
-	// verdict, not who is holding the pen). The driver's own write at implement is its own test below.
-	assert.equal(writeGuard({ abs: `${wtB}/src/app.ts`, dfDir: df, features: feats, boundSlug: "a", byWorker: true }), null, "b implement worktree open even when bound to a");
+	assert.equal(writeGuard({ abs: `${wtB}/src/app.ts`, dfDir: df, features: feats, boundSlug: "a" }), null, "b implement worktree open even when bound to a");
 	assert.ok(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: feats, boundSlug: "b" }), "implement-bound session confined to its worktree");
 	const rel = { ...impl, stage: "release" as const };
 	assert.equal(writeGuard({ abs: "/repo/CHANGELOG.md", dfDir: df, features: [{ state: rel, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores may touch main checkout");
@@ -589,87 +536,12 @@ test("writeGuard: a symlink in the worktree is judged where the bytes land", () 
 	symlinkSync(path.join(repo, "src"), path.join(wt, "linked"));
 	const impl = { ...newState("e", false), stage: "implement" as const, worktree: "wt", branch: "feat/e" };
 	const feats = [{ state: impl, worktreeAbs: wt }];
-	// byWorker: this test is about where the bytes land, not about who writes (the delegation nudge
-	// refusing a driver at implement has its own test).
-	const g = (abs: string) => writeGuard({ abs, dfDir: df, features: feats, boundSlug: "e", repoRoot: repo, byWorker: true });
+	const g = (abs: string) => writeGuard({ abs, dfDir: df, features: feats, boundSlug: "e", repoRoot: repo });
 	assert.match(g(path.join(wt, "linked", "app.ts")) ?? "", /edit its worktree/, "bytes written through the link land in the main checkout — the link's path must not launder them");
 	assert.equal(g(path.join(wt, "app.ts")), null, "a plain worktree path stays the working area");
 	// and the main-checkout dev-flow files stay owned through a link too
 	symlinkSync(df, path.join(wt, "dflink"));
 	assert.match(g(path.join(wt, "dflink", "e", "state.json")) ?? "", /dev-flow-owned/, "state.json reached through a symlink is still state.json");
-});
-
-test("parseDelegationLedger: run windows parse, everything else is skipped", () => {
-	const a = "a".repeat(40);
-	const b = "b".repeat(40);
-	const line = delegationLine("2026-10-30T12:00:00Z", "implement", a, b, 3);
-	assert.equal(line, `[2026-10-30T12:00:00Z] run (implement): ${a}..${b} 3 commit(s)`);
-	assert.deepEqual(parseDelegationLedger(line), [{ stage: "implement", start: a, end: b }]);
-	assert.equal(parseDelegationLedger(`${line}\n${line}`).length, 2, "the log is history: the same range twice reads as two runs, not one");
-	assert.deepEqual(parseDelegationLedger(delegationLine("t", "pre-release", a, b, 1)), [{ stage: "pre-release", start: a, end: b }], "the stage rides along — coverage counts implement windows only");
-	assert.deepEqual(parseDelegationLedger(""), []);
-	assert.deepEqual(parseDelegationLedger("\n\nnot a ledger line\n[t] run (implement): zzz..yyy 1 commit(s)\n[t] run ():\n"), [], "prose and a short or missing sha range are not windows");
-	assert.deepEqual(parseDelegationLedger(`[t] run: ${a}..${b} 2 commit(s)`), [{ stage: "run", start: a, end: b }], "a line with no stage is still a window, just nobody's implement work");
-});
-
-test("mainCheckoutRoot: git's common dir names the main checkout a worktree borrows its history from", () => {
-	// The pure half of dev-flow's flowRoot: a feature worktree's .dev-flow/ holds only the tracked
-	// playbook, so every guard has to be judged from the checkout the state actually lives in.
-	assert.equal(mainCheckoutRoot("/repo/.dev-flow/x/worktree", "/repo/.git"), "/repo", "a linked worktree resolves to the checkout owning its objects");
-	assert.equal(mainCheckoutRoot("/elsewhere/wt", "/repo/.git"), "/repo", "a worktree parked anywhere off the repo still points home");
-	assert.equal(mainCheckoutRoot("/repo/.dev-flow/x/worktree", "/repo/wt/.git"), "/repo/wt", "a worktree of a worktree resolves to that worktree's own main checkout");
-	assert.equal(mainCheckoutRoot("/repo", "/repo/.git"), null, "a main checkout is its own flow truth: nothing to remap");
-	assert.equal(mainCheckoutRoot("/tmp/scratch", null), null, "no git answer is never a remap");
-	assert.equal(mainCheckoutRoot("/wt", ".git"), null, "a relative answer resolves against cwd and says cwd is the main checkout");
-});
-
-test("delegationErrors: every branch commit falls inside an implement-stage run window", () => {
-	const impl = { ...newState("b", false), stage: "implement" as const };
-	const w1 = { stage: "implement", start: "s1", end: "e1" };
-	const w2 = { stage: "implement", start: "s3", end: "e4" };
-	const pre = { stage: "pre-release", start: "s2", end: "e2" };
-	const cover = (map: Record<string, string[]>) => (w: DelegationWindow) => map[`${w.start}..${w.end}`] ?? [];
-	assert.deepEqual(delegationErrors(impl, [], ["c1"], cover({})), [DELEGATION_REFUSAL], "no ledger is no proof, and the refusal names the call that fixes it");
-	assert.match(DELEGATION_REFUSAL, /flow_stage \{ stage: "implement" \}/);
-	assert.deepEqual(delegationErrors(impl, [w1], ["c1", "c2"], cover({ "s1..e1": ["c1", "c2"] })), [], "full coverage passes");
-	assert.deepEqual(delegationErrors(impl, [w1, w2], ["c1", "c2", "c3"], cover({ "s1..e1": ["c1"], "s3..e4": ["c2", "c3"] })), [], "sequential workers pool their coverage");
-	assert.match(delegationErrors(impl, [w1], ["c1", "c2", "c3"], cover({ "s1..e1": ["c1", "c2"] })).join("\n"), /1 commit\(s\) on the branch were made outside a worker run/, "a stray is named by count");
-	assert.deepEqual(delegationErrors({ ...impl, docs: true }, [], ["c1"], cover({})), [], "a docs flow is exempt");
-	assert.deepEqual(delegationErrors({ ...impl, patch: true }, [], ["c1"], cover({})), [], "a patch flow is exempt");
-	assert.deepEqual(delegationErrors(impl, [], null, cover({})), [], "git not answering is never proof of a violation");
-	assert.deepEqual(delegationErrors(impl, [], [], cover({})), [], "nothing on the branch is nothing to attribute — verifyGate refuses the empty branch by name");
-	assert.deepEqual(delegationErrors(impl, [pre], ["c1"], cover({ "s2..e2": ["c1"] })), [DELEGATION_REFUSAL], "a pre-release window proves nothing about who implemented");
-	assert.deepEqual(delegationErrors(impl, [w1], ["c1"], cover({ "s1..e1": [] })), [DELEGATION_REFUSAL], "a window that committed nothing delivered nothing");
-});
-
-test("writeGuard: at implement the driver drives, a worker writes", () => {
-	const df = "/repo/.dev-flow";
-	const wt = "/repo/.wt/b";
-	const impl = { ...newState("b", false), stage: "implement" as const, worktree: ".wt/b" };
-	const w = (over: object = {}, byWorker?: boolean) => writeGuard({ abs: `${wt}/src/app.ts`, dfDir: df, features: [{ state: { ...impl, ...over } as FlowState, worktreeAbs: wt }], boundSlug: "b", byWorker });
-	assert.match(w() ?? "", /implement work is delegated/, "the driver's own write at implement is the one thing the ledger can never show — the guard says it at the write");
-	assert.equal(w({}, true), null, "the worker session is allowed here: that is what it was sent for");
-	assert.equal(w({ docs: true }), null, "a docs flow stays inline");
-	assert.equal(w({ patch: true }), null, "a patch flow stays inline");
-	assert.equal(w({ stage: "pre-release" as const }), null, "pre-release prep is the driver's own work by design");
-});
-
-test("writeGuard: the delegation ledger is dev-flow-owned — the session it constrains cannot sign it", () => {
-	// the forgeability finding: writeGuard refused state.json and claim.json but let a bound session
-	// write its own .dev-flow/<slug>/stage-sessions/delegations.log, and one hand-written line
-	// covering the driver's own shas collapses the gate's "zero bypass".
-	const df = "/repo/.dev-flow";
-	const wt = "/repo/.wt/b";
-	const impl = { ...newState("b", false), stage: "implement" as const, worktree: ".wt/b" };
-	const feats = [{ state: impl, worktreeAbs: wt }];
-	const ledger = `${df}/b/stage-sessions/${DELEGATIONS_FILE}`;
-	const g = (abs: string, byWorker?: boolean) => writeGuard({ abs, dfDir: df, features: feats, boundSlug: "b", byWorker });
-	assert.match(g(ledger) ?? "", /delegations\.log is dev-flow-owned/, "the ledger is the proof the gate trusts — its subject may not write it");
-	assert.match(g(ledger, true) ?? "", /dev-flow-owned/, "not even a worker signs its own window: flow_stage appends the ledger itself, outside the guard");
-	assert.match(g(ledger) ?? "", /cannot sign its own proof/, "and the refusal says why");
-	assert.equal(g(`${df}/b/stage-sessions/transcripts.log`), null, "the sibling worker index in the same folder stays writable — the rule is the ledger, not the folder");
-	assert.equal(g(`${df}/b/plan/plan.md`), null, "the feature dir's other files are untouched");
-	assert.equal(g(`${wt}/delegations.log`, true), null, "a source file that merely shares the name is no ledger (and it sits outside stage-sessions/)");
 });
 
 test("openReflections: unchecked items only", () => {
@@ -1208,52 +1080,6 @@ test("claimBlocks refuses a silent take-over only for a foreign live claim", () 
 	assert.equal(claimBlocks(claim, "B", () => false), false, "foreign claim from a dead pid — claim is void");
 });
 
-test("a recycled pid does not hold a dead session's claim", () => {
-	const claim = { key: "A", pid: 854, at: "2026-11-02T15:25:32.728Z", start: "1000" };
-	assert.equal(claimBlocks(claim, "B", () => true, () => "1000"), true, "same pid, same start: the claimant is alive");
-	assert.equal(claimBlocks(claim, "B", () => true, () => "9999"), false, "same pid, different start: an unrelated process inherited the pid");
-	assert.equal(claimBlocks(claim, "B", () => true, () => undefined), true, "no start identity to compare: the pid alone decides, as before");
-	assert.equal(claimBlocks({ key: "A", pid: 854, at: "x" }, "B", () => true, () => "9999"), true, "a legacy claim without start keeps the pid-only judgement");
-});
-
-test("processStart reads field 22 of /proc/<pid>/stat, counting past a comm with spaces and parens", () => {
-	const fields = Array.from({ length: 50 }, (_, i) => String(i + 3)); // field 3 onward
-	const stat = `854 (next-server (v16) x) ${fields.join(" ")}`;
-	assert.equal(processStart(854, () => stat), "22");
-	assert.equal(processStart(854, () => { throw new Error("no procfs"); }), undefined);
-	if (process.platform === "linux") assert.match(processStart(process.pid) ?? "", /^\d+$/, "a real process has one here");
-});
-
-test("claimAge words the claim's age for a refusal", () => {
-	const at = "2026-11-02T00:00:00.000Z";
-	const t = Date.parse(at);
-	assert.equal(claimAge({ key: "A", pid: 1, at }, t + 5 * 60000), "5 min old");
-	assert.equal(claimAge({ key: "A", pid: 1, at }, t + 3 * 3600000), "3 h old");
-	assert.equal(claimAge({ key: "A", pid: 1, at }, t + 3 * 86400000), "3 days old");
-	assert.equal(claimAge({ key: "A", pid: 1, at: "garbage" }), "");
-});
-
-test("orphanWorktreeBuckets: finished, vanished and stateless worktrees, never a live one or a foreign repo", () => {
-	const root = "/home/me/work/repo";
-	const b = (slug: string) => sessionBucketName(`${root}/.dev-flow/${slug}/worktree`);
-	assert.equal(b("my-feat"), "--home-me-work-repo-.dev-flow-my-feat-worktree--", "pi's own encoding");
-	const features = new Map([
-		["live", { finished: false, worktreeExists: true }],
-		["done-one", { finished: true, worktreeExists: false }],
-		["lost-wt", { finished: false, worktreeExists: false }],
-	]);
-	const buckets = [b("live"), b("done-one"), b("lost-wt"), b("no-state"), sessionBucketName(root), sessionBucketName("/home/me/work/other/.dev-flow/x/worktree")];
-	assert.deepEqual(orphanWorktreeBuckets(buckets, root, features).map((o) => o.slug), ["done-one", "lost-wt", "no-state"]);
-});
-
-test("sessionHeaderParent reads the parent off the first line alone", () => {
-	assert.equal(sessionHeaderParent('{"type":"session","id":"a","parentSession":"/b/d.jsonl"}\n{"type":"message"'), "/b/d.jsonl");
-	assert.equal(sessionHeaderParent('{"type":"session","id":"a"}\n'), null, "a session that is nobody's child");
-	assert.equal(sessionHeaderParent('{"type":"session","id":"a","parentSess'), undefined, "an incomplete first line is not judged");
-	assert.equal(sessionHeaderParent('{"type":"message"}\n'), undefined, "not a pi session");
-	assert.equal(sessionHeaderParent("garbage\n"), undefined);
-});
-
 test("pidAlive probes process existence without signaling", () => {
 	assert.equal(pidAlive(process.pid), true, "our own process is alive");
 	assert.equal(pidAlive(2 ** 30), false, "a pid beyond the range is dead");
@@ -1472,19 +1298,6 @@ test("nextHint: the UI clause appends to the plan path instead of replacing it",
 	assert.match(nextHint({ ...ui, ui: false }, DEFAULTS), /plan\/plan\.md, then ask the operator Approve\?/);
 });
 
-test("nextHint: the implement hint delegates the work — it must not order inline authoring", () => {
-	const impl = { ...newState("d", false), stage: "implement" as const, worktree: ".dev-flow/d/worktree" };
-	const hint = nextHint(impl, DEFAULTS);
-	assert.match(hint, /flow_stage \{ stage: "implement" \}/, "the hint sends the work through a worker session");
-	assert.doesNotMatch(hint, /^implement in the worktree/, "it no longer opens by telling the driver to author the work itself — the write guard refuses that and the verify gate refuses the branch it produces");
-	assert.match(hint, /rerun flow check \(tier-1 checks, incl\. health with seeded data\)/, "the driver keeps flow check");
-	assert.match(hint, /ask them Verified\? in chat and run flow verify --confirmed/, "and the checkpoint");
-	assert.match(hint, /keep the app running when you ask Verified\?/, "and running the app");
-	// docs mode is exempt from delegation, so its hint stays inline — it is the one that must NOT name flow_stage
-	assert.match(nextHint({ ...impl, docs: true }, DEFAULTS), /^implement in the worktree \.dev-flow\/d\/worktree — docs mode/, "the docs sibling keeps its inline wording");
-	assert.doesNotMatch(nextHint({ ...impl, docs: true }, DEFAULTS), /flow_stage/, "no delegation demand in docs mode");
-});
-
 test("nextHint names the playbook merge style at the release stage", () => {
 	const st = { ...newState("x", false), stage: "release" as const };
 	const cfg = { ...DEFAULTS, release: { ...DEFAULTS.release, merge: "squash" as const } };
@@ -1513,354 +1326,57 @@ test("pre-reference: the changelog writer reviews the branch, not its commits", 
 	assert.match(ref, /fold-safe/, "consolidating one's own entry is stated as fold-proof-safe");
 });
 
-// ------------------------------------------------------- stage worker contract (flow_stage)
-
-test("isDelegableStage: only the heavy middle stages delegate", () => {
-	assert.ok(isDelegableStage("implement") && isDelegableStage("pre-release"), "implement and pre-release work delegates");
-	for (const s of ["plan", "release", "done", "nonsense"]) assert.ok(!isDelegableStage(s as never), `${s} stays with the driving session`);
+test("mainCheckoutRoot: git's common dir names the main checkout a worktree borrows its history from", () => {
+	assert.equal(mainCheckoutRoot("/repo/.dev-flow/x/worktree", "/repo/.git"), "/repo", "a linked worktree resolves to the checkout owning its objects");
+	assert.equal(mainCheckoutRoot("/elsewhere/wt", "/repo/.git"), "/repo", "a worktree parked anywhere off the repo still points home");
+	assert.equal(mainCheckoutRoot("/repo", "/repo/.git"), null, "a main checkout is its own flow truth: nothing to remap");
+	assert.equal(mainCheckoutRoot("/tmp/scratch", null), null, "no git answer is never a remap");
+	assert.equal(mainCheckoutRoot("/wt", ".git"), null, "a relative answer resolves against cwd and says cwd is the main checkout");
 });
 
-test("parseStageReport digests the contract block", () => {
-	const text = "prose before\n\n**STAGE REPORT**\ndone:\n- wired the tool\nfiles:\n- src/core.ts — report contract\nnotes:\n- operator asked for bounded output\nblockers:\n- none\n";
-	const r = parseStageReport(text);
-	assert.equal(r.missing, false);
-	assert.deepEqual(r.done, ["wired the tool"]);
-	assert.deepEqual(r.files, ["src/core.ts — report contract"]);
-	assert.deepEqual(r.notes, ["operator asked for bounded output"]);
-	assert.deepEqual(r.blockers, [], "a blockers:none line is not a blocker");
+test("release order: tags and forge shipping wait for the release stage", () => {
+	const g = (command: string, stage: "implement" | "pre-release" | "release" | null, branch = "feat/x") => bashFlowGuard({ command, branch, stage, defaultBranch: "main" });
+	assert.match(g("git tag -a v1.2.0 -m x", "pre-release") ?? "", /tagging is release work/, "a tag cut at pre-release is refused");
+	assert.equal(g("git tag -a v1.2.0 -m x", "release", "main"), null, "the same tag at release is the release");
+	assert.equal(g("git tag -l", "pre-release"), null, "listing tags only reads");
+	assert.equal(g("git tag", "implement"), null, "bare git tag lists");
+	assert.match(g("git push origin --tags", "pre-release") ?? "", /pushing tags is release work/);
+	assert.match(g("git push origin refs/tags/v1.2.0", "implement") ?? "", /pushing tags is release work/);
+	assert.equal(g("git push -u origin feat/x", "pre-release"), null, "pushing the feature branch for the PR is fine");
+	assert.equal(g("git tag v1.2.0", null), null, "an unbound session is not judged by a stage it does not have");
+	assert.ok(tagCreates("git tag v1"), "a lightweight tag creates");
+	assert.ok(!tagCreates("git tag --contains HEAD"));
+	assert.match(releaseOrderInvocation("gh pr merge 46 --squash", "pre-release") ?? "", /merging the PR is release work/);
+	assert.match(releaseOrderInvocation("cd wt && gh release create v1 --notes x", "implement") ?? "", /forge release is release work/);
+	assert.equal(releaseOrderInvocation("gh pr merge 46 --squash", "release"), null, "at release the merge is the job");
+	assert.equal(releaseOrderInvocation("gh pr create --base main", "pre-release"), null, "opening the PR is pre-release work");
+	assert.equal(releaseOrderInvocation('grep "gh pr merge" docs/', "implement"), null, "quoted prose is not a merge");
+	assert.equal(releaseOrderInvocation("gh pr merge 1", null), null, "unbound: no stage to judge");
 });
 
-test("parseStageReport without the block is a finding, not a throw", () => {
-	const r = parseStageReport("I finished everything, it all works.\n");
-	assert.equal(r.missing, true);
-	assert.match(r.rawTail, /finished everything/);
+test("branchCreateTarget: the branch a checkout/switch creates, through leading flags", () => {
+	assert.equal(branchCreateTarget("git checkout -q -b fix/dockerfile"), "fix/dockerfile");
+	assert.equal(branchCreateTarget("git switch -c fix/x"), "fix/x");
+	assert.equal(branchCreateTarget("git checkout -q -B fix/y origin/main"), "fix/y");
+	assert.equal(branchCreateTarget("git checkout feat/x"), null, "switching to an existing branch creates nothing");
+	assert.equal(branchCreateTarget("git checkout -- src/a.ts"), null);
 });
 
-test("renderStageReport flags a missing block and respects the cap", () => {
-	assert.match(renderStageReport(parseStageReport("tail text")), /WITHOUT the STAGE REPORT/, "a skipped contract is loud");
-	const big = parseStageReport("STAGE REPORT\ndone:\n- " + "y".repeat(500) + "\n");
-	const small = renderStageReport(big, 100);
-	assert.ok(small.length < 220 && small.includes("truncated"), `digest stays bounded: ${small.length}`);
-});
-
-test("buildStageBrief carries the on-disk truth and the handoff note", () => {
-	const b = buildStageBrief({ slug: "s", stage: "implement", workDir: "/wt", planFile: "/r/.dev-flow/s/plan/plan.md", referenceText: "PLAYBOOK-TEXT", statusJson: '{"stage":"implement"}', gitSummary: "## feat/s", note: "operator said Z" });
-	for (const must of ["PLAYBOOK-TEXT", '{"stage":"implement"}', "## feat/s", "/wt", "operator said Z", "STAGE REPORT"])
-		assert.ok(b.includes(must), `brief must carry ${must}`);
-	const bare = buildStageBrief({ slug: "s", stage: "pre-release", workDir: "/wt", planFile: "/p", referenceText: "", statusJson: "{}", gitSummary: "" });
-	assert.ok(bare.includes("(none — the plan"), "an empty note says so out loud");
-	assert.ok(bare.includes("(this stage has no playbook reference)"), "a missing reference degrades visibly");
-});
-
-// ---------------------------------------- stage progress & graceful stop (flow_stage, gh#142)
-
-test("stage budget clamps to the sane band", () => {
-	assert.equal(clampStageBudgetMin(), 45, "no argument: the default budget");
-	assert.equal(clampStageBudgetMin(undefined), 45);
-	assert.equal(clampStageBudgetMin(90), 90, "an in-band override stands");
-	assert.equal(clampStageBudgetMin(1), 5, "never a minute of chaos");
-	assert.equal(clampStageBudgetMin(999), 120, "never an all-afternoon cap");
-});
-
-test("stageElapsedLabel renders mm:ss", () => {
-	assert.equal(stageElapsedLabel(0), "00:00");
-	assert.equal(stageElapsedLabel(65_000), "01:05");
-	assert.equal(stageElapsedLabel(3_600_000), "60:00", "past an hour the minutes just keep counting");
-	assert.equal(stageElapsedLabel(-5), "00:00");
-});
-
-test("summarizeToolArgs picks the informative field and caps it", () => {
-	assert.equal(summarizeToolArgs({ command: "npm test" }), "npm test", "bash shows the command");
-	assert.equal(summarizeToolArgs({ path: "src/core.ts", edits: [] }), "src/core.ts", "edit shows the path");
-	assert.match(summarizeToolArgs({ weird: [1, 2] }), /^\{"weird"/, "anything else is compact JSON");
-	const long = summarizeToolArgs({ command: "x".repeat(200) });
-	assert.ok(long.length === 58 && long.endsWith("…"), `capped at 60 columns: ${long.length}`);
-	assert.equal(summarizeToolArgs(undefined), "");
-});
-
-test("stageLiveLine is one bounded, elapsed-stamped line", () => {
-	assert.equal(stageLiveLine(65_000, "bash", "npm test"), "[+01:05] bash — npm test");
-	assert.equal(stageLiveLine(0, "worker", ""), "[+00:00] worker");
-});
-
-test("the budget steer orders a commit-then-report close-out", () => {
-	const s = stageInterruptSteer(45);
-	for (const must of ["45 min", "commit", "STAGE REPORT", "interrupted at budget"])
-		assert.ok(s.includes(must), `the steer must say ${must}`);
-});
-
-test("the brief makes per-unit commits a boundary", () => {
-	const b = buildStageBrief({ slug: "s", stage: "implement", workDir: "/wt", planFile: "/p", referenceText: "", statusJson: "{}", gitSummary: "" });
-	assert.match(b, /EACH TIME a unit of work is complete/, "a cut must cost one unit, not a worktree");
-});
-
-// ------------------------------------------------------- worker ops: verify / reflect / live card
-
-test("worker op legality: verify belongs to implement, reflect to a recorded release", () => {
-	const at = (stage: string, approvals: Record<string, string> = {}) => ({ stage: stage as never, approvals });
-	assert.equal(workerOpError("verify", at("implement")), null, "verify proves the implement work before Verified?");
-	assert.match(workerOpError("verify", at("plan"))!, /only while the feature is at implement/, "no verifier for an unapproved plan");
-	assert.match(workerOpError("verify", at("pre-release"))!, /stage is "pre-release"/, "and none after the stage moved on");
-	assert.equal(workerOpError("reflect", at("release", { release: "now" })), null, "the finish review runs once the release is recorded");
-	assert.match(workerOpError("reflect", at("release"))!, /no release recorded/, "before release-done it has nothing to review");
-	assert.match(workerOpError("reflect", at("implement"))!, /after release-done/, "mid-flow reflection stays the driver's own protocol");
-	assert.equal(workerOpError("run", at("implement")), null, "run keeps its own (stage-match) legality, untouched here");
-	assert.equal(workerOpError("status", at("plan")), null, "reading a live run needs no stage at all");
-});
-
-test("worker budgets and toolsets: reviews are shorter and hold no pen", () => {
-	assert.equal(WORKER_OP_BUDGET_MIN.run, 45, "the implement slice keeps the stage default");
-	assert.equal(WORKER_OP_BUDGET_MIN.verify, 30, "operator decision: a review run defaults to 30");
-	assert.equal(WORKER_OP_BUDGET_MIN.reflect, 30);
-	assert.deepEqual([...WORKER_OP_TOOLS.verify], ["read", "bash"], "a checker that can edit is a second implementer");
-	assert.deepEqual([...WORKER_OP_TOOLS.reflect], ["read", "bash"]);
-	assert.ok(WORKER_OP_TOOLS.run.includes("edit"), "the implement worker still builds");
-});
-
-test("parseVerifyReport reads the verdict, and reads a hedge as no verdict", () => {
-	const pass = parseVerifyReport("checked everything\nVERIFY REPORT\nverdict: pass\nfindings:\n- none\nevidence:\n- npm test — 251 pass\n");
-	assert.equal(pass.verdict, "pass");
-	assert.equal(pass.missing, false);
-	assert.equal(pass.findings.length, 0, "\"none\" is an empty section, not a finding");
-	assert.deepEqual(pass.evidence, ["npm test — 251 pass"]);
-	const fail = parseVerifyReport("VERIFY REPORT\nverdict: fail\nfindings:\n- plan D3 wants the gate to refuse, src/core.ts:10 accepts\n");
-	assert.equal(fail.verdict, "fail");
-	assert.equal(fail.findings.length, 1);
-	assert.equal(parseVerifyReport("VERIFY REPORT\nverdict: probably fine\n").verdict, null, "a hedge never passes");
-	assert.equal(parseVerifyReport("I checked it, looks great!").missing, true);
-	assert.match(renderVerifyReport(parseVerifyReport("nope")), /WITHOUT the VERIFY REPORT/, "a skipped contract is loud, never trusted");
-	assert.match(renderVerifyReport(parseVerifyReport("VERIFY REPORT\nverdict: maybe\n")), /no readable verdict/);
-	assert.match(renderVerifyReport(parseVerifyReport("VERIFY REPORT\nverdict: fail\nfindings:\n- " + "y".repeat(500) + "\n"), 200), /digest truncated/);
-});
-
-test("the verify PASS stamp rides the tier-1 invalidation path, not a parallel one", () => {
-	const s = { ...newState("f", false), stage: "implement" as const };
-	assert.equal(verifyStampMissing(s), true, "nothing recorded means the gate asks nobody");
-	recordVerifyPass(s, "now", "fp1");
-	assert.equal(s.checks[VERIFY_STAMP]?.ok, true);
-	assert.equal(verifyStampMissing(s), false);
-	// a worktree edit clears every check record (the edit hook's job); the PASS must not survive it
-	s.checks = {};
-	assert.equal(verifyStampMissing(s), true, "one edit, one re-run — precise, never sticky");
-	recordVerifyPass(s, "now", "fp1");
-	freshenChecks(s, "fp2");
-	assert.equal(verifyStampMissing(s), false, "the stamp answers to its own wider fingerprint (worktree + plan), so a plain worktree refresh must not speak for it — the verify gate voids it against the real stamp fingerprint");
-	recordVerifyPass(s, "now", null);
-	assert.equal(verifyStampMissing(s), false, "git could not answer: an unprovable stamp is never proven stale");
-	assert.equal(verifyStampMissing({ ...newState("d", false, false, true), stage: "implement" as const }), false, "docs mode is exempt like tier-1");
-});
-
-test("worker session names carry role, ordinal, purpose and outcome", () => {
-	assert.equal(workerName("⏳", "🔍", null, "stamp attack"), "⏳ 🔍 · stamp attack");
-	assert.equal(workerName("✓", "🔨", 2, "wire ops", "3 commits"), "✓ 🔨 #2 · 3 commits · wire ops");
-	assert.equal(workerName("✓", "🔍", null, "", "PASS"), "✓ 🔍 · PASS");
-	assert.equal(workerName("✗", "🔨", 3, "", "hard-cut"), "✗ 🔨 #3 · hard-cut");
-	assert.equal(workerName("⏳", "🔨", 1, ""), "⏳ 🔨 #1", "a label-less run is still separated by ordinal");
-	assert.equal(sanitizeWorkerLabel("  wire\n verify\u0007 ops   "), "wire verify ops", "control chars and whitespace collapse");
-	assert.equal(sanitizeWorkerLabel("twenty chars twelve " + "x".repeat(40)), "twenty chars twelve", "clips on the word boundary when one sits past half the budget");
-	assert.equal(sanitizeWorkerLabel("a " + "x".repeat(60)).length, 32, "an early-only boundary keeps the full 32-char clip");
-	assert.equal(sanitizeWorkerLabel("\u0001\u0002"), "", "nothing meaningful left reads empty");
-});
-
-test("planFingerprint tracks the plan dir byte-for-byte", () => {
-	const dir = mkdtempSync(path.join(tmpdir(), "fp-plan-"));
-	try {
-		assert.equal(planFingerprint(dir), planFingerprint(dir), "absent/empty dir is stable");
-		writeFileSync(path.join(dir, "plan.md"), "a");
-		const h1 = planFingerprint(dir);
-		assert.equal(planFingerprint(dir), h1, "same bytes, same hash");
-		assert.notEqual(planFingerprint(dir), planFingerprint(path.join(dir, "missing")), "present-but-empty ≠ absent");
-		const other = mkdtempSync(path.join(tmpdir(), "fp-plan2-"));
-		writeFileSync(path.join(other, "target.md"), "external a");
-		rmSync(path.join(dir, "plan.md"));
-		symlinkSync(path.join(other, "target.md"), path.join(dir, "plan.md"));
-		const hl = planFingerprint(dir);
-		writeFileSync(path.join(other, "target.md"), "external b");
-		assert.notEqual(planFingerprint(dir), hl, "a symlinked plan still hashes what it resolves to");
-		rmSync(path.join(dir, "plan.md"));
-		rmSync(other, { recursive: true, force: true });
-		// a plain file must not hash like a symlink of the base name (marker-collision class, round 3)
-		writeFileSync(path.join(dir, "plan.md@link"), "X");
-		const fake = planFingerprint(dir);
-		const mirror = mkdtempSync(path.join(tmpdir(), "fp-plan3-"));
-		writeFileSync(path.join(mirror, "t"), "X");
-		symlinkSync(path.join(mirror, "t"), path.join(dir, "plan.md"));
-		assert.notEqual(planFingerprint(dir), fake, "a symlink never collides with a same-name-prefixed file");
-		rmSync(path.join(dir, "plan.md"));
-		rmSync(mirror, { recursive: true, force: true });
-		writeFileSync(path.join(dir, "plan.md"), "b");
-		assert.notEqual(planFingerprint(dir), h1, "content moves the hash");
-		writeFileSync(path.join(dir, "plan.md"), "a");
-		mkdirSync(path.join(dir, "mockups"));
-		writeFileSync(path.join(dir, "mockups", "m.png"), "x");
-		const h2 = planFingerprint(dir);
-		writeFileSync(path.join(dir, "mockups", "m.png"), "y");
-		assert.notEqual(planFingerprint(dir), h2, "nested bytes count too — a swapped mockup moves the verdict's ground");
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("transcripts.log lines append and parse back into (op, path)", () => {
-	const line = workerTranscriptLine("2026-01-01T00:00:00Z", "verify", "/tmp/sess.jsonl");
-	assert.match(line, /worker transcript \(verify\): \/tmp\/sess\.jsonl/);
-	const log = `noise hand-written line\n${line}\n${workerTranscriptLine("2026-01-01T01:00:00Z", "run", "/tmp/other.jsonl")}\n`;
-	const parsed = parseWorkerTranscripts(log);
-	assert.equal(parsed.length, 2, "unrecognised lines are skipped, the log is append-only");
-	assert.deepEqual(parsed[0], { at: "2026-01-01T00:00:00Z", op: "verify", path: "/tmp/sess.jsonl" });
-	assert.equal(parsed[1].op, "run");
-	assert.equal(parseWorkerTranscripts("").length, 0);
-});
-
-test("live lines carry the worker's output, bounded", () => {
-
-	assert.equal(stageLiveAssistantLine(5_000, "planning now\nrunning the suite"), "[+00:05] ✎ running the suite", "the last line is the news, no tool-call decoration");	assert.equal(stageLiveAssistantLine(0, "   \n\n"), "", "an empty narration costs no line");
-	assert.equal(stageLiveResultLine(5_000, "bash", true, "251 pass\n0 fail"), "[+00:05] ✓ bash — 251 pass 0 fail");
-	assert.equal(stageLiveResultLine(5_000, "bash", false, "exit 1"), "[+00:05] ✗ bash — exit 1");
-	const long = stageLiveAssistantLine(0, "x".repeat(500));
-	assert.ok(long.length <= 130, `a single live line stays one line: ${long.length}`);
-	const lines = Array.from({ length: 11 }, (_, i) => `line ${i}`);
-	const tail = liveTail(lines, 8);
-	assert.equal(tail[0], "… 3 earlier items", "R6: the collapsed view counts what it dropped instead of showing it");
-	assert.deepEqual(tail.slice(1), lines.slice(-8));
-	assert.deepEqual(liveTail(["a", "b"], 8), ["a", "b"], "short runs show everything and say nothing about it");
-	assert.deepEqual(liveTail(["a", "", "b", ""], 8), ["a", "b"], "blank lines never push real activity off the card");
-});
-
-test("one worker card frame: header, bounded tail, verdict, cost", () => {
-	const tail = Array.from({ length: 11 }, (_, i) => `[+00:0${i}] bash — cmd${i}`);
-	const v = { kind: "stage worker · implement", slug: "carded", elapsedMs: 65_000, budgetMin: 45, tail, usage: "3 turns · \u21911k \u2193200 \u00b7 ctx 5k \u00b7 $0.1000", state: "running" as const };
-	const collapsed = stageCardLines(v);
-	assert.match(collapsed[0], /^\u23f3 stage worker \u00b7 implement \u00b7 carded \u00b7 01:05\/45m$/, "header: what, where, clock against budget");
-	assert.equal(collapsed[1], "\u2026 3 earlier items", "the collapsed card counts what it dropped");
-	assert.equal(collapsed.length, 1 + 1 + 8 + 1, "header + ellipsis + 8 tail + usage \u2014 the card never spills");
-	const done = stageCardLines({ ...v, state: "done", verdict: "pass" as const, transcript: "/tmp/t.jsonl" });
-	assert.match(done[0], /^\u2713/);
-	assert.ok(done.includes("verdict: PASS"), "the verdict line is what the gate asks for");
-	assert.ok(!done.some((l) => l.startsWith("transcript:")), "collapsed hides the path");
-	const wide = stageCardLines({ ...v, state: "failed" as const, transcript: "/tmp/t.jsonl" }, true);
-	assert.match(wide[0], /^\u2717/, "a failed run's frame says so");
-	assert.equal(wide.length, 1 + 11 + 1 + 1, "expanded widens the tail and names the transcript");
-});
-
-test("the usage line says what a run cost", () => {	const u = { input: 1200, output: 300, cacheRead: 45_000, cacheWrite: 0, totalTokens: 46_500, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.42 } };
-	assert.equal(stageUsageLine(u, 7), "7 turns · ↑1.2k ↓300 · ctx 46.5k · $0.4200");
-	assert.match(stageUsageLine({ ...u, input: 0, output: 0, cacheRead: 0, cost: { ...u.cost, total: 0 } }), /↑0 ↓0/);
-});
-
-test("the verify brief orders a check, not a fix", () => {
-	const b = buildVerifyBrief({ slug: "s", workDir: "/wt", planFile: "/p/plan.md", statusJson: "{}", gitSummary: "", diffStat: "2 files changed", defaultBranch: "main", checks: [{ name: "test", cmd: "npm test" }], note: "operator approved D3 as a hard gate" });
-	assert.match(b, /CHECK, DON'T FIX/);
-	assert.match(b, /git status --porcelain/, "the brief warns the tree identity is proved afterwards");
-	assert.match(b, /git diff main…HEAD/);
-	assert.match(b, /npm test/, "tier-1 commands travel in the brief");
-	assert.match(b, /hard gate/, "the note rides along like every other worker");
-	assert.match(b, /VERIFY REPORT\nverdict: pass \| fail/);
-});
-
-test("the reflect brief hands the reviewer the whole flow", () => {
-	const b = buildReflectBrief({
-		slug: "s",
-		planFile: "/p/plan.md",
-		statusJson: "{}",
-		driverSession: "/drv.jsonl",
-		transcripts: [{ at: "t1", op: "implement", path: "/w1.jsonl" }, { at: "t2", op: "verify", path: "/nonexistent-zz.jsonl" }],
-		openReflections: ["- [ ] gate X is confusing"],
-	});
-	assert.ok(b.includes("/drv.jsonl"), "the driver's own transcript is input #1");
-	assert.ok(b.includes("/w1.jsonl"));
-	assert.match(b, /nonexistent-zz\.jsonl.*file is gone/, "a stale transcript path is named, never silently dropped");
-	assert.match(b, /gate X is confusing/, "dedupe against the open queue is part of the brief");
-	assert.match(b, /\[playbook\] .*dev-flow itself/s, "the tagging contract is spelled out");
-});
-
-test("reflect findings split by tag, prose counts as nothing", () => {
-	const r = parseReflectFindings("chat chat\n- **[playbook]** checklist item 3 is stale — evidence: it asks for chromium, none is configured\n`[plugin]` verify gate message is too quiet — evidence: silent refusal\n[neither] the repo README lies\n[playbook] none\n");
-	assert.equal(r.playbook.length, 1);
-	assert.equal(r.plugin.length, 1);
-	assert.equal(r.other.length, 1);
-	assert.equal(r.missing, false);
-	assert.equal(parseReflectFindings("everything was fine, no findings").missing, true, "prose is not findings — the driver must say so");
-});
-
-test("workerFamily reads the parent link back as a family, newest first", () => {
-	const driver = "/sd/main-checkout/2026-10-30_driver.jsonl";
-	const rows = [
-		{ path: "/sd/w2.jsonl", parent: driver, name: "✓ 🔍 · PASS · stamp attack", messageCount: 7, modified: new Date("2026-10-30T12:00:00Z") },
-		{ path: "/sd/w1.jsonl", parent: driver, name: "✓ 🔨 #1 · 3 commits · wire ops", messageCount: 42, modified: new Date("2026-10-30T11:00:00Z") },
-		{ path: "/sd/fork.jsonl", parent: "/sd/some-other-session.jsonl", name: "a fork of something else", messageCount: 3, modified: new Date("2026-10-30T13:00:00Z") },
-		{ path: "/sd/plain.jsonl", name: "an ordinary session", messageCount: 9, modified: new Date("2026-10-30T14:00:00Z") },
-	];
-	const out = workerFamily(rows, driver);
-	assert.equal(out.length, 2, "only this session's children, not unrelated forks or plain sessions");
-	assert.match(out[0], /PASS · stamp attack/, "newest first");
-	assert.match(out[0], /7 msgs/, "message count rides along so an empty worker is visible");
-	assert.ok(out[0].includes("/sd/w2.jsonl"), "the transcript path is on the line — that is what pi export needs");
-	assert.doesNotMatch(out.join("\n"), /ordinary session|fork of something else/);
-});
-
-test("workerFamily tolerates a driver-less host, an unnamed worker, and a long family", () => {
-	assert.deepEqual(workerFamily([{ path: "/a.jsonl", parent: "/d.jsonl" }], null), [], "no driver file means no family to print, never a guess");
-	assert.deepEqual(workerFamily([], "/d.jsonl"), [], "an empty bucket is empty output — the caller prints the 'none yet' line");
-	assert.match(workerFamily([{ path: "/w.jsonl", parent: "/d.jsonl", modified: 0 }], "/d.jsonl")[0], /\(unnamed worker\)/, "a worker whose rename never landed still shows up");
-	const many = Array.from({ length: WORKER_FAMILY_ITEMS + 3 }, (_, i) => ({ path: `/w${i}.jsonl`, parent: "/d.jsonl", modified: i }));
-	const lines = workerFamily(many, "/d.jsonl");
-	assert.equal(lines.length, WORKER_FAMILY_ITEMS + 1, "a long family folds the older workers behind one counted line");
-	assert.match(lines.at(-1) ?? "", /3 earlier workers/);
-});
-
-test("workerFamily matches the parent link however the path is spelled", () => {
-	const rows = [{ path: "/sd/w.jsonl", parent: "/sd/dir/../w-parent.jsonl", messageCount: 1, modified: 5 }];
-	assert.equal(workerFamily(rows, "/sd/w-parent.jsonl").length, 1, "a link that resolves to the driver's file is the driver's child");
-	assert.equal(workerFamily([{ path: "/sd/w.jsonl", parent: "/sd/w-parent.jsonl/", modified: 1 }], "/sd/w-parent.jsonl").length, 1, "a trailing separator is the same file");
-	assert.equal(workerFamily([{ path: "/sd/w.jsonl", parent: "/sd/other.jsonl", modified: 1 }], "/sd/w-parent.jsonl").length, 0, "and a different file is not");
-});
-
-test("the settled card carries the family; the collapsed card does not", () => {
-	const base = { kind: "\ud83d\udd0d verify", slug: "lineage", elapsedMs: 60_000, budgetMin: 30 };
-	const family = ["\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 other work \u00b7 9 msgs \u00b7 2026-10-30 11:00 \u00b7 /sd/other.jsonl"];
-	const settled = stageCardLines({ ...base, state: "done", transcript: "/sd/mine.jsonl", family }, true).join("\n");
-	assert.match(settled, /workers this session spawned:/, "the expanded settled card carries the family");
-	assert.match(settled, /PASS \u00b7 other work/);
-	assert.doesNotMatch(stageCardLines({ ...base, state: "done", family }).join("\n"), /other work/, "the collapsed one-liner stays lean");
-});
-
-test("workerFamily can leave the caller's own run out of its own family list", () => {
-	const driver = "/sd/driver.jsonl";
-	const rows = [
-		{ path: "/sd/live.jsonl", parent: driver, name: "\u23f3 \ud83d\udd28 #2 \u00b7 wire ops", messageCount: 5, modified: 20 },
-		{ path: "/sd/older.jsonl", parent: driver, name: "\u2713 \ud83d\udd0d \u00b7 PASS \u00b7 check", messageCount: 8, modified: 10 },
-	];
-	assert.equal(workerFamily(rows, driver).length, 2, "by default the live worker is listed like any other");
-	const others = workerFamily(rows, driver, { exclude: "/sd/live.jsonl" });
-	assert.equal(others.length, 1, "excluded is gone, so a heading that says other workers means it");
-	assert.match(others[0], /PASS \u00b7 check/);
-	assert.equal(workerFamily(rows, driver, { exclude: "/sd/dir/../live.jsonl" }).length, 1, "the exclusion compares files, not strings");
-});
-
-test("family timestamps are local wall-clock, not UTC", () => {
-	// the operator scans these next to their own clock; a UTC stamp reads as a session in the future
-	const at = new Date(2026, 9, 30, 23, 45).getTime(); // local by construction
-	const line = workerFamily([{ path: "/w.jsonl", parent: "/d.jsonl", name: "w", messageCount: 1, modified: at }], "/d.jsonl")[0];
-	assert.match(line, /2026-10-30 23:45/, `expected local wall-clock in: ${line}`);
-	assert.doesNotMatch(line, /T\d{2}:\d{2}/, "no ISO/UTC shape snuck back in");
-});
-
-test("a ledger-sourced family names its source on the card, not only in status", () => {
-	const v = { kind: "\ud83d\udd0d verify", slug: "lineage", elapsedMs: 60_000, budgetMin: 30, state: "done" as const };
-	const ledger = stageCardLines({ ...v, family: ["run \u00b7 2026-10-30 11:02 \u00b7 /sd/w.jsonl"], familyHeading: familyHeading({ ledger: true }) }, true).join("\n");
-	assert.match(ledger, /workers this session spawned \(from the flow's ledger \u2014 this host has no session file to nest\):/);
-	assert.match(stageCardLines({ ...v, family: ["x"] }, true).join("\n"), /^workers this session spawned:$/m, "picker rows need no disclaimer");
-	assert.equal(familyHeading({ live: true }), "other workers this session spawned:");
-});
-
-test("a folded family counts the workers, not the fold line", () => {
-	const driver = "/d.jsonl";
-	const rows = Array.from({ length: 14 }, (_, i) => ({ path: `/sd/w${i}.jsonl`, parent: driver, name: `w${i}`, messageCount: 1, modified: i }));
-	const lines = workerFamily(rows, driver);
-	assert.ok(lines.some((l) => isFamilyFoldLine(l)), "the overflow folds into one counted line");
-	assert.equal(workerFamilyCount(lines), 12, "14 workers print 12 rows and a count of the rest, and report twelve — the fold line is not a worker");
-	assert.equal(workerFamilyCount(["x", "y"]), 2, "an unfolded list counts as it reads");
-	assert.equal(workerFamilyCount([]), 0);
-	assert.equal(workerFamilyCount(null), null, "no source is not zero workers");
+test("worker helpers: op legality, budget clamp, REPORT parsing", () => {
+	assert.equal(workerOpError("implement", "implement"), null);
+	assert.match(workerOpError("implement", "pre-release") ?? "", /runs at implement/);
+	assert.equal(workerOpError("review", "pre-release"), null);
+	assert.match(workerOpError("review", "plan") ?? "", /runs at implement or pre-release/);
+	assert.match(workerOpError("verify", "implement") ?? "", /unknown op/);
+	assert.equal(clampBudgetMin(undefined, "implement"), 60);
+	assert.equal(clampBudgetMin(1000, "review"), 180);
+	assert.equal(clampBudgetMin(1, "review"), 5);
+	const r = parseWorkerReport("work...\n\n## REPORT\nverdict: **PASS**\n- fine");
+	assert.equal(r.found, true);
+	assert.equal(r.verdict, "PASS");
+	assert.match(r.body, /fine/);
+	const none = parseWorkerReport("Now let me write D4.");
+	assert.equal(none.found, false);
+	assert.match(none.body, /write D4/, "the tail is kept for the driver");
+	assert.equal(parseWorkerReport("REPORT mentioned inline is not a heading").found, false);
 });

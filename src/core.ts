@@ -4,7 +4,7 @@
  * Pure(ish) logic only — no pi imports here so it is unit-testable with
  * `node --test`. The extension in extensions/dev-flow.ts is thin wiring.
  */
-import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -101,10 +101,10 @@ export interface Config {
 	versioning: Versioning;
 	/** Seconds the post-deploy health probe may keep retrying before the gate gives up (0 = single shot). */
 	healthWait: number;
-	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string; merge?: MergeStyle | "any" };
+	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
-	/** `require` (default): a shell call must carry its own visible timeout — the injected class
-	 *  default is armed silently and never shows in the transcript. `inject`: arm it silently. */
+	/** `inject` (default): the class default timeout is armed silently on every shell call.
+	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
 	bashTimeout: "require" | "inject";
 	/** Operator safety rules from the project.md flow-guard block — stage-independent. */
 	guard: GuardRules;
@@ -124,7 +124,7 @@ export const DEFAULTS: Config = {
 	healthWait: 30,
 	release: { review: "/flow-review", changelog: "CHANGELOG.md", releases: true },
 	mainHook: true,
-	bashTimeout: "require",
+	bashTimeout: "inject",
 	guard: { deny: [], confirm: [], protect: [], forbid: [] },
 };
 
@@ -480,9 +480,6 @@ export function freshenChecks(state: FlowState, fp: string | null, keep: (name: 
 	if (!fp) return [];
 	const stale: string[] = [];
 	for (const [name, rec] of Object.entries(state.checks)) {
-		// the verify stamp answers to a WIDER fingerprint (worktree + plan/), so plain worktree
-		// comparison must never speak for it — the verify gate voids it against that fingerprint.
-		if (name === VERIFY_STAMP) continue;
 		if (rec.wt && rec.wt !== fp && !keep(name)) {
 			delete state.checks[name];
 			stale.push(name);
@@ -885,14 +882,11 @@ export function parsePushRefs(pushes: string[][]): PushRef[] {
 	return out;
 }
 
-/** Flow control files by full path — state.json, claim.json and the delegation ledger — or a bare
- *  name when the command also touches `.dev-flow` (that is how `cd .dev-flow/<slug> && mv state.json …`
- *  reaches it). The claim is the live-session lock: deleting it is as much theft as forging a stage.
- *  `delegations.log` joins the two because the verify gate reads it as proof of WHO worked the stage:
- *  refusing it to the edit/write tools only while `echo >>` still reaches it would guard the honest
- *  session and none other (writeGuard is the same rule for the other half of the tool surface). */
-const STATE_PATH = /(^|[\s'"\/])(?:(?:state|claim)\.json|delegations\.log)$/;
-const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:(?:state|claim)\.json|delegations\.log)$/;
+/** Flow control files by full path — state.json and claim.json — or a bare name when the command
+ *  also touches `.dev-flow` (that is how `cd .dev-flow/<slug> && mv state.json …` reaches it).
+ *  The claim is the live-session lock: deleting it is as much theft as forging a stage. */
+const STATE_PATH = /(^|[\s'"\/])(?:state|claim)\.json$/;
+const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:state|claim)\.json$/;
 const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
 const DF_ANYWHERE = /\.dev-flow\b/;
 /** The `.dev-flow/` folder itself or one feature directory under it — deleting either destroys the flow
@@ -1040,7 +1034,52 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 		if (writesDefault && o.stage !== "release") return `pushing to ${o.defaultBranch} requires stage "release" (verified feature)${attr}`;
 	}
 	if (git("merge") && onMain && o.stage !== "release") return `merging into ${o.defaultBranch} requires stage "release"${attr}`;
+	// Shipping belongs to the release stage: a tag cut (or pushed) while the feature is still before release
+	// leaves the gates unable to record it — flow release then refuses "already tagged" and the flow cannot close.
+	if (o.stage && BEFORE_RELEASE.has(o.stage)) {
+		if (git("tag") && tagCreates(c)) return `tagging is release work — the feature is at ${o.stage}; run flow release first (it gates the version, then tags)${judgedIn}`;
+		if (git("push")) {
+			const refs = o.pushRefs ?? parsePushRefs(gitInvocation(c).pushes);
+			if (/\s--(?:tags|follow-tags)\b/.test(c) || /refs\/tags\//.test(c) || refs.some((r) => r.kind === "tag")) return `pushing tags is release work — the feature is at ${o.stage}; run flow release first${judgedIn}`;
+		}
+	}
 	return null;
+}
+
+const BEFORE_RELEASE = new Set<Stage>(["plan", "implement", "pre-release"]);
+
+/** Does this `git tag` invocation create (or move) a tag? Bare `git tag` and the listing/verify forms only read. */
+export function tagCreates(command: string): boolean {
+	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?tag\b([^;|&\n]*)/);
+	if (!m) return false;
+	const tok = m[1].trim().split(/\s+/).filter(Boolean);
+	if (!tok.length) return false;
+	if (tok.some((t) => /^(-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|-v|--verify|-d|--delete)$/.test(t))) return false;
+	return true;
+}
+
+/** Forge-side shipping (`gh pr merge`, `glab mr merge`, `gh|glab release create`) before the release stage, or null.
+ *  Quoted text is prose except inside a head that execs its argument — the same reading as mergeStyleInvocation. */
+export function releaseOrderInvocation(command: string, stage: Stage | null): string | null {
+	if (!stage || !BEFORE_RELEASE.has(stage)) return null;
+	for (const seg of bashSegments(command)) {
+		if (READ_ONLY_HEADS.has(segHead(seg))) continue;
+		const hay = REEXEC_HEADS.has(segHead(seg)) ? `${seg} ${maskQuoted(seg)}` : maskQuoted(seg);
+		if (/\bgh\s+pr\s+merge\b/.test(hay) || /\bglab\s+mr\s+merge\b/.test(hay))
+			return `merging the PR is release work — the feature is at ${stage}; ask the operator Release? and run flow release first (yolo pre-answers the question, it does not skip the gate)`;
+		if (/\b(?:gh|glab)\s+release\s+create\b/.test(hay))
+			return `publishing a forge release is release work — the feature is at ${stage}; run flow release, then flow release-done creates it`;
+	}
+	return null;
+}
+
+/** Name of a branch a `git checkout -b/-B` / `git switch -c/-C` creates, or null. */
+export function branchCreateTarget(command: string): string | null {
+	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\b([^;|&\n]*)/);
+	if (!m) return null;
+	const tok = m[1].trim().split(/\s+/).filter(Boolean);
+	const i = tok.findIndex((t) => /^(-[bBcC]|--create|--force-create|--orphan)$/.test(t));
+	return i >= 0 && tok[i + 1] ? unquote(tok[i + 1]) : null;
 }
 
 // ------------------------------------------------------- project safety rules
@@ -1289,6 +1328,15 @@ const within = (abs: string, dir: string | null) => !!dir && (abs === dir || abs
  * the guarded checkout, and `repoRoot` keeps a repository that merely lives under the temp dir (every
  * smoke-test repo) under the normal stage rules.
  */
+/** The main checkout a linked worktree shares its history with, from git's answer for the common dir
+ *  (`<main>/.git`), or null when there is nothing to remap: git did not answer, or cwd already is that
+ *  checkout (a plain clone answers its own dir). */
+export function mainCheckoutRoot(cwd: string, commonDir: string | null): string | null {
+	if (!commonDir) return null;
+	const main = path.resolve(path.dirname(path.resolve(cwd, commonDir)));
+	return main === path.resolve(cwd) ? null : main;
+}
+
 export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
 	const real = realAbs(abs);
 	if (repoRoot) {
@@ -1299,36 +1347,15 @@ export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
 	return real === tmp || real.startsWith(tmp + path.sep);
 }
 
-/** The main checkout a linked worktree shares its history with, from git's answer for the common dir
- *  (`<main>/.git`), or null when there is nothing to remap: git did not answer, or cwd already is that
- *  checkout (a plain clone answers its own dir). Pure — the caller decides whether to trust the root it
- *  gets (dev-flow's `flowRoot` keeps cwd unless the main checkout is dev-flow-initiated). */
-export function mainCheckoutRoot(cwd: string, commonDir: string | null): string | null {
-	if (!commonDir) return null;
-	const main = path.resolve(path.dirname(path.resolve(cwd, commonDir)));
-	return main === path.resolve(cwd) ? null : main;
-}
-
-/** True when the path is a feature's delegation ledger (.dev-flow/<slug>/stage-sessions/delegations.log)
- *  — the file the verify gate reads to prove a worker ran. Matched by shape, not just filename, so a
- *  source file that merely happens to be named delegations.log stays writable anywhere, including inside
- *  a worktree that lives under .dev-flow/. */
-export function isDelegationLedger(abs: string, dfDir: string): boolean {
-	return path.basename(abs) === DELEGATIONS_FILE && path.basename(path.dirname(abs)) === STAGE_SESSIONS_DIR && abs.includes(dfDir + path.sep);
-}
-
 /**
  * Write guard with per-path attribution: writes inside a worktree are judged by that
  * worktree's own feature; main-checkout writes are judged by the session's bound feature
  * (release+ may touch it; plan/implement may not); with no binding and unfinished features
  * the session must bind first (`flow use`). Flow-by-default: a session with no flow may not
  * touch the checkout at all — a bound feature is the only way in.
- * `byWorker` says the writing session is a flow_stage worker: a normal feature's worktree stays
- * closed to its driver at implement (implement work is delegated — see delegationErrors), open to
- * the worker that was sent to do it.
  * Returns a reason or null (allowed).
  */
-export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null; byWorker?: boolean }): string | null {
+export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null }): string | null {
 	// Judge where the bytes land, not where the path pretends: a symlink inside the worktree pointing
 	// out of it is the same write as the target path (realAbs walks the deepest existing ancestor, so
 	// a brand-new file under a real directory resolves right, and a never-existing one is stable).
@@ -1338,12 +1365,6 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 	if (abs === path.join(dfDir, "project.md")) return "project.md is the operator playbook — change it with flow init --write (setup) or inside a docs/patch flow's worktree";
 	if (abs.endsWith("state.json") && abs.includes(dfDir + path.sep)) return "state.json is dev-flow-owned — advance stages with the flow tool only";
 	if (abs.endsWith("claim.json") && abs.includes(dfDir + path.sep)) return "claim.json is dev-flow-owned — the live-session lock is not an edit target; take a feature over with flow use <slug>";
-	// The delegation ledger is the fact the verify gate trusts about *who* worked — and the session it
-	// constrains is the one holding the pen. Left writable, one hand-written line covering the driver's
-	// own shas collapses "zero bypass", so it is dev-flow-owned like state.json. Worker runs append it
-	// from flow_stage's completion code (appendFileSync, which never passes through this guard), and
-	// flow verify only ever reads it — no sanctioned channel needs it to be an edit target.
-	if (isDelegationLedger(abs, dfDir)) return `${DELEGATIONS_FILE} is dev-flow-owned — the delegation ledger is written by flow_stage worker runs and read by flow verify; a session cannot sign its own proof`;
 	// Owner attribution BEFORE the .dev-flow allow: with the default worktreeDir inside .dev-flow,
 	// a worktree must still be judged by its owning feature's stage, not treated as free plan space.
 	const owner = o.features.find((f) => within(abs, f.worktreeAbs ? realAbs(f.worktreeAbs) : null));
@@ -1353,14 +1374,6 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 		// the playbook copy inside a worktree: only operator-granted lightweight modes may change it
 		if (path.basename(abs) === "project.md" && abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
 			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
-		// At implement the driver drives and a worker authors: the verify gate refuses a branch whose
-		// commits fall outside a worker's run window (delegationErrors), so an inline edit here is work
-		// that cannot be proven later. Saying it at the write is cheaper than letting a session author a
-		// branch and hitting the gate with it — and unlike the gate, this knows who is holding the pen:
-		// workers are registered sessions (byWorker), and --docs/--patch are the operator-granted inline
-		// modes. Pre-release stays in-session by design (review, changelog, bump are judgment calls).
-		if (owner.state.stage === "implement" && !owner.state.docs && !owner.state.patch && !o.byWorker)
-			return `implement work is delegated — ${owner.state.slug} is a normal feature at implement: a flow_stage { stage: "implement" } worker edits and commits in this worktree, not this session (the driver keeps the gates, the checkpoint, flow check and running the app)`;
 		return null; // implement/pre-release/release: own worktree is the working area
 	}
 	// Scratch outside the checkout is not a repo write: every stage (and an unbound session) may use it. It
@@ -1406,11 +1419,6 @@ export interface SessionClaim {
 	key: string;
 	pid: number;
 	at: string;
-	/** The claiming process's start identity (`processStart`), when the platform has one. A pid is
-	 *  recycled — a claim left by a crashed pi can name a pid some unrelated process now holds — so a
-	 *  live pid only counts as the claimant when its start identity still matches. Absent on legacy
-	 *  claims and on platforms without /proc, which keep the pid-only judgement. */
-	start?: string;
 }
 
 /** Whether a process is running (kill 0 only probes existence; EPERM means it exists, foreign-owned). */
@@ -1423,43 +1431,9 @@ export function pidAlive(pid: number): boolean {
 	}
 }
 
-/** A process's start identity: field 22 (`starttime`, clock ticks since boot) of `/proc/<pid>/stat`.
- *  Two processes that share a pid never share it. `undefined` where there is no procfs. The comm
- *  field (2) may itself hold spaces or parens, so the fields are counted from the LAST `)`. */
-export function processStart(pid: number, read: (file: string) => string = (f) => readFileSync(f, "utf8")): string | undefined {
-	try {
-		const stat = read(`/proc/${pid}/stat`);
-		const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-		// rest[0] is field 3 (state), so field 22 sits at index 19
-		const st = rest[19];
-		return st && /^\d+$/.test(st) ? st : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/** True only when another live session holds the claim — its feature can only be taken by an explicit `flow use`, never quietly.
- *  A claim whose pid is alive but whose recorded start identity no longer matches belongs to a dead
- *  session whose pid was recycled: it does not block. */
-export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (pid: number) => boolean = pidAlive, startOf: (pid: number) => string | undefined = processStart): boolean {
-	if (!claim || claim.key === myKey || !alive(claim.pid)) return false;
-	if (claim.start) {
-		const now = startOf(claim.pid);
-		if (now !== undefined && now !== claim.start) return false;
-	}
-	return true;
-}
-
-/** How old a claim is, in words, for a refusal: "claimed 3 days ago" lets the operator tell a live
- *  session from a stale pid at a glance. Empty when the stamp is unreadable. */
-export function claimAge(claim: SessionClaim, nowMs: number = Date.now()): string {
-	const t = Date.parse(claim.at);
-	if (!Number.isFinite(t)) return "";
-	const min = Math.max(0, Math.round((nowMs - t) / 60000));
-	if (min < 60) return `${min} min old`;
-	const h = Math.round(min / 60);
-	if (h < 48) return `${h} h old`;
-	return `${Math.round(h / 24)} days old`;
+/** True only when another live session holds the claim — its feature can only be taken by an explicit `flow use`, never quietly. */
+export function claimBlocks(claim: SessionClaim | null, myKey: string, alive: (pid: number) => boolean = pidAlive): boolean {
+	return !!claim && claim.key !== myKey && alive(claim.pid);
 }
 
 /** Footer glyph per stage: the footer has no room for stage words and no legend of its own (README:Status bar is the legend). */
@@ -1884,10 +1858,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask the operator Approve? in chat and run flow approve --confirmed when they answer`;
 		case "implement":
 			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
-			// The hint is what `flow status` and the per-turn injection hand the driver every turn, so it must
-			// not order work the write guard refuses and the verify gate refuses: at implement a worker authors,
-			// the driver drives. (docs mode above stays inline — it is exempt from the delegation gate.)
-			return `delegate the implement work: flow_stage { stage: "implement" } sends a worker to edit, test and commit in the worktree ${state.worktree} (your own edits there are guard-refused, and flow verify refuses a branch whose commits fall outside a worker run); when it reports, rerun flow check (tier-1 checks, incl. health with seeded data) and get a fresh verify-worker PASS; tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
+			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
 		case "pre-release":
 			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog} (a heading for the new version, carrying every pending Unreleased line over as it stands)` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":
@@ -1981,867 +1952,93 @@ export function applyAnswer(partial: Record<string, unknown>, key: string, value
 }
 
 
-// ------------------------------------------------------- stage worker (flow_stage)
+// ------------------------------------------------------------- stage worker (flow_stage)
 
-/** Stages whose *work* `flow_stage` may delegate to a disposable sub-session. plan is the
- *  operator dialogue; release/finish carry the Release?/Finish? words — only the heavy middle
- *  stages are delegated, and gates are never delegated: the driving session keeps every gate,
- *  every checkpoint and the claim, so gate integrity never depends on a worker behaving. */
-export const DELEGABLE_STAGES = ["implement", "pre-release"] as const;
-export type DelegableStage = (typeof DELEGABLE_STAGES)[number];
-export function isDelegableStage(s: string): s is DelegableStage {
-	return (DELEGABLE_STAGES as readonly string[]).includes(s);
-}
+export type WorkerOp = "implement" | "review";
 
-/** Sentinel line that ends a stage worker's final message — the parent digests exactly this,
- *  not the whole run, so one stage's hundred tool calls cost the driving session one bounded block. */
-export const STAGE_REPORT_HEAD = "STAGE REPORT";
+/** Stages where each worker op is legal: implement edits only while the flow is at implement; a review
+ *  (read-only, advisory) is useful before verify and again before release. */
+export const WORKER_OP_STAGES: Record<WorkerOp, Stage[]> = { implement: ["implement"], review: ["implement", "pre-release"] };
 
-/** The sections of the report block. The preserve-list mirrors flowCompactInstructions' demands:
- *  a worker's nuance lives nowhere else, so what is not written here is lost on purpose. */
-export const STAGE_REPORT_CONTRACT = `Write, as the very last lines of your final message, exactly this block (empty sections say \`none\`):
-${STAGE_REPORT_HEAD}
-done:
-- <what you actually did, one line per item>
-files:
-- <path> — <what changed there>
-notes:
-- <operator answers/decisions not yet recorded by a gate · reasons for uncommitted changes · the exact next action>
-blockers:
-- <what would fail Verified? right now> (or: none)`;
+/** Default wall-clock budget per op, in minutes. */
+export const WORKER_BUDGET_MIN: Record<WorkerOp, number> = { implement: 60, review: 30 };
 
-export interface StageReport {
-	done: string[];
-	files: string[];
-	notes: string[];
-	blockers: string[];
-	/** true when the worker never emitted the block — the caller must treat the raw tail as suspect. */
-	missing: boolean;
-	/** bounded tail of the worker's final message (kept for the digest when missing, else for reference). */
-	rawTail: string;
-}
+/** Times a worker that stopped without its REPORT is told to keep going before the run gives up. */
+export const WORKER_NUDGES = 2;
 
-/** Digest a stage worker's final message into the report contract. Lenient by design: a worker
- *  that skipped the block yields `missing: true` plus its tail, never a throw at the end of a long stage. */
-export function parseStageReport(text: string): StageReport {
-	const lines = (text ?? "").split("\n");
-	let start = -1;
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (/^\s*[*_#>\s]*STAGE\s+REPORT[*_\s]*$/i.test(lines[i])) { start = i; break; }
-	}
-	const rep: StageReport = {
-		done: [], files: [], notes: [], blockers: [],
-		missing: start < 0,
-		rawTail: lines.slice(-15).join("\n").slice(-600),
-	};
-	if (start < 0) return rep;
-	type Section = "done" | "files" | "notes" | "blockers";
-	let section: Section | null = null;
-	for (const line of lines.slice(start + 1)) {
-		const h = /^(done|files|notes|blockers)\s*[::]\s*$/i.exec(line.trim());
-		if (h) { section = h[1].toLowerCase() as Section; continue; }
-		const b = /^\s*[-*]\s+(.+)$/.exec(line);
-		if (b && section) rep[section].push(b[1].trim());
-	}
-	rep.blockers = rep.blockers.filter((b) => !/^(none|no blockers?|n\/a|nothing)[-.\s]*$/i.test(b));
-	return rep;
-}
-
-/** Bounded, parent-facing digest of a worker run. `cap` exists so one delegation cannot spend
- *  the context it just saved; the full transcript stays on disk, named in the caller's output. */
-export function renderStageReport(r: StageReport, cap = 4000): string {
-	const parts: string[] = [];
-	if (r.missing) parts.push("worker ended WITHOUT the STAGE REPORT block — digesting its raw tail, verify before trusting it:", "```", r.rawTail, "```");
-	for (const s of ["done", "files", "notes"] as const)
-		if (r[s].length) parts.push(`${s}:`, ...r[s].map((x) => `- ${x}`));
-	if (r.blockers.length) parts.push("BLOCKERS:", ...r.blockers.map((x) => `- ${x}`));
-	if (!parts.length) parts.push("(report block was empty)");
-	const out = parts.join("\n");
-	return out.length <= cap ? out : `${out.slice(0, cap)}\n…(digest truncated — full worker transcript on disk)`;
-}
-
-export interface StageBriefInput {
-	slug: string;
-	stage: DelegableStage;
-	/** absolute path of the feature worktree — the worker's whole world. */
-	workDir: string;
-	/** absolute path of plan/plan.md in the main checkout (the worktree does not carry it). */
-	planFile: string;
-	/** the stage playbook reference contents ("" when the stage has none). */
-	referenceText: string;
-	/** truth as the driving session saw it: `flow status --json` output. */
-	statusJson: string;
-	/** `git status --porcelain -b` taken in the worktree before the worker starts. */
-	gitSummary: string;
-	/** what the parent session passes on: operator answers, decisions, warnings, the next action. */
-	note?: string;
-}
-
-/** The worker's complete brief: role, boundaries, on-disk truth, stage playbook, handoff note,
- *  and the closing contract. Pure — the wiring reads the files and runs the git/status calls. */
-export function buildStageBrief(i: StageBriefInput): string {
-	return `You are a dev-flow stage worker: you do the ${i.stage} work for feature "${i.slug}" and then report back. The flow itself belongs to a DIFFERENT session (the driving session): it owns the gates, the operator's checkpoint answers, and the claim. Work only inside ${i.workDir} (the feature worktree, on its branch).
-
-Boundaries (the guard enforces these; do not work around them):
-- No gate commands, no flow verbs, no questions to the operator — the driving session runs every gate and asks every checkpoint. You owe the work and the report at the end.
-- .dev-flow state files (state.json, claim.json, project.md) are read-only.
-- Commit to the current feature branch EACH TIME a unit of work is complete (one module, one file-group, one screen) — if you are interrupted, that must cost one unit, never a dirty worktree. Never push, never merge, never touch the default branch, never write outside ${i.workDir}.
-
-Start by reading the plan — ${i.planFile} — and whatever it points to.
-
-Flow truth (\`flow status --json\` from the driving session):
-${i.statusJson}
-
-Worktree state (\`git status --porcelain -b\`):
-${i.gitSummary || "(clean)"}
-
-The stage playbook — what this stage owes when it exits (the gates you cannot see):
-${i.referenceText || "(this stage has no playbook reference)"}
-
-Handoff note from the driving session (operator answers, decisions, warnings, the exact next action):
-${i.note?.trim() || "(none — the plan and the status above are your whole brief)"}
-
-When you are done — finished OR blocked — stop doing work and close with the report.
-${STAGE_REPORT_CONTRACT}`;
-}
-
-/** Stage-worker budget bounds, in minutes. The default is deliberately generous (a gate may wait
- *  15 min on one deploy; a stage is a whole stage); `budgetMin` is the per-call, operator-visible
- *  override. A playbook knob would move the default project-side — deliberately a later flow. */
-export const STAGE_BUDGET_DEFAULT_MIN = 45;
-export const STAGE_BUDGET_MIN_MIN = 5;
-export const STAGE_BUDGET_MAX_MIN = 120;
-export function clampStageBudgetMin(raw?: unknown): number {
-	const n = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : STAGE_BUDGET_DEFAULT_MIN;
-	return Math.min(STAGE_BUDGET_MAX_MIN, Math.max(STAGE_BUDGET_MIN_MIN, n));
-}
-
-/** `mm:ss` for heartbeat, live-log and status lines. */
-export function stageElapsedLabel(ms: number): string {
-	const s = Math.max(0, Math.floor(ms / 1000));
-	return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
-}
-
-/** One-summarization of a tool call's args for the live line: bash shows the command, edit/write the
- *  path, anything else compact JSON — always capped. */
-export function summarizeToolArgs(args: unknown): string {
-	const a = args as Record<string, unknown> | undefined;
-	let s = "";
-	if (a && typeof a === "object") {
-		if (typeof a.command === "string") s = a.command;
-		else if (typeof a.path === "string") s = a.path;
-		else { try { s = JSON.stringify(a); } catch { s = ""; } }
-	}
-	s = s.replace(/\s+/g, " ").trim();
-	return s.length > 60 ? `${s.slice(0, 57)}…` : s;
-}
-
-/** One appended line of `.dev-flow/<slug>/stage-live.log` — the tail-able activity floor that works
- *  on hosts where no tool partial ever renders. */
-export function stageLiveLine(elapsedMs: number, toolName: string, argsSummary: string): string {
-	return `[+${stageElapsedLabel(elapsedMs)}] ${toolName}${argsSummary ? ` — ${argsSummary}` : ""}`;
-}
-
-/** The soft-landing order steered into a worker at 75% of its budget: commit what is done, report
- *  the truth, stop starting new units. Beats an abort by one clean commit. */
-export function stageInterruptSteer(budgetMin: number): string {
-	return `Budget spent (${budgetMin} min) — stop planning new work now. Finish only the edit you are mid-way through, commit everything that is done to the feature branch (a "wip(stage): …" commit is fine and expected), then close with the STAGE REPORT block: done lists what is committed, notes says what was never started and what may not compile, blockers says "interrupted at budget". Do not start new units.`;
-}
-
-// ------------------------------------------------------- worker ops beyond the stage work (verify / reflect / live card)
-
-/** Every `flow_stage` op. `run` is a stage's work; `verify` and `reflect` are check-only reviews —
- *  they read and run commands but hold no edit or write, so the driving session gets independent eyes
- *  without handing over a gate or a fix; `status` reads the live run and needs no worker at all. */
-export const WORKER_OPS = ["run", "verify", "reflect", "status"] as const;
-export type WorkerOp = (typeof WORKER_OPS)[number];
-export function isWorkerOp(s: string): s is WorkerOp {
-	return (WORKER_OPS as readonly string[]).includes(s);
-}
-
-/** Default budget per op, minutes (the shared 5–120 clamp still applies). An implement slice is a
- *  whole stage; a review run reads and executes and cannot land a unit, so its default is the
- *  operator-set 30 — smaller default, same steer at 75%. */
-export const WORKER_OP_BUDGET_MIN: Record<WorkerOp, number> = { run: STAGE_BUDGET_DEFAULT_MIN, verify: 30, reflect: 30, status: STAGE_BUDGET_DEFAULT_MIN };
-
-/** Toolset per op — the guard still judges every write by the owning feature's stage, but a reviewer
- *  that carries no edit or write tool cannot even try to fix what it is judging (standing order:
- *  check, don't fix). `status` spawns nothing; the empty list is the marker, never a spawn. */
-export const WORKER_OP_TOOLS: Record<WorkerOp, readonly string[]> = {
-	run: ["read", "bash", "edit", "write"],
-	verify: ["read", "bash"],
-	reflect: ["read", "bash"],
-	status: [],
+export const clampBudgetMin = (n: unknown, op: WorkerOp): number => {
+	const v = typeof n === "number" && Number.isFinite(n) ? n : WORKER_BUDGET_MIN[op];
+	return Math.min(180, Math.max(5, Math.round(v)));
 };
 
-/** Op legality, judged on the bound flow's live state: null = legal, string = the tool's refusal.
- *  `verify` is scoped to implement — it is that stage's own independent proof, while pre-release
- *  already has its review (`/flow-review`) and release/finish carry checkpoint words. `reflect` runs
- *  once the release is recorded and before `flow finish` deletes the flow dir. Gates stay
- *  undelegable: a verify worker's PASS is an INPUT the gate demands, never a gate the worker runs. */
-export function workerOpError(op: WorkerOp, st: { stage: Stage; approvals: Record<string, string> }): string | null {
-	if (op === "verify" && st.stage !== "implement")
-		return `a verify worker runs only while the feature is at implement (stage is "${st.stage}") — it proves the implement work before Verified?; pre-release review is the playbook's review command, and release/finish carry checkpoint words`;
-	if (op === "reflect" && !(st.stage === "release" && st.approvals.release))
-		return `a reflect worker runs at the release stage after release-done recorded the release (stage is "${st.stage}"${st.approvals.release ? "" : ", no release recorded"}) — it reviews the finished flow before flow finish deletes .dev-flow/<slug>/`;
-	return null;
+/** Why an op is not legal for a feature at this stage, or null. */
+export function workerOpError(op: string, stage: Stage): string | null {
+	if (op !== "implement" && op !== "review") return `unknown op "${op}" — flow_stage ops: implement (a worker edits and commits a slice), review (a fresh read-only reviewer)`;
+	const ok = WORKER_OP_STAGES[op];
+	return ok.includes(stage) ? null : `op "${op}" runs at ${ok.join(" or ")} — the feature is at ${stage}`;
 }
 
-/** Sentinel line that ends a verify worker's final message — the sibling of STAGE_REPORT_HEAD. The
- *  verdict is machine-read: it is what the verify gate demands, so prose approval is never enough. */
-export const VERIFY_REPORT_HEAD = "VERIFY REPORT";
-
-/** The verify worker's closing contract. `verdict` is a closed set on purpose: anything the parser
- *  cannot read as pass/fail is treated as NO pass, so a hedged report never stamps the gate. */
-export const VERIFY_REPORT_CONTRACT = `Close your final message with exactly this block (empty sections say \`none\`):
-${VERIFY_REPORT_HEAD}
-verdict: pass | fail
-findings:
-- <one line per problem: what the plan requires, what the code does instead, file:line>
-evidence:
-- <one line per thing you ran: the command and what it printed>`;
-
-export interface VerifyReport {
-	/** null = no readable verdict (missing block, or a hedge where pass|fail was demanded). */
-	verdict: "pass" | "fail" | null;
-	findings: string[];
-	evidence: string[];
-	/** true when the worker never emitted the block. */
-	missing: boolean;
-	rawTail: string;
-}
-
-/** Digest a verify worker's final message. A missing block or an unreadable verdict is a NON-pass —
- *  the caller must not stamp the gate on anything it did not read. */
-export function parseVerifyReport(text: string): VerifyReport {
-	const lines = (text ?? "").split("\n");
-	let start = -1;
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (/^\s*[*_#>\s]*VERIFY\s+REPORT[*_\s]*$/i.test(lines[i])) { start = i; break; }
-	}
-	const rep: VerifyReport = { verdict: null, findings: [], evidence: [], missing: start < 0, rawTail: lines.slice(-15).join("\n").slice(-600) };
-	if (start < 0) return rep;
-	type Section = "findings" | "evidence";
-	let section: Section | null = null;
-	for (const line of lines.slice(start + 1)) {
-		const v = /^\s*verdict\s*[:=]\s*([A-Za-z]+)/i.exec(line.trim());
-		if (v) {
-			const word = v[1].toLowerCase();
-			rep.verdict = word === "pass" || word === "passes" || word === "passed" ? "pass" : word === "fail" || word === "failed" || word === "failing" ? "fail" : null;
-			continue;
-		}
-		const h = /^(findings|evidence)\s*[:=]\s*$/i.exec(line.trim());
-		if (h) { section = h[1].toLowerCase() as Section; continue; }
-		const b = /^\s*[-*]\s+(.+)$/.exec(line);
-		if (b && section) rep[section].push(b[1].trim());
-	}
-	rep.findings = rep.findings.filter((f) => !/^(none|no findings?|n\/a|nothing)[-.\s]*$/i.test(f));
-	return rep;
-}
-
-/** Parent-facing digest of a verify run — bounded like the stage digest; the full transcript is on
- *  disk and named by the caller. */
-export function renderVerifyReport(r: VerifyReport, cap = 4000): string {
-	const parts: string[] = [];
-	if (r.missing) parts.push("verify worker ended WITHOUT the VERIFY REPORT block — there is NO verdict, the tree is not verified:", "```", r.rawTail, "```");
-	else if (!r.verdict) parts.push("VERIFY REPORT carried no readable verdict (pass | fail was required) — treated as NO pass:", "```", r.rawTail, "```");
-	else parts.push(`verdict: ${r.verdict.toUpperCase()}`);
-	if (r.findings.length) parts.push("findings:", ...r.findings.map((x) => `- ${x}`));
-	if (r.evidence.length) parts.push("evidence:", ...r.evidence.map((x) => `- ${x}`));
-	if (!parts.length) parts.push("(report block was empty)");
-	const out = parts.join("\n");
-	return out.length <= cap ? out : `${out.slice(0, cap)}\n…(digest truncated — full worker transcript on disk)`;
-}
-
-/** Key the verify-worker PASS rides under inside state.checks. Living there is not a shortcut, it is
- *  the point: the PASS must die exactly when a tier-1 record dies (an edit-tool clear, a fingerprint
- *  that moved), so the friction is precise — one edit, one re-run — and never sticky. */
-export const VERIFY_STAMP = "verify";
-
-/** Stamp a PASS over the tree as it is now (fp = worktreeFingerprint; null = git could not answer,
- *  and an unprovable stamp is a stamp that never looks stale — same rule as freshenChecks). */
-export function recordVerifyPass(state: FlowState, at: string, fp: string | null): void {
-	state.checks[VERIFY_STAMP] = { ok: true, at, ...(fp ? { wt: fp } : {}) };
-}
-
-/** How each op's session announces itself in the picker — the stage-line glyph vocabulary reused for
- *  worker names, so a row reads as a role at a glance instead of N identical "stage worker" lines. */
-export const WORKER_OP_GLYPH: Record<WorkerOp, string> = { run: "🔨", verify: "🔍", reflect: "🏁", status: "👁" };
-
-/** A driver-supplied purpose, made safe for a session name: control chars gone, whitespace collapsed,
- *  clamped to ~32 chars on a word boundary. "" when nothing meaningful is left. */
-export function sanitizeWorkerLabel(raw: string): string {
-	const s = raw.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim();
-	if (s.length <= 32) return s;
-	const cut = s.slice(0, 32);
-	const at = cut.lastIndexOf(" ");
-	return (at >= 16 ? cut.slice(0, at) : cut).trim();
-}
-
-/** Session-name grammar: live `⏳ 🔨 #2 · wire ops`, done `✓ 🔨 #2 · 3 commits · wire ops`,
- *  `✓ 🔍 · stamp attack · PASS`, `✗ 🔨 #3 · hard-cut`. The final rename answers "how did it end?"
- *  without opening the row; the ordinal separates re-delegations when no label was given. */
-export function workerName(mark: string, glyph: string, seq: number | null, label: string, outcome?: string | null): string {
-	const core = `${glyph}${seq ? ` #${seq}` : ""}${outcome ? ` · ${outcome}` : ""}${label ? ` · ${label}` : ""}`;
-	return `${mark} ${core}`;
-}
-
-/** Content hash of a feature's plan/ dir (sorted relpath + bytes; "" stable when absent). The verify
- *  verdict was written AGAINST the plan, so a mid-stage plan edit must void the PASS exactly like a
- *  worktree edit — the stamp fingerprint hashes the worktree TOGETHER WITH this. */
-export function planFingerprint(dir: string): string {
-	const h = createHash("sha256");
-	// absent and empty must not collide — an accidentally deleted plan dir is a different ground than an emptied one
-	h.update(existsSync(dir) ? "present\0" : "absent\0");
-	const walk = (d: string, rel: string) => {
-		// the entry kind rides as a control char after the name — a text marker ("@link") would collide
-		// with a real file literally named that, control chars in a name are the pathological remainder
-		for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : 1))) {
-			const p = path.join(d, e.name);
-			if (e.isDirectory()) {
-				h.update(`${rel}${e.name}\x01`);
-				walk(p, `${rel}${e.name}/`);
-			} else if (e.isSymbolicLink()) {
-				// a symlinked plan hides its content behind the entry — hash the link AND what it resolves to
-				h.update(`${rel}${e.name}\x02`).update(readlinkSync(p));
-				try {
-					h.update(readFileSync(p));
-				} catch {
-					/* dangling link: the target string is all there is */
-				}
-			} else if (e.isFile()) h.update(`${rel}${e.name}\x00`).update(readFileSync(p));
-			else h.update(`${rel}${e.name}\x03`);
-		}
-	};
-	if (existsSync(dir)) walk(dir, "");
-	return h.digest("hex").slice(0, 16);
-}
-
-/** A PASS the verify gate may accept? docs-mode flows are exempt exactly like tier-1 checks: a docs
- *  flow runs no project command, so there is nothing for a checker to check beyond the operator. */
-export function verifyStampMissing(state: FlowState): boolean {
-	if (state.docs) return false;
-	return !state.checks[VERIFY_STAMP]?.ok;
-}
-
-/** The verify gate's refusal line for a missing PASS — printed with the demand spelled out, because
- *  the operator's question must never be asked on a tree nothing independent has looked at. */
-export const VERIFY_STAMP_REFUSAL = `no verify-worker PASS on this tree — run flow_stage { op: "verify" } and get its verdict: pass before asking Verified? (the PASS belongs to the tree it was read on: any worktree edit drops it like any tier-1 record; a docs flow is exempt)`;
-
-/** The durable worker index inside .dev-flow/<slug>/stage-sessions/ — one line per finished worker. */
-export const TRANSCRIPTS_FILE = "transcripts.log";
-
-/** `worker transcript: …` line appended to .dev-flow/<slug>/stage-sessions/transcripts.log — the
- *  durable index the reflect worker reads (until now a transcript path lived only in the parent's
- *  tool result, i.e. only as long as that session's context). */
-export function workerTranscriptLine(at: string, op: string, file: string): string {
-	return `[${at}] worker transcript (${op}): ${file}`;
-}
-
-/** Parse transcripts.log back into entries; anything unrecognised is skipped, the log is append-only
- *  and hand-editable. Missing files are the caller's problem (a stale path still tells a reader a
- *  worker ran). */
-export function parseWorkerTranscripts(text: string): { at: string; op: string; path: string }[] {
-	const out: { at: string; op: string; path: string }[] = [];
-	for (const line of (text ?? "").split("\n")) {
-		const m = /^\s*\[(.*?)\]\s*worker transcript(?: \(([^)]*)\))?:\s*(\S+)/.exec(line);
-		if (m) out.push({ at: m[1], op: m[2] ?? "run", path: m[3] });
-	}
-	return out;
-}
-
-/** The durable delegation ledger inside .dev-flow/<slug>/stage-sessions/ — one line per finished
- *  `flow_stage` run worker, written by the same completion code that counts its commits. Read fresh
- *  at the gate, never folded into state.checks: those records mean "this tree was checked", a window
- *  means "this range was worked by a worker", and re-running a check must not erase the history the
- *  branch rests on (transcripts.log rides outside state for the same reason). */
-export const DELEGATIONS_FILE = "delegations.log";
-
-/** The folder inside .dev-flow/<slug>/ that holds the worker logs (transcripts.log, delegations.log) —
- *  also half of what makes a delegations.log a delegation ledger (see isDelegationLedger). */
-export const STAGE_SESSIONS_DIR = "stage-sessions";
-
-/** One finished worker run: the stage it worked and the commit range it left behind. */
-export interface DelegationWindow {
-	stage: string;
-	start: string;
-	end: string;
-}
-
-/** A delegations.log line. The line carries a **range**, not a count, because a range is what the
- *  gate can re-check: an amend or a rebase after the fact moves the sha out of every recorded window,
- *  which no write guard could ever see — bash-authored commits name no author, a rewritten sha does. */
-export function delegationLine(at: string, stage: string, start: string, end: string, commits: number): string {
-	return `[${at}] run (${stage}): ${start}..${end} ${commits} commit(s)`;
-}
-
-/** Parse delegations.log back into windows; anything unrecognised is skipped — the log is append-only
- *  and hand-editable, and an index that throws would take the gate down with it (transcripts.log's
- *  rule). Shas must look like shas so a typo'd line is simply not a window, rather than a window
- *  whose `git rev-list` fails for a reason the gate could only guess at. */
-export function parseDelegationLedger(text: string): DelegationWindow[] {
-	const out: DelegationWindow[] = [];
-	for (const line of (text ?? "").split("\n")) {
-		const m = /^\s*\[(.*?)\]\s*run(?: \(([^)]*)\))?:\s*([0-9a-f]{7,40})\.\.([0-9a-f]{7,40})/i.exec(line);
-		if (m) out.push({ stage: m[2] ?? "run", start: m[3], end: m[4] });
-	}
-	return out;
-}
-
-/** The verify gate's refusal when nobody did the stage's work — spelled out the way
- *  VERIFY_STAMP_REFUSAL spells its fix, so the driver reads its next action off the refusal line. */
-export const DELEGATION_REFUSAL = `the implement work was not delegated — run flow_stage { stage: "implement" } and let the worker session do the edits and commits (this session keeps the gates, the checkpoint and flow check)`;
-
-/** Was the implement stage worked, or merely driven? The rule `flow verify` enforces: at least one
- *  implement-stage run window carries a commit, and every commit the branch holds over its default
- *  branch falls inside some implement-stage window. `windowCommits` resolves a window to its shas —
- *  git lives on the caller's side, so this stays a pure function under test.
- *  `branchCommits === null` (git could not answer) returns no errors: an unprovable answer is never
- *  proof of a violation, the BranchState.commitsAhead rule. `--docs` and `--patch` are exempt exactly
- *  like the verify stamp and the tier-1 checks — those two modes are the work the operator granted
- *  inline. Coverage is judged only here: commits the driver makes after verify (changelog, bump) are
- *  pre-release work and belong to the session by design. */
-export function delegationErrors(
-	state: FlowState,
-	ledger: DelegationWindow[],
-	branchCommits: string[] | null,
-	windowCommits: (w: DelegationWindow) => string[],
-): string[] {
-	if (state.docs || state.patch) return [];
-	if (branchCommits === null) return [];
-	// Nothing on the branch to attribute: coverage is a claim about commits, and an empty branch has
-	// none. verifyGate already refuses a branch with nothing committed — one refusal per fact.
-	if (!branchCommits.length) return [];
-	const covered = new Set<string>();
-	for (const w of ledger.filter((x) => x.stage === "implement")) for (const sha of windowCommits(w) ?? []) covered.add(sha);
-	// A window whose range holds nothing proves a worker ran and delivered nothing: the stage is still
-	// undelivered, and "N commit(s) outside a window" on top of that names the same fact twice with
-	// worse advice — there is nothing to redo, there is nothing yet.
-	if (!covered.size) return [DELEGATION_REFUSAL];
-	const strays = branchCommits.filter((sha) => !covered.has(sha));
-	if (!strays.length) return [];
-	return [`${strays.length} commit(s) on the branch were made outside a worker run — delegate a fixer that redoes them (or reset them)`];
-}
-
-/** How many live lines the card and `op: "status"` show: enough to see what the worker is doing,
- *  bounded so a long stage never spends the context the delegation just saved (R6). */
-export const LIVE_TAIL_ITEMS = 8;
-/** One live line's cap — worker output is signal in a tail, noise in bulk. */
-const LIVE_LINE_CAP = 110;
-
-/** One line of a worker's assistant prose, for the live tail: last non-empty line only (a worker
- *  narrating a plan would otherwise drown its own tool activity). */
-export function stageLiveAssistantLine(elapsedMs: number, text: string): string {
-	const lines = (text ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
-	if (!lines.length) return "";
-	// its own shape, not stageLiveLine's: prose is not `tool — args`, an em dash in front of every
-	// sentence the worker wrote would read as a tool call that happened to talk
-	return `[+${stageElapsedLabel(elapsedMs)}] ✎ ${liveClip(lines[lines.length - 1])}`;
-}
-/** A finished tool call: ✓/✗ plus one line of what came back — the difference between "it is running"
- *  and "it is getting somewhere". */
-export function stageLiveResultLine(elapsedMs: number, toolName: string, ok: boolean, summary: string): string {
-	return stageLiveLine(elapsedMs, `${ok ? "✓" : "✗"} ${toolName}`, liveClip(summary));
-}
-
-
-export function liveClip(s: string, cap = LIVE_LINE_CAP): string {
-	const one = (s ?? "").replace(/\s+/g, " ").trim();
-	return one.length > cap ? `${one.slice(0, cap - 1)}…` : one;
-}
-
-/** The bounded tail: `… M earlier items` then the last `max` lines (empty lines never counted —
- *  a skipped assistant narration must not push real activity off the card). */
-export function liveTail(lines: string[], max = LIVE_TAIL_ITEMS): string[] {
-	const kept = lines.filter(Boolean);
-	if (kept.length <= max) return kept;
-	return [`… ${kept.length - max} earlier items`, ...kept.slice(-max)];
-}
-
-
-/** Everything the live tool card needs to draw one frame. The card is the guaranteed visibility
- *  surface (it renders in the driver's own transcript on every host), so it is built from plain
- *  strings here and wrapped into components by the extension — the same lines reach a host that only
- *  shows the update's text (pi-web) and the no-UI fallback `op: "status"`. */
-export interface StageCardView {
-	kind: string;
+export interface WorkerBriefInput {
+	op: WorkerOp;
 	slug: string;
-	elapsedMs: number;
-	budgetMin: number;
-	softFired?: boolean;
-	tail?: string[];
-	usage?: string;
-	state?: "running" | "done" | "failed";
-	verdict?: "pass" | "fail" | null;
-	note?: string;
-	transcript?: string;
-	/** settled card only: the flow's other workers, already rendered by `workerFamily`. */
-	family?: string[];
-	/** heading for `family` when the rows came from somewhere coarser than pi's listing. */
-	familyHeading?: string;
-}
-
-/** One frame of the worker card: header (what · where · clock against budget), the bounded live tail,
- *  the verdict once there is one, and what it cost. Expanded widens the tail and names the transcript. */
-export function stageCardLines(v: StageCardView, expanded = false): string[] {
-	const glyph = v.state === "failed" ? "✗" : v.state === "done" ? "✓" : "⏳";
-	const out = [`${glyph} ${v.kind} · ${v.slug} · ${stageElapsedLabel(v.elapsedMs)}/${v.budgetMin}m${v.softFired ? " · closing out" : ""}`];
-	if (v.note) out.push(`note: ${liveClip(v.note, 80)}`);
-	out.push(...liveTail(v.tail ?? [], expanded ? LIVE_TAIL_ITEMS * 4 : LIVE_TAIL_ITEMS));
-	if (v.verdict) out.push(`verdict: ${v.verdict.toUpperCase()}`);
-	if (v.usage) out.push(v.usage);
-	if (expanded && v.transcript) out.push(`transcript: ${v.transcript}`);
-	// the family only on the settled card: listing a session directory is IO, and a live frame
-	// redraws on every worker tool call — a running run must not pay for a directory read
-	if (expanded && v.family?.length) out.push(v.familyHeading ?? familyHeading(), ...v.family);
-	return out;
-}
-
-/** One worker session as pi's own session listing describes it. dev-flow keeps no lineage index
- *  of its own: the `parentSession` link in a session header *is* the record, and pi's picker threads
- *  on it. The extension reads pi's types and maps them onto this pi-free shape so the logic here
- *  stays unit-testable. */
-export interface WorkerSessionRow {
-	/** the worker's session file */
-	path: string;
-	/** the parent link as pi recorded it (`parentSession`); absent = not somebody's child */
-	parent?: string | null;
-	/** the picker display name — it carries the ⏳/✓/✗ and the outcome the driver stamps on it */
-	name?: string;
-	messageCount?: number;
-	/** file mtime, however the host hands it over (pi gives a Date; tests give a number) */
-	modified?: Date | number | string;
-}
-
-/** How many workers one render lists before it folds the older ones. */
-export const WORKER_FAMILY_ITEMS = 12;
-
-/** Family rendering options: `exclude` drops one transcript — the live or just-finished run, which
- *  the caller already shows as its own section or its own line. */
-export interface WorkerFamilyOptions {
-	exclude?: string;
-}
-
-/** The heading over a family list — the one place the wording lives, so the status text and the card
- *  cannot drift, and so a list that came from the ledger (no message counts, no renames) says so. */
-export function familyHeading(o: { live?: boolean; ledger?: boolean } = {}): string {
-	return `${o.live ? "other workers this session spawned" : "workers this session spawned"}${o.ledger ? " (from the flow's ledger — this host has no session file to nest)" : ""}:`;
-}
-
-/** The same session file written two ways is still one session (separators, trailing slash, and on
- *  Windows the case of the drive letter). pi's own picker canonicalizes the same idea. */
-export function sessionPathKey(p: string): string {
-	const k = path.resolve(p).replace(/[\\/]+$/, "");
-	return process.platform === "win32" ? k.toLowerCase() : k;
-}
-
-function sessionTime(row: WorkerSessionRow): number {
-	const raw = row.modified instanceof Date ? row.modified.getTime() : typeof row.modified === "number" ? row.modified : row.modified ? Date.parse(row.modified) : 0;
-	return Number.isFinite(raw) ? raw : 0;
-}
-
-/**
- * The family — every stage worker this session spawned, newest first, one line each.
- *
- * A stage worker is a real pi session whose header carries `parentSession` pointing at the driver's
- * own file, so pi's picker nests it under the driver by itself (Threaded sort). This reads the same
- * fact back for every surface that has no tree: the `flow_stage` card and `op: "status"`. Nothing is
- * stored here, so a renamed worker (`✓ 🔍 · PASS · stamp attack`) reads back renamed, and workers a
- * previous session already delegated show up next to this one's.
- */
-export function workerFamily(rows: WorkerSessionRow[], driverFile: string | null | undefined, opts: WorkerFamilyOptions = {}): string[] {
-	if (!driverFile) return [];
-	const max = WORKER_FAMILY_ITEMS;
-	const drop = opts.exclude ? sessionPathKey(opts.exclude) : null;
-	const mine = rows
-		.filter((r) => r.parent && sessionPathKey(r.parent) === sessionPathKey(driverFile) && (!drop || sessionPathKey(r.path) !== drop))
-		.sort((a, b) => sessionTime(b) - sessionTime(a));
-	const shown = mine.slice(0, max);
-	const lines = shown.map((r) => {
-		const at = sessionTime(r);
-		return `${r.name?.trim() || "(unnamed worker)"} · ${r.messageCount ?? 0} msgs · ${at ? localStamp(at) : "time unknown"} · ${r.path}`;
-	});
-	if (mine.length > shown.length) lines.push(familyFoldLine(mine.length - shown.length));
-	return lines;
-}
-
-/** A transcript's header parent link, read from its first line alone — the cheap pass of the family
- *  scan. Returns `undefined` for a file that is not a pi session (or has no complete first line in
- *  the bytes read), `null` for a session that is nobody's child. */
-export function sessionHeaderParent(head: string): string | null | undefined {
-	const nl = head.indexOf("\n");
-	if (nl < 0) return undefined;
-	try {
-		const h = JSON.parse(head.slice(0, nl)) as { type?: string; parentSession?: unknown };
-		if (h?.type !== "session") return undefined;
-		return typeof h.parentSession === "string" && h.parentSession ? h.parentSession : null;
-	} catch {
-		return undefined;
-	}
-}
-
-/** The fields the family view needs, from one transcript's full text — the same rules pi's own
- *  session listing applies (latest `session_info` name wins, explicit clears included; messages are
- *  `message` entries; last activity is the newest user/assistant message, else the header time).
- *  Only the few files whose header names the driver reach this — that is what keeps a family read
- *  proportional to the family, not to the bucket's whole history. */
-export function parseSessionSummary(text: string, file: string, mtimeMs?: number): WorkerSessionRow | null {
-	type Header = { timestamp?: unknown; parentSession?: unknown };
-	let header: Header | null = null;
-	let name: string | undefined;
-	let messageCount = 0;
-	let last: number | undefined;
-	for (const line of text.split("\n")) {
-		if (!line.trim()) continue;
-		let e: { type?: string; name?: unknown; timestamp?: unknown; message?: { role?: string; content?: unknown; timestamp?: unknown } };
-		try { e = JSON.parse(line); } catch { continue; }
-		if (!header) {
-			if (e?.type !== "session") return null;
-			header = e as Header;
-			continue;
-		}
-		if (e.type === "session_info") name = typeof e.name === "string" ? e.name.trim() || undefined : undefined;
-		if (e.type !== "message") continue;
-		messageCount++;
-		const m = e.message;
-		if (!m || m.content === undefined || (m.role !== "user" && m.role !== "assistant")) continue;
-		const t = typeof m.timestamp === "number" ? m.timestamp : Date.parse(String(e.timestamp));
-		if (Number.isFinite(t)) last = Math.max(last ?? 0, t);
-	}
-	if (!header) return null;
-	const headerTime = typeof header.timestamp === "string" ? Date.parse(header.timestamp) : NaN;
-	const modified = last && last > 0 ? last : Number.isFinite(headerTime) ? headerTime : mtimeMs;
-	return { path: file, parent: typeof header.parentSession === "string" ? header.parentSession : null, name, messageCount, modified };
-}
-
-/** pi's bucket name for a working directory (`--home-me-repo--`), the same encoding pi applies
- *  (`getDefaultSessionDirPath`). Used only to RECOGNIZE buckets, never to choose where a session goes. */
-export function sessionBucketName(cwd: string): string {
-	return `--${path.resolve(cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-}
-
-/** What the doctor needs to judge one feature's worktree bucket. */
-export interface WorktreeBucketFeature {
-	/** the slug's state is gone, done or aborted — nothing will delegate into this worktree again */
-	finished: boolean;
-	worktreeExists: boolean;
-}
-
-/**
- * Session buckets stage workers left behind before 0.70 put workers in the driver's bucket. Such a
- * worker ran with cwd = the feature worktree, so pi filed it under that worktree's own bucket — which
- * no folder scope opened from the main checkout ever shows, and which outlives the worktree. A bucket
- * is reported when it encodes `<root>/.dev-flow/<slug>/worktree` and that slug is finished or its
- * worktree is gone. `features` is keyed by slug; a slug absent from it has no state at all (finished).
- */
-export function orphanWorktreeBuckets(buckets: string[], root: string, features: Map<string, WorktreeBucketFeature>): { bucket: string; slug: string }[] {
-	const prefix = sessionBucketName(path.join(root, ".dev-flow")).slice(0, -2) + "-";
-	const out: { bucket: string; slug: string }[] = [];
-	for (const b of buckets) {
-		if (!b.startsWith(prefix) || !b.endsWith("-worktree--")) continue;
-		const encSlug = b.slice(prefix.length, -"-worktree--".length);
-		if (!encSlug) continue;
-		// slugs are kebab-case, which the encoding leaves intact; a slug that is a known feature wins
-		const f = features.get(encSlug);
-		if (f && !f.finished && f.worktreeExists) continue;
-		out.push({ bucket: b, slug: encSlug });
-	}
-	return out;
-}
-
-/** Stage workers spawned in THIS process, by session id. A worker loads the operator's extensions —
- *  dev-flow among them, because its guards must hold inside the worker too — but the driver's context
- *  (the playbook core, the unbound-session posture, "surface this to the operator") is wrong there:
- *  the brief is the worker's whole instruction. The worker's loader imports dev-flow as its own
- *  module instance, so the registry lives on a process-global symbol both instances can see. */
-const WORKER_SESSIONS = Symbol.for("dev-flow.workerSessions");
-function workerSessionSet(): Set<string> {
-	const g = globalThis as unknown as Record<symbol, Set<string> | undefined>;
-	return (g[WORKER_SESSIONS] ??= new Set<string>());
-}
-export function markWorkerSession(id: string | undefined | null): void {
-	if (id) workerSessionSet().add(id);
-}
-export function isWorkerSession(id: string | undefined | null): boolean {
-	return !!id && workerSessionSet().has(id);
-}
-
-/** The line that stands in for the workers too old to list. It is not a worker, so anything counting
- *  the list has to know it — and both sources fold the same way, so the shape lives here. */
-export function familyFoldLine(dropped: number): string {
-	return `… ${dropped} earlier workers`;
-}
-
-export function isFamilyFoldLine(line: string): boolean {
-	return line.startsWith("… ");
-}
-
-/** How many workers a rendered family list stands for: the fold line is a count, not a worker. */
-export function workerFamilyCount(lines: string[] | null | undefined): number | null {
-	if (!lines) return null;
-	return lines.filter((l) => !isFamilyFoldLine(l)).length;
-}
-
-/** Local wall-clock `YYYY-MM-DD HH:mm` — the convention every dev-flow timestamp follows (a UTC
- *  stamp next to the operator's own clock reads as a future or past session, and the family line is
- *  meant to be scanned, not converted). */
-function localStamp(ms: number): string {
-	const d = new Date(ms);
-	const p = (n: number) => String(n).padStart(2, "0");
-	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-/** What the tool accumulated from a worker's assistant usage records. */
-export interface StageUsage {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-	totalTokens: number;
-	cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
-}
-
-/** One compact usage line for the card and the result: what the run cost, at a glance. */
-export function stageUsageLine(u: StageUsage, turns?: number): string {
-	const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n));
-	const ctx = u.cacheRead + u.input + u.output;
-	return `${turns ? `${turns} turns · ` : ""}↑${k(u.input)} ↓${k(u.output)} · ctx ${k(ctx)} · $${u.cost.total.toFixed(4)}`;
-}
-
-export interface VerifyBriefInput {
-	slug: string;
-	/** absolute path of the feature worktree — the reviewer's whole world. */
 	workDir: string;
-	/** absolute path of plan/plan.md in the main checkout. */
 	planFile: string;
-	statusJson: string;
-	/** `git status --porcelain -b` in the worktree, before the run. */
-	gitSummary: string;
-	/** `git diff --stat <default>…HEAD` — the shape of what is under review; the reviewer reads the
-	 *  full diff itself (pasting it here would spend the context the delegation saves). */
-	diffStat: string;
-	/** tier-1 commands the playbook says must be green (name + command). */
-	checks: { name: string; cmd: string }[];
-	/** the driver's default branch, for the diff range. */
 	defaultBranch: string;
-	note?: string;
+	commits: string; // `git log --oneline <base>..HEAD`
+	status: string; // `git status --short`
+	checks: { name: string; command: string }[];
+	note: string;
 }
 
-/** The verify worker's brief: judge, never fix. The tree-identity clause is what makes the stamp
- *  honest — the tool proves the tree was untouched afterwards, so a PASS can only belong to the tree
- *  the gate is about to approve. */
-export function buildVerifyBrief(i: VerifyBriefInput): string {
-	const checks = i.checks.length ? i.checks.map((c) => `- ${c.name}: ${c.cmd}`).join("\n") : "- (the playbook names no tier-1 commands — judge against the plan and the diff)";
-	return `You are a dev-flow VERIFY worker: an independent checker for feature "${i.slug}" at its implement stage. You did not write this code and you will not change it. The flow belongs to another session — gates, checkpoints and the operator conversation stay there; you owe one verdict.
-
-Work only inside ${i.workDir} (the feature worktree, on its branch).
-
-Standing order — CHECK, DON'T FIX:
-- You have read and bash only. Do not edit, write, format, commit, stash, or clean anything. The tool compares \`git status --porcelain\`, \`git rev-parse HEAD\` and \`git symbolic-ref HEAD\` before and after your run: if the tree, HEAD or the branch pointer moved at all, your verdict is VOID and the run is reported as a violation.
-- Running commands is allowed and expected (tests, build, the health probe, starting a throwaway process to read its output) — as long as nothing you run leaves the tree dirty. A command that rewrites tracked files is off-limits; say so in evidence instead.
-- Never run a flow gate or a flow verb, never ask the operator anything.
-
-Read first: the plan — ${i.planFile} — then what the branch actually changed:
-\`git diff ${i.defaultBranch}…HEAD\` (stat now: ${i.diffStat || "(no stat)"})
-
-Flow truth (\`flow status --json\` from the driving session):
-${i.statusJson}
-
-Worktree state at your start (\`git status --porcelain -b\`):
-${i.gitSummary || "(clean)"}
-
-
-Tier-1 commands the playbook demands (run them yourself, do not trust the records):
-${checks}
-
-Note from the driving session (what it already knows, what it is unsure of, what to look at hardest):
-${i.note?.trim() || "(none — the plan and the diff are your whole brief)"}
-Judge the diff against the plan, not against taste. Hunt for: plan items that were skipped or only half-done, behavior that contradicts the plan, missing or hollow tests for what changed, obvious bugs and unsafe paths, anything slow or wasteful under real use, leftover debug output, and docs that now lie. Report what you can prove; skip style preferences.
-
-Close with the verdict block. verdict: pass ONLY if you found nothing that should stop this from going to the operator — a plan gap, a real bug, or a missing test is a fail. Put the reasoning in findings (with file:line) and what you ran in evidence; the driving session reads ONLY this block, so a finding you did not write down does not exist.
-${VERIFY_REPORT_CONTRACT}`;
+/** The facts every worker needs, so the driver's note can be just the slice. The plan path is absolute:
+ *  it lives in the MAIN checkout's gitignored .dev-flow/, never inside the worktree. */
+export function buildWorkerBrief(o: WorkerBriefInput): string {
+	const checks = o.checks.length ? o.checks.map((c) => `- ${c.name}: \`${c.command}\``).join("\n") : "- (the playbook defines no tier-1 commands)";
+	const head = [
+		`You are a ${o.op === "implement" ? "stage worker implementing a slice" : "fresh, independent reviewer"} for dev-flow feature \`${o.slug}\`.`,
+		"",
+		"## Facts",
+		`- Worktree (your cwd; work only here): ${o.workDir}`,
+		`- Approved plan (read it first; it is outside the worktree): ${o.planFile}`,
+		`- Branch base: ${o.defaultBranch}`,
+		`- Commits on the branch so far:\n${o.commits.trim() ? o.commits.trim().split("\n").map((l) => `  ${l}`).join("\n") : "  (none)"}`,
+		`- Uncommitted now: ${o.status.trim() ? `\n${o.status.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "clean"}`,
+		`- Project checks (run them before you report):\n${checks}`,
+		"- You hold no flow tool: gates, checkpoints and the operator stay with the driving session.",
+		"",
+		"## Your task",
+		o.note.trim() || "(no note — do what the plan's next unfinished step asks)",
+		"",
+	];
+	const contract =
+		o.op === "implement"
+			? [
+					"## Contract",
+					"- Use the edit/write tools for source changes. Commit as you go on the feature branch (small, meaningful commits).",
+					"- Do not stop to narrate — keep working until the slice is done or you are blocked.",
+					"- Finish with a final message whose last section starts with a line `REPORT` followed by: done, commits, open items, risks.",
+				]
+			: [
+					"## Contract",
+					"- Check, don't fix: read the plan, the diff (`git diff " + o.defaultBranch + "...HEAD`) and the code; run the checks and any probe that proves a claim. Change no files, make no commits.",
+					"- Look for correctness bugs, claims in docs/changelog the code does not back, missing tests for risky paths, and plan items not delivered.",
+					"- Finish with a final message whose last section starts with a line `REPORT` followed by: `verdict: PASS` or `verdict: FAIL`, then findings (most severe first, each with file:line and how you proved it).",
+				];
+	return [...head, ...contract].join("\n");
 }
 
-/** Findings contract for the reflect worker: tagged, one line each, machine-split so the driver can
- *  print playbook items apart from plugin items without re-reading a whole run. */
-export const REFLECT_FINDINGS_CONTRACT = `Close your final message with exactly this block (empty sections say \`none\`):
-REFLECT FINDINGS
-[playbook] <one line — what this project's playbook (project.md / its references) should say differently> — evidence: <what you saw>
-[plugin] <one line — what dev-flow itself (a gate, guard, status, doc) should do differently> — evidence: <what you saw>
-(one line per finding, repeat the tag as many times as you have findings; prefix a line with [neither] when it is real but belongs to neither — the driver routes it by hand)`;
-
-export interface ReflectFindings {
-	playbook: string[];
-	plugin: string[];
-	other: string[];
-	/** true when no tagged line was found at all — the reviewer produced prose, not findings. */
-	missing: boolean;
-	rawTail: string;
-}
-
-/** Split a reflect worker's message into tagged findings. Bullets, bold and inline code around the
- *  tag are tolerated: a model decorates, and re-parsing prose by hand in the driver is worse. */
-export function parseReflectFindings(text: string): ReflectFindings {
-	const out: ReflectFindings = { playbook: [], plugin: [], other: [], missing: true, rawTail: (text ?? "").split("\n").slice(-15).join("\n").slice(-600) };
-
-	for (const line of (text ?? "").split("\n")) {
-		// bracketed tag (the contract) or a bare `plugin:` lead-in; markdown decoration is noise around it
-		const m = /^\s*(?:[-*>]\s*)?[*_`]*\s*\[\s*(playbook|plugin|neither|other)\s*\]\s*[*_`]*\s*(?:[:—-]\s*)?(.+)$|^\s*(?:[-*>]\s*)?[*_`]*\s*(playbook|plugin)\s*:\s*(.+)$/i.exec(line.trim());
-		if (!m) continue;
-		const body = (m[2] ?? m[4]).replace(/[*`\s]+$/, "").trim();
-		if (!body || /^(none|n\/a|nothing)[-.\s]*$/i.test(body)) continue;
-		const kind = (m[1] ?? m[3]).toLowerCase();
-		if (kind === "playbook") out.playbook.push(body);
-		else if (kind === "plugin") out.plugin.push(body);
-		else out.other.push(body);
+/** The REPORT section of a worker's final message: everything after the last `REPORT` heading line. */
+export function parseWorkerReport(text: string): { found: boolean; body: string; verdict: "PASS" | "FAIL" | null } {
+	const lines = (text ?? "").split("\n");
+	let at = -1;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (/^\s*[#*_>\s]*REPORT[*_:\s]*$/i.test(lines[i])) { at = i; break; }
 	}
-	out.missing = !out.playbook.length && !out.plugin.length && !out.other.length;
-	return out;
+	if (at < 0) return { found: false, body: lines.slice(-12).join("\n").slice(-800), verdict: null };
+	const body = lines.slice(at + 1).join("\n").trim();
+	const v = /verdict\s*[:=]\s*\**\s*(PASS|FAIL)/i.exec(body);
+	return { found: true, body, verdict: v ? (v[1].toUpperCase() as "PASS" | "FAIL") : null };
 }
 
-export interface ReflectBriefInput {
-	slug: string;
-	planFile: string;
-	statusJson: string;
-	/** The driver's own session file (JSONL) — pre-compaction turns live there even after the driver's
-	 *  context was summarized away, which is exactly what a finish review needs. */
-	driverSession: string | null;
-	/** Every worker transcript recorded in transcripts.log, oldest first. */
-	transcripts: { at: string; op: string; path: string }[];
-	/** Open reflection lines, so a finding already queued is not queued twice. */
-	openReflections: string[];
-	note?: string;
-}
-
-/** The reflect worker's brief: an independent reviewer of the WHOLE flow — driver included. It
- *  cannot ask the operator anything and cannot write, so it returns tagged findings the driver puts to
- *  the operator (fold / fix / drop stays the operator's call, as always). */
-export function buildReflectBrief(i: ReflectBriefInput): string {
-	const tlist = i.transcripts.length
-		? i.transcripts.map((t) => `- ${t.op} worker (${t.at}): ${t.path}${existsSync(t.path) ? "" : "  (file is gone — note it, do not invent it)"}`).join("\n")
-		: "- (this flow delegated nothing — review the driver session alone)";
-	const open = i.openReflections.length ? i.openReflections.map((l) => `- ${l}`).join("\n") : "- none";
-	return `You are a dev-flow REFLECT worker: an independent reviewer of the finished flow "${i.slug}". You review the DRIVER session — the session that drove the flow — plus every worker it delegated, and you report what the process should learn. You are not the driver, so nothing here is defensive: name the wasted turn, the gate that misfired, the playbook line that lied.
-
-Standing order — read-only: read and bash only. Never edit, write, commit, push, run a flow gate, or ask the operator anything. Reading git logs and files through bash is expected.
-
-Read the whole flow, in this order:
-1. the driver's own session transcript: ${i.driverSession ?? "(the driver's session file was not resolvable — review from the transcripts below and say so in your findings)"}
-   (a JSONL of every message, tool call and result. If it is large, read it in chunks and follow the turns, not the file.)
-2. every worker the flow delegated:
-${tlist}
-3. the plan the flow was held to: ${i.planFile}
-4. how the flow ended (\`flow status --json\` of the driving session):
-${i.statusJson}
-
-Then run the reflection itself, over what you read (this is the same protocol \`flow reflect\` prints, applied to the transcripts):
-1. every turn of the flow: friction, wrong turns, repeated failures, guards or gates that misfired or confused the agent, playbook drift, dead weight the flow added but never used. A finding must cite what happened — "the verify gate refused twice for X, the driver wasted N turns guessing why" is a finding; "the flow was slow" is not.
-2. classify each one: [playbook] = this project's own playbook/references/checklist wording should change; [plugin] = dev-flow itself (a gate, a guard, status, a doc) should change.
-3. dedupe against the open queue below — never report the same issue twice; if an open item already covers it, say "already queued: <item>" instead of a new finding.
-
-Open reflection queue (already filed):
-${open}
-
-${i.note?.trim() ? `Note from the driver (context you cannot read elsewhere):\n${i.note.trim()}\n` : ""}
-${REFLECT_FINDINGS_CONTRACT}`;
-}
+/** The nudge a worker gets when its turn ended without the REPORT block. */
+export const WORKER_NUDGE = "You stopped before finishing and without the REPORT section. Continue the task now (keep using tools; commit as you go). When it is done — or you are truly blocked — end with the `REPORT` section the contract asks for.";

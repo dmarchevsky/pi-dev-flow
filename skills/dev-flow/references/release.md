@@ -25,7 +25,9 @@ the worktree unless noted:
    (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) —
    never `--follow-tags` (it silently skips lightweight tags: they never reach
    the remote, CI never publishes). After the merge a tag points at what
-   actually shipped. If CI publishes from the tag, set `release.artifact` in
+   actually shipped. If CI builds from the tag, set `release.preflight` (e.g.
+   `docker build .`) so `flow release` proves that build before the tag exists,
+   and `release.artifact` in
    the playbook — `release-done` then verifies the published artifact and
    refuses local-only tags outright. Unversioned flow (`--no-version` granted):
    no bump, no tag — publish the merge only (your entry rides under

@@ -2,18 +2,6 @@
 > [../SKILL.md](../SKILL.md); this file is the detail for one stage — read it
 > when the session reaches that stage.
 
-## Before a flow exists (pre-plan)
-
-A feature request arriving in an **unbound** session gets analysis, not
-scaffolding — this is the only phase with **no writes at all** (guards refuse
-checkout writes unbound anyway): read the code the request touches (reads are
-always free), then bring back to chat: findings, the real unknowns, your
-**open questions** and a proposed **direction**, with a proposed slug and mode
-and its one-line why. **Ask the operator to start the flow** — only on their
-word do you `flow start <slug>` (they grant any `--patch`/`--docs` mode at the
-start gate). The direction lives in chat until the plan stage writes and owns
-`plan.md`.
-
 ## Start
 
 **No `.dev-flow/`?** `flow init` analyzes the repo and prints a **setup
@@ -37,7 +25,8 @@ with a delete offer — surface the dialog, never delete on your own.
 findings); `--force` re-detects from scratch, `--draft` prints without
 writing.
 
-`flow start <slug> [--ui]` — `--ui` whenever anything user-visible is touched;
+`flow start <slug> [--ui --confirmed]` — `--ui` adds a rendered-mockup gate to plan, so it is
+operator-granted like `--patch`/`--docs`: propose it when screens change, start with it only on their word;
 slug lowercase words-dashed; check `flow status` for an active feature first.
 
 `flow start` **preflights** before it creates anything: it warns when this session runs an older dev-flow

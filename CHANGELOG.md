@@ -4,6 +4,27 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.73.0] - 2026-11-03
+
+**Back to a simple worktree flow.** 0.67–0.72 grew a worker system (about 1.9k source lines) on top of a flow that was meant to be simple. A real session (`audit-hardening`: 6 h of implement across 9 workers and 4 verify rounds, then a release the flow could not close) showed that machinery costing more than it saved. This release starts again from 0.66.0, keeps the fixes from that range that are not about workers, and adds one small optional worker.
+
+### Removed
+- `flow_stage` ops `run`, `verify` and `reflect`, as they were: the verify PASS stamp and its tree/HEAD/plan fingerprints, the delegation ledger and **required delegation** (verify no longer asks who wrote a commit; the driver may edit its worktree again), worker lineage/family listing, the live card, footer beat, grace steer, budget clamp and tree snapshots, `stage-sessions/` transcripts.log, and `docs/stage-agent.md`.
+
+### Added
+- **`flow_stage` (optional, slim).** `op: "implement"` (stage implement): a fresh pi session in the worktree with read/bash/edit/write edits and commits one slice. `op: "review"` (implement or pre-release): a fresh read-only reviewer returns findings and `verdict: PASS|FAIL`. This verdict is **advice, no gate depends on it**. The tool briefs the facts itself (absolute plan path in the main checkout, commits so far, uncommitted paths, project checks), so `note` is just the slice. A worker whose turn ends in prose is nudged to continue (up to twice), and an implement run ends with `flow check` plus the new commits. One wall-clock budget (default 60/30 min).
+- **`release.preflight = <cmd>`**: `flow release` runs it in the worktree before anything ships (e.g. `docker build .`); a failure refuses the gate. In `audit-hardening` the tag-triggered image build broke twice after tagging.
+
+### Changed
+- **Shipping waits for `flow release`.** For a bound feature before the release stage, `git tag <name>`, tag pushes, `gh pr merge` / `glab mr merge` and `gh|glab release create` are refused ("run flow release first"). Shipping by hand at pre-release left `flow release` refusing "already tagged" and the flow unable to close. The skill now says yolo never skips a gate.
+- **A feature worktree keeps its branch**: `git checkout -b` / `git switch -c` inside one is refused; an unrelated fix is its own `--patch` flow.
+- **`--ui` is operator-granted** (`--confirmed`), like `--patch`/`--docs`: it adds a rendered-mockup requirement to the plan gate.
+- **`bashTimeout` defaults to `inject`.** The class default timeout was always armed; refusing a call that did not state it cost about 35 wasted turns in one session. `bashTimeout = require` keeps the old behaviour.
+
+### Kept from 0.67–0.72
+- A session inside a feature worktree is judged by the **main checkout's** `.dev-flow/` (fixes "no active flow" on every edit/write in a worktree).
+- The release gate proves a clean worktree (gh#131); the release recipe merges only once CI is green (gh#134); doctor treats an aborted feature as a designed state (gh#138).
+
 ## [0.72.0] - 2026-11-03
 
 - **The implement stage must be worked, not just driven.** A session could always judge its own implement work too small to delegate and author it inline — `flow verify` proved the tree, never who wrote it. Now a normal feature's verify refuses unless every commit the branch holds falls inside a `flow_stage` worker's recorded run window: each finished worker appends its window to a dev-flow-owned `stage-sessions/delegations.log` (a session cannot sign its own proof — the ledger is refused to edit/write tools and counted as state tampering in bash), and an after-the-fact amend or rebase surfaces as an uncovered sha no write guard could ever see. While a normal feature is at implement, its own worktree is closed to its driver's edit/write tools and open to the worker that was sent to do it; the injected implement hint, the playbook and the skill no longer offer the inline escape. `--docs` and `--patch` — the operator-granted inline modes — are exempt, and there is no flag or yolo path around the rule. Heads-up for flows already at implement when you upgrade: their existing commits precede any ledger, so their next `flow verify` refuses — delegate a worker that finishes (or redoes) the work.
