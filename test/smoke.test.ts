@@ -2326,3 +2326,36 @@ test("a session inside a feature worktree is judged by the main checkout's flow 
 	const checkout = await pi.handlers.tool_call[0]({ toolName: "bash", input: { command: "git checkout feat/wtguard", timeout: 60 } }, session("wt-worker")) as { block?: boolean; reason?: string } | undefined;
 	assert.equal(checkout, undefined, "checking the feature branch out inside its own worktree is allowed");
 });
+
+test("a feature worktree stays on its own branch, and a bound feature ships only at release", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "shipord"]);
+	mkdirSync(path.join(repo, ".dev-flow", "shipord", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "shipord", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "shipord", "worktree");
+	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	assert.match((await bash(`cd ${wt} && git checkout -q -b fix/side`))?.reason ?? "", /stays on its own branch/, "no side branch inside the feature worktree");
+	assert.equal(await bash(`cd ${wt} && git checkout feat/shipord`), undefined, "its own branch is fine");
+	assert.match((await bash("gh pr merge 3 --merge"))?.reason ?? "", /release work/, "the bound feature at implement cannot merge its PR");
+	assert.match((await bash(`cd ${wt} && git tag v9.9.9`))?.reason ?? "", /tagging is release work/, "nor tag");
+});
+
+test("--ui is operator-granted: start refuses it without --confirmed", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const bare = await flow(["start", "uifeat", "--ui"]);
+	assert.ok(bare.isError, "a self-granted --ui is refused");
+	assert.match(bare.content[0].text, /--ui is operator-granted/);
+	const granted = await flow(["start", "uifeat", "--ui", "--confirmed"]);
+	assert.ok(!granted.isError, granted.content[0].text);
+	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "uifeat", "state.json"), "utf8")).ui, true);
+});

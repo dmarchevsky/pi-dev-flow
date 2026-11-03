@@ -13,7 +13,7 @@ description: >
 # dev-flow: the stage-by-stage playbook
 
 Only the **flow tool** advances stages, and each gate refuses until its exit
-criteria hold. Drive it with args arrays — `["start", "dark-mode", "--ui"]`,
+criteria hold. Drive it with args arrays — `["start", "dark-mode"]`,
 `["test"]`, `["status"]`.
 
 Ground rules:
@@ -43,7 +43,8 @@ Ground rules:
   - **yolo** at any checkpoint → run that gate `--yolo --confirmed`; every later
     checkpoint is pre-confirmed — run the remaining gates back to back without
     asking, honoring guidance attached to the word ("yolo, create a patch
-    version release" → bump patch; "yolo, no tag" → `--no-version`). Checks and
+    version release" → bump patch; "yolo, no tag" → `--no-version`). Yolo never
+    skips a gate: merge/tag/publish follow `flow release`. Checks and
     guardrails stay fully enforced — a flow-guard `confirm` rule still asks the
     operator.
   - At Release?, choosing **no version/tag for this flow** →
@@ -66,7 +67,6 @@ Ground rules:
   `flow status` is your view. **project.md is the operator-owned playbook**:
   read freely, **never edit** — it changes through `flow init --write` on the
   operator's word (`flow doctor` reviews what it lacks).
-- **Every bash/shell call states its own `timeout`** or the guard refuses it.
 - **A guard blocking you means you are skipping a stage or writing outside your
   feature** — run the gate instead of working around it. The guard reads
   **commands**: quoted text is an argument's prose (a PR body discussing a

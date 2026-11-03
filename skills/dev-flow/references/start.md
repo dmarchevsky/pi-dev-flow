@@ -25,7 +25,8 @@ with a delete offer — surface the dialog, never delete on your own.
 findings); `--force` re-detects from scratch, `--draft` prints without
 writing.
 
-`flow start <slug> [--ui]` — `--ui` whenever anything user-visible is touched;
+`flow start <slug> [--ui --confirmed]` — `--ui` adds a rendered-mockup gate to plan, so it is
+operator-granted like `--patch`/`--docs`: propose it when screens change, start with it only on their word;
 slug lowercase words-dashed; check `flow status` for an active feature first.
 
 `flow start` **preflights** before it creates anything: it warns when this session runs an older dev-flow

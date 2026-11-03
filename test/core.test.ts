@@ -61,6 +61,9 @@ import {
 	changelogVersionsBetween,
 	inScratchDir,
 	mainCheckoutRoot,
+	tagCreates,
+	releaseOrderInvocation,
+	branchCreateTarget,
 	guessReflectSections,
 	reflectItems,
 	reflectMove,
@@ -1326,4 +1329,32 @@ test("mainCheckoutRoot: git's common dir names the main checkout a worktree borr
 	assert.equal(mainCheckoutRoot("/repo", "/repo/.git"), null, "a main checkout is its own flow truth: nothing to remap");
 	assert.equal(mainCheckoutRoot("/tmp/scratch", null), null, "no git answer is never a remap");
 	assert.equal(mainCheckoutRoot("/wt", ".git"), null, "a relative answer resolves against cwd and says cwd is the main checkout");
+});
+
+test("release order: tags and forge shipping wait for the release stage", () => {
+	const g = (command: string, stage: "implement" | "pre-release" | "release" | null, branch = "feat/x") => bashFlowGuard({ command, branch, stage, defaultBranch: "main" });
+	assert.match(g("git tag -a v1.2.0 -m x", "pre-release") ?? "", /tagging is release work/, "a tag cut at pre-release is refused");
+	assert.equal(g("git tag -a v1.2.0 -m x", "release", "main"), null, "the same tag at release is the release");
+	assert.equal(g("git tag -l", "pre-release"), null, "listing tags only reads");
+	assert.equal(g("git tag", "implement"), null, "bare git tag lists");
+	assert.match(g("git push origin --tags", "pre-release") ?? "", /pushing tags is release work/);
+	assert.match(g("git push origin refs/tags/v1.2.0", "implement") ?? "", /pushing tags is release work/);
+	assert.equal(g("git push -u origin feat/x", "pre-release"), null, "pushing the feature branch for the PR is fine");
+	assert.equal(g("git tag v1.2.0", null), null, "an unbound session is not judged by a stage it does not have");
+	assert.ok(tagCreates("git tag v1"), "a lightweight tag creates");
+	assert.ok(!tagCreates("git tag --contains HEAD"));
+	assert.match(releaseOrderInvocation("gh pr merge 46 --squash", "pre-release") ?? "", /merging the PR is release work/);
+	assert.match(releaseOrderInvocation("cd wt && gh release create v1 --notes x", "implement") ?? "", /forge release is release work/);
+	assert.equal(releaseOrderInvocation("gh pr merge 46 --squash", "release"), null, "at release the merge is the job");
+	assert.equal(releaseOrderInvocation("gh pr create --base main", "pre-release"), null, "opening the PR is pre-release work");
+	assert.equal(releaseOrderInvocation('grep "gh pr merge" docs/', "implement"), null, "quoted prose is not a merge");
+	assert.equal(releaseOrderInvocation("gh pr merge 1", null), null, "unbound: no stage to judge");
+});
+
+test("branchCreateTarget: the branch a checkout/switch creates, through leading flags", () => {
+	assert.equal(branchCreateTarget("git checkout -q -b fix/dockerfile"), "fix/dockerfile");
+	assert.equal(branchCreateTarget("git switch -c fix/x"), "fix/x");
+	assert.equal(branchCreateTarget("git checkout -q -B fix/y origin/main"), "fix/y");
+	assert.equal(branchCreateTarget("git checkout feat/x"), null, "switching to an existing branch creates nothing");
+	assert.equal(branchCreateTarget("git checkout -- src/a.ts"), null);
 });

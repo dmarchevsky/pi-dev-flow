@@ -115,6 +115,8 @@ import {
 	versionTagGate,
 	writeGuard,
 	mainCheckoutRoot,
+	releaseOrderInvocation,
+	branchCreateTarget,
 	type BranchState,
 	type Config,
 	type FeatureRef,
@@ -325,7 +327,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|list|tidy|move <n> --plugin|--playbook] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui] [--force] [--patch|--docs --confirmed] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build than the disk ships (in the dev-flow repo, an older build than this checkout's own manifest), and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the build the disk says to run (this checkout's own manifest in the dev-flow repo, the installed package's elsewhere) and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there; --plugin / --playbook / --both state the section instead of leaving it to the wording, and the echo prints why the note landed where it did); reflect list numbers the open items with their section; reflect move <n> --plugin|--playbook re-files one of them; reflect tidy drops the closed (`- [x]`) items from reflections.md — every surface that queues or reviews reflections nudges when the checked-off pile grows; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
+	"help [--json] | init [--force|--draft|--write <text>] | reflect [<note>|list|tidy|move <n> --plugin|--playbook] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — start preflights the playbook before creating anything: it prints playbook gaps and warns when the session runs an older dev-flow build than the disk ships (in the dev-flow repo, an older build than this checkout's own manifest), and it refuses until a merge policy is set (ask the operator squash / merge / rebase / any in chat, then re-run with --merge=<style> --confirmed — the answer is written into project.md and enforced from then on: gh/glab merges that contradict it are blocked, and release-done proves what actually landed); version prints the build the disk says to run (this checkout's own manifest in the dev-flow repo, the installed package's elsewhere) and names any other dev-flow copies registered in the same process (--check-upstream also asks the registry for the published one) — reflect <note> queues a suggestion in reflections.md (gate flags like --confirmed are ignored there; --plugin / --playbook / --both state the section instead of leaving it to the wording, and the echo prints why the note landed where it did); reflect list numbers the open items with their section; reflect move <n> --plugin|--playbook re-files one of them; reflect tidy drops the closed (`- [x]`) items from reflections.md — every surface that queues or reviews reflections nudges when the checked-off pile grows; bare reflect prints the full session-reflection protocol (review the session log, re-check open items against shipped fixes and newer dev-flow versions, dedupe and report new findings, put the fix decision to the operator); roadmap manages .dev-flow/roadmap.md, the gitignored backlog of future features (bare lists open items; add appends one; pick <n> <slug> stamps open item <n> with the slug a later flow start uses — flow finish checks it off when that feature ships; done <n> checks off by hand; tidy drops done items); bare doctor reviews structure, git consistency and open reflections (routes each fix to a flow; it never writes); doctor <note> prints an investigation brief for a fresh observation; state gates take [slug] and --confirmed (the operator already answered in chat); --ui/--patch/--docs likewise need --confirmed (the operator granted the mode); --yolo on any state gate (approve/verify/release/finish) = the operator said \"yolo\" at that checkpoint: it answers that question and pre-confirms every later one (needs --confirmed; checks and guardrails stay); release --no-fold-check = operator-granted escape from the changelog fold proofs (the entries pending before the release are not line-checked; the entry heading and the 'this branch touched the changelog' proofs stay); release --no-version = this flow ships merge + changelog only — no bump, tag or forge release; the entry rides under Unreleased until the next versioned release folds it (default: versioned); when the session runs an older dev-flow build than the checkout, release names both builds, lists what the running code can no longer prove, and asks the operator update (/reload) or proceed with the old release — an operator decision recorded in state and repeated by release-done, never a block";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -1561,12 +1563,14 @@ ${mdDigest(draftRefresh)}`))
 
 async function gateStart(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, rest, flag, slugArg } = o;
-	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --patch/--docs are operator-granted modes — ask the operator in chat, then add --confirmed", isError: true };
+	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --ui/--patch/--docs are operator-granted — ask the operator in chat, then add --confirmed", isError: true };
 	if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
 	// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
 	if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
 	const mode = flag("patch") ? "patch" : flag("docs") ? "docs" : null;
 	if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — the operator must grant it in chat, then re-run with --confirmed`, isError: true };
+	// --ui adds the rendered-mockup gate to plan: worth it only when screens change, and the operator says so
+	if (flag("ui") && !flag("confirmed")) return { text: "--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate, so use it only when the feature changes screens; ask the operator, then re-run with --confirmed", isError: true };
 	// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
 	const curBr = await currentBranch(root);
 	if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
@@ -2120,7 +2124,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		description:
 			"Drive the dev-flow stage gates for the active feature (plan → implement → pre-release → release → done). Never edit .dev-flow state directly; gates enforce plan/mockup/test/verification criteria and confirm with the operator.",
 		parameters: Type.Object({
-			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug", "--ui"]' }),
+			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug"]' }),
 		}),
 		execute: async (_id, params, _signal, _onUpdate, ctx) => {
 			const res = await runFlow(params.args, ctx.cwd, uiFrom(ctx), sessFor(ctx));
@@ -2285,6 +2289,11 @@ export default function devFlow(pi: ExtensionAPI) {
 				const why = await askOperator(ctx, command, mv.confirm);
 				if (why) return { block: true, reason: why };
 			}
+			// shipping on the forge (PR merge, release page) is release-stage work for a bound feature
+			if (/\b(?:gh|glab)\b/.test(command)) {
+				const ro = releaseOrderInvocation(command, boundFeature(guardRoot, key)?.stage ?? null);
+				if (ro) return { block: true, reason: ro };
+			}
 			const inv = gitInvocation(command);
 			if (!inv.subs.length) return undefined; // git is not invoked as a command — nothing to guard
 			const bound = boundFeature(guardRoot, key);
@@ -2327,6 +2336,11 @@ export default function devFlow(pi: ExtensionAPI) {
 				}
 				const reason = bashFlowGuard({ command: g.seg, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore, dir: gitDir, attribution: bound ? undefined : `not attributed to a bound feature (session ${key}; dev-flow ${loadedVersion() ?? "?"} at ${SELF_BUILD.dir}) — run flow use <slug> here if a binding is missing` });
 				if (reason) return { block: true, reason };
+				// A feature worktree stays on its feature branch: a side branch cut inside it repurposes the
+				// worktree (and leaves it off its branch for the next gate); out-of-flow fixes get their own flow.
+				const created = branchCreateTarget(g.seg);
+				const homeWt = worktrees.find((w) => gitDir === w || gitDir.startsWith(w + path.sep));
+				if (created && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${created} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch --confirmed)` };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
 				const target = checkoutTarget(g.seg);
 				if (target && target.startsWith(featureBranchPrefix(cfg))) {

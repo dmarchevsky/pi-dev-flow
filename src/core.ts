@@ -1034,7 +1034,52 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 		if (writesDefault && o.stage !== "release") return `pushing to ${o.defaultBranch} requires stage "release" (verified feature)${attr}`;
 	}
 	if (git("merge") && onMain && o.stage !== "release") return `merging into ${o.defaultBranch} requires stage "release"${attr}`;
+	// Shipping belongs to the release stage: a tag cut (or pushed) while the feature is still before release
+	// leaves the gates unable to record it — flow release then refuses "already tagged" and the flow cannot close.
+	if (o.stage && BEFORE_RELEASE.has(o.stage)) {
+		if (git("tag") && tagCreates(c)) return `tagging is release work — the feature is at ${o.stage}; run flow release first (it gates the version, then tags)${judgedIn}`;
+		if (git("push")) {
+			const refs = o.pushRefs ?? parsePushRefs(gitInvocation(c).pushes);
+			if (/\s--(?:tags|follow-tags)\b/.test(c) || /refs\/tags\//.test(c) || refs.some((r) => r.kind === "tag")) return `pushing tags is release work — the feature is at ${o.stage}; run flow release first${judgedIn}`;
+		}
+	}
 	return null;
+}
+
+const BEFORE_RELEASE = new Set<Stage>(["plan", "implement", "pre-release"]);
+
+/** Does this `git tag` invocation create (or move) a tag? Bare `git tag` and the listing/verify forms only read. */
+export function tagCreates(command: string): boolean {
+	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?tag\b([^;|&\n]*)/);
+	if (!m) return false;
+	const tok = m[1].trim().split(/\s+/).filter(Boolean);
+	if (!tok.length) return false;
+	if (tok.some((t) => /^(-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|-v|--verify|-d|--delete)$/.test(t))) return false;
+	return true;
+}
+
+/** Forge-side shipping (`gh pr merge`, `glab mr merge`, `gh|glab release create`) before the release stage, or null.
+ *  Quoted text is prose except inside a head that execs its argument — the same reading as mergeStyleInvocation. */
+export function releaseOrderInvocation(command: string, stage: Stage | null): string | null {
+	if (!stage || !BEFORE_RELEASE.has(stage)) return null;
+	for (const seg of bashSegments(command)) {
+		if (READ_ONLY_HEADS.has(segHead(seg))) continue;
+		const hay = REEXEC_HEADS.has(segHead(seg)) ? `${seg} ${maskQuoted(seg)}` : maskQuoted(seg);
+		if (/\bgh\s+pr\s+merge\b/.test(hay) || /\bglab\s+mr\s+merge\b/.test(hay))
+			return `merging the PR is release work — the feature is at ${stage}; ask the operator Release? and run flow release first (yolo pre-answers the question, it does not skip the gate)`;
+		if (/\b(?:gh|glab)\s+release\s+create\b/.test(hay))
+			return `publishing a forge release is release work — the feature is at ${stage}; run flow release, then flow release-done creates it`;
+	}
+	return null;
+}
+
+/** Name of a branch a `git checkout -b/-B` / `git switch -c/-C` creates, or null. */
+export function branchCreateTarget(command: string): string | null {
+	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?(?:checkout|switch)\b([^;|&\n]*)/);
+	if (!m) return null;
+	const tok = m[1].trim().split(/\s+/).filter(Boolean);
+	const i = tok.findIndex((t) => /^(-[bBcC]|--create|--force-create|--orphan)$/.test(t));
+	return i >= 0 && tok[i + 1] ? unquote(tok[i + 1]) : null;
 }
 
 // ------------------------------------------------------- project safety rules
