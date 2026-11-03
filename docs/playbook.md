@@ -103,7 +103,7 @@ vocabulary).
 `## global` holds
 `defaultBranch`, `branchPattern`, `worktreeDir`, `mainHook`, `mockupGlobs`, `bashTimeout = inject`
 (default: the class timeout is armed silently on every shell call) `| require` (refuse calls that do not state one), `release.review`,
-`release.changelog` (default `CHANGELOG.md`; set it empty to opt out), `release.releases` and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
+`release.changelog` (default `CHANGELOG.md`; set it empty to opt out), `release.releases`, `release.preflight = <cmd>` (run in the worktree by `flow release` before anything ships — e.g. `docker build .`, so the build the tag triggers is proven first; a failure refuses the gate) and `release.artifact = <cmd>` (verify the published artifact — image registry probe etc. — before release-done completes); the implement stage takes `setup`/`test`/`build`/`run`/`seedData`/`health`/
 `dev`. Of those, `setup` runs once inside a freshly created worktree at `approve` (where `cp .env` +
 `npm install` belong — a failing setup fails the gate), and `run` is advisory: the agent starts the app
 with it for the running-and-healthy walk, dev-flow never runs it itself. `dev` is the dev deploy run by

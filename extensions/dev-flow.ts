@@ -1085,6 +1085,12 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 	const preGate = preReleaseGate({ ...state!, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 	if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
+	// the build the tag will trigger, proven before anything ships: a broken artifact build found after the
+	// tag costs follow-up PRs and a re-cut tag
+	if (cfg.release.preflight) {
+		const pf = await sh(cfg.release.preflight, wtCwd);
+		if (!pf.ok) return { text: `release gate FAILED:\n- release.preflight failed in ${state!.worktree} (${cfg.release.preflight}) — fix it on the branch before anything ships:\n${tail(pf.out)}`, isError: true };
+	}
 	// a stale session build is the operator's decision, never a block: publishing under an older gate is a
 	// legitimate choice (hotfix, offline reload), and refusing would close exactly the emergency the relaxed
 	// modes exist for. The gate names both builds, lists what the running code is missing, and folds the

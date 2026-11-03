@@ -101,7 +101,7 @@ export interface Config {
 	versioning: Versioning;
 	/** Seconds the post-deploy health probe may keep retrying before the gate gives up (0 = single shot). */
 	healthWait: number;
-	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string; merge?: MergeStyle | "any" };
+	release: { review: string; changelog?: string; tagPattern?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */

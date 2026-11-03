@@ -40,6 +40,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		"release.github": "release.releases",
 		"release.releases": "release.releases",
 		"release.artifact": "release.artifact",
+		"release.preflight": "release.preflight",
 		"release.merge": "release.merge",
 	},
 	plan: {},
@@ -61,6 +62,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		github: "release.releases", // legacy alias for `releases` — parse warns about the rename
 		releases: "release.releases",
 		artifact: "release.artifact",
+		preflight: "release.preflight", // run in the worktree at flow release, before anything ships (e.g. docker build .)
 		merge: "release.merge", // how a merged branch lands: squash | merge | rebase | any
 	},
 };

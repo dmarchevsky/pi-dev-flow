@@ -2452,3 +2452,29 @@ test("flow_stage review: advisory verdict, read-only toolset, no gate state touc
 		stageWorkerSpawn.run = orig;
 	}
 });
+
+test("release.preflight runs at flow release and a failure refuses the gate before anything ships", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\npreflight = test -f ship-ok || (echo stub build failed; exit 3)\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "pf"]);
+	mkdirSync(path.join(repo, ".dev-flow", "pf", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "pf", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "pf");
+	await flow(["check"]);
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
+	const wt = path.join(repo, ".dev-flow", "pf", "worktree");
+	const refused = await flow(["release", "--confirmed"]);
+	assert.ok(refused.isError);
+	assert.match(refused.content[0].text, /release\.preflight failed[\s\S]*stub build failed/, "the failing build output is shown");
+	writeFileSync(path.join(wt, "ship-ok"), "");
+	execFileSync("git", ["-C", wt, "add", "-A"]);
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "fix the build"]);
+	execFileSync("git", ["-C", repo, "merge", "-q", "--ff", "feat/pf"]);
+	assert.ok(!(await flow(["check"])).isError);
+	assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/, "a passing preflight lets the gate through");
+});
