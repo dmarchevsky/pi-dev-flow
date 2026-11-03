@@ -119,6 +119,7 @@ import {
 	verifyGate,
 	versionTagGate,
 	widgetLines,
+	chipLabel,
 	writeGuard,
 	mainCheckoutRoot,
 	buildWorkerBrief,
@@ -2145,16 +2146,15 @@ function refreshStatus(ctx: ExtensionContext, root: string): void {
 	}
 	const un = unfinishedStates(root);
 	const bound = boundFeature(root, sessionKey(ctx));
-	const text = statusFor(bound, un.length).text;
 	// TUI keeps the footer as its only surface: a lines-widget there is an always-present block above the
 	// editor (no click to collapse), which competes with "the footer is the legend". pi-web shows the footer
 	// text once, as the chip itself — a status line beside it would only repeat it.
 	if (!web) {
-		ctx.ui.setStatus("dev-flow", text);
+		ctx.ui.setStatus("dev-flow", statusFor(bound, un.length).text);
 		return;
 	}
 	ctx.ui.setStatus("dev-flow", undefined);
-	setChip(text, widgetLines(bound, un));
+	setChip(chipLabel(bound, un.length), widgetLines(bound, un));
 }
 
 

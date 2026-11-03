@@ -4,6 +4,11 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.77.3] - 2026-11-03
+
+### Changed
+- pi-web's footer chip is packed to fit its fixed width (longer labels were clipped with `…`): unbound reads `💬 N open` instead of `💬 N flows open`; bound puts every glyph first with no spaces, then the slug — `🔨⚡⚠️my-feature` instead of `🔨 my-feature ⚡` — so a clip only ever cuts the slug's tail, never the stage or markers (hover shows it whole). The terminal footer is unchanged.
+
 ## [0.77.2] - 2026-11-03
 
 ### Changed

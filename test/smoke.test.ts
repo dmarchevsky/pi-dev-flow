@@ -647,12 +647,12 @@ test("status bar: compact refresh follows the gates", async () => {
 	assert.equal(statuses.at(-1), undefined, "pi-web carries no separate status line — the chip is the footer");
 	assert.equal(chips.size, 1, "exactly one dev-flow chip: the stale footer key was cleared on repaint");
 	// the chip reads the footer text; its panel lists the OTHER open flows — none yet
-	assert.deepEqual(chip(chips), ["📝 demo-feature", ["no other flows open"]], "the bound flow is the chip label, not repeated in its panel");
+	assert.deepEqual(chip(chips), ["📝demo-feature", ["no other flows open"]], "the bound flow is the chip label, not repeated in its panel");
 	// a second session that never bound sees only the open-flow count — never the slug
 	const chipsB = new Map<string, string[]>();
 	const b = { ...ctx, sessionManager: { getSessionId: () => "sess-foot-B", getBranch: () => [] as never[] }, ui: { ...ctx.ui, setWidget: setWidget(chipsB) } };
 	await pi.cmds.flow.handler("status", b);
-	assert.deepEqual(chip(chipsB), ["💬 1 flow open", ["📝 demo-feature · plan"]], "unbound chip reads the count, not the slug, and lists every open flow");
+	assert.deepEqual(chip(chipsB), ["💬 1 open", ["📝 demo-feature · plan"]], "unbound chip reads the count, not the slug, and lists every open flow");
 });
 
 test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {
@@ -1406,7 +1406,7 @@ test("pending checkpoint: 💬 rides the footer until the word arrives, and is n
 	assert.match((await flow(["approve"])).content[0].text, /needs the operator/, "without the word the gate refuses and goes pending");
 	assert.equal((await flow(["status"])).content[0].text.includes("💬 Approve?"), true, "flow status names the pending checkpoint");
 	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, uiCtx);
-	assert.equal(seen.at(-1), "📝 plan-gate 💬", "the footer carries the checkpoint glyph on a bound flow");
+	assert.equal(seen.at(-1), "📝💬plan-gate", "the pi-web chip carries the checkpoint glyph up front on a bound flow");
 	await flow(["abort", "plan-gate", "--confirmed"]);
 	await flow(["start", "other"]);
 	writeFileSync(path.join(repo, ".dev-flow", "other", "plan", "plan.md"), "# plan\n\n- do it\n");
