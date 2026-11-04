@@ -189,9 +189,16 @@ export function parseProjectMd(text: string): ParsedMd {
 		if (!stage || stage === "global" || !MD_STAGES.includes(stage as MdStage)) return; // preamble/unknown → not injected
 		const item = line.match(CHECK_ITEM);
 		if (item) {
-			const rawItem = item[1].trim();
-			const uiOnly = rawItem.startsWith("(ui) ");
-			(p.checklist[stage] ??= []).push({ text: uiOnly ? rawItem.slice(5).trim() : rawItem, uiOnly });
+			// qualifiers lead the item in any order: (ui) = --ui features only, (versioned) = not on a --no-version flow
+			let text = item[1].trim();
+			let uiOnly = false;
+			let versionedOnly = false;
+			for (let q = /^\((ui|versioned)\)\s+/.exec(text); q; q = /^\((ui|versioned)\)\s+/.exec(text)) {
+				if (q[1] === "ui") uiOnly = true;
+				else versionedOnly = true;
+				text = text.slice(q[0].length);
+			}
+			(p.checklist[stage] ??= []).push(versionedOnly ? { text, uiOnly, versionedOnly } : { text, uiOnly });
 			return;
 		}
 		if (/^(#|```|<!--|\s*$)/.test(line) && !line.startsWith("### ")) return; // h1/html comments/blank are not prose
@@ -508,7 +515,7 @@ export function mdDigest(text: string): string {
 		}
 		if (s === "pre-release" && !keys.file && !p.flow.release["versioning.file"]) bits.push("version: no version file set — releases cannot bump or tag");
 		const items = p.checklist[s] ?? [];
-		if (items.length) bits.push(`manual check: ${items.map((i) => `${i.uiOnly ? "(UI only) " : ""}\"${i.text}\"`).join(" · ")}`);
+		if (items.length) bits.push(`manual check: ${items.map((i) => `${i.uiOnly ? "(UI only) " : ""}${i.versionedOnly ? "(versioned only) " : ""}\"${i.text}\"`).join(" · ")}`);
 		if (p.prose[s]) bits.push(`guidance: "${p.prose[s].replace(/\s+/g, " ").trim()}"`);
 		if (bits.length) rows.push(`${label} — ${bits.join(" · ")}`);
 	}

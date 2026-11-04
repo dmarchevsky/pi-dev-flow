@@ -72,6 +72,7 @@ import {
 	guessReflectSections,
 	reflectItems,
 	reflectMove,
+	reflectDone,
 	reflectProtocol,
 	reflectUnfiledCount,
 	reflectLegacyPluginCount,
@@ -82,6 +83,13 @@ import {
 	parseReflectReport,
 	renderReflectFindings,
 	childSessionFiles,
+	conflictMarkerLines,
+	isReleaseOnly,
+	digestTranscript,
+	workerSteer,
+	WORKER_STEER_AT,
+	WORKER_SALVAGE,
+	WORKER_SALVAGE_MS,
 	WORKER_NUDGE_READONLY,
 	type SessionHeaderInfo,
 	reflectionLine,
@@ -369,7 +377,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> stamps an item for flow start, finish checks it off — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
+	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code|done <n> [<what>]] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check|--no-marker-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word; --no-marker-check lets a branch add conflict-marker-shaped lines on purpose — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, done <n> checks a fixed one off, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> stamps an item for flow start, finish checks it off — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -716,10 +724,23 @@ async function branchState(cwd: string, defaultBranch: string): Promise<BranchSt
 	};
 }
 
+/** Commits HEAD carries since the newest local version tag (all of them before the first release) —
+ *  local refs only, so the probe stays offline-safe. HEAD is the default branch's tip on an empty branch. */
+async function unreleasedOnMain(cwd: string, pattern: string): Promise<{ count: number | null; since: string | null }> {
+	const tags = await sh("git tag --list", cwd);
+	const newest = tags.ok ? newestTaggedVersion(pattern, tags.out.split("\n").map((t) => t.trim()).filter(Boolean)) : null;
+	const since = newest ? pattern.replace("{version}", newest) : null;
+	const r = await sh(since ? `git rev-list --count ${sq(since)}..HEAD` : "git rev-list --count HEAD", cwd);
+	const n = Number.parseInt(r.out.trim(), 10);
+	return { count: r.ok && Number.isFinite(n) ? n : null, since };
+}
+
 function describeBranchState(b: BranchState, defaultBranch: string): string {
-	return b.commitsAhead === null
-		? `commits: unknown (no merge base with ${defaultBranch} — the commit proof is skipped)`
-		: `commits: ${b.commitsAhead} ahead of ${defaultBranch}, ${b.uncommitted} uncommitted path(s)`;
+	if (b.commitsAhead === null) return `commits: unknown (no merge base with ${defaultBranch} — the commit proof is skipped)`;
+	const line = `commits: ${b.commitsAhead} ahead of ${defaultBranch}, ${b.uncommitted} uncommitted path(s)`;
+	return b.commitsAhead === 0 && (b.unreleased?.count ?? 0) > 0
+		? `${line} — release-only flow: ${b.unreleased!.count} unreleased commit(s) on ${defaultBranch}${b.unreleased!.since ? ` since ${b.unreleased!.since}` : " (nothing tagged yet)"}; verify proves that tree, the version bump is the pre-release commit`
+		: line;
 }
 
 // ---------------------------------------------------------------- gate runner
@@ -941,6 +962,21 @@ function reflectMoveNote(root: string, args: string[], forced: ReflectTarget | n
 	return { text: twin ? `reflect: item ${n} was already recorded under ## ${section} — the duplicate is gone (${note})` : `reflect: item ${n} re-filed under ## ${section} — ${note}` };
 }
 
+/** `flow reflect done <n> [what fixed it]` — check a folded/fixed item off, so doctor stops re-reporting it (#165). */
+function reflectDoneNote(root: string, sess: Session, args: string[]): RunResult {
+	const text = readReflectionsText(root);
+	const items = reflectItems(text);
+	const n = Number(args[0]);
+	if (!Number.isInteger(n) || n < 1 || n > items.length)
+		return { text: items.length ? `done: open item 1–${items.length} required — flow reflect list numbers them` : "done: nothing open in reflections.md", isError: true };
+	const stamp = [now().slice(0, 10), sess.slug].filter(Boolean).join(" ");
+	const what = args.slice(1).join(" ").trim();
+	const next = reflectDone(text, n, what ? `${stamp} — ${what}` : stamp)!;
+	writeFileSync(path.join(dfDir(root), "reflections.md"), next);
+	const { tidy } = reflectionNudges(next, now().slice(0, 10));
+	return { text: `reflect: item ${n} checked off — ${items[n - 1].body}` + (tidy ? `\n${tidy}` : "") };
+}
+
 /** `flow reflect tidy` — drop the closed (`- [x]`) items; the `— fixed:` note already recorded the outcome. */
 function reflectTidy(root: string): RunResult {
 	const file = path.join(dfDir(root), "reflections.md");
@@ -1043,6 +1079,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	if (err) return err;
 	const items = applicableItems(cfg, state!, "implement");
 	const branch = await branchState(gateCwd(root, state!), cfg.defaultBranch);
+	if (branch.commitsAhead === 0 && cfg.versioning.file) branch.unreleased = await unreleasedOnMain(gateCwd(root, state!), cfg.versioning.pattern);
 	const branchLine = describeBranchState(branch, cfg.defaultBranch);
 	// A green record belongs to the tree it ran against. A worktree change made through bash (sed,
 	// a formatter, codegen) fires no edit-tool invalidation — the fingerprint is what notices the
@@ -1125,6 +1162,12 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const final = verifyGate(state!, cfg, branch);
 	if (final.length) return { text: `verify gate FAILED:\n- ${final.join("\n- ")}`, isError: true };
 	state!.approvals.verify = now();
+	if (isReleaseOnly(cfg, branch)) state!.releaseOnly = true;
+	else delete state!.releaseOnly;
+	// the tree the word was given over (#162) — a git that cannot answer leaves it unset, never a refusal
+	const vHead = await sh("git rev-parse HEAD", gateCwd(root, state!));
+	if (vHead.ok && vHead.out.trim()) state!.verifiedHead = vHead.out.trim();
+	else delete state!.verifiedHead;
 	state!.stage = "pre-release";
 	delete state!.pendingAsk;
 	writeState(root, state!);
@@ -1135,9 +1178,10 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg, takeYoloWord } = o;
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
-	const items = applicableItems(cfg, state!, "pre-release");
 	// operator's word at Release?: this flow ships without a version bump or tag — recorded only once Release? is answered
 	const noVersion = flag("no-version") || !!state!.noVersion;
+	// (versioned) items stand down on an unversioned flow — the set confirmed here is the one that applies to it
+	const items = applicableItems(cfg, { ...state!, noVersion }, "pre-release");
 	// yolo is the operator's word at Release? — pre-confirms Finish?; publishing guardrails stay enforced
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
@@ -1190,7 +1234,11 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 			}
 		}
 	}
-	const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged, changelogBase, noFoldCheck: flag("no-fold-check") };
+	// #164: a hand-resolved merge can commit a leftover marker — content to git, so nothing else catches it
+	const markerBase = await mergeBase(wtCwd, cfg.defaultBranch);
+	const markerDiff = markerBase ? await sh(`git diff -U0 --no-color --no-ext-diff ${sq(markerBase)} HEAD`, wtCwd) : null;
+	const conflictMarkers = markerDiff?.ok ? conflictMarkerLines(markerDiff.out) : undefined;
+	const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged, changelogBase, noFoldCheck: flag("no-fold-check"), conflictMarkers, noMarkerCheck: flag("no-marker-check") };
 	// same freshness rule as verify: a green predating a worktree write may not stand for the tree this gate blesses
 	if (freshenChecks(state!, await worktreeFingerprint(wtCwd)).length) writeState(root, state!);
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
@@ -1223,14 +1271,27 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 			`Update (/reload, then re-run flow release on the current build) or proceed with the old release?`;
 		staleNote = `released under dev-flow ${behind} (${selfBuild.label} ${selfBuild.version ?? "?"}) by operator choice — proofs newer than ${behind} did not run`;
 	}
+	// #162: Verified? was answered over one tree; commits after it ship under that word unless someone says
+	// so. A warning, never a refusal — doc-only moves after verify are normal; the operator decides.
+	let postVerify = "";
+	if (state!.verifiedHead) {
+		const since = await sh(`git log --oneline --no-decorate ${sq(state!.verifiedHead)}..HEAD`, wtCwd);
+		const commits = since.ok ? since.out.split("\n").filter((l) => l.trim()) : [];
+		// a release-only flow commits its bump and changelog after verify by design — only other files count
+		const prepFiles = new Set([cfg.versioning.file, cfg.release.changelog, cfg.versioning.file === "package.json" ? "package-lock.json" : ""].filter(Boolean) as string[]);
+		const touched = state!.releaseOnly && commits.length ? await sh(`git diff --name-only ${sq(state!.verifiedHead)} HEAD`, wtCwd) : null;
+		const prepOnly = !!touched?.ok && touched.out.split("\n").filter((l) => l.trim()).every((f) => prepFiles.has(f.trim()));
+		if (commits.length && !prepOnly)
+			postVerify = `${commits.length} commit(s) landed after the operator's Verified? (given over ${state!.verifiedHead.slice(0, 7)}): ${commits.slice(0, 6).join(" | ")}${commits.length > 6 ? ` …(${commits.length - 6} more)` : ""} — the verify verdict does not cover them: if behaviour changed, have the operator check the current build before Release?, and either way say in the PR body which commit the verdict was given over`;
+	}
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 	const askPending = !flag("confirmed") && !state!.yolo;
 	if (askPending) {
 		markPendingAsk(root, state!, "Release?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}`, "Release?"), isError: true };
+			return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}${postVerify ? ` — tell them: ${postVerify}` : ""}`, "Release?"), isError: true };
 		}
-		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}`);
+		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}${postVerify ? `\n\n${postVerify}` : ""}`);
 		if (!ok) {
 			delete state!.pendingAsk;
 			writeState(root, state!);
@@ -1255,7 +1316,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
 	delete state!.pendingAsk;
 	writeState(root, state!);
-	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${nextHint(state!, cfg)}` };
+	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}${postVerify ? ` Warning: ${postVerify}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${nextHint(state!, cfg)}` };
 }
 
 async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
@@ -1876,6 +1937,7 @@ async function gateReflect(o: GateCtx): Promise<RunResult> {
 	if (words.length === 1 && words[0] === "tidy") return reflectTidy(root);
 	if (words.length === 1 && words[0] === "list") return await reflectList(root);
 	if (words[0] === "move") return reflectMoveNote(root, words.slice(1), forced);
+	if (words[0] === "done") return reflectDoneNote(root, sess, words.slice(1));
 	if (words.length) return await reflectNote(root, sess, words, forced);
 	const self = pluginVersion(import.meta.dirname);
 	const upstream = await pluginUpstream(root);
@@ -2091,6 +2153,43 @@ const workerSessions = new Set<string>();
 
 /** Toolset per worker op: an implementer codes, a reviewer reads and runs commands only. */
 const WORKER_TOOLS: Record<WorkerOp, string[]> = { implement: ["read", "bash", "edit", "write"], review: ["read", "bash"], reflect: ["read", "bash"] };
+
+/** Test-only timer override: the smoke suite drives the steer, the hard cut and the salvage grace in ms. */
+export const workerTiming: { softMs?: number; hardMs?: number; graceMs?: number } = {};
+
+/** The upstream dev-flow repo's issues in every state, for the reflect brief's dedupe — prefetched so
+ *  the worker reads a list instead of looping gh searches. null = gh could not answer (the brief then
+ *  falls back to the search recipe). */
+async function upstreamIssueList(root: string, repo: string): Promise<{ number: number; title: string; state: string }[] | null> {
+	if (!repo || process.env.DEV_FLOW_NO_ISSUES) return null;
+	const r = await sh(`gh issue list --repo ${sq(repo)} --state all --json number,title,state --limit 200`, root, 15_000);
+	if (!r.ok) return null;
+	try {
+		const a = JSON.parse(r.out) as { number?: unknown; title?: unknown; state?: unknown }[];
+		return Array.isArray(a) ? a.filter((i) => Number.isInteger(i?.number)).map((i) => ({ number: Number(i.number), title: String(i.title ?? ""), state: String(i.state ?? "") })) : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Seam: the smoke suite stubs the prefetch instead of calling gh against the real upstream. */
+export const reflectSeams = { upstreamIssues: upstreamIssueList };
+
+/** Build the reflect worker's transcript digests in the feature's scratch dir (driver first). A
+ *  transcript that cannot be read is skipped — the brief still names the raw file. */
+function writeTranscriptDigests(root: string, slug: string, files: string[]): { transcript: string; digest: string }[] {
+	const dir = path.join(featureTmpDir(dfDir(root), slug), "reflect");
+	const out: { transcript: string; digest: string }[] = [];
+	for (const f of files) {
+		try {
+			mkdirSync(dir, { recursive: true });
+			const digest = path.join(dir, `${path.basename(f, ".jsonl")}.digest.txt`);
+			writeFileSync(digest, digestTranscript(readFileSync(f, "utf8")));
+			out.push({ transcript: f, digest });
+		} catch { /* unreadable transcript: the raw path stays in the brief */ }
+	}
+	return out;
+}
 
 /** Line 1 of every pi session file in `dir` — the header that names a worker's parent session. A
  *  file is read up to its first newline only (transcripts grow large); unreadable files are skipped. */
@@ -2467,15 +2566,20 @@ export default function devFlow(pi: ExtensionAPI) {
 					? await (async () => {
 							const items = readReflections(root);
 							const fold = await foldView(root, items);
+							const upstream = await pluginUpstream(root);
+							const children = lineage.file ? childSessionFiles(lineage.file, sessionHeaders(lineage.dir)) : [];
 							return buildReflectBrief({
 								slug: st.slug, root, today: now().slice(0, 10),
 								driverFile: lineage.file ?? null,
-								children: lineage.file ? childSessionFiles(lineage.file, sessionHeaders(lineage.dir)) : [],
+								children,
+								digests: lineage.file ? writeTranscriptDigests(root, st.slug, [lineage.file, ...children.map((c) => c.file)]) : [],
+								upstreamIssues: (await reflectSeams.upstreamIssues(root, upstream)) ?? undefined,
+								budgetMin,
 								reflectionsFile: path.join(dfDir(root), "reflections.md"),
 								items,
 								projectMd: path.join(dfDir(root), "project.md"),
 								version: pluginVersion(import.meta.dirname).version,
-								upstream: await pluginUpstream(root),
+								upstream,
 								selfRepo,
 								projectIssues: fold.state === "ok" && !selfRepo ? { repo: fold.slug, issues: fold.result.upstreamOnly.map((i) => ({ number: i.number, title: i.title })) } : undefined,
 								note: String(params.note ?? ""),
@@ -2483,7 +2587,7 @@ export default function devFlow(pi: ExtensionAPI) {
 						})()
 					: buildWorkerBrief({
 							op: wop, slug: st.slug, workDir: work,
-							planFile: path.join(featDir(root, st.slug), "plan", "plan.md"),
+							planFile: ((f) => (existsSync(f) ? f : null))(path.join(featDir(root, st.slug), "plan", "plan.md")),
 							defaultBranch: cfg.defaultBranch,
 							commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
 							status: await git("git status --short"),
@@ -2495,11 +2599,20 @@ export default function devFlow(pi: ExtensionAPI) {
 			const subagent = !lineage.id || !lineage.file ? undefined : { parentId: lineage.id, parentFile: lineage.file, toolCallId: id, profile: `flow-${wop}`, description: name, task: brief };
 			let child: AgentSession | undefined;
 			let timedOut = false;
+			let steered = false;
+			let salvaged = false;
 			let crash: string | null = null;
 			let nudges = 0;
 			let report = parseWorkerReport("");
 			const abortChild = () => void Promise.resolve(child?.abort()).catch(() => {});
-			const timer = setTimeout(() => { timedOut = true; abortChild(); }, budgetMin * 60_000);
+			const hardMs = workerTiming.hardMs ?? budgetMin * 60_000;
+			// grace before the cliff (gh#142): steered at 75% to wrap up, so a long run hands back a REPORT
+			// instead of being cut mid-thought — the hard timer stays the backstop
+			const softTimer = setTimeout(() => {
+				steered = true;
+				try { void Promise.resolve(child?.steer(workerSteer(wop, budgetMin))).catch(() => {}); } catch { /* the hard cut follows */ }
+			}, workerTiming.softMs ?? Math.round(hardMs * WORKER_STEER_AT));
+			const timer = setTimeout(() => { timedOut = true; abortChild(); }, hardMs);
 			signal?.addEventListener("abort", abortChild);
 			let unsub: (() => void) | undefined;
 			let releaseLive: (status: string) => void = () => {};
@@ -2524,9 +2637,24 @@ export default function devFlow(pi: ExtensionAPI) {
 					await child.prompt(wop === "implement" ? WORKER_NUDGE : WORKER_NUDGE_READONLY);
 					report = parseWorkerReport(child.getLastAssistantText() ?? "");
 				}
+				// cut at the budget without a REPORT: one short, tool-less turn to hand back what it found —
+				// an aborted reflection otherwise loses every finding it had already made
+				if (!report.found && timedOut && !signal?.aborted) {
+					salvaged = true;
+					const grace = setTimeout(abortChild, workerTiming.graceMs ?? WORKER_SALVAGE_MS);
+					try {
+						await child.prompt(WORKER_SALVAGE);
+						report = parseWorkerReport(child.getLastAssistantText() ?? "");
+					} catch {
+						/* a failed salvage is still an interrupted run, not a crash */
+					} finally {
+						clearTimeout(grace);
+					}
+				}
 			} catch (e) {
 				crash = e instanceof Error ? e.message : String(e);
 			} finally {
+				clearTimeout(softTimer);
 				clearTimeout(timer);
 				signal?.removeEventListener("abort", abortChild);
 				unsub?.();
@@ -2536,14 +2664,20 @@ export default function devFlow(pi: ExtensionAPI) {
 			const headAfter = (await git("git rev-parse HEAD")).trim();
 			const newCommits = headBefore && headAfter && headBefore !== headAfter ? await git(`git log --oneline ${sq(headBefore)}..HEAD`) : "";
 			const dirty = (await git("git status --short")).trim();
-			const outcome = crash ? `crashed: ${crash}` : timedOut ? `interrupted at the ${budgetMin}-min budget` : report.found ? "reported" : `ended without REPORT after ${nudges} nudge(s)`;
+			const outcome = crash
+				? `crashed: ${crash}`
+				: timedOut
+					? `interrupted at the ${budgetMin}-min budget${steered ? " (steered to wrap up at " + Math.round(WORKER_STEER_AT * 100) + "%)" : ""}${report.found ? " — REPORT salvaged after the cut, treat it as partial" : salvaged ? " — the salvage prompt got no REPORT either" : ""}`
+					: report.found
+						? `reported${steered ? " (after the wrap-up steer)" : ""}`
+						: `ended without REPORT after ${nudges} nudge(s)`;
 			// the terminal entry is what settles the Agents menu row (a persisted `running` the host
 			// cannot prove live displays as `interrupted`); a no-REPORT run is a failure, not a ✓.
 			if (subagent) {
 				const doneAt = now();
 				const final = crash
 					? { version: 1, status: "failed", completedAt: doneAt, error: crash }
-					: timedOut || signal?.aborted
+					: signal?.aborted || (timedOut && !report.found)
 						? { version: 1, status: "aborted", completedAt: doneAt }
 						: report.found
 							? { version: 1, status: "completed", completedAt: doneAt, result: report.body }
@@ -2554,7 +2688,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			}
 			releaseLive("failed"); // idempotent guard: a throw between claim and result must not leave a live row
 			try { if (child) workerSessions.delete(child.sessionManager.getSessionId()); } catch { /* id-less session: nothing was registered */ }
-			try { child?.setSessionName(`${report.found && !crash && !timedOut && !signal?.aborted ? "✓" : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
+			try { child?.setSessionName(`${report.found && !crash && !signal?.aborted ? (timedOut ? "◐" : "✓") : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
 			const parts = [`${glyph} ${wop} worker ${outcome} (${Math.round((Date.now() - started) / 60_000)} min)`];
 			let reflected: ReturnType<typeof parseReflectReport> | null = null;
 			if (wop === "reflect") {

@@ -52,7 +52,7 @@ executable checks and hard safety rules:
 |---|---|---|
 | 1 — executable | ` ```flow` (`key = value`) config blocks; ` ```flow-check <name>` command blocks | gates run every check, record pass/fail against a worktree fingerprint, a changed tree makes them stale — hard |
 | 1 — guard | ` ```flow-guard ` (`deny`/`confirm`/`protect`/`forbid`) rules in `## global` | enforced on every bash command and every edit/write path, at every stage — hard block or operator confirmation |
-| 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features) | gate confirms cover them as a set (hashed: changing the items asks again); `(ui)` items never appear for non-UI features |
+| 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features; `- [ ] (versioned) item` = only when the flow ships a version — it stands down on `--no-version`) | gate confirms cover them as a set (hashed: changing the items asks again); `(ui)` items never appear for non-UI features, `(versioned)` items never for an unversioned flow (a deploy proof of the tagged image, say) |
 | 3 — prose | any other text | injected to the agent when its stage begins — advisory |
 
 Example `## implement` section:

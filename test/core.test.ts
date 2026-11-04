@@ -41,6 +41,8 @@ import {
 	maskQuoted,
 	needsOperator,
 	nextHint,
+	applicableItems,
+	checklistPending,
 	parsePushRefs,
 	playbookTamper,
 	pluginVersion,
@@ -94,6 +96,11 @@ import {
 	REFLECT_HEADER,
 	childSessionFiles,
 	buildReflectBrief,
+	buildWorkerBrief,
+	digestTranscript,
+	conflictMarkerLines,
+	reflectDone,
+	workerSteer,
 	parseReflectReport,
 	renderReflectFindings,
 	appendRoadmapItem,
@@ -213,6 +220,15 @@ test("verifyGate refuses a branch with nothing committed — checks describe the
 	assert.equal(verifyGate(s, cfg, { commitsAhead: 1, uncommitted: 3 }).length, 0, "one commit with a dirty tree passes: the iterate-and-re-verify loop stays cheap");
 	assert.equal(verifyGate(s, cfg).length, 0, "no branch state measured → nothing claimed");
 	assert.equal(verifyGate(s, cfg, { commitsAhead: null, uncommitted: 0 }).length, 0, "an unanswerable merge base must not refuse the gate");
+});
+
+test("verifyGate: an empty branch on a versioned project with unreleased work on main is a release-only flow (#161)", () => {
+	const s = { ...newState("r", false), stage: "implement" as const };
+	const vc = buildConfig({ versioning: { file: "VERSION" } });
+	assert.equal(verifyGate(s, vc, { commitsAhead: 0, uncommitted: 0, unreleased: { count: 4, since: "v1.2.0" } }).length, 0, "main's unreleased work is what this flow releases");
+	assert.match(verifyGate(s, vc, { commitsAhead: 0, uncommitted: 0, unreleased: { count: 0, since: "v1.2.0" } }).join(" "), /nothing landed on the default branch since v1\.2\.0 — there is nothing to verify or release/);
+	assert.match(verifyGate(s, vc, { commitsAhead: 0, uncommitted: 0, unreleased: { count: null, since: null } }).join(" "), /nothing committed on the feature branch yet/, "an unanswerable probe keeps the old refusal");
+	assert.match(verifyGate(s, cfg, { commitsAhead: 0, uncommitted: 0, unreleased: { count: 4, since: null } }).join(" "), /nothing committed/, "no versioning file: no release-only path");
 });
 
 test("releaseGate requires verify approval and release stage", () => {
@@ -970,6 +986,135 @@ test("buildReflectBrief: transcripts, queue, upstream dedupe and the row contrac
 	assert.match(self, /no flow_stage worker ran/);
 	assert.match(self, /this checkout IS dev-flow/);
 	assert.ok(!self.includes("gh issue list --repo"), "no upstream search line without a foreign upstream");
+});
+
+test("buildReflectBrief: prebuilt digests, prefetched upstream issues and the budget replace the dump-and-search loop", () => {
+	const brief = buildReflectBrief({
+		slug: "feat-x", root: "/r", today: "2026-11-03", driverFile: "/s/driver.jsonl", children: [],
+		reflectionsFile: "f", items: [], projectMd: "p", version: "1", upstream: "me/dev-flow", selfRepo: false,
+		digests: [{ transcript: "/s/driver.jsonl", digest: "/r/.dev-flow/feat-x/tmp/reflect/driver.digest.txt" }],
+		upstreamIssues: [{ number: 142, title: "worker cap cuts mid-stage", state: "CLOSED" }],
+		budgetMin: 20, note: "",
+	});
+	assert.match(brief, /Start here — digests already built for you/);
+	assert.match(brief, /\/r\/\.dev-flow\/feat-x\/tmp\/reflect\/driver\.digest\.txt  \(of driver\.jsonl\)/);
+	assert.ok(!brief.includes("Skim with jq"), "with digests the raw-dump recipe is not offered");
+	assert.match(brief, /gh#142 \[closed\] worker cap cuts mid-stage/);
+	assert.ok(!brief.includes("--search"), "a prefetched list replaces the search loop");
+	assert.match(brief, /Budget: 20 min, wall clock\. Aim to write the REPORT by about 60%/);
+	assert.match(brief, /you review the session, not the product/i);
+});
+
+test("digestTranscript: operator words, flow calls and answers, errors and repeats — line-tagged, a fraction of the raw size", () => {
+	const msg = (role: string, content: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ type: "message", timestamp: "2026-11-03T20:00:00Z", message: { role, content, ...extra } });
+	const call = (id: string, name: string, args: unknown) => msg("assistant", [{ type: "thinking", thinking: "x".repeat(5000) }, { type: "toolCall", id, name, arguments: args }]);
+	const lines = [
+		JSON.stringify({ type: "session", version: 3, id: "d" }),
+		msg("user", [{ type: "text", text: "fix the status dot" }]),
+		call("c1", "flow", { args: ["start", "dot"] }),
+		msg("toolResult", [{ type: "text", text: "feature dot started at stage plan" }], { toolCallId: "c1", toolName: "flow", isError: false }),
+		call("c2", "bash", { command: "npm test" }),
+		msg("toolResult", [{ type: "text", text: "1 failing: dot.test.ts" }], { toolCallId: "c2", toolName: "bash", isError: true }),
+		call("c3", "bash", { command: "npm test" }),
+		call("c4", "bash", { command: "npm test" }),
+		call("c5", "bash", { command: "cat big.log" }),
+		msg("toolResult", [{ type: "text", text: "y".repeat(50_000) }], { toolCallId: "c5", toolName: "bash", isError: false }),
+		JSON.stringify({ type: "compaction", summary: "s" }),
+		JSON.stringify({ type: "custom_message", customType: "flow", content: "release needs the operator: NEEDS-OPERATOR" }),
+		"not json",
+	];
+	const raw = lines.join("\n");
+	const d = digestTranscript(raw);
+	assert.match(d, /^digest: \d+ entries, 5 tool calls, 1 tool errors, 2026-11-03T20:00:00Z/);
+	assert.match(d, /×3 from L5: npm test/);
+	assert.match(d, /L2 OPERATOR: fix the status dot/);
+	assert.match(d, /L3 flow start dot/);
+	assert.match(d, /L4   ↳ feature dot started at stage plan/);
+	assert.match(d, /L6 ERROR bash \(call L5: npm test\) → 1 failing: dot\.test\.ts/);
+	assert.match(d, /L11 ── compaction/);
+	assert.match(d, /L12 \/flow → release needs the operator/);
+	assert.ok(!d.includes("yyyy"), "a plain tool result's output is not copied");
+	assert.ok(!d.includes("xxxx"), "thinking is not copied");
+	assert.ok(d.length < raw.length / 20, `digest ${d.length} vs raw ${raw.length}`);
+	const clipped = digestTranscript(Array.from({ length: 400 }, (_, i) => msg("user", `operator line ${i} ${"z".repeat(300)}`)).join("\n"), { maxChars: 4000 });
+	assert.match(clipped, /operator line 0 /, "the start survives the clip");
+	assert.match(clipped, /operator line 399 /, "the end survives the clip");
+	assert.match(clipped, /digest clipped/);
+});
+
+test("workerSteer: names the time left; implement commits, read-only ops write the REPORT", () => {
+	assert.match(workerSteer("reflect", 20), /about 5 min of your 20-min budget/);
+	assert.match(workerSteer("reflect", 20), /Stop probing and write the REPORT section now/);
+	assert.match(workerSteer("implement", 60), /about 15 min .* commit what works/);
+});
+
+test("buildWorkerBrief: no plan file (a --docs / --patch flow) is said, not sent after as an ENOENT (gh#167)", () => {
+	const base = { op: "review" as const, slug: "d", workDir: "/w", defaultBranch: "main", commits: "", status: "", checks: [], note: "review the docs change" };
+	const none = buildWorkerBrief({ ...base, planFile: null });
+	assert.match(none, /Plan: none — this flow \(--docs \/ --patch\) has no plan file by design/);
+	assert.match(none, /Check, don't fix: read the task, the diff \(`git diff main\.\.\.HEAD`\)/);
+	assert.ok(!none.includes("Approved plan"));
+	const withPlan = buildWorkerBrief({ ...base, planFile: "/r/.dev-flow/d/plan/plan.md" });
+	assert.match(withPlan, /Approved plan \(read it first; it is outside the worktree\): \/r\/\.dev-flow\/d\/plan\/plan\.md/);
+	assert.match(withPlan, /read the plan, the diff/);
+});
+
+test("conflictMarkerLines: added markers are named with file:line; removed lines and setext underlines are not (#164)", () => {
+	const diff = [
+		"diff --git a/CHANGELOG.md b/CHANGELOG.md",
+		"--- a/CHANGELOG.md",
+		"+++ b/CHANGELOG.md",
+		"@@ -3,0 +4,3 @@",
+		"+- new entry",
+		"+>>>>>>> origin/main",
+		"+=======",
+		"@@ -20 +23 @@",
+		"-<<<<<<< HEAD",
+		"+<<<<<<<",
+		"diff --git a/docs/a.md b/docs/a.md",
+		"--- a/docs/a.md",
+		"+++ b/docs/a.md",
+		"@@ -1,0 +2,2 @@",
+		"+Title",
+		"+=======",
+		"+>>>>>>>>>> not a marker (ten)",
+	].join("\n");
+	assert.deepEqual(conflictMarkerLines(diff), ["CHANGELOG.md:5: >>>>>>> origin/main", "CHANGELOG.md:23: <<<<<<<"]);
+	assert.deepEqual(conflictMarkerLines(""), []);
+});
+
+test("preReleaseGate: leftover conflict markers refuse the release unless the operator grants --no-marker-check", () => {
+	const c0 = buildConfig({});
+	const st = { ...newState("m", false), stage: "pre-release" as const, noVersion: true };
+	const prep = { manifestVersion: null, remoteTags: [], changelog: null, changelogChanged: null, conflictMarkers: ["CHANGELOG.md:5: >>>>>>> origin/main"] };
+	assert.ok(preReleaseGate(st, c0, prep).some((e) => /adds 1 merge-conflict marker line\(s\)[\s\S]*CHANGELOG\.md:5/.test(e)));
+	assert.ok(!preReleaseGate(st, c0, { ...prep, noMarkerCheck: true }).some((e) => /conflict marker/.test(e)));
+	assert.ok(!preReleaseGate(st, c0, { ...prep, conflictMarkers: [] }).some((e) => /conflict marker/.test(e)));
+});
+
+test("--docs --no-version: no changelog proof (#163); (versioned) items stand down; the pre-release hint says unversioned is the usual docs path (#166)", () => {
+	const c = buildConfig({ versioning: { file: "VERSION" }, release: { changelog: "CHANGELOG.md" } });
+	const docs = { ...newState("d", false, false, true), stage: "pre-release" as const, noVersion: true };
+	const prep = { manifestVersion: null, remoteTags: [], changelog: { file: "CHANGELOG.md", content: "# Changelog\n\n## [Unreleased]\n" }, changelogChanged: false };
+	assert.deepEqual(preReleaseGate(docs, c, prep), [], "a docs flow shipped unversioned owes no changelog line");
+	const code = { ...newState("n", false), stage: "pre-release" as const, noVersion: true, checks: { test: { ok: true, at: "" } } };
+	assert.ok(preReleaseGate(code, c, prep).some((e) => /unchanged on this branch/.test(e)), "a code flow shipped unversioned still does");
+	c.checklist.release = [{ text: "image tag matches", uiOnly: false, versionedOnly: true }, { text: "PR merged", uiOnly: false }];
+	assert.deepEqual(applicableItems(c, docs, "release").map((i) => i.text), ["PR merged"]);
+	assert.equal(checklistPending(c, docs, "release"), 1);
+	assert.deepEqual(applicableItems(c, { ...docs, noVersion: false }, "release").map((i) => i.text), ["image tag matches", "PR merged"]);
+	const hint = nextHint({ ...docs, noVersion: false }, c);
+	assert.match(hint, /docs flow: it usually ships unversioned — ask the operator; with their word, flow release --no-version needs no bump/);
+	assert.match(nextHint({ ...newState("v", false), stage: "pre-release" as const }, c), /bump version in VERSION/, "a normal flow keeps the versioned hint");
+});
+
+test("reflectDone: checks item n off with a fixed note, in list numbering (#165)", () => {
+	const text = "# r\n\n## playbook\n\n- [ ] a — s 2026-10-01\n- [x] old — fixed: x\n\n## code\n\n- [ ] b — s 2026-10-02\n";
+	const next = reflectDone(text, 2, "2026-11-03 fix-b — PR #9")!;
+	assert.match(next, /- \[x\] b — s 2026-10-02 — fixed: 2026-11-03 fix-b — PR #9/);
+	assert.match(next, /- \[ \] a — s 2026-10-01/, "the other item stays open");
+	assert.equal(reflectItems(next).length, 1);
+	assert.equal(reflectDone(text, 3, "x"), null);
 });
 
 test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, plugin routes upstream", () => {

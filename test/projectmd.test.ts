@@ -133,6 +133,15 @@ test("parseProjectMd: (ui) marker splits tier-2 items", () => {
 	assert.deepEqual(p.checklist.plan, [{ text: "mockups only", uiOnly: true }, { text: "both", uiOnly: false }]);
 });
 
+test("parseProjectMd: (versioned) marks an item that stands down on a --no-version flow, in any order with (ui) (#166)", () => {
+	const p = parseProjectMd("## release\n- [ ] (versioned) image tag matches\n- [ ] (ui) (versioned) served bundle\n- [ ] always\n");
+	assert.deepEqual(p.checklist.release, [
+		{ text: "image tag matches", uiOnly: false, versionedOnly: true },
+		{ text: "served bundle", uiOnly: true, versionedOnly: true },
+		{ text: "always", uiOnly: false },
+	]);
+});
+
 test("## pre-release parses like release: keys, checklist, prose", () => {
 	const p = parseProjectMd("# dev-flow\n\n## pre-release\nreview policy prose\n```flow\nversionFile = pyproject.toml\nchangelog = CHANGES.md\n```\n- [ ] version chosen with operator\n");
 	assert.equal(p.hard.length, 0);
