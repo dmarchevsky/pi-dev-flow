@@ -26,7 +26,9 @@ feature).
    blocks).
    Throwaway scripts and scratch output go in `$TMPDIR` (or `mktemp`), not a
    hard-coded `/tmp/...`: in a bound session, and in every command a gate runs,
-   it is `.dev-flow/<slug>/tmp/`, and finish removes it with the feature.
+   it is `.dev-flow/<slug>/tmp/`, and finish removes it with the feature. The
+   same commands get that dir as `GIT_CEILING_DIRECTORIES`, so a test fixture
+   made under it is not inside the checkout (git does not climb out of it).
 3. `flow check` runs every tier-1 check (test, health, named `flow-check`
    blocks) and records each against a fingerprint of the worktree; any later
    worktree change makes them stale — verify reruns stale checks itself.

@@ -27,7 +27,9 @@ writing.
 
 `flow start <slug> [--ui --confirmed]` — `--ui` adds a rendered-mockup gate to plan, so it is
 operator-granted like `--patch`/`--docs`: propose it when screens change, start with it only on their word;
-slug lowercase words-dashed; check `flow status` for an active feature first.
+slug lowercase words-dashed; check `flow status` for an active feature first. Screens turned out to
+change after a plain start (the operator asks for mockups)? While the feature is still at plan,
+`flow start <slug> --ui --confirmed` from its session switches the mockup gate on; past plan it refuses.
 
 `flow start` **preflights** before it creates anything: it warns when this session runs an older dev-flow
 build than the checkout (`/reload` before trusting gate output), prints the playbook gaps `flow doctor`

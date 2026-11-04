@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -8,9 +9,11 @@ import {
 	applyAnswer,
 	appendReflection,
 	approveGate,
+	foreignWorktreeLinks,
 	bashSegments,
 	bashFlowGuard,
 	featureTmpDir,
+	featureTmpEnv,
 	withTmpDir,
 	checklistHash,
 	checkoutInvocation,
@@ -1059,6 +1062,15 @@ test("buildWorkerBrief: no plan file (a --docs / --patch flow) is said, not sent
 	assert.match(withPlan, /read the plan, the diff/);
 });
 
+test("buildWorkerBrief: an implement worker sharing a dirty worktree commits only its own paths", () => {
+	const base = { op: "implement" as const, slug: "r", workDir: "/w", defaultBranch: "main", commits: "", checks: [], note: "slice", planFile: null };
+	const dirty = buildWorkerBrief({ ...base, status: " M web/src/App.tsx\nD  web/src/Old.tsx" });
+	assert.match(dirty, /driving session's work in progress, not yours: never stage or commit them/);
+	assert.match(dirty, /never `git add -A`, `git add \.` or `git commit -a`/);
+	assert.ok(!buildWorkerBrief({ ...base, status: "" }).includes("work in progress, not yours"), "a clean worktree needs no warning");
+	assert.ok(!buildWorkerBrief({ ...base, op: "review", status: " M x" }).includes("not yours"), "a reviewer commits nothing anyway");
+});
+
 test("conflictMarkerLines: added markers are named with file:line; removed lines and setext underlines are not (#164)", () => {
 	const diff = [
 		"diff --git a/CHANGELOG.md b/CHANGELOG.md",
@@ -1148,6 +1160,21 @@ test("versionTagGate: manifest and tag must agree", () => {
 	assert.deepEqual(versionTagGate("0.13.1-letta_0.34.9", "{version}", ["0.13.1-letta_0.34.9"]), [], "suffix-style patterns");
 });
 
+
+test("foreignWorktreeLinks: a mockup linking another feature's worktree is named; main checkout, own worktree and web links are fine", () => {
+	const df = "/r/.dev-flow";
+	const html = (href: string) => `<link rel="stylesheet" href="${href}">`;
+	const links = foreignWorktreeLinks(df, "rail", [
+		{ file: "mockups/a.html", html: html("../../../status-and-loading/worktree/web/src/styles.css") },
+		{ file: "mockups/b.html", html: html("../../../../web/src/styles.css") },
+		{ file: "mockups/c.html", html: html("../../worktree/web/src/styles.css") },
+		{ file: "mockups/d.html", html: `<style>@import url("file:///r/.dev-flow/other/worktree/x.css");</style><img src="https://x/y.png">` },
+	]);
+	assert.deepEqual(links, ["mockups/a.html: ../../../status-and-loading/worktree/web/src/styles.css", "mockups/d.html: file:///r/.dev-flow/other/worktree/x.css"]);
+	const errs = approveGate(newState("rail", false), cfg, ["plan.md"], "", links);
+	assert.ok(errs.some((e) => /mockups link another feature's worktree — mockups\/a\.html/.test(e) && /link the main checkout's stylesheet/.test(e)));
+	assert.deepEqual(approveGate(newState("rail", false), cfg, ["plan.md"], ""), []);
+});
 
 test("approveGate: patch features skip the plan document, gates stay", () => {
 	const p = newState("p", false, true);
@@ -1658,5 +1685,37 @@ test("worker helpers: op legality, budget clamp, REPORT parsing", () => {
 
 test("withTmpDir prefixes a shell-quoted TMPDIR and keeps the command as judged", () => {
 	assert.equal(featureTmpDir("/r/.dev-flow", "x"), path.join("/r/.dev-flow", "x", "tmp"));
-	assert.equal(withTmpDir("ls -la", "/r/a b/it's"), "export TMPDIR='/r/a b/it'\\''s'\nls -la");
+	assert.equal(
+		withTmpDir("ls -la", "/r/a b/it's"),
+		"export TMPDIR='/r/a b/it'\\''s' GIT_CEILING_DIRECTORIES='/r/a b/it'\\''s'${GIT_CEILING_DIRECTORIES:+:$GIT_CEILING_DIRECTORIES}\nls -la",
+	);
+	assert.deepEqual(featureTmpEnv("/r/t", ""), { TMPDIR: "/r/t", GIT_CEILING_DIRECTORIES: "/r/t" });
+	assert.deepEqual(featureTmpEnv("/r/t", "/home"), { TMPDIR: "/r/t", GIT_CEILING_DIRECTORIES: `/r/t${path.delimiter}/home` });
+});
+
+test("the feature scratch dir is a git ceiling: a fixture under it is not inside the checkout", () => {
+	const repo = mkdtempSync(path.join(tmpdir(), "df-ceiling-"));
+	try {
+		execSync("git init -q", { cwd: repo });
+		const tmp = featureTmpDir(path.join(repo, ".dev-flow"), "feat");
+		const fixture = path.join(tmp, "fixture-1");
+		mkdirSync(fixture, { recursive: true });
+		const probe = (env: Record<string, string>) => {
+			try {
+				execSync("git rev-parse --git-dir", { cwd: fixture, stdio: "pipe", env: { ...process.env, ...env } });
+				return true;
+			} catch {
+				return false;
+			}
+		};
+		assert.equal(probe({ GIT_CEILING_DIRECTORIES: "" }), true, "without the ceiling git climbs out of the fixture into the checkout");
+		assert.equal(probe(featureTmpEnv(tmp, "")), false, "with it the fixture is no repository");
+		// the shell prefix the bash hook adds behaves the same
+		const sh = withTmpDir("git rev-parse --git-dir >/dev/null 2>&1 && echo found || echo none", tmp);
+		assert.equal(execSync(sh, { cwd: fixture, shell: "/bin/bash", env: { ...process.env, GIT_CEILING_DIRECTORIES: "" } }).toString().trim(), "none");
+		// the main checkout still resolves under the same env
+		assert.equal(execSync(sh, { cwd: repo, shell: "/bin/bash", env: { ...process.env, GIT_CEILING_DIRECTORIES: "" } }).toString().trim(), "found");
+	} finally {
+		rmSync(repo, { recursive: true, force: true });
+	}
 });

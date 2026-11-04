@@ -2158,7 +2158,8 @@ test("threshold compaction takeover: flow-aware compact() returned as custom com
 		}) as typeof compactionTakeover.run;
 		const t = mk();
 		const res = await takeover(t.event, t.c);
-		assert.equal(res?.compaction?.summary, "flow-aware summary", "our summary lands via the custom-compaction channel — no cancel dance, no re-entry");
+		assert.match(res?.compaction?.summary ?? "", /^flow-aware summary\n/, "our summary lands via the custom-compaction channel — no cancel dance, no re-entry");
+		assert.match(res?.compaction?.summary ?? "", /\[dev-flow state on disk — authoritative[^\n]*\]\n- feature demo-feature — stage: plan\n- approvals recorded: none\n- checks: none recorded\n- next: investigate/, "the disk's flow state is appended, not left to the summarizer");
 		assert.equal(res?.cancel, undefined, "pi appends the returned compaction itself — nothing to cancel");
 		assert.match(String(calls[0].instructions), /demo-feature/, "the summary carries the flow-aware instructions");
 		assert.equal(calls[0].apiKey, "k", "request-time auth is resolved and forwarded");
@@ -2168,7 +2169,7 @@ test("threshold compaction takeover: flow-aware compact() returned as custom com
 		}) as typeof compactionTakeover.run;
 		assert.equal(await takeover(mk().event, mk().c), undefined, "a failed takeover must NOT cancel pi's own compaction");
 		compactionTakeover.run = (async (preparation: { firstKeptEntryId: string; tokensBefore: number }) => ({ summary: "retry", firstKeptEntryId: preparation.firstKeptEntryId, tokensBefore: preparation.tokensBefore })) as typeof compactionTakeover.run;
-		assert.equal((await takeover(mk().event, mk().c))?.compaction?.summary, "retry", "the failed takeover released the in-flight mark — the next one is not skipped");
+		assert.match((await takeover(mk().event, mk().c))?.compaction?.summary ?? "", /^retry\n/, "the failed takeover released the in-flight mark — the next one is not skipped");
 	} finally {
 		compactionTakeover.run = orig;
 	}
@@ -2456,6 +2457,33 @@ test("--ui is operator-granted: start refuses it without --confirmed", async () 
 	const granted = await flow(["start", "uifeat", "--ui", "--confirmed"]);
 	assert.ok(!granted.isError, granted.content[0].text);
 	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "uifeat", "state.json"), "utf8")).ui, true);
+});
+
+test("--ui can be switched on for the plan-stage feature this session drives, and only there", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const st = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "late", "state.json"), "utf8"));
+	await flow(["init", "--write", TEST_MD]);
+	assert.ok(!(await flow(["start", "late"])).isError);
+	assert.equal(st().ui, false);
+	const plain = await flow(["start", "late"]);
+	assert.ok(plain.isError);
+	assert.match(plain.content[0].text, /already exists — flow use late.*--ui --confirmed/, "a plain re-start names the way to add the mockup gate");
+	const bare = await flow(["start", "late", "--ui"]);
+	assert.ok(bare.isError && /operator-granted/.test(bare.content[0].text), "still operator-granted");
+	const on = await flow(["start", "late", "--ui", "--confirmed"]);
+	assert.ok(!on.isError, on.content[0].text);
+	assert.match(on.content[0].text, /ui flag set on existing feature late/);
+	assert.equal(st().ui, true);
+	assert.match((await flow(["start", "late", "--ui", "--confirmed"])).content[0].text, /already has the ui flag/);
+	// past plan the flag stays as it is
+	writeFileSync(path.join(repo, ".dev-flow", "late", "state.json"), JSON.stringify({ ...st(), ui: false, stage: "implement" }));
+	const late = await flow(["start", "late", "--ui", "--confirmed"]);
+	assert.ok(late.isError);
+	assert.match(late.content[0].text, /at implement — the ui flag can be set only at plan/);
+	assert.equal(st().ui, false);
 });
 
 /** A scripted stand-in for the worker's pi session: each prompt runs the next scripted turn. */
@@ -2955,7 +2983,7 @@ test("a bound feature's processes get TMPDIR in .dev-flow/<slug>/tmp/ — finish
 	const tmp = path.join(repo, ".dev-flow", "scratch", "tmp");
 	const ok = await bash("ls");
 	assert.equal(ok.res, undefined);
-	assert.equal(ok.command, `export TMPDIR='${tmp}'\nls`, "an allowed call runs with the feature's scratch dir");
+	assert.equal(ok.command, `export TMPDIR='${tmp}' GIT_CEILING_DIRECTORIES='${tmp}'\${GIT_CEILING_DIRECTORIES:+:\$GIT_CEILING_DIRECTORIES}\nls`, "an allowed call runs with the feature's scratch dir");
 	assert.ok(existsSync(tmp), "and the dir exists before the command runs");
 	const blocked = await bash("echo x > .dev-flow/scratch/state.json");
 	assert.ok(blocked.res?.block, "a refused call is still refused");
