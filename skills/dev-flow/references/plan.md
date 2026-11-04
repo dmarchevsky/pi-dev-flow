@@ -22,7 +22,12 @@
    commits fall out of the worktree's base (push them or re-plan).
 4. **UI flag set?** Mockups live in `plan/mockups/`, one HTML per screen/state
    (`<screen>.html`), linking the project's real stylesheet and class names
-   where they exist (relative links work from `.dev-flow/`). Every mockup
+   where they exist (relative links work from `.dev-flow/`). At plan the
+   feature has **no worktree yet** — link the main checkout's stylesheet
+   (`../../../../<path>` from `plan/mockups/`), never another feature's
+   worktree (the approve gate refuses it: that branch drifts and is removed at
+   its finish); after approve, re-render against this feature's worktree any
+   mockup you keep using. Every mockup
    must be **rendered** — an unrendered mockup is not a mockup:
    - Headless chromium: PATH `chromium`/`chromium-browser`/`google-chrome`,
      else playwright's

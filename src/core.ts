@@ -242,7 +242,32 @@ const IMG_EXT = /\.(?:png|jpe?g|webp|gif)$/i;
  *  planDoc is the text of plan/plan.md (undefined = absent) — the embed proofs read the plan
  *  document itself. Before it, the gate checked only that *a* *.md and *a* *.png existed, which
  *  let a pre-plan/direction file with unembedded screenshots walk through Approve. */
-export function approveGate(state: FlowState, cfg: Config, planFiles: string[], planDoc?: string): string[] {
+/** Links in a feature's mockup HTML that resolve into ANOTHER feature's worktree, as `file: href`.
+ *  At plan this feature has no worktree yet, and a sibling's is a tempting stand-in for "the branch's
+ *  stylesheet" — but it is a different branch that drifts or vanishes when that feature finishes, so
+ *  every later re-render silently describes someone else's styles (lettuce rail-ui-fixes linked
+ *  status-and-loading's). `mockups` are paths relative to plan/ with their HTML; dfDir is absolute. */
+export function foreignWorktreeLinks(dfDir: string, slug: string, mockups: { file: string; html: string }[]): string[] {
+	const out: string[] = [];
+	const base = path.join(dfDir, slug, "plan");
+	for (const m of mockups) {
+		const refs = [
+			...m.html.matchAll(/\b(?:href|src)\s*=\s*["']([^"']+)["']/gi),
+			...m.html.matchAll(/@import\s+(?:url\(\s*)?["']?([^"')\s;]+)/gi),
+		].map((x) => x[1]);
+		for (const ref of refs) {
+			if (/^(?:https?:|data:|#|mailto:)/i.test(ref)) continue;
+			const p = ref.replace(/^file:\/\//i, "").split(/[?#]/)[0];
+			const abs = path.isAbsolute(p) ? path.normalize(p) : path.resolve(path.dirname(path.join(base, m.file)), p);
+			const rel = path.relative(dfDir, abs);
+			const owner = /^([^/\\]+)[/\\]worktree(?:[/\\]|$)/.exec(rel)?.[1];
+			if (owner && owner !== slug && !rel.startsWith("..")) out.push(`${m.file}: ${ref}`);
+		}
+	}
+	return out;
+}
+
+export function approveGate(state: FlowState, cfg: Config, planFiles: string[], planDoc?: string, foreignLinks: string[] = []): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "plan") errs.push(`stage is "${state.stage}", approval only applies to "plan"`);
 	if (!state.patch && !state.docs && !planFiles.includes("plan.md"))
@@ -264,6 +289,8 @@ export function approveGate(state: FlowState, cfg: Config, planFiles: string[], 
 			});
 		if (unrendered.length) errs.push(`mockups without an embedded render — ${unrendered.join(", ")} (render each screen and name the shot after it: <screen>-<width>.png)`);
 	}
+	if (foreignLinks.length)
+		errs.push(`mockups link another feature's worktree — ${foreignLinks.join(", ")}: that branch drifts and is removed at its finish; at plan link the main checkout's stylesheet (this feature's worktree does not exist until approve) and re-render`);
 	return errs;
 }
 
@@ -1377,10 +1404,20 @@ export function featureTmpDir(dfDir: string, slug: string): string {
 	return path.join(dfDir, slug, "tmp");
 }
 
-/** The agent's shell command with TMPDIR pointed at the feature's scratch dir (newline-prefixed, the
+/** The env every process of a bound feature gets: TMPDIR in the feature's scratch dir, and that dir as a
+ *  git ceiling. The scratch dir sits inside the repo, so without the ceiling git walks up out of a
+ *  test's mkdtemp fixture and answers with the enclosing checkout — a suite asserting "no repo here"
+ *  goes red only under dev-flow (lettuce rail-ui-fixes: a build-info test failed every gate run).
+ *  Commands run from the worktree or the main checkout never climb through the scratch dir, so they
+ *  are untouched. An inherited ceiling list is kept. */
+export function featureTmpEnv(dir: string, inherited = process.env.GIT_CEILING_DIRECTORIES): Record<string, string> {
+	return { TMPDIR: dir, GIT_CEILING_DIRECTORIES: inherited ? `${dir}${path.delimiter}${inherited}` : dir };
+}
+
+/** The agent's shell command with the feature env (featureTmpEnv) exported (newline-prefixed, the
  *  shape pi's own commandPrefix uses — the command itself stays byte-for-byte what the guards judged). */
 export function withTmpDir(command: string, dir: string): string {
-	return `export TMPDIR=${sq(dir)}\n${command}`;
+	return `export TMPDIR=${sq(dir)} GIT_CEILING_DIRECTORIES=${sq(dir)}\${GIT_CEILING_DIRECTORIES:+:\$GIT_CEILING_DIRECTORIES}\n${command}`;
 }
 
 export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
@@ -2014,6 +2051,24 @@ function mergeHintFor(cfg: Config): string {
 }
 
 /** What the agent/user should do next, per stage. */
+/** The block a flow-aware compaction appends to its summary: the flow's state as the disk holds it.
+ *  A summarizer merging an older summary can carry a stale stage forward (lettuce rail-ui-fixes: a
+ *  pre-release compaction still said "implement, next: flow verify"); this block is written from
+ *  state.json, never by the model, and says it outranks the prose above it. */
+export function compactionStateBlock(state: FlowState, cfg: Config): string {
+	const approvals = Object.keys(state.approvals ?? {});
+	const checks = Object.entries(state.checks ?? {}).map(([k, v]) => `${k}:${v?.ok ? "ok" : "FAILED"}`);
+	return [
+		"",
+		"---",
+		"[dev-flow state on disk — authoritative; where the summary above disagrees, this wins]",
+		`- feature ${state.slug}${state.patch ? " (patch)" : state.docs ? " (docs)" : ""}${state.ui ? " (UI)" : ""} — stage: ${state.stage}${state.branch ? `, branch ${state.branch}` : ""}`,
+		`- approvals recorded: ${approvals.length ? approvals.join(", ") : "none"}`,
+		`- checks: ${checks.length ? checks.join(", ") : "none recorded"}`,
+		`- next: ${nextHint(state, cfg)}`,
+	].join("\n");
+}
+
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
@@ -2183,6 +2238,11 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 			? [
 					"## Contract",
 					"- Use the edit/write tools for source changes. Commit as you go on the feature branch (small, meaningful commits).",
+					...(o.status.trim()
+						? [
+								"- The uncommitted paths above are the driving session's work in progress, not yours: never stage or commit them. Commit only your own paths by name (`git add <paths>` then `git commit -m … -- <paths>`); never `git add -A`, `git add .` or `git commit -a`. Check `git diff --cached --name-only` before every commit.",
+							]
+						: []),
 					"- Do not stop to narrate — keep working until the slice is done or you are blocked.",
 					"- Finish with a final message whose last section starts with a line `REPORT` followed by: done, commits, open items, risks.",
 				]

@@ -123,6 +123,9 @@ import {
 	subst,
 	sq,
 	featureTmpDir,
+	featureTmpEnv,
+	compactionStateBlock,
+	foreignWorktreeLinks,
 	withTmpDir,
 	tagNotesCommand,
 	validSlug,
@@ -155,16 +158,19 @@ import { detectProject, type Detection } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
 
-/** The dev-flow build this session actually loaded — see sessionRunsOlderBuild. Read at call time, and
- * DEV_FLOW_LOADED_VERSION can stand in for it (the smoke suite runs gates in-process and needs to
- * pretend it is an old session): the override can only ever make a gate more cautious — it never
- * lifts a proof, it turns a release into a warn-and-ask. */
-function loadedVersion(): string | null {
-	return process.env.DEV_FLOW_LOADED_VERSION?.trim() || pluginVersion(import.meta.dirname).version;
-}
-
-/** This build's own identity, read once (the guard hot path must not re-walk the fs per call). */
+/** This build's own identity, read once at load: it is what this session's code IS — an update that
+ * rewrites the package on disk later does not change the code already running. */
 const SELF_BUILD = pluginVersion(import.meta.dirname);
+
+/** The dev-flow build this session actually loaded — see sessionRunsOlderBuild. The load-time
+ * manifest, never a fresh read: re-reading the package after an in-place update reported the NEW
+ * version as loaded and the stale one as shipped (lettuce rail-ui-fixes, 0.79.0 → 0.80.0).
+ * DEV_FLOW_LOADED_VERSION (read at call time) can stand in for it (the smoke suite runs gates
+ * in-process and needs to pretend it is an old session): the override can only ever make a gate more
+ * cautious — it never lifts a proof, it turns a release into a warn-and-ask. */
+function loadedVersion(): string | null {
+	return process.env.DEV_FLOW_LOADED_VERSION?.trim() || SELF_BUILD.version;
+}
 
 /** The dev-flow build this session *should* be running, as the disk describes it, and how to call it.
  * In the dev-flow repo that is the checkout's own manifest: main moves ahead of the installed copy at
@@ -174,7 +180,7 @@ const SELF_BUILD = pluginVersion(import.meta.dirname);
 function checkoutBuild(root: string): { version: string | null; dir: string; repo: string; label: string } {
 	return isSelfRepo(root)
 		? { ...pluginVersion(root), label: "this checkout" }
-		: { ...SELF_BUILD, label: "the dev-flow install" };
+		: { ...pluginVersion(import.meta.dirname), label: "the dev-flow install" }; // fresh: what the disk ships NOW
 }
 
 /** The build this session runs vs the one the disk ships: `behind` is the loaded version when they differ
@@ -618,7 +624,7 @@ function gateCwd(root: string, state: FlowState): string {
 function featureEnv(root: string, state: FlowState): Record<string, string> {
 	const dir = featureTmpDir(dfDir(root), state.slug);
 	mkdirSync(dir, { recursive: true });
-	return { TMPDIR: dir };
+	return featureTmpEnv(dir);
 }
 
 /** Tier-1 checks the gate still has to see green. Entering a stage — and every edit of the worktree —
@@ -1772,7 +1778,20 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 async function gateStart(o: GateCtx): Promise<RunResult> {
 	const { root, sess, cfg, rest, flag, slugArg } = o;
 	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --ui/--patch/--docs are operator-granted — ask the operator in chat, then add --confirmed", isError: true };
-	if (existsSync(featDir(root, slugArg))) return { text: `feature ${slugArg} already exists`, isError: true };
+	if (existsSync(featDir(root, slugArg))) {
+		// --ui on the plan-stage feature this session drives: the operator asked for mockups after the start,
+		// so turn the mockup gate on instead of refusing — a UI feature left at ui=false skips the mockup
+		// proof at approve and every (ui) checklist item (lettuce rail-ui-fixes shipped 20 ungated mockups)
+		const existing = readState(root, slugArg);
+		if (flag("ui") && existing && sess.slug === slugArg) {
+			if (!flag("confirmed")) return { text: "--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate; ask the operator, then re-run with --confirmed", isError: true };
+			if (existing.ui) return { text: `feature ${slugArg} already has the ui flag` };
+			if (existing.stage !== "plan") return { text: `feature ${slugArg} is at ${existing.stage} — the ui flag can be set only at plan (the mockup gate is approve's); render the screens anyway and say so in the verify report`, isError: true };
+			writeState(root, { ...existing, ui: true });
+			return { text: `ui flag set on existing feature ${slugArg} (plan stage): the approve gate now requires rendered mockups under plan/mockups/ (${cfg.mockupGlobs.join(", ")}), each embedded in plan.md, and the (ui) checklist items apply` };
+		}
+		return { text: `feature ${slugArg} already exists — flow use ${slugArg} to resume it${existing?.stage === "plan" ? `; to add the mockup gate at plan, run flow start ${slugArg} --ui --confirmed from the session bound to it` : ""}`, isError: true };
+	}
 	// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
 	if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
 	const mode = flag("patch") ? "patch" : flag("docs") ? "docs" : null;
@@ -1836,7 +1855,9 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	// the embed proofs read the plan document itself: a render that exists on disk but is not
 	// embedded in plan.md is one the operator would never be shown
 	const planMd = path.join(planDir, "plan.md");
-	const errs = approveGate(state!, cfg, listFiles(planDir), existsSync(planMd) ? readFileSync(planMd, "utf8") : undefined);
+	const planFiles = listFiles(planDir);
+	const mockupHtml = planFiles.filter((f) => /^mockups\/.+\.html?$/i.test(f)).map((f) => ({ file: f, html: readFileSync(path.join(planDir, f), "utf8") }));
+	const errs = approveGate(state!, cfg, planFiles, existsSync(planMd) ? readFileSync(planMd, "utf8") : undefined, foreignWorktreeLinks(dfDir(root), state!.slug, mockupHtml));
 	if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 	const planItems = applicableItems(cfg, state!, "plan");
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
@@ -2784,7 +2805,9 @@ export default function devFlow(pi: ExtensionAPI) {
 			const headers = auth.headers ? (Object.fromEntries(Object.entries(auth.headers).filter(([, v]) => v !== null)) as Record<string, string>) : undefined;
 			// same function pi itself calls — same split-turn merge, file lists and prompts, just flow-aware instructions
 			const result = await compactionTakeover.run(event.preparation, model, auth.apiKey, headers, flowCompactInstructions(st!), event.signal, undefined, undefined, auth.env);
-			return { compaction: result };
+			// re-read: the summarize call took a while, and the block must state the disk as it is now
+			const now = readState(root, st!.slug) ?? st!;
+			return { compaction: { ...result, summary: result.summary + compactionStateBlock(now, loadProject(dfDir(root)).cfg) } };
 		} catch {
 			return undefined; // pi's default compaction proceeds untouched
 		} finally {

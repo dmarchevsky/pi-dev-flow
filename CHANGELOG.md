@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **Tests that make temp dirs no longer find the enclosing repo under dev-flow.** Since 0.79.0 a bound feature's commands run with `TMPDIR` in `.dev-flow/<slug>/tmp/`, inside the checkout, so git walked up out of a test's `mkdtemp` fixture and answered with the project's repo; a suite asserting "no repository here" failed only under the gates. That dir is now also the commands' `GIT_CEILING_DIRECTORIES` (an inherited list is kept).
+- **The "this session runs an older dev-flow" warning named the versions backwards** in projects that install dev-flow: after an in-place update it said the session ran the new build and the install shipped the old one. The loaded version is now the one read at load, and the shipped one is read fresh.
+- **A flow-aware compaction can no longer carry a stale stage forward.** Its summary ends with a block written from `state.json` (stage, approvals, checks, next) that says it outranks the prose above it; one pre-release summary had still said "implement, next: flow verify".
+- **An implement worker sharing a dirty worktree is told the uncommitted paths are the driver's**: commit only its own paths by name, never `git add -A` / `commit -a`.
+
+### Added
+- `flow start <slug> --ui --confirmed` on the plan-stage feature this session drives switches the mockup gate on instead of refusing with "already exists". Past plan it refuses, and a plain re-start names `flow use`.
+- The approve gate refuses a mockup that links another feature's worktree (href, src or `@import`); at plan, link the main checkout's stylesheet.
+
 ## [0.80.0] - 2026-11-03
 
 **A reflection that runs out of time still hands back its findings; release-only flows pass verify.**
