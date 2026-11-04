@@ -25,7 +25,9 @@ Gate flags are ignored (`flow reflect "<note>" --confirmed` queues the note
 alone). With no flag the wording guesses (plugin-shaped → the upstream recipe,
 otherwise `## playbook`) and the printed line says why; `flow reflect list`
 numbers the queue and `flow reflect move <n> --playbook|--code` re-files an
-item — never hand-retype it. A legacy `## plugin` row from an older dev-flow is
+item — never hand-retype it. `flow reflect done <n> ["<what fixed it>"]` checks
+an item off once a flow has fixed it (`— fixed: <date> <slug> — <what>`), so
+doctor stops re-reporting it. A legacy `## plugin` row from an older dev-flow is
 flagged by `flow doctor` / `reflect list`: file it upstream and check it off
 `— filed: gh#NNN`. For a note to chase **now**: `flow doctor "<observation>"`
 prints an investigation brief without queueing.
@@ -50,9 +52,10 @@ prints an investigation brief without queueing.
 - Plain `flow doctor` reviews the open items and **routes** each — `## playbook`
   → docs flow, `## code` → patch flow. To fold items in on the operator's word:
   investigate, propose the fix, get confirmation, open the routed flow and apply
-  it there — project.md is editable only in a docs/patch worktree. Check items
-  off in `.dev-flow/reflections.md` (gitignored, yours to edit; not
-  `project.md`) with `- [x]` and a `— folded: <what>` or `— fixed: <what>` note.
+  it there — project.md is editable only in a docs/patch worktree. Once it is
+  merged, check the item off with `flow reflect done <n> "<what>"` (or by hand in
+  the gitignored `.dev-flow/reflections.md`: `- [x]` and a `— folded: <what>` or
+  `— fixed: <what>` note).
 - **Open GitHub issues fold into the view** when the repo has a GitHub remote: `flow doctor` and
   `flow reflect list` list them under the local queue (read-time fold — issues are never imported,
   each item keeps one home). A local row an open issue already covers carries `⟷ gh#NNN` — fold it

@@ -4,6 +4,23 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.80.0] - 2026-11-03
+
+**A reflection that runs out of time still hands back its findings; release-only flows pass verify.**
+
+### Fixed
+- **A reflection cut at its budget no longer loses its findings.** `flow_stage` workers are steered at 75% of their budget to wrap up and write the REPORT (the gh#142 grace, lost in the 0.73 slim-down, is back for every op). A worker still cut at the budget gets one tool-less prompt for its REPORT, and the result comes back marked partial instead of "aborted".
+- **The reflect worker reads instead of digging.** Before it starts, the tool writes a line-tagged digest of the driver and every worker transcript into `.dev-flow/<slug>/tmp/reflect/`: operator messages, flow calls and answers, tool errors, NEEDS-OPERATOR, repeated commands. A 2.5 MB driver transcript digests to about 25 KB. The upstream issue list (all states) is prefetched into the brief, the brief states the budget, and the worker is told it reviews the session, not the product.
+- **Release refuses leftover merge-conflict markers** (#164). A `<<<<<<<` / `|||||||` / `>>>>>>>` line the branch adds is named with `file:line`; `--no-marker-check` is the operator's escape.
+- **A review worker on a `--docs` / `--patch` flow is no longer sent after a missing plan.md** (#167). The brief says the flow has no plan file and to judge the work against the task.
+- **`--docs --no-version` no longer owes a changelog line** (#163), and the pre-release hint for a docs flow says unversioned is the usual path instead of "bump version" (#166).
+
+### Added
+- `flow reflect done <n> ["<what>"]` checks a fixed item off, so doctor stops re-reporting it (#165).
+- `- [ ] (versioned) item` in the playbook: a checklist item that only applies when the flow ships a version. It stands down on `--no-version`, so release-done stops listing tag/image proofs an unversioned flow can never satisfy (#166).
+- **Release-only flows** (#161): on a versioned project, `flow verify` accepts an empty branch when the default branch has unreleased commits since the newest version tag. The version bump is the pre-release commit, as the playbook says, and the release gate does not count it as a post-verify change. With nothing unreleased, verify says there is nothing to release.
+- `flow release` names commits made after the operator's Verified? (verify now stamps the HEAD it was given over). It warns and never refuses (#162).
+
 ## [0.79.0] - 2026-11-03
 
 **Scratch files live in the feature folder and go away at finish.**

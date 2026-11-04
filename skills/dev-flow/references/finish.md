@@ -14,7 +14,9 @@ the session context goes with it. Run the end-of-session reflection now:
    **docs** (fix only in `project.md` → docs flow), **code** (fix in this
    project's code, maybe the playbook too → patch flow) or **plugin** (dev-flow
    itself → GitHub issue upstream), with a **fold** or **drop** recommendation.
-   `note` = anything the operator said about friction this session. If the
+   `note` = anything the operator said about friction this session. The tool
+   prebuilds a line-tagged digest of every transcript and prefetches the
+   upstream issues, so the worker reads instead of dumping and searching. If the
    worker fails, run the review inline (bare `flow reflect` prints the protocol).
 2. Show the operator the list with your recommendation per item and ask
    **fold or drop** for each (`fold 1,3 drop 2` is a fine answer) — then stop.

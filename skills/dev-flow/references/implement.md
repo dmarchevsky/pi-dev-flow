@@ -17,7 +17,9 @@ feature).
    the end faces review blind and is not crash-safe. The gate enforces the
    habit: `flow verify` refuses while the branch holds **no commit** (checks
    describe the working tree, so nothing committed means nothing reviewed was
-   ever recorded) and every verify line reports
+   ever recorded; a **release-only flow** — a versioned project whose code is
+   already on main, unreleased since the last tag — passes with an empty branch,
+   and its bump is the pre-release commit) and every verify line reports
    `commits: N ahead of <default>, M uncommitted path(s)` — uncommitted paths
    never block verify, they are what the operator sees they are approving.
 2. Write tests as you go (project framework: the `test` key / `flow-check`
@@ -111,6 +113,10 @@ resending the same note.
 - One worker at a time per session. The worker holds no flow tool, so gates
   and checkpoints stay with you. Its transcript nests under this session in
   pi's picker.
+- Budget (`budgetMin`; default 60 implement, 30 review, 20 reflect): at 75% the
+  worker is steered to wrap up and report. A worker cut at the budget is asked
+  once, with no tools, for its REPORT, so what it found comes back marked
+  partial instead of being lost.
 
 `flow verify` re-runs build, runs the `dev` deploy when configured (the
 operator reviews the running app; the gate **prints what it ran** —

@@ -47,14 +47,18 @@ export interface FlowState {
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
 	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
 	pendingAsk?: string; // the checkpoint word a gate asked for and has not been given ("Approve?", "Verified?", …) — presentation only (💬 in the footer), it never gates
+	releaseOnly?: boolean; // verify found nothing on the branch but unreleased work on main: this flow only cuts the version (#161)
+	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a flow_stage reflect worker reported for this flow — finish names a missing one (advisory, never a block)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
-/** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features. */
+/** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features;
+ *  versionedOnly items ("(versioned)") presuppose a bump/tag and stand down on a --no-version flow (#166). */
 export interface ChecklistItem {
 	text: string;
 	uiOnly: boolean;
+	versionedOnly?: boolean;
 }
 
 export interface Commands {
@@ -270,7 +274,15 @@ export function approveGate(state: FlowState, cfg: Config, planFiles: string[], 
 export interface BranchState {
 	commitsAhead: number | null;
 	uncommitted: number;
+	/** Only measured when nothing is committed on a versioned project: commits on the default branch since
+	 *  the newest version tag (every commit when none is tagged yet), and that tag. > 0 = a release-only
+	 *  flow — main carries the code, the flow only cuts the version (#161). null = git could not answer. */
+	unreleased?: { count: number | null; since: string | null };
 }
+
+/** A release-only flow: nothing on the branch, but the default branch holds unreleased work to version (#161). */
+export const isReleaseOnly = (cfg: Config, branch?: BranchState | null): boolean =>
+	!!cfg.versioning.file && branch?.commitsAhead === 0 && (branch.unreleased?.count ?? 0) > 0;
 
 /** Gate: implement → release. Tier 1: every parsed check green; tier 2: checklist confirmed;
  *  the branch must hold at least one commit — checks describe the working tree, so with nothing
@@ -278,7 +290,13 @@ export interface BranchState {
 export function verifyGate(state: FlowState, cfg: Config, branch?: BranchState | null): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "implement") errs.push(`stage is "${state.stage}", verify only applies to "implement"`);
-	if (branch && branch.commitsAhead === 0) errs.push("nothing committed on the feature branch yet — commit as you go, verify proves a committed state");
+	// a release-only flow (#161) proves main's committed tree here; its version bump is the pre-release commit
+	if (branch && branch.commitsAhead === 0 && !isReleaseOnly(cfg, branch))
+		errs.push(
+			cfg.versioning.file && branch.unreleased?.count === 0
+				? `nothing committed on the feature branch, and ${branch.unreleased.since ? `nothing landed on the default branch since ${branch.unreleased.since}` : "the default branch has nothing to release"} — there is nothing to verify or release`
+				: "nothing committed on the feature branch yet — commit as you go, verify proves a committed state",
+		);
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
 	const pend = checklistPending(cfg, state, "implement");
 	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow verify after ticking them off`);
@@ -301,6 +319,30 @@ export interface ReleasePrep {
 	changelogBase?: { pending: string[]; source: "tag" | "merge-base" | "none" };
 	/** Operator-granted escape from the line-level fold proofs (`flow release --no-fold-check`). */
 	noFoldCheck?: boolean;
+	/** Conflict-marker lines the branch adds vs its merge base (`file:line: text`) — a hand-resolved merge
+	 *  that kept one ships it otherwise (#164). Undefined = not measured (no merge base). */
+	conflictMarkers?: string[];
+	/** Operator-granted escape for a branch that adds marker-shaped lines on purpose (`--no-marker-check`). */
+	noMarkerCheck?: boolean;
+}
+
+/** Added lines in a unified diff (`git diff -U0 <base>`) that are merge-conflict markers, as
+ *  `file:line: text`. Only the unambiguous markers count — `<<<<<<<`, `|||||||`, `>>>>>>>` at the line start
+ *  followed by a space or the end of the line; a bare `=======` is also a markdown heading underline. */
+export function conflictMarkerLines(diff: string): string[] {
+	const out: string[] = [];
+	let file = "";
+	let line = 0;
+	for (const l of (diff ?? "").split("\n")) {
+		if (l.startsWith("+++ ")) { file = l.slice(4).replace(/^b\//, ""); continue; }
+		const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+		if (h) { line = Number(h[1]); continue; }
+		if (l.startsWith("+")) {
+			if (/^(<{7}|\|{7}|>{7})( |$)/.test(l.slice(1))) out.push(`${file}:${line}: ${l.slice(1).slice(0, 80)}`);
+			line++;
+		}
+	}
+	return out;
 }
 
 /** One changelog line as the fold proofs compare it: indentation, bullet style and whitespace runs are
@@ -386,10 +428,14 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
 	const pend = checklistPending(cfg, state, "pre-release");
 	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow release after ticking them off`);
+	if (prep.conflictMarkers?.length && !prep.noMarkerCheck)
+		errs.push(`the branch adds ${prep.conflictMarkers.length} merge-conflict marker line(s) — a hand-resolved merge kept them; fix and commit (or, when the lines are meant, re-run with --no-marker-check on the operator's word):\n  ${prep.conflictMarkers.slice(0, 5).join("\n  ")}${prep.conflictMarkers.length > 5 ? `\n  …(${prep.conflictMarkers.length - 5} more)` : ""}`);
 	if (state.noVersion) {
 		// unversioned flow (operator granted --no-version): no bump, no tag, no forge release —
-		// but the merge still owes a changelog line under Unreleased, folded by the next versioned release
-		if (cfg.release.changelog) {
+		// but the merge still owes a changelog line under Unreleased, folded by the next versioned release.
+		// A --docs flow does not (#163): it changes the playbook/docs, which many projects keep out of a
+		// user-facing changelog — an entry it writes is still welcome, just not proven.
+		if (cfg.release.changelog && !state.docs) {
 			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — an unversioned release must record its entry there (under Unreleased)`);
 			else {
 				if (prep.changelogChanged === false) errs.push(`${prep.changelog.file} is unchanged on this branch — an unversioned release must add its entry (under Unreleased)`);
@@ -448,7 +494,7 @@ export function unreleasedPending(content: string): boolean {
 
 export function checklistHash(items: ChecklistItem[]): string {
 	return createHash("sha1")
-		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.text}`).join("\n"))
+		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.versionedOnly ? "(versioned) " : ""}${i.text}`).join("\n"))
 		.digest("hex")
 		.slice(0, 12);
 }
@@ -485,7 +531,7 @@ export function freshenChecks(state: FlowState, fp: string | null, keep: (name: 
 
 /** Items that apply to this feature — "(ui)" items only when the UI flag is set. */
 export function applicableItems(cfg: Config, state: FlowState, stage: string): ChecklistItem[] {
-	return (cfg.checklist[stage] ?? []).filter((i) => !i.uiOnly || state.ui);
+	return (cfg.checklist[stage] ?? []).filter((i) => (!i.uiOnly || state.ui) && (!i.versionedOnly || !state.noVersion));
 }
 
 /** Items exist for the stage and current confirmation does not match their hash; returns pending count or 0. */
@@ -1703,6 +1749,20 @@ export function reflectMove(text: string, n: number, section: ReflectSection): s
 	return appendReflection(lines.join("\n"), [section], line.trim());
 }
 
+/** Check open item `n` (the `flow reflect list` numbering) off: `- [x] … — fixed: <note>` — the convention
+ *  doctor reads as closed, so a folded item stops re-nagging (#165). null when there is no item `n`. */
+export function reflectDone(text: string, n: number, note: string): string | null {
+	const lines = text.split("\n");
+	let seen = 0;
+	for (let i = 0; i < lines.length; i++) {
+		if (!isOpenItem(lines[i])) continue;
+		if (++seen !== n) continue;
+		lines[i] = `${lines[i].replace(/^(\s*)- \[ \] /, "$1- [x] ").trimEnd()} — fixed: ${note.trim()}`;
+		return lines.join("\n");
+	}
+	return null;
+}
+
 /** What `flow doctor <note>` prints: the note is an investigation order, not an answer —
  *  the plugin has no LLM; the agent investigates, the gates confirm, the flow implements. */
 export function investigationBrief(note: string, selfRepo: boolean): string[] {
@@ -1964,6 +2024,8 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
 			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
 		case "pre-release":
+			if (state.docs && (cfg.versioning.file || cfg.release.changelog))
+				return `${cfg.release.review} → fix must-have/should-have → docs flow: it usually ships unversioned — ask the operator; with their word, flow release --no-version needs no bump, no tag and (docs mode) no changelog entry. Shipping it versioned instead:${cfg.release.changelog ? ` prepare ${cfg.release.changelog}` : ""}${cfg.versioning.file ? `${cfg.release.changelog ? " and" : ""} bump version in ${cfg.versioning.file}` : ""}. Then show the operator the PR summary, ask Release? and run flow release`;
 			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog} (a heading for the new version, carrying every pending Unreleased line over as it stands)` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":
 			return state.approvals.release
@@ -2085,7 +2147,8 @@ export interface WorkerBriefInput {
 	op: Exclude<WorkerOp, "reflect">;
 	slug: string;
 	workDir: string;
-	planFile: string;
+	/** null = no plan file on disk (a --docs / --patch flow needs none) — the brief says so instead of sending the worker after an ENOENT */
+	planFile: string | null;
 	defaultBranch: string;
 	commits: string; // `git log --oneline <base>..HEAD`
 	status: string; // `git status --short`
@@ -2102,7 +2165,9 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 		"",
 		"## Facts",
 		`- Worktree (your cwd; work only here): ${o.workDir}`,
-		`- Approved plan (read it first; it is outside the worktree): ${o.planFile}`,
+		o.planFile
+			? `- Approved plan (read it first; it is outside the worktree): ${o.planFile}`
+			: "- Plan: none — this flow (--docs / --patch) has no plan file by design; judge the work against the task below and the commits",
 		`- Branch base: ${o.defaultBranch}`,
 		`- Commits on the branch so far:\n${o.commits.trim() ? o.commits.trim().split("\n").map((l) => `  ${l}`).join("\n") : "  (none)"}`,
 		`- Uncommitted now: ${o.status.trim() ? `\n${o.status.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "clean"}`,
@@ -2123,7 +2188,7 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 				]
 			: [
 					"## Contract",
-					"- Check, don't fix: read the plan, the diff (`git diff " + o.defaultBranch + "...HEAD`) and the code; run the checks and any probe that proves a claim. Change no files, make no commits.",
+					`- Check, don't fix: read ${o.planFile ? "the plan" : "the task"}, the diff (\`git diff ${o.defaultBranch}...HEAD\`) and the code; run the checks and any probe that proves a claim. Change no files, make no commits.`,
 					"- Look for correctness bugs, claims in docs/changelog the code does not back, missing tests for risky paths, and plan items not delivered.",
 					"- Finish with a final message whose last section starts with a line `REPORT` followed by: `verdict: PASS` or `verdict: FAIL`, then findings (most severe first, each with file:line and how you proved it).",
 				];
@@ -2149,7 +2214,106 @@ export const WORKER_NUDGE = "You stopped before finishing and without the REPORT
 /** The nudge a read-only worker (review, reflect) gets — it has nothing to commit. */
 export const WORKER_NUDGE_READONLY = "You stopped before finishing and without the REPORT section. Continue the task now (keep using tools; change no files). When it is done — or you are truly blocked — end with the `REPORT` section the contract asks for.";
 
+/** Share of the budget at which a worker is steered to wrap up (gh#142's grace, restored for every op). */
+export const WORKER_STEER_AT = 0.75;
+
+/** Grace after the hard cut: one REPORT-only prompt, so an interrupted worker hands back what it found. */
+export const WORKER_SALVAGE_MS = 3 * 60_000;
+
+/** The steer a worker gets at WORKER_STEER_AT of its budget — wrap up while there is time to. */
+export function workerSteer(op: WorkerOp, budgetMin: number): string {
+	const left = Math.max(1, Math.round(budgetMin * (1 - WORKER_STEER_AT)));
+	return op === "implement"
+		? `Time check: about ${left} min of your ${budgetMin}-min budget are left. Finish the edit in hand, commit what works, and end with the REPORT section now (done, commits, open items, risks) — an honest partial report beats being cut off.`
+		: `Time check: about ${left} min of your ${budgetMin}-min budget are left. Stop probing and write the REPORT section now with what you have — rows you could not fully prove say so in their evidence. Being cut off loses every finding.`;
+}
+
+/** The prompt an interrupted worker gets once after the hard cut — report only, no more tools. */
+export const WORKER_SALVAGE = "Your time budget is spent and your last turn was interrupted. Do not call any more tools. Reply now with only the REPORT section the contract asks for, from what you already found (mark anything unfinished or unproven as such).";
+
 // ------------------------------------------------------------- reflect worker (flow_stage op "reflect")
+
+/** Compact, line-referenced digest of a pi session JSONL for the reflect worker. A driver transcript
+ *  runs to megabytes; the worker used to spend half its budget dumping and paging it. The digest keeps
+ *  what a reflection looks for — operator messages, flow gate calls and their answers, tool errors,
+ *  refusals, repeated commands — each tagged `L<n>` (the JSONL line) so the worker can open the raw
+ *  entry when one needs context. Pure: text in, text out. */
+export function digestTranscript(jsonl: string, opts: { maxChars?: number } = {}): string {
+	const max = opts.maxChars ?? 80_000;
+	const clip = (t: string, n: number) => {
+		const one = t.replace(/\s+/g, " ").trim();
+		return one.length > n ? `${one.slice(0, n)}…` : one;
+	};
+	const textOf = (c: unknown): string =>
+		typeof c === "string" ? c : Array.isArray(c) ? c.filter((b) => b && (b as { type?: string }).type === "text").map((b) => String((b as { text?: unknown }).text ?? "")).join("\n") : "";
+	const out: string[] = [];
+	const calls = new Map<string, { line: number; name: string; args: string }>();
+	const cmdCount = new Map<string, { n: number; first: number }>();
+	let entries = 0, toolCalls = 0, errors = 0, first = "", last = "";
+	const lines = (jsonl ?? "").split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const raw = lines[i].trim();
+		if (!raw) continue;
+		let e: Record<string, unknown>;
+		try { e = JSON.parse(raw); } catch { continue; }
+		entries++;
+		const L = `L${i + 1}`;
+		const ts = typeof e.timestamp === "string" ? e.timestamp : "";
+		if (ts) { first ||= ts; last = ts; }
+		if (e.type === "compaction") { out.push(`${L} ── compaction (earlier context summarized)`); continue; }
+		if (e.type === "custom_message" && e.customType === "flow") { out.push(`${L} /flow → ${clip(textOf(e.content), 400)}`); continue; }
+		if (e.type !== "message") continue;
+		const m = (e.message ?? {}) as { role?: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean };
+		if (m.role === "user") {
+			const t = textOf(m.content);
+			if (t.trim()) out.push(`${L} OPERATOR: ${clip(t, 900)}`);
+		} else if (m.role === "assistant") {
+			const blocks = Array.isArray(m.content) ? (m.content as Record<string, unknown>[]) : [];
+			const said = blocks.filter((b) => b.type === "text").map((b) => String(b.text ?? "")).join(" ");
+			if (said.trim()) out.push(`${L} agent: ${clip(said, 300)}`);
+			for (const b of blocks) {
+				if (b.type !== "toolCall") continue;
+				toolCalls++;
+				const name = String(b.name ?? "?");
+				const a = (b.arguments ?? {}) as Record<string, unknown>;
+				const args = name === "bash" ? String(a.command ?? "") : name === "flow" ? (Array.isArray(a.args) ? (a.args as unknown[]).join(" ") : JSON.stringify(a)) : JSON.stringify(a);
+				calls.set(String(b.id ?? ""), { line: i + 1, name, args });
+				if (name === "bash") {
+					const k = clip(args, 200);
+					const c = cmdCount.get(k);
+					if (c) c.n++; else cmdCount.set(k, { n: 1, first: i + 1 });
+				}
+				if (name === "flow" || name === "flow_stage") out.push(`${L} ${name} ${clip(name === "flow" ? args : `${String(a.op ?? "")} ${String(a.note ?? "")}`, 300)}`);
+			}
+		} else if (m.role === "toolResult") {
+			const call = calls.get(String(m.toolCallId ?? ""));
+			const name = call?.name ?? m.toolName ?? "?";
+			const res = textOf(m.content);
+			if (m.isError) {
+				errors++;
+				out.push(`${L} ERROR ${name}${call ? ` (call L${call.line}: ${clip(call.args, 160)})` : ""} → ${clip(res, 400)}`);
+			} else if (name === "flow" || name === "flow_stage") {
+				out.push(`${L}   ↳ ${clip(res, name === "flow_stage" ? 600 : 400)}`);
+			} else if (/NEEDS-OPERATOR/.test(res.slice(0, 600))) {
+				out.push(`${L} GUARD ${name}${call ? ` (call L${call.line}: ${clip(call.args, 160)})` : ""} → ${clip(res, 300)}`);
+			}
+		}
+	}
+	const repeats = [...cmdCount.entries()].filter(([, c]) => c.n >= 3).sort((a, b) => b[1].n - a[1].n).slice(0, 15);
+	const head = [
+		`digest: ${entries} entries, ${toolCalls} tool calls, ${errors} tool errors${first ? `, ${first} → ${last}` : ""}`,
+		"(L<n> = line in the raw JSONL — open it with: sed -n '<n>p' <file> | jq . — only when a row needs context)",
+		...(repeats.length ? ["repeated shell commands (≥3×):", ...repeats.map(([k, c]) => `  ×${c.n} from L${c.first}: ${k}`)] : []),
+		"",
+	];
+	let body = out.join("\n");
+	if (body.length > max) {
+		// keep both ends: the start frames the task, the end holds the release and the operator's last words
+		const half = Math.floor(max / 2);
+		body = `${body.slice(0, half)}\n… (digest clipped — ${body.length - max} chars dropped from the middle; grep the raw JSONL for that span) …\n${body.slice(-half)}`;
+	}
+	return [...head, body].join("\n");
+}
 
 /** A pi session file and the `parentSession` its header names (line 1 of the JSONL). */
 export interface SessionHeaderInfo {
@@ -2192,6 +2356,12 @@ export interface ReflectBriefInput {
 	selfRepo: boolean;
 	/** open issues on this project's own GitHub repo (the read-time fold), when gh could list them */
 	projectIssues?: { repo: string; issues: { number: number; title: string }[] };
+	/** the upstream dev-flow repo's issues (all states), prefetched so dedupe is a read, not a gh loop */
+	upstreamIssues?: { number: number; title: string; state: string }[];
+	/** pre-built transcript digests (driver first), one per transcript, in the feature's scratch dir */
+	digests?: { transcript: string; digest: string }[];
+	/** the wall-clock budget the worker runs under, in minutes */
+	budgetMin?: number;
 	note: string;
 }
 
@@ -2202,6 +2372,9 @@ export function buildReflectBrief(o: ReflectBriefInput): string {
 	const up = o.upstream || "(unknown — say so in the REPORT)";
 	const open = o.items.length ? o.items.map((it, i) => `  ${i + 1}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}`).join("\n") : "  (none)";
 	const kids = o.children.length ? o.children.map((c) => `  - ${c.file}${c.name ? ` (${c.name})` : ""}`).join("\n") : "  (none — no flow_stage worker ran in this session)";
+	const digests = o.digests?.length ? o.digests.map((d) => `  - ${d.digest}  (of ${path.basename(d.transcript)})`).join("\n") : "";
+	const upIssues = o.upstreamIssues ? (o.upstreamIssues.length ? o.upstreamIssues.map((i) => `  gh#${i.number} [${i.state.toLowerCase()}] ${i.title}`).join("\n") : "  (none)") : "";
+	const budget = o.budgetMin ? `${o.budgetMin} min` : "a fixed wall-clock budget";
 	const issues = o.projectIssues ? (o.projectIssues.issues.length ? o.projectIssues.issues.map((i) => `  gh#${i.number} ${i.title}`).join("\n") : "  (none open)") : "";
 	return [
 		`You are a fresh, independent reviewer of the dev-flow session for feature \`${o.slug}\`: find what went wrong or was slow, and say where each fix belongs.`,
@@ -2210,17 +2383,24 @@ export function buildReflectBrief(o: ReflectBriefInput): string {
 		`- Repo (your cwd): ${o.root} — today is ${o.today}`,
 		`- Driver session transcript (read it in full): ${o.driverFile ?? "(unknown — the session is not file-backed; say so and review what you can)"}`,
 		`- Sub-agent (flow_stage worker) transcripts:\n${kids}`,
-		"- Transcripts are pi JSONL, one entry per line (type session / message / custom …; messages carry role, content, tool calls and tool results). Skim with jq or grep — e.g. jq -c 'select(.type==\"message\")' <file> — for tool errors, guard or gate refusals, NEEDS-OPERATOR, retries, repeated commands, operator corrections; then read the surrounding entries.",
+		...(digests
+			? [`- **Start here — digests already built for you** (operator messages, flow calls and answers, tool errors, guard refusals, repeated commands; each row tagged L<n> = its line in the raw JSONL). Read these in full; open a raw entry only when a row needs context (sed -n '<n>p' <file> | jq .). Do not re-dump the raw transcripts:\n${digests}`]
+			: ["- Transcripts are pi JSONL, one entry per line (type session / message / custom …; messages carry role, content, tool calls and tool results). Skim with jq or grep — e.g. jq -c 'select(.type==\"message\")' <file> — for tool errors, guard or gate refusals, NEEDS-OPERATOR, retries, repeated commands, operator corrections; then read the surrounding entries."]),
 		`- This project's playbook: ${o.projectMd}`,
 		`- This project's reflection queue: ${o.reflectionsFile} — open items:\n${open}`,
 		`- dev-flow ${o.version ?? "(version unknown)"}; upstream repo: ${up}${o.selfRepo ? " — this checkout IS dev-flow, so plugin findings are this project's code findings" : ""}`,
-		...(o.upstream && !o.selfRepo ? [`- Dedupe plugin findings upstream (read-only): gh issue list --repo ${o.upstream} --state all --search "<keywords>" — cite gh#N when one covers it (fixed / won't-fix / open).`] : []),
+		...(o.upstreamIssues && o.upstream
+			? [`- Issues on ${o.upstream} (all states) — dedupe plugin findings against this list; cite gh#N when one covers it. Run gh issue view <N> --repo ${o.upstream} only for a likely match:\n${upIssues}`]
+			: o.upstream && !o.selfRepo
+				? [`- Dedupe plugin findings upstream (read-only): gh issue list --repo ${o.upstream} --state all --search "<keywords>" — cite gh#N when one covers it (fixed / won't-fix / open).`]
+				: []),
 		...(o.projectIssues ? [`- Open issues on this project's repo ${o.projectIssues.repo}:\n${issues}`] : []),
-		"- You hold no flow tool and write nothing: no file edits, no commits, no gh issue create. The driving session and the operator decide.",
+		"- You hold no flow tool and write nothing: no file edits, no commits, no gh issue create, no scratch dumps outside $TMPDIR. The driving session and the operator decide.",
+		`- Budget: ${budget}, wall clock. Aim to write the REPORT by about 60% of it; an interrupted run loses every finding.`,
 		"",
 		"## Your task",
 		o.note.trim() ? `Operator context: ${o.note.trim()}` : "(no extra context from the driver)",
-		"1. Review the transcripts for real friction only: wrong turns, repeated failures, misfiring guards or gates, playbook drift, slow paths with an obvious fix. One-off typos, environment hiccups and things already fixed later in the session are not findings.",
+		"1. Review the transcripts for real friction only: wrong turns, repeated failures, misfiring guards or gates, playbook drift, slow paths with an obvious fix. One-off typos, environment hiccups and things already fixed later in the session are not findings. You review the session, not the product: evidence is a transcript line — do not re-audit the project's source to second-guess what the session shipped.",
 		`2. Classify each finding: docs — the fix lives only in this project's playbook (project.md) → docs flow; code — the fix touches this project's code (maybe the playbook too) → patch flow; plugin — dev-flow's own behaviour or wording → upstream GitHub issue${o.selfRepo ? " (here: report it as code)" : ""}.`,
 		"3. Dedupe each finding against the open items above and the issues; a finding an open item already covers is not new — mark that item recurred instead.",
 		"4. Recommend fold (worth recording / filing) or drop (one-off, environmental, operator choice, already covered) with a one-clause reason.",

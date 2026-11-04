@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import devFlow, { compactionTakeover, stageWorkerSpawn, testSeams } from "../extensions/dev-flow.ts";
+import devFlow, { compactionTakeover, reflectSeams, stageWorkerSpawn, testSeams, workerTiming } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -799,6 +799,22 @@ test("reflect --playbook/--code file by decision, --plugin prints the upstream r
 	writeFileSync(reflFile, "# dev-flow reflections\n\n## plugin\n\n- [ ] old plugin gripe — x 2026-01-01\n");
 	assert.match((await flow(["doctor"])).content[0].text, /1 open item\(s\) under the legacy ## plugin heading belong on GitHub/);
 	assert.match((await flow(["reflect", "list"])).content[0].text, /legacy ## plugin heading belong on GitHub/);
+});
+
+test("reflect done <n>: checks a fixed item off with date, slug and what fixed it — doctor stops re-reporting it (#165)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const file = path.join(repo, ".dev-flow", "reflections.md");
+	writeFileSync(file, "# dev-flow reflections\n\n## playbook\n\n- [ ] seed cmd drifted — s 2026-10-01\n\n## code\n\n- [ ] seed skips admins — s 2026-10-02\n");
+	assert.match((await flow(["reflect", "done", "3"])).content[0].text, /open item 1–2 required/);
+	const r = await flow(["reflect", "done", "2", "PR", "#93"]);
+	assert.ok(!r.isError, r.content[0].text);
+	assert.match(r.content[0].text, /item 2 checked off — seed skips admins/);
+	assert.match(readFileSync(file, "utf8"), /- \[x\] seed skips admins — s 2026-10-02 — fixed: \d{4}-\d\d-\d\d — PR #93/);
+	assert.match((await flow(["reflect", "list"])).content[0].text, /1 open/);
 });
 
 test("reflect tidy: drops closed items; the nudge fires once the pile is worth a tidy", async () => {
@@ -1850,7 +1866,7 @@ test("flow help: usage answers everywhere, even with no .dev-flow/", async () =>
 		assert.match(r.content[0].text, /^usage: flow <sub> — help \[--json\] \| init/);
 		assert.match(r.content[0].text, /approve \[--yolo\]/);
 		assert.match(r.content[0].text, /verify \[--yolo\]/);
-		assert.match(r.content[0].text, /release \[--yolo\|--no-version\|--no-fold-check\]/);
+		assert.match(r.content[0].text, /release \[--yolo\|--no-version\|--no-fold-check\|--no-marker-check\]/);
 	}
 });
 
@@ -1941,14 +1957,61 @@ test("unversioned release: --no-version ships merge + changelog and skips the bu
 	const cold = await flow(["release", "--no-version", "--confirmed"]);
 	assert.ok(cold.isError && /unchanged on this branch/.test(cold.content[0].text), "an unversioned release must change the changelog");
 	const wt = path.join(repo, ".dev-flow", "nv", "worktree");
+	// #164: a hand-resolved merge that kept a marker is refused, naming file:line
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- nv ships\n>>>>>>> origin/main\n");
+	commitWt(repo, "nv", "changelog: nv ships (bad merge)");
+	const marked = await flow(["release", "--no-version", "--confirmed"]);
+	assert.ok(marked.isError && /adds 1 merge-conflict marker line\(s\)[\s\S]*CHANGELOG\.md:6: >>>>>>> origin\/main/.test(marked.content[0].text), marked.content[0].text);
 	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- nv ships\n");
 	commitWt(repo, "nv", "changelog: nv ships"); // the line must be on the branch — release refuses an uncommitted worktree (gh#131)
 	const r = await flow(["release", "--no-version", "--confirmed"]);
 	assert.match(r.content[0].text, /unversioned: no bump or tag; your changelog entry rides under Unreleased/);
+	// #162: the changelog commits came after Verified? — the release names them instead of shipping them under that word
+	assert.match(r.content[0].text, /Warning: 2 commit\(s\) landed after the operator's Verified\? \(given over [0-9a-f]{7}\): [0-9a-f]+ changelog: nv ships \| [0-9a-f]+ changelog: nv ships \(bad merge\)/);
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "nv", "state.json"), "utf8"));
+	assert.match(st.verifiedHead, /^[0-9a-f]{40}$/, "verify stamped the tree it was given over");
 	assert.equal(st.noVersion, true, "the mode is persisted for release-done");
 	const rd = await flow(["release-done", "--confirmed"]);
 	assert.match(rd.content[0].text, /release recorded as complete \(unversioned — the changelog entry ships under Unreleased; the next versioned release folds it\)/);
+});
+
+test("release-only flow: verify accepts an empty branch over unreleased main, the bump lands at pre-release (#161)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
+	await flow(["start", "rel", "--patch", "--confirmed"]);
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	const v = await flow(["verify", "--confirmed"]);
+	assert.ok(!v.isError, v.content[0].text);
+	assert.match(v.content[0].text, /commits: 0 ahead of main, 0 uncommitted path\(s\) — release-only flow: \d+ unreleased commit\(s\) on main \(nothing tagged yet\)/);
+	const stFile = path.join(repo, ".dev-flow", "rel", "state.json");
+	assert.equal(JSON.parse(readFileSync(stFile, "utf8")).releaseOnly, true);
+	const wt = path.join(repo, ".dev-flow", "rel", "worktree");
+	writeFileSync(path.join(wt, "package.json"), '{"name":"t","version":"1.0.0"}');
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n## [1.0.0]\n- first\n");
+	commitWt(repo, "rel", "release 1.0.0");
+	const r = await flow(["release", "--confirmed"]);
+	assert.match(r.content[0].text, /release approved/, r.content[0].text);
+	assert.ok(!/landed after the operator's Verified\?/.test(r.content[0].text), "the bump commit after verify is the release-only flow's design, not a warning");
+});
+
+test("a release-only verify refuses when main has nothing since the last tag (#161)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	execFileSync("git", ["-C", repo, "tag", "v0.9.0"]);
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
+	execFileSync("git", ["-C", repo, "tag", "-f", "v0.9.0"]); // init may have committed the playbook: the tag sits on main's tip
+	await flow(["start", "rel", "--patch", "--confirmed"]);
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	const v = await flow(["verify", "--confirmed"]);
+	assert.ok(v.isError);
+	assert.match(v.content[0].text, /nothing landed on the default branch since v0\.9\.0 — there is nothing to verify or release/);
 });
 
 test("release-done publishes the version the release gate stamped, and refuses to go behind origin (#52)", async () => {
@@ -2515,6 +2578,8 @@ test("flow_stage reflect: reads the driver and worker transcripts, renders fold/
 		() => "Read both.\n\nREPORT\nF1 | fold | docs | test command drifted | dup: none | why: hit twice | evidence: driver.jsonl:2\nF2 | fold | plugin | guard refused a scratch write | dup: none | why: real friction\nO1 | recurred | the seed note bit again",
 	]);
 	const orig = stageWorkerSpawn.run;
+	const origIssues = reflectSeams.upstreamIssues;
+	reflectSeams.upstreamIssues = async () => [{ number: 142, title: "worker cap cuts mid-stage", state: "CLOSED" }];
 	let spawned: { work: string; tools: string[]; subagent?: { profile: string } } | undefined;
 	stageWorkerSpawn.run = async (o) => { spawned = o; return worker as never; };
 	try {
@@ -2529,6 +2594,12 @@ test("flow_stage reflect: reads the driver and worker transcripts, renders fold/
 		assert.ok(!brief.includes("stranger.jsonl"), "another session's worker is not");
 		assert.match(brief, /1\. \[playbook\] the seed note is stale/);
 		assert.match(brief, /Operator context: the operator disliked the double prompt/);
+		const digest = path.join(repo, ".dev-flow", "rfl", "tmp", "reflect", "driver.digest.txt");
+		assert.ok(existsSync(digest), "the driver's digest is built in the feature scratch dir");
+		assert.ok(existsSync(path.join(repo, ".dev-flow", "rfl", "tmp", "reflect", "w1.digest.txt")), "and each worker's");
+		assert.ok(brief.includes(digest), "the brief points at the digest");
+		assert.match(brief, /gh#142 \[closed\] worker cap cuts mid-stage/, "upstream issues are prefetched into the brief");
+		assert.match(brief, /Budget: 20 min/);
 		const out = r.content[0].text;
 		assert.match(out, /1\. \[fold\] docs: test command drifted\n\s+→ docs flow/);
 		assert.match(out, /2\. \[fold\] plugin: guard refused a scratch write\n\s+→ upstream GitHub issue/);
@@ -2540,6 +2611,54 @@ test("flow_stage reflect: reads the driver and worker transcripts, renders fold/
 		assert.ok(!readFileSync(path.join(repo, ".dev-flow", "reflections.md"), "utf8").includes("test command drifted"), "the worker's findings are not written — the operator decides");
 	} finally {
 		stageWorkerSpawn.run = orig;
+		reflectSeams.upstreamIssues = origIssues;
+	}
+});
+
+test("flow_stage: steered before the budget, and a worker cut at it is asked once for its REPORT — findings survive the cut", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "cut"]);
+	const prompts: string[] = [];
+	const steers: string[] = [];
+	let last = "";
+	let release: (() => void) | undefined;
+	const worker = {
+		...fakeWorker([]),
+		prompts,
+		// the first turn runs until it is aborted — the 20-minute reflection that was composing its REPORT
+		prompt: async (t: string) => {
+			prompts.push(t);
+			if (prompts.length === 1) { await new Promise<void>((r) => { release = r; }); last = "Now composing the findings…"; }
+			else last = "REPORT\nF1 | fold | docs | the seed command drifted | dup: none | why: hit twice";
+		},
+		getLastAssistantText: () => last,
+		steer: async (t: string) => { steers.push(t); },
+		abort: async () => { release?.(); },
+	};
+	const orig = stageWorkerSpawn.run;
+	const origIssues = reflectSeams.upstreamIssues;
+	reflectSeams.upstreamIssues = async () => null;
+	stageWorkerSpawn.run = async () => worker as never;
+	Object.assign(workerTiming, { softMs: 20, hardMs: 80, graceMs: 2000 });
+	try {
+		const r = (await pi.tools.flow_stage.execute("id", { op: "reflect", note: "" }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
+		const out = r.content[0].text;
+		assert.equal(steers.length, 1, "steered once before the cut");
+		assert.match(steers[0], /Time check: about 5 min of your 20-min budget are left/);
+		assert.equal(prompts.length, 2, "no nudges after the cut — one salvage prompt");
+		assert.match(prompts[1], /Do not call any more tools/);
+		assert.match(out, /interrupted at the 20-min budget \(steered to wrap up at 75%\) — REPORT salvaged after the cut, treat it as partial/);
+		assert.match(out, /1\. \[fold\] docs: the seed command drifted/, "the salvaged rows are rendered");
+		assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "cut", "state.json"), "utf8")).reflectedAt, "a salvaged reflection still counts for finish");
+	} finally {
+		stageWorkerSpawn.run = orig;
+		reflectSeams.upstreamIssues = origIssues;
+		delete workerTiming.softMs; delete workerTiming.hardMs; delete workerTiming.graceMs;
 	}
 });
 
