@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.80.0] - 2026-11-03
+
+**A reflection that runs out of time still hands back its findings; release-only flows pass verify.**
+
 ### Fixed
 - **A reflection cut at its budget no longer loses its findings.** `flow_stage` workers are steered at 75% of their budget to wrap up and write the REPORT (the gh#142 grace, lost in the 0.73 slim-down, is back for every op). A worker still cut at the budget gets one tool-less prompt for its REPORT, and the result comes back marked partial instead of "aborted".
 - **The reflect worker reads instead of digging.** Before it starts, the tool writes a line-tagged digest of the driver and every worker transcript into `.dev-flow/<slug>/tmp/reflect/`: operator messages, flow calls and answers, tool errors, NEEDS-OPERATOR, repeated commands. A 2.5 MB driver transcript digests to about 25 KB. The upstream issue list (all states) is prefetched into the brief, the brief states the budget, and the worker is told it reviews the session, not the product.
