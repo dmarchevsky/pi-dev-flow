@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.82.1] - 2026-11-05
+
+**pi-web shows one dev-flow chip per session again.**
+
+### Fixed
+- **A stage change no longer leaves the previous stage's chip behind in pi-web.** The chip's label is its widget key, and the "previous key" to clear on repaint was one slot for the whole server process; when another session (a chat, a worker) repainted in between, the next repaint cleared that session's key instead, so e.g. `🔨telegram-settings` stayed beside `🚀telegram-settings`. The previous key is now kept per session (and survives `/reload`); a session's slot is dropped at shutdown.
+
 ## [0.82.0] - 2026-11-05
 
 **A feature split off mid-flow is parked in the roadmap with its notes, and a hand-made feature dir can be adopted instead of deleted.**
