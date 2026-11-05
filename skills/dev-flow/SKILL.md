@@ -43,7 +43,8 @@ Ground rules:
   - **yolo** at any checkpoint → run that gate `--yolo --confirmed`; every later
     checkpoint is pre-confirmed — run the remaining gates back to back without
     asking, honoring guidance attached to the word ("yolo, create a patch
-    version release" → bump patch; "yolo, no tag" → `--no-version`). Yolo never
+    version release" → bump patch; "yolo, no tag" → `--no-version`); a
+    NEEDS-OPERATOR is still asked. Yolo never
     skips a gate: merge/tag/publish follow `flow release`. Checks and
     guardrails stay fully enforced — a flow-guard `confirm` rule still asks the
     operator.

@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **A yolo given early no longer ships commits nobody saw** (fixes #176). In this case a yolo at plan pre-answered Release?, and a fix that landed after Verified? shipped with only an after-the-fact warning. Now a standing yolo does not answer Release? while non-prep commits sit after Verified?: the gate asks Release? and names those commits. `--confirmed` (the operator's own answer, including a yolo said at Release?) still passes.
+- **An unbound session can write a path git ignores** (fixes #175). This covers a per-machine file such as a local secrets note listed in `.git/info/exclude`. Before this, the guard refused it, so agents wrote it from bash instead. Tracked and untracked-unignored paths are still refused, and the refusal now names the `.git/info/exclude` route.
+
+### Added
+- **`yolo = until-release`** in a playbook's `## release` block. In that project a yolo given at an earlier checkpoint never answers Release?, for repos whose rules want the release word given after the commits exist. A junk value warns and keeps the default, `all`.
+
 ## [0.83.1] - 2026-11-05
 
 **A worker whose model is down is reported as down, not nudged as a stall.**

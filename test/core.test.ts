@@ -494,6 +494,11 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.match(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: feats, boundSlug: null }) ?? "", /flow use/);
 	assert.ok(writeGuard({ abs: "/repo/src/app.ts", dfDir: df, features: feats, boundSlug: "a" }));
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/a/plan/plan.md", dfDir: df, features: feats, boundSlug: "a" }), null);
+	// gh#175: a path git ignores is writable unbound (never a commit, never a dirty checkout) — the caller asks git
+	assert.equal(writeGuard({ abs: "/repo/.pi/local-secrets/pw.md", dfDir: df, features: feats, boundSlug: null, ignored: true }), null);
+	assert.match(writeGuard({ abs: "/repo/.pi/local-secrets/pw.md", dfDir: df, features: feats, boundSlug: null }) ?? "", /\.git\/info\/exclude/, "the refusal names the exemption");
+	assert.match(writeGuard({ abs: "/repo/.dev-flow/scratch.md", dfDir: df, features: feats, boundSlug: null, ignored: true }) ?? "", /holds flow state/, ".dev-flow/ (itself ignored) keeps its own rule");
+	assert.match(writeGuard({ abs: "/repo/x.log", dfDir: df, features: feats, boundSlug: "b", ignored: true }) ?? "", /edit its worktree/, "a bound implement session is still sent to its worktree");
 	assert.match(writeGuard({ abs: "/repo/.dev-flow/b/plan/plan.md", dfDir: df, features: feats, boundSlug: "a" }) ?? "", /write only inside its own/, "one session may not write another feature's plan");
 	assert.ok(writeGuard({ abs: "/repo/wt-a/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/wt-a" }], boundSlug: "b" }), "plan-owned worktree stays closed even when bound elsewhere");
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/a/worktree/x.ts", dfDir: df, features: [{ state: plan, worktreeAbs: "/repo/.dev-flow/a/worktree" }], boundSlug: null }), "default worktreeDir inside .dev-flow is still stage-gated by its owner");

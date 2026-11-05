@@ -56,6 +56,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		artifact: "release.artifact",
 		preflight: "release.preflight", // run in the worktree at flow release, before anything ships (e.g. docker build .)
 		merge: "release.merge", // how a merged branch lands: squash | merge | rebase | any
+		yolo: "release.yolo", // how far a standing yolo reaches: all (default) | until-release (gh#176)
 	},
 };
 // pre-release owns release preparation; the release keys are accepted under both sections so
@@ -159,6 +160,11 @@ export function parseProjectMd(text: string): ParsedMd {
 						// merge is the other enum: a typo here must not quietly mean "no policy" and drop the teeth
 						if (mapped === "release.merge" && !parseMergeStyle(m[2])) {
 							p.warn.push(`${where}: merge = "${m[2]}" — expected squash, merge, rebase or any — ignored`);
+							return;
+						}
+						// a typo must not quietly widen what a yolo answers
+						if (mapped === "release.yolo" && !/^(all|until-release)$/.test(m[2].trim())) {
+							p.warn.push(`${where}: yolo = "${m[2]}" — expected all or until-release, keeping all`);
 							return;
 						}
 						p.flow[stage as MdStage][mapped] = m[2];
@@ -330,7 +336,7 @@ const ANSWER_STAGE: Record<string, MdStage> = {
 	defaultBranch: "global", forge: "global", worktreeDir: "global", branchPattern: "global", mainHook: "global", mockupGlobs: "global", bashTimeout: "global",
 	setup: "implement", test: "implement", build: "implement", run: "implement", seedData: "implement", health: "implement", dev: "implement", healthWait: "implement",
 	versionFile: "pre-release", versionTag: "pre-release", changelog: "pre-release", review: "pre-release",
-	releases: "release", artifact: "release", preflight: "release", merge: "release",
+	releases: "release", artifact: "release", preflight: "release", merge: "release", yolo: "release",
 };
 /** The draft's placeholder comment per key (buildDraft) — stale once the key has an answer. */
 const DRAFT_HINTS: Record<string, RegExp> = { versionFile: /<!-- versionFile = /, merge: /<!-- merge = /, changelog: /<!-- no changelog found/ };
@@ -484,7 +490,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): 
 /** Compact per-stage digest of project.md content for dialog display (raw md walls are unreadable). */
 const DIGEST_STAGES: Record<string, string> = { global: "General", plan: "Planning", implement: "Implement", "pre-release": "Pre-release", release: "Release" };
 const DIGEST_CMDS: Record<string, string> = { setup: "setup", test: "test", build: "build", run: "run app", seedData: "seed data", dev: "dev deploy" };
-const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files", forge: "forge", bashTimeout: "shell-call timeout mode", merge: "merge policy" };
+const DIGEST_WORDS: Record<string, string> = { defaultBranch: "default branch", branchPattern: "branch pattern", worktreeDir: "worktree dir", mainHook: "main-branch hook", mockupGlobs: "mockup files", forge: "forge", bashTimeout: "shell-call timeout mode", merge: "merge policy", yolo: "yolo reach" };
 
 /** Human summary of a playbook for the init confirm: one line per stage, real values and full item/guidance text, nothing truncated. */
 export function mdDigest(text: string): string {

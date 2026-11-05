@@ -1297,14 +1297,24 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 		if (commits.length && !prepOnly)
 			postVerify = `${commits.length} commit(s) landed after the operator's Verified? (given over ${state!.verifiedHead.slice(0, 7)}): ${commits.slice(0, 6).join(" | ")}${commits.length > 6 ? ` …(${commits.length - 6} more)` : ""} — the verify verdict does not cover them: if behaviour changed, have the operator check the current build before Release?, and either way say in the PR body which commit the verdict was given over`;
 	}
+	// a standing yolo (given at an earlier checkpoint) stops short of Release? when the playbook says so, or
+	// when commits landed after Verified? — the word was given before those commits existed (gh#176).
+	// --confirmed is the operator's own answer at this checkpoint, yolo-at-Release? included: it always stands.
+	const yoloHeld = !state!.yolo || flag("confirmed")
+		? ""
+		: cfg.release.yolo === "until-release"
+			? "the playbook sets yolo = until-release: a yolo given earlier never answers Release? — ask it"
+			: postVerify
+				? "a yolo given earlier does not cover commits that landed after Verified? — ask Release? with them named"
+				: "";
 	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
-	const askPending = !flag("confirmed") && !state!.yolo;
+	const askPending = !flag("confirmed") && (!state!.yolo || !!yoloHeld);
 	if (askPending) {
 		markPendingAsk(root, state!, "Release?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`release confirmation needs the operator: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}${postVerify ? ` — tell them: ${postVerify}` : ""}`, "Release?"), isError: true };
+			return { text: needsOperator(`release confirmation needs the operator${yoloHeld ? ` (${yoloHeld})` : ""}: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}${postVerify ? ` — tell them: ${postVerify}` : ""}`, "Release?"), isError: true };
 		}
-		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}${postVerify ? `\n\n${postVerify}` : ""}`);
+		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}${postVerify ? `\n\n${postVerify}` : ""}${yoloHeld ? `\n\n(${yoloHeld})` : ""}`);
 		if (!ok) {
 			delete state!.pendingAsk;
 			writeState(root, state!);
@@ -2984,7 +2994,9 @@ export default function devFlow(pi: ExtensionAPI) {
 				const why = await askOperator(ctx, `Editing ${path.relative(ctx.cwd, abs) || abs}`, pv.confirm);
 				if (why) return { block: true, reason: why };
 			}
-			const reason = writeGuard({ abs, dfDir: dfDir(guardRoot), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd });
+			// only an unbound session's main-checkout write ever reads it — ask git just then (gh#175)
+			const ignored = !bound && (await sh(`git check-ignore -q -- ${sq(abs)}`, guardRoot)).ok; // outside the repo: git exits 128, not ignored
+			const reason = writeGuard({ abs, dfDir: dfDir(guardRoot), features: feats, boundSlug: bound?.slug ?? null, repoRoot: ctx.cwd, ignored });
 			// a stale green is caught where it matters: verify and release fingerprint the worktree (freshenChecks)
 			return reason ? { block: true, reason } : undefined;
 		}

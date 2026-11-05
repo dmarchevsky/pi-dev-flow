@@ -106,7 +106,7 @@ export interface Config {
 	versioning: Versioning;
 	/** Seconds the post-deploy health probe may keep retrying before the gate gives up (0 = single shot). */
 	healthWait: number;
-	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any" };
+	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
@@ -1438,7 +1438,7 @@ export function inScratchDir(abs: string, repoRoot?: string | null): boolean {
  * touch the checkout at all — a bound feature is the only way in.
  * Returns a reason or null (allowed).
  */
-export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null }): string | null {
+export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef[]; boundSlug: string | null; repoRoot?: string | null; ignored?: boolean }): string | null {
 	// Judge where the bytes land, not where the path pretends: a symlink inside the worktree pointing
 	// out of it is the same write as the target path (realAbs walks the deepest existing ancestor, so
 	// a brand-new file under a real directory resolves right, and a never-existing one is stable).
@@ -1486,8 +1486,13 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 			return `bound feature ${o.boundSlug} is at ${bound.state.stage} — edit its worktree (${bound.state.worktree}), not the main checkout; a throwaway script goes in $TMPDIR (.dev-flow/${o.boundSlug}/tmp/, removed at finish)`;
 		return null; // release: release chores may touch the main checkout
 	}
-	if (!o.features.length) return "no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature";
-	return `unfinished features: ${o.features.map((f) => f.state.slug).join(", ")} — bind this session with flow use <slug> (or pass an explicit slug to gates)`;
+	// a path git ignores can never reach a commit nor dirty the checkout finish proves clean: a per-machine
+	// file (local secrets, editor state) is not source, and refusing it only sent agents around the guard
+	// through bash (gh#175). The caller asks git; tracked and untracked-unignored paths stay refused.
+	if (o.ignored) return null;
+	const ignoreHint = " — a per-machine file that must never be committed: add its path to .git/info/exclude first (a git-ignored path is writable without a flow)";
+	if (!o.features.length) return `no active flow — every request goes through flow: flow start <slug> for new work, flow use <slug> for an unfinished feature${ignoreHint}`;
+	return `unfinished features: ${o.features.map((f) => f.state.slug).join(", ")} — bind this session with flow use <slug> (or pass an explicit slug to gates)${ignoreHint}`;
 }
 
 /** Prefix feature branches match: branchPattern up to `{slug}` — used to keep feature branches out of the main checkout. */

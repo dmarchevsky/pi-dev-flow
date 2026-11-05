@@ -150,7 +150,9 @@ build" means stays the project's own assertion: the probe runs with the worktree
 wait for readiness and compare the served build stamp with `git rev-parse HEAD`. No probe → the
 gate prints `health: none configured` and `flow doctor` flags the combination. The pre-release and release stages take
 `versionFile`/`versionTag` (defaults `v{version}`; accepted under either section) and
-`merge = squash | merge | rebase | any` — how a merged PR lands on the default branch (see below). `## global` also takes
+`merge = squash | merge | rebase | any` — how a merged PR lands on the default branch (see below) — and
+`yolo = all | until-release`: with `until-release` a yolo given at an earlier checkpoint never answers Release?
+(for repos whose rules want the release word given after the commits exist; default `all`). `## global` also takes
 `forge = github | gitlab | self` — the release machinery's target; when unset it is detected from the
 `origin` URL at the moment of use (GitHub gets `gh`, GitLab gets `glab`, self-hosted stays forge-neutral:
 no automatic release creation, merge proof by ancestry only), and `release.releases = false` skips

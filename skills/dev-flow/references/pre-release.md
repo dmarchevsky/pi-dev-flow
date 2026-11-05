@@ -37,7 +37,11 @@ invent one mid-release. Sequence:
 4. `flow check` — the prep edits made the implement checks stale; the release
    gate demands them green again.
 5. State what the PR will contain, present version and changelog entry,
-   **stop** — **Release?** → `flow release --confirmed`. Checkpoint report:
+   **stop** — **Release?** → `flow release --confirmed`. Under a standing
+   yolo you run `flow release` without asking. If it returns **NEEDS-OPERATOR
+   Release?**, ask anyway: either commits landed after Verified? (the yolo
+   predates them, and the gate names them), or the playbook sets
+   `yolo = until-release`. Checkpoint report:
    stage line **🔍 pre-release · `<slug>`** — version decision (`pending` /
    `bump <level> → vX.Y.Z ~` / `no-version ✓`) · tag · changelog · fold ·
    review tally · merge style, then `Done:`/`Next steps:` per the Stage

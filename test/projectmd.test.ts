@@ -325,6 +325,13 @@ test("a junk merge value warns instead of silently meaning no policy", () => {
 	assert.equal(mdToConfig(p).release.merge, undefined, "nothing is stored, so the doctor and flow start keep asking");
 });
 
+test("release yolo = until-release parses; a junk value warns and keeps the default (gh#176)", () => {
+	assert.equal(mdToConfig(parseProjectMd("# d\n\n## release\n\n```flow\nyolo = until-release\n```\n")).release.yolo, "until-release");
+	const junk = parseProjectMd("# d\n\n## release\n\n```flow\nyolo = never\n```\n");
+	assert.match(junk.warn.join(" "), /yolo = "never" — expected all or until-release, keeping all/);
+	assert.equal(mdToConfig(junk).release.yolo, undefined);
+});
+
 test("mdDigest renders the merge policy; buildDraft asks instead of inventing one", () => {
 	assert.match(mdDigest("# d\n\n## release\n\n```flow\nmerge = squash\n```\n"), /merge policy: squash/);
 	const det = { report: [], missing: [], partial: { defaultBranch: "main", commands: {}, versioning: { file: "package.json" } } };
