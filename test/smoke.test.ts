@@ -2696,6 +2696,37 @@ test("flow_stage review: advisory verdict, read-only toolset, no gate state touc
 	}
 });
 
+test("flow_stage: a worker whose model errors is reported as a dead model, not nudged as a stall (gh#173)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "dead"]);
+	mkdirSync(path.join(repo, ".dev-flow", "dead", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "dead", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	const base = fakeWorker([]);
+	// what pi leaves behind after its own auto-retry gave up: error turns, no text, no tool calls
+	const messages: unknown[] = [{ role: "assistant", stopReason: "toolUse" }];
+	const worker = { ...base, messages, prompt: async (t: string) => { base.prompts.push(t); messages.push({ role: "user" }, { role: "assistant", stopReason: "error", errorMessage: "terminated" }, { role: "assistant", stopReason: "error", errorMessage: "Request timed out." }); }, getLastAssistantText: () => "" };
+	const orig = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = async () => worker as never;
+	try {
+		const r = (await pi.tools.flow_stage.execute("id", { op: "review", note: "check it" }, undefined, undefined, ctx)) as { content: [{ text: string }]; details?: { outcome?: string } };
+		const out = r.content[0].text;
+		assert.equal(base.prompts.length, 1, "no nudge is spent on a dead model");
+		assert.match(out, /model failed: stopReason=error "Request timed out\." \(2 consecutive error turn\(s\)\) — not a stall, nudges skipped/);
+		assert.match(out, /not stalled: no review happened\. Take it inline/);
+		assert.ok(!/ended without REPORT/.test(out), "a dead model never reads as a prose stall");
+		const result = base.entries.find((e) => e.type === "pi-web:subagent-result");
+		if (result) assert.equal(result.data.status, "failed");
+	} finally {
+		stageWorkerSpawn.run = orig;
+	}
+});
+
 test("flow_stage reflect: reads the driver and worker transcripts, renders fold/drop rows, records the run", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

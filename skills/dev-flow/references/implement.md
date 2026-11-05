@@ -101,7 +101,10 @@ resending the same note.
   adds the facts itself: the absolute plan path, the branch's commits, the
   uncommitted paths and the project checks. Your `note` is just the slice, plus
   any operator answers the worker cannot see. A worker whose turn ends in prose
-  is nudged to continue, up to twice. On return the tool reruns `flow check` and
+  is nudged to continue, up to twice. A turn that ended in a **model error**
+  (`model failed: stopReason=error …`) is not nudged: pi already retried it, so
+  the model is down, not slow. Take the slice or review inline, or retry the
+  delegation once the provider answers again. On return the tool reruns `flow check` and
   lists the new commits and anything uncommitted.
 - `flow_stage({ op: "review", note })` — a fresh **read-only** reviewer (at
   implement or pre-release): findings plus `verdict: PASS|FAIL`. It is advisory:

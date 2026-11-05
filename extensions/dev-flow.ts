@@ -139,6 +139,7 @@ import {
 	buildWorkerBrief,
 	clampBudgetMin,
 	parseWorkerReport,
+	workerTurnError,
 	workerOpError,
 	WORKER_NUDGE,
 	WORKER_NUDGES,
@@ -2687,6 +2688,8 @@ export default function devFlow(pi: ExtensionAPI) {
 		let crash: string | null = null;
 		let nudges = 0;
 		let report = parseWorkerReport("");
+		let modelError: ReturnType<typeof workerTurnError> = null;
+		const turnError = () => workerTurnError((child as { messages?: unknown[] } | undefined)?.messages ?? []);
 		const abortChild = () => void Promise.resolve(child?.abort()).catch(() => {});
 		const hardMs = workerTiming.hardMs ?? budgetMin * 60_000;
 		// grace before the cliff (gh#142): steered at 75% to wrap up, so a long run hands back a REPORT
@@ -2714,15 +2717,18 @@ export default function devFlow(pi: ExtensionAPI) {
 			});
 			await child.prompt(brief);
 			report = parseWorkerReport(child.getLastAssistantText() ?? "");
-			// a turn that ends in prose ("now let me write D4…") ends the session: tell it to keep going
-			while (!report.found && !timedOut && !signal?.aborted && nudges < WORKER_NUDGES) {
+			if (!report.found) modelError = turnError();
+			// a turn that ends in prose ("now let me write D4…") ends the session: tell it to keep going —
+			// but never a turn that ended in a model error: pi already retried it, a nudge buys one more storm (gh#173)
+			while (!report.found && !modelError && !timedOut && !signal?.aborted && nudges < WORKER_NUDGES) {
 				nudges++;
 				await child.prompt(wop === "implement" ? WORKER_NUDGE : WORKER_NUDGE_READONLY);
 				report = parseWorkerReport(child.getLastAssistantText() ?? "");
+				if (!report.found) modelError = turnError();
 			}
 			// cut at the budget without a REPORT: one short, tool-less turn to hand back what it found —
 			// an aborted reflection otherwise loses every finding it had already made
-			if (!report.found && timedOut && !signal?.aborted) {
+			if (!report.found && !modelError && timedOut && !signal?.aborted) {
 				salvaged = true;
 				const grace = setTimeout(abortChild, workerTiming.graceMs ?? WORKER_SALVAGE_MS);
 				try {
@@ -2747,9 +2753,12 @@ export default function devFlow(pi: ExtensionAPI) {
 		const headAfter = (await git("git rev-parse HEAD")).trim();
 		const newCommits = headBefore && headAfter && headBefore !== headAfter ? await git(`git log --oneline ${sq(headBefore)}..HEAD`) : "";
 		const dirty = (await git("git status --short")).trim();
+		const modelLine = modelError ? `model failed: stopReason=${modelError.reason} ${JSON.stringify(modelError.message)} (${modelError.streak} consecutive error turn(s)) — not a stall, ${nudges ? `stopped after ${nudges} nudge(s)` : "nudges skipped"}` : "";
 		const outcome = crash
 			? `crashed: ${crash}`
-			: timedOut
+			: modelError
+				? modelLine
+				: timedOut
 				? `interrupted at the ${budgetMin}-min budget${steered ? " (steered to wrap up at " + Math.round(WORKER_STEER_AT * 100) + "%)" : ""}${report.found ? " — REPORT salvaged after the cut, treat it as partial" : salvaged ? " — the salvage prompt got no REPORT either" : ""}`
 				: report.found
 					? `reported${steered ? " (after the wrap-up steer)" : ""}`
@@ -2760,7 +2769,9 @@ export default function devFlow(pi: ExtensionAPI) {
 			const doneAt = now();
 			const final = crash
 				? { version: 1, status: "failed", completedAt: doneAt, error: crash }
-				: signal?.aborted || (timedOut && !report.found)
+				: modelError
+					? { version: 1, status: "failed", completedAt: doneAt, error: modelLine }
+					: signal?.aborted || (timedOut && !report.found)
 					? { version: 1, status: "aborted", completedAt: doneAt }
 					: report.found
 						? { version: 1, status: "completed", completedAt: doneAt, result: report.body }
@@ -2772,12 +2783,14 @@ export default function devFlow(pi: ExtensionAPI) {
 		releaseLive("failed"); // idempotent guard: a throw between claim and result must not leave a live row
 		try { if (child) workerSessions.delete(child.sessionManager.getSessionId()); } catch { /* id-less session: nothing was registered */ }
 		try { child?.setSessionName(`${report.found && !crash && !signal?.aborted ? (timedOut ? "◐" : "✓") : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
+		// a dead model is a different failure from a stall, with a different remedy: say which (gh#173)
+		const deadModelNote = `no REPORT — the worker's model was failing (${modelError?.message ?? ""}), not stalled: no ${wop === "implement" ? "slice was finished" : wop === "review" ? "review happened" : "reflection happened"}. Take it inline, or retry the delegation later (check the provider) — re-briefing it now hits the same failure.`;
 		const parts = [`${glyph} ${wop} worker ${outcome} (${Math.round((Date.now() - started) / 60_000)} min)`];
 		let reflected: ReturnType<typeof parseReflectReport> | null = null;
 		if (wop === "reflect") {
 			reflected = report.found ? parseReflectReport(report.body) : null;
 			const rows = reflected && (reflected.findings.length || reflected.open.length || /^\s*F0\b/m.test(report.body)) ? renderReflectFindings(reflected, selfRepo) : null;
-			parts.push(rows ? rows.join("\n") : report.found ? `REPORT (rows did not parse — read them yourself):\n${report.body.slice(0, 6000)}` : `no REPORT — last words:\n${report.body}`);
+			parts.push(rows ? rows.join("\n") : report.found ? `REPORT (rows did not parse — read them yourself):\n${report.body.slice(0, 6000)}` : modelError ? deadModelNote : `no REPORT — last words:\n${report.body}`);
 			if (report.found) {
 				// the record finish reads: a reflection ran for this flow, so finish goes on to its cleanup
 				const cur = readState(root, st.slug);
@@ -2796,7 +2809,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: null, commits: 0, findings: reflected?.findings.length ?? 0, recorded: report.found } };
 		}
 		parts.push(
-			report.found ? `REPORT:\n${report.body.slice(0, 6000)}` : `no REPORT — last words:\n${report.body}`,
+			report.found ? `REPORT:\n${report.body.slice(0, 6000)}` : modelError ? deadModelNote : `no REPORT — last words:\n${report.body}`,
 			`new commits:\n${newCommits.trim() || "(none)"}`,
 			`uncommitted: ${dirty ? `\n${dirty}` : "clean"}`,
 		);
