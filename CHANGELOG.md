@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.82.0] - 2026-11-05
+
+**A feature split off mid-flow is parked in the roadmap with its notes, and a hand-made feature dir can be adopted instead of deleted.**
+
 ### Fixed
 - **A feature split off mid-flow no longer ends up as an unpickable ghost.** An agent asked for "a separate flow" wrote `.dev-flow/<new>/plan/` by hand; the next session's `flow start` said it already existed, `flow use` found no state, and doctor offered to delete it. A bound session can no longer write another feature's dir or a hand-made `<x>/plan/` (the refusal names the roadmap route); `flow start <slug> --confirmed` adopts an existing ghost and keeps its plan files; `flow use` on a ghost points there.
 
