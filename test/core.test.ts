@@ -67,6 +67,7 @@ import {
 	inScratchDir,
 	mainCheckoutRoot,
 	parseWorkerReport,
+	workerTurnError,
 	workerOpError,
 	clampBudgetMin,
 	tagCreates,
@@ -1737,4 +1738,14 @@ test("the feature scratch dir is a git ceiling: a fixture under it is not inside
 	} finally {
 		rmSync(repo, { recursive: true, force: true });
 	}
+});
+
+test("workerTurnError: a trailing model-error storm is a dead model, not a stall (gh#173)", () => {
+	const ok = { role: "assistant", stopReason: "toolUse" };
+	const err = (m: string) => ({ role: "assistant", stopReason: "error", errorMessage: m });
+	assert.equal(workerTurnError([]), null);
+	assert.equal(workerTurnError([{ role: "user" }, ok, { role: "toolResult" }, { role: "assistant", stopReason: "stop" }]), null, "a normal end");
+	assert.equal(workerTurnError([err("Request timed out."), ok]), null, "an error a retry recovered from");
+	assert.deepEqual(workerTurnError([ok, err("terminated"), err("Request timed out."), { role: "user" }, err("Request timed out.")]), { reason: "error", message: "Request timed out.", streak: 3 });
+	assert.equal(workerTurnError([{ role: "assistant", stopReason: "error" }])?.message, "(no error message)");
 });

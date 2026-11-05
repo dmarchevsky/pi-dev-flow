@@ -2286,6 +2286,18 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 	return [...head, ...contract].join("\n");
 }
 
+/** A worker turn that ended in a model error (gh#173): the newest assistant message has stopReason
+ *  "error". pi has already auto-retried inside the prompt by then, so this is a dead model, not a stall —
+ *  nudging it only buys another retry storm. `streak` counts the consecutive trailing error turns. */
+export function workerTurnError(messages: readonly unknown[]): { reason: string; message: string; streak: number } | null {
+	const turns = messages.filter((m): m is { role: string; stopReason?: string; errorMessage?: string } => !!m && typeof m === "object" && (m as { role?: unknown }).role === "assistant");
+	const last = turns.at(-1);
+	if (!last || last.stopReason !== "error") return null;
+	let streak = 0;
+	for (let i = turns.length - 1; i >= 0 && turns[i].stopReason === "error"; i--) streak++;
+	return { reason: last.stopReason, message: String(last.errorMessage ?? "").trim() || "(no error message)", streak };
+}
+
 /** The REPORT section of a worker's final message: everything after the last `REPORT` heading line. */
 export function parseWorkerReport(text: string): { found: boolean; body: string; verdict: "PASS" | "FAIL" | null } {
 	const lines = (text ?? "").split("\n");
