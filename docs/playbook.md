@@ -200,7 +200,7 @@ On a **fresh repo** it prints the setup brief: the detection report, plus one qu
 
 `--track` commits the playbook as a playbook chore (`git add -f` + the main-hook prefix). `--draft` prints the draft, or the current file, without writing.
 
-On an **existing file** init is doctor mode. It reports drift, dead commands and scripts, an unparseable manifest, dual configs, and **ghost feature dirs** (a `.dev-flow/<slug>/` whose `state.json` is gone). It offers to delete ghost dirs on your confirm, and says so instead when no UI is present. It never runs your commands.
+On an **existing file** init is doctor mode. It reports drift, dead commands and scripts, an unparseable manifest, dual configs, and **ghost feature dirs** (a `.dev-flow/<slug>/` whose `state.json` is gone). It offers to delete ghost dirs on your confirm, and says so instead when no UI is present; to keep one as a new feature's draft, decline and run `flow start <slug> --confirmed`, which adopts it. It never runs your commands.
 
 When a hook manager sets `core.hooksPath` (husky, lefthook…), git ignores `.git/hooks`, so init prints the main-branch guard lines for you to add to that hook instead of installing one that would never run. An existing foreign `pre-commit` gets the same printout.
 

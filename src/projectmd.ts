@@ -477,7 +477,7 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): 
 	if (cfg.commands.run && !cfg.checkList.some((c) => c.name === "health")) f.push('run command configured but no tier-1 health check — add commands.health or a flow-check so "running and healthy" is enforced');
 	if (cfg.commands.dev && !healthProbe(cfg)) f.push("dev deploy configured but no health check — flow verify cannot prove the deploy came back serving this build: add commands.health or a flow-check health block");
 	if (!cfg.checkList.length) f.push("implement tier-1 gates nothing — no test, no health, no flow-check block: 'flow check' would pass vacuously");
-	for (const g of ghostFeatureDirs(root)) f.push(`${g} has a plan/ but no state.json — ghost of a closed or aborted feature (flow init offers to remove it)`);
+	for (const g of ghostFeatureDirs(root)) f.push(`${g} has a plan/ but no state.json — ghost of a closed, aborted or hand-made feature (flow start <slug> --confirmed adopts it as a new feature; flow init offers to remove it)`);
 	return f;
 }
 

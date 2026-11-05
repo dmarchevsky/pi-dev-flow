@@ -107,6 +107,7 @@ import {
 	parseReflectReport,
 	renderReflectFindings,
 	appendRoadmapItem,
+	roadmapBriefFor,
 	roadmapDone,
 	roadmapDoneForSlug,
 	roadmapOpenCount,
@@ -518,6 +519,11 @@ test("writeGuard: path attribution + session binding rules", () => {
 	assert.ok(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: [], boundSlug: null }), "and that reaches nested paths too");
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: feats, boundSlug: "b" }), null, "a bound session keeps the folder as it had it — flow-owned paths inside it are refused by their own rules");
 	assert.equal(writeGuard({ abs: "/repo/.dev-flow/notes/x.md", dfDir: df, features: [{ state: { ...impl, stage: "release" as const }, worktreeAbs: wtB }], boundSlug: "b" }), null, "release chores keep the folder");
+	// a spin-off is parked in the roadmap — a hand-made feature dir is a ghost no gate can pick up
+	assert.match(writeGuard({ abs: "/repo/.dev-flow/spin/plan/plan.md", dfDir: df, features: feats, boundSlug: "b" }) ?? "", /flow roadmap add "<title>" --slug=spin/, "an implement session may not hand-make another feature's plan dir");
+	assert.match(writeGuard({ abs: "/repo/.dev-flow/a/notes.md", dfDir: df, features: feats, boundSlug: "b" }) ?? "", /not this session's feature \(b\)/, "nor write into another live feature's dir");
+	assert.equal(writeGuard({ abs: "/repo/.dev-flow/b/plan/plan.md", dfDir: df, features: feats, boundSlug: "b" }), null, "its own plan stays writable at implement");
+	assert.equal(writeGuard({ abs: "/repo/.dev-flow/roadmap.md", dfDir: df, features: feats, boundSlug: "b" }), null, "the roadmap is where the spin-off goes");
 	assert.deepEqual(checkoutInvocation("git checkout feat/x"), { target: "feat/x", creates: false });
 	assert.deepEqual(checkoutInvocation("git switch -c feat/y && make"), { target: "feat/y", creates: true });
 	assert.deepEqual(checkoutInvocation("git checkout -f feat/z"), { target: "feat/z", creates: false }, "a leading flag does not hide the branch");
@@ -615,6 +621,19 @@ test("roadmap: finish hook checks off every item stamped (slug)", () => {
 	assert.ok(r.text.includes("- [x] pick me (fin) — done: 2025-10-19"));
 	assert.ok(r.text.includes("- [ ] other (later)"), "unstamped items stay open");
 	assert.equal(roadmapDoneForSlug(src, "nobody", "x").count, 0);
+});
+
+test("roadmap: a brief rides under its item as quoted lines — never counted, found by slug, tidied with it", () => {
+	const one = appendRoadmapItem("", "channel visibility — split from tg (mcv)", "scope: per-channel\n- [ ] not an item\n");
+	assert.match(one, /- \[ \] channel visibility — split from tg \(mcv\)\n  > scope: per-channel\n  > - \[ \] not an item\n$/);
+	const two = appendRoadmapItem(one, "next");
+	assert.equal(roadmapOpenCount(two), 2, "brief lines are not backlog items");
+	assert.deepEqual(roadmapBriefFor(two, "mcv"), { item: "channel visibility — split from tg (mcv)", brief: "scope: per-channel\n- [ ] not an item" });
+	assert.deepEqual(roadmapBriefFor(two, "next"), null, "an unstamped item is not found by slug");
+	assert.equal(roadmapBriefFor(appendRoadmapItem("", "x (s)"), "s")?.brief, "", "no brief → empty");
+	const tidied = roadmapTidy(roadmapDone(two, 1, "d")!);
+	assert.ok(!tidied.includes("> scope") && tidied.includes("- [ ] next"), "a done item's brief leaves with it");
+	assert.ok(roadmapTidy(two).includes("  > scope"), "an open item's brief stays");
 });
 
 test("roadmap: tidy drops done items and keeps preamble and open items", () => {

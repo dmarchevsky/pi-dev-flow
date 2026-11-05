@@ -137,10 +137,16 @@ Verify lands the feature in **pre-release**.
 Mid-stage additions — do not bounce the flow, do not grow it silently:
 **this feature grew** → stay at implement, append a `**Added mid-stage:**` line
 to `plan.md` (what was asked and how), implement, `flow check` again — edits
-make the checks stale, so verify re-covers the addition. **Different problem** → finish this feature first, then a new flow
-(`flow start <new-slug>` after this one ships); never fold two features into
-one plan, PR and verify — the
-audit trail is the point. **Heavily amended plan** → show it and have the
+make the checks stale, so verify re-covers the addition. **Different problem** →
+a spin-off: once the operator agrees to split it, park it in the roadmap with
+what you worked out — `flow roadmap add "<title>" --slug=<new-slug>
+--brief=<notes>` (or `--brief-file=<path>`; the item records it was split from
+this feature) — then finish this feature, and `flow start <new-slug>` (any
+session, fresh is fine) seeds the new `plan/plan.md` from the brief. **Never
+create `.dev-flow/<new-slug>/` by hand**: a plan dir with no `state.json` is a
+ghost no gate picks up (the guard refuses it; `flow start <slug> --confirmed`
+adopts one that already exists). Never fold two features into one plan, PR and
+verify — the audit trail is the point. **Heavily amended plan** → show it and have the
 operator re-approve in chat; verify remains the checkpoint — no reopen command
 exists by design.
 

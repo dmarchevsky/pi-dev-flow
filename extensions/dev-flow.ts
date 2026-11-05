@@ -112,6 +112,7 @@ import {
 	roadmapDone,
 	roadmapDoneForSlug,
 	roadmapOpenCount,
+	roadmapBriefFor,
 	roadmapPick,
 	roadmapTidy,
 	shouldSelfCompact,
@@ -285,7 +286,7 @@ const initiated = (root: string): boolean => existsSync(path.join(dfDir(root), "
  *  with parseMergeStyle so a typo is reported instead of ignored. */
 function flagValue(rest: string[], name: string): string | null {
 	for (const a of rest) {
-		const m = a.match(new RegExp(`^--${name}=(.+)$`));
+		const m = a.match(new RegExp(`^--${name}=([\\s\\S]+)$`)); // a --brief= value spans lines
 		if (m) return m[1];
 	}
 	return null;
@@ -383,7 +384,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code|done <n> [<what>]] | roadmap [add <text>|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check|--no-marker-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word; --no-marker-check lets a branch add conflict-marker-shaped lines on purpose — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, done <n> checks a fixed one off, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> stamps an item for flow start, finish checks it off — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
+	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code|done <n> [<what>]] | roadmap [add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check|--no-marker-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word; --no-marker-check lets a branch add conflict-marker-shaped lines on purpose — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, done <n> checks a fixed one off, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> (or add --slug=) stamps an item for flow start, which seeds the new plan from its brief; finish checks it off — a new feature asked for mid-flow is parked there, never as a hand-made .dev-flow/<slug>/; start <slug> --confirmed adopts such a ghost dir — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -1647,8 +1648,8 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 	// ghosts: feature dirs whose state.json is gone — inert, invisible to status and guards, and only findable by eye
 	const ghosts = ghostFeatureDirs(root);
 	if (ghosts.length) {
-		if (!ui.hasUI) notes.push(`${ghosts.length} ghost feature dir(s) — a plan/ with no state.json, no flow owns them (${ghosts.join(", ")}); delete them or run flow init interactively`);
-		else if (await ui.confirm("Remove ghost feature dirs?", `${ghosts.map((g) => `${g} — plan/ with no state.json`).join("\n")}\n\nNo flow owns these; their plan/*.md is not recoverable afterwards.`)) {
+		if (!ui.hasUI) notes.push(`${ghosts.length} ghost feature dir(s) — a plan/ with no state.json, no flow owns them (${ghosts.join(", ")}); adopt one with flow start <slug> --confirmed, delete them, or run flow init interactively`);
+		else if (await ui.confirm("Remove ghost feature dirs?", `${ghosts.map((g) => `${g} — plan/ with no state.json`).join("\n")}\n\nNo flow owns these; their plan/*.md is not recoverable afterwards. To keep one as a new feature's draft, decline and run flow start <slug> --confirmed.`)) {
 			for (const g of ghosts) rmSync(path.join(root, g), { recursive: true, force: true });
 			notes.push(`removed ${ghosts.length} ghost feature dir(s): ${ghosts.map((g) => g.slice(".dev-flow/".length)).join(", ")}`);
 		} else notes.push(`kept ${ghosts.length} ghost feature dir(s) — inert, remove them whenever you like`);
@@ -1778,7 +1779,14 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 async function gateStart(o: GateCtx): Promise<RunResult> {
 	const { root, sess, cfg, rest, flag, slugArg } = o;
 	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --ui/--patch/--docs are operator-granted — ask the operator in chat, then add --confirmed", isError: true };
-	if (existsSync(featDir(root, slugArg))) {
+	// a ghost (plan/ but no state.json — typically a spin-off someone wrote by hand) is adopted, never a dead end:
+	// "already exists, flow use it" sent the agent to use, which found no state, and doctor offered to delete it
+	const ghost = existsSync(featDir(root, slugArg)) && !existsSync(stateFile(root, slugArg)) && existsSync(path.join(featDir(root, slugArg), "plan"));
+	if (ghost && !flag("confirmed")) {
+		const files = listFiles(path.join(featDir(root, slugArg), "plan"));
+		return { text: `.dev-flow/${slugArg}/ is a ghost — plan/ (${files.join(", ") || "empty"}) but no state.json, so no flow owns it. Adopt it as this feature's draft plan: flow start ${slugArg} --confirmed (the operator agrees in chat), or delete the dir to start clean`, isError: true };
+	}
+	if (existsSync(featDir(root, slugArg)) && !ghost) {
 		// --ui on the plan-stage feature this session drives: the operator asked for mockups after the start,
 		// so turn the mockup gate on instead of refusing — a UI feature left at ui=false skips the mockup
 		// proof at approve and every (ui) checklist item (lettuce rail-ui-fixes shipped 20 ungated mockups)
@@ -1840,7 +1848,19 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 	// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling.
 	// the stamp is what ran, not what the disk claims (that mismatch is the warning above).
 	const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), loadedVersion() ?? undefined);
-	mkdirSync(path.join(featDir(root, slugArg), "plan"), { recursive: true });
+	const planDir = path.join(featDir(root, slugArg), "plan");
+	if (ghost) notes.push(`adopted ghost .dev-flow/${slugArg}/ — its plan/ (${listFiles(planDir).join(", ") || "empty"}) is this feature's draft`);
+	mkdirSync(planDir, { recursive: true });
+	// a roadmap item stamped for this slug carries its brief into the plan: the spin-off's context outlives the session that split it
+	const picked = roadmapBriefFor(readRoadmap(root), slugArg);
+	if (picked) {
+		const planMd = path.join(planDir, "plan.md");
+		const carried = `> Carried over from the roadmap: ${picked.item}${picked.brief ? `\n>\n${picked.brief.split("\n").map((l) => `> ${l}`.trimEnd()).join("\n")}` : ""}\n`;
+		if (!existsSync(planMd)) {
+			writeFileSync(planMd, `# ${slugArg} — plan (draft)\n\n${carried}`);
+			notes.push(`roadmap item "${picked.item}" seeded plan/plan.md${picked.brief ? " with its brief" : ""} — a draft: plan it out and approve as usual`);
+		} else notes.push(`roadmap item "${picked.item}"${picked.brief ? ` — brief:\n${picked.brief}` : ""}`);
+	}
 	writeState(root, state);
 	sess.bind(slugArg);
 	sess.rename(slugArg);
@@ -1994,9 +2014,17 @@ async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 			return { text: [`roadmap — ${open} open (${done} done):`, ...openChecklistItems(text).map((l, i) => `  ${i + 1}. ${l.slice(6)}`)].join("\n") };
 		}
 		case "add": {
-			if (!args.length) return { text: 'usage: flow roadmap add "<future feature>"', isError: true };
-			save(appendRoadmapItem(text, args.join(" ")));
-			return { text: `roadmap: added — ${open + 1} open` };
+			if (!args.length) return { text: 'usage: flow roadmap add "<future feature>" [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]', isError: true };
+			// a spin-off: --slug stamps it like pick (flow start finds it), the brief carries what was worked
+			// out in chat into the new feature's plan, and a bound session records where it was split from
+			const slug = flagValue(rest, "slug");
+			if (slug !== null && !validSlug(slug)) return { text: `--slug=${slug} is not a slug (lowercase, dashes)`, isError: true };
+			const briefFile = flagValue(rest, "brief-file");
+			if (briefFile !== null && !existsSync(path.resolve(root, briefFile))) return { text: `--brief-file=${briefFile} does not exist`, isError: true };
+			const brief = briefFile !== null ? readFileSync(path.resolve(root, briefFile), "utf8") : (flagValue(rest, "brief") ?? "");
+			const item = [args.join(" "), sess.slug && sess.slug !== slug ? `— split from ${sess.slug}` : "", slug ? `(${slug})` : ""].filter(Boolean).join(" ");
+			save(appendRoadmapItem(text, item, brief));
+			return { text: `roadmap: added — ${open + 1} open${slug ? `; stamped for ${slug}${brief.trim() ? " with a brief" : ""} — flow start ${slug} seeds its plan from it${sess.slug ? ` (after ${sess.slug} ships)` : ""}` : ""}` };
 		}
 		case "pick": {
 			const slug = args[1] ?? "";
@@ -2017,7 +2045,7 @@ async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 			return { text: `roadmap: dropped ${done} done item(s) — ${open} open` };
 		}
 		default:
-			return { text: "usage: flow roadmap [list|add <text>|pick <n> <slug>|done <n>|tidy]", isError: true };
+			return { text: "usage: flow roadmap [list|add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|tidy]", isError: true };
 		}
 }
 
@@ -2123,7 +2151,10 @@ async function gateUse(o: GateCtx): Promise<RunResult> {
 	const { root, sess, slugArg } = o;
 	if (!slugArg) return { text: "usage: flow use <slug>", isError: true };
 	const st = readState(root, slugArg);
-	if (!st) return { text: `no unfinished feature ${slugArg}`, isError: true };
+	if (!st) {
+		const ghost = existsSync(path.join(featDir(root, slugArg), "plan"));
+		return { text: ghost ? `.dev-flow/${slugArg}/ is a ghost — plan/ but no state.json, so there is nothing to resume: flow start ${slugArg} --confirmed adopts its plan as a new feature` : `no unfinished feature ${slugArg}`, isError: true };
+	}
 	const prior = readClaim(root, slugArg);
 	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
 	sess.bind(slugArg);

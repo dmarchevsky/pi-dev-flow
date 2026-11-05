@@ -1473,6 +1473,12 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 		// agent owns stay writable with no binding; project.md is refused above, state/claim.json too.
 		if (DF_ADVISORY_FILES.has(path.relative(dfDir, abs))) return null;
 		if (!bound) return `.dev-flow/ holds flow state — an unbound session may write only its advisory files there (.dev-flow/reflections.md, .dev-flow/roadmap.md); bind with flow start <slug> or flow use <slug>, and a throwaway script goes outside the repo (under $TMPDIR)`;
+		// another feature's directory, or a hand-made one shaped like a feature (`<x>/plan/…`): a plan dir
+		// with no state.json is a ghost no gate can pick up — `flow start` refuses the existing dir, `flow use`
+		// finds no state, doctor offers to delete it. A spin-off feature is parked in the roadmap instead.
+		const [top, second] = path.relative(dfDir, abs).split(path.sep);
+		if (top !== bound.state.slug && (second === "plan" || o.features.some((f) => f.state.slug === top)))
+			return `.dev-flow/${top}/ is not this session's feature (${bound.state.slug}) — never create a feature dir by hand: park a new feature with flow roadmap add "<title>" --slug=${top} --brief=<notes> (the brief seeds its plan), and flow start ${top} once ${bound.state.slug} ships`;
 		return null;
 	}
 	if (bound) {
@@ -1961,9 +1967,27 @@ const isOpenItem = (line: string) => line.trim().startsWith("- [ ] ");
 const isDoneItem = (line: string) => /^\s*-\s*\[[xX]\]\s/.test(line);
 const stampItem = (line: string, stamp: string) => `- [x] ${line.trim().slice(6)} — done: ${stamp}`;
 
-/** Append an open item to roadmap.md content; a header is minted from empty content. */
-export function appendRoadmapItem(text: string, item: string): string {
-	return `${text.trimEnd() || ROADMAP_HEADER.trimEnd()}\n- [ ] ${item.trim()}\n`;
+/** A brief line under a roadmap item: indented blockquote (`  > …`). The quote keeps a brief's own
+ *  `- [ ]` lines from counting as backlog items (item matching trims, then wants a leading dash). */
+const isBriefLine = (line: string) => /^\s+>/.test(line);
+
+/** Append an open item to roadmap.md content; a header is minted from empty content. An optional
+ *  brief (the notes a spin-off feature carries into its plan) lands as indented `  > ` lines under it. */
+export function appendRoadmapItem(text: string, item: string, brief?: string): string {
+	const body = (brief ?? "").replace(/\r/g, "").trim();
+	const quoted = body ? `${body.split("\n").map((l) => `  > ${l}`.trimEnd()).join("\n")}\n` : "";
+	return `${text.trimEnd() || ROADMAP_HEADER.trimEnd()}\n- [ ] ${item.trim()}\n${quoted}`;
+}
+
+/** The open item stamped `(slug)` and its brief (quote markers stripped) — what flow start seeds a
+ *  picked feature's plan with. Null when no open item carries the stamp. */
+export function roadmapBriefFor(text: string, slug: string): { item: string; brief: string } | null {
+	const lines = text.split("\n");
+	const i = lines.findIndex((l) => isOpenItem(l) && l.includes(`(${slug})`));
+	if (i === -1) return null;
+	const brief: string[] = [];
+	for (let j = i + 1; j < lines.length && isBriefLine(lines[j]); j++) brief.push(lines[j].replace(/^\s+> ?/, ""));
+	return { item: lines[i].trim().slice(6), brief: brief.join("\n").trim() };
 }
 
 /** Number of open roadmap items. */
@@ -2012,7 +2036,14 @@ export function roadmapDoneForSlug(text: string, slug: string, stamp: string): {
 
 /** Drop the done (`- [x]`) items; preamble and open items stay verbatim. */
 export function roadmapTidy(text: string): string {
-	return text.split("\n").filter((l) => !isDoneItem(l)).join("\n").replace(/\n{3,}/g, "\n\n");
+	// a done item's brief goes with it — left behind it would read as the brief of the item above
+	let dropping = false;
+	const out = text.split("\n").filter((l) => {
+		if (isBriefLine(l)) return !dropping;
+		dropping = isDoneItem(l);
+		return !dropping;
+	});
+	return out.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** How far before pi's own compaction threshold dev-flow compacts (one fat tool turn). */
