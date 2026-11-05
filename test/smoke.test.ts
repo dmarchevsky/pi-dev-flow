@@ -1187,6 +1187,38 @@ test("roadmap: add → list → pick → done → tidy route through the backlog
 	assert.match((await flow(["status"])).content[0].text, /1 roadmap item\(s\) open/, "status nudges the backlog");
 });
 
+test("spin-off: roadmap add --slug --brief seeds the new plan; a hand-made ghost dir is adopted, not a dead end", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	assert.ok((await flow(["roadmap", "add", "x", "--slug=Bad Slug"])).isError, "the slug is validated");
+	const add = await flow(["roadmap", "add", "message", "channel", "visibility", "--slug=mcv", "--brief=hide muted channels\nper-user toggle"]);
+	assert.match(add.content[0].text, /stamped for mcv with a brief — flow start mcv seeds its plan/);
+	const start = await flow(["start", "mcv"]);
+	assert.ok(!start.isError, start.content[0].text);
+	assert.match(start.content[0].text, /seeded plan\/plan\.md with its brief/);
+	const plan = readFileSync(path.join(repo, ".dev-flow", "mcv", "plan", "plan.md"), "utf8");
+	assert.match(plan, /> Carried over from the roadmap: message channel visibility \(mcv\)\n>\n> hide muted channels\n> per-user toggle/);
+
+	// a ghost: plan/ written by hand, no state.json
+	const ghostPlan = path.join(repo, ".dev-flow", "ghosty", "plan");
+	mkdirSync(ghostPlan, { recursive: true });
+	writeFileSync(path.join(ghostPlan, "plan.md"), "# hand-made draft\n");
+	const use = await flow(["use", "ghosty"]);
+	assert.ok(use.isError && /ghost[\s\S]*flow start ghosty --confirmed adopts/.test(use.content[0].text), "use points at adoption");
+	execFileSync("git", ["-C", repo, "checkout", "-q", "main"]);
+	const refused = await flow(["start", "ghosty"]);
+	assert.ok(refused.isError && /is a ghost — plan\/ \(plan\.md\)/.test(refused.content[0].text), "start names the ghost and asks for the operator's word");
+	const adopted = await flow(["start", "ghosty", "--confirmed"]);
+	assert.ok(!adopted.isError, adopted.content[0].text);
+	assert.match(adopted.content[0].text, /adopted ghost \.dev-flow\/ghosty\//);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "ghosty", "state.json")), "state created");
+	assert.equal(readFileSync(path.join(ghostPlan, "plan.md"), "utf8"), "# hand-made draft\n", "the hand-made draft is kept");
+});
+
 test("finish closes a released feature only: refuses early, then removes worktree, branch and state", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

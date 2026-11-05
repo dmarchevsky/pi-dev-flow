@@ -253,7 +253,9 @@ While a feature is active, every tool call passes a guard:
 ```
 
 `roadmap.md` is your backlog of future features (`flow roadmap add / pick / done`), also advisory — a
-shipped feature checks off the item it was picked from.
+shipped feature checks off the item it was picked from. A new feature that comes up mid-flow is parked
+there as a spin-off (`flow roadmap add "<title>" --slug=<slug> --brief=<notes>`); `flow start <slug>`
+later seeds its plan from the brief.
 
 ## Documentation
 

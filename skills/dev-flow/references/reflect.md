@@ -76,5 +76,12 @@ content, you maintain and honor it. Advisory like reflections, never gating:
 - Handed a feature: `flow roadmap pick <n> <slug>` stamps the item with the
   slug (pick is one verb — it starts nothing), then `flow start <slug>` builds
   it as a normal flow; its `flow finish` checks the item off automatically.
+- **Spin-off** (a new feature surfaced mid-flow, split off on the operator's
+  word): `flow roadmap add "<title>" --slug=<slug> --brief=<notes>` (or
+  `--brief-file=<path>`) adds and stamps in one call; the brief sits under the
+  item as `  > ` lines and a bound session's slug is recorded as `— split from
+  <slug>`. `flow start <slug>` seeds `plan/plan.md` with the item and brief (a
+  draft — plan and approve as usual). A hand-made `.dev-flow/<slug>/plan/` with
+  no `state.json` is a ghost: `flow start <slug> --confirmed` adopts it.
 - Shipped outside a flow: `flow roadmap done <n>` (date-stamped by hand);
   `flow roadmap tidy` drops checked lines when history clutters the list.

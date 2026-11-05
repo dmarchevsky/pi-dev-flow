@@ -17,6 +17,9 @@
    name is itself the gate's proof: **plan.md** — a preliminary direction
    belongs *inside* plan.md (marked draft), never a separate
    `pre-plan`/`direction.md` file: the approve gate requires plan.md by name.
+   Scope splits off at plan (the operator wants part of it later)? Park that
+   part with `flow roadmap add "<title>" --slug=<slug> --brief=<notes>` — never
+   a second `.dev-flow/<slug>/` written by hand.
    First check
    `git log origin/<default>..<default> --oneline`: local-only default-branch
    commits fall out of the worktree's base (push them or re-plan).
