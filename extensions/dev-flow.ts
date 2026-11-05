@@ -384,7 +384,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code|done <n> [<what>]] | roadmap [add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check|--no-marker-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word; --no-marker-check lets a branch add conflict-marker-shaped lines on purpose — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, done <n> checks a fixed one off, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> (or add --slug=) stamps an item for flow start, which seeds the new plan from its brief; finish checks it off — a new feature asked for mid-flow is parked there, never as a hand-made .dev-flow/<slug>/; start <slug> --confirmed adopts such a ghost dir — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
+	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code|done <n> [<what>]] | roadmap [add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check|--no-marker-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [--no-reflect] [--note=<text>] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word; --no-marker-check lets a branch add conflict-marker-shaped lines on purpose — finish runs the closing reflection worker first (before removing anything) and stops for the operator's fold/drop; the re-run with --confirmed cleans up; --no-reflect --confirmed skips it on the operator's explicit word (yolo never does), --note= hands the worker the operator's friction notes — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, done <n> checks a fixed one off, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> (or add --slug=) stamps an item for flow start, which seeds the new plan from its brief; finish checks it off — a new feature asked for mid-flow is parked there, never as a hand-made .dev-flow/<slug>/; start <slug> --confirmed adopts such a ghost dir — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -996,8 +996,13 @@ function reflectTidy(root: string): RunResult {
 	return { text: `reflections: dropped ${closed} closed item(s) — ${open} open` };
 }
 
+/** What a gate may need from the extension closure: finish runs the closing reflection worker itself. */
+export interface FlowHooks {
+	reflect?: (state: FlowState, note: string) => Promise<{ text: string; recorded: boolean; findings: number; failed: boolean }>;
+}
+
 /** Single runner for both the /flow command and the flow tool. */
-async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Promise<RunResult> {
+async function runFlow(args: string[], root: string, ui: Ui, sess: Session, hooks: FlowHooks = {}): Promise<RunResult> {
 	const [sub = "status", ...rest] = args;
 	// help and version are questions about the plugin, not the repo: answerable with no .dev-flow/ at all
 	if (sub === "help" || sub === "--help" || sub === "-h") return { text: rest.includes("--json") ? gateHelpJson(GATE_HELP, loadedVersion()) : `usage: flow <sub> — ${GATE_HELP}` };
@@ -1013,7 +1018,7 @@ async function runFlow(args: string[], root: string, ui: Ui, sess: Session): Pro
 		return null;
 	};
 	const slugArg = rest.find((a) => !a.startsWith("--"));
-	const o: GateCtx = { root, ui, sess, cfg, rest, flag, slugArg, takeYoloWord };
+	const o: GateCtx = { root, ui, sess, cfg, rest, flag, slugArg, takeYoloWord, hooks };
 
 	switch (sub) {
 		case "init":
@@ -1539,19 +1544,38 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	}
 	// a forge release that failed at release-done is still the operator's call — but they must see it before the state vanishes (#63)
 	const forgeSkipNote = state!.forgeReleaseSkipped ? ` WARNING: the forge release was not created (${state!.forgeReleaseSkipped}) — recreate it manually or re-run release-done before finishing.` : "";
-	// the session context dies with the state: name a missing reflection — advisory, never a block (yolo too)
-	const reflectSkipNote = state!.reflectedAt ? "" : ` Note: no reflection recorded for ${state!.slug} — the finish protocol runs flow_stage(op: "reflect") first and puts fold/drop to the operator.`;
 	// the one finish question — asked after the safety checks so it can never be a wasted question
 	// yolo works uniformly at every gate: at Finish? nothing later remains to pre-confirm, the flag just answers this one
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
+	// The closing reflection runs here, before anything is removed: the worker reads this session's
+	// transcripts and .dev-flow/<slug>/tmp, and finish is about to drop that folder and the binding — a
+	// reflection asked for after finish has nothing bound to run against. Only the operator's explicit
+	// --no-reflect skips it; yolo never does (it answers checkpoints, it does not waive the review).
+	const skipReflect = flag("no-reflect");
+	if (skipReflect && !flag("confirmed")) return { text: "--no-reflect is the operator's word — ask them whether to skip the closing reflection, then re-run with --no-reflect --confirmed", isError: true };
+	if (!state!.reflectedAt && !skipReflect) {
+		const skipHint = "or — only on the operator's explicit word — flow finish --no-reflect --confirmed";
+		if (!o.hooks.reflect) return { text: `finish: no reflection recorded for ${state!.slug} and no reflect worker available here — run flow_stage(op: "reflect") first, ${skipHint}`, isError: true };
+		const r = await o.hooks.reflect(state!, flagValue(o.rest, "note") ?? "");
+		const cur = readState(root, state!.slug) ?? state!; // the worker stamped reflectedAt on disk
+		if (!r.recorded)
+			return { text: `finish: the closing reflection did not report — nothing was removed.\n\n${r.text}\n\nNext: re-run flow finish to retry, or review inline (bare flow reflect prints the protocol) and then flow_stage(op: "reflect"), ${skipHint}.`, isError: true };
+		if (!r.findings) {
+			markPendingAsk(root, cur, "Finish?");
+			return { text: needsOperator(`the closing reflection ran before cleanup and found nothing new to fold — nothing was removed yet.\n\n${r.text}\n\nAsk the operator Finish? and run flow finish --confirmed when they answer: the worktree, branch and .dev-flow/${state!.slug}/ go on that run.`, "Finish?"), isError: true };
+		}
+		markPendingAsk(root, cur, "Fold or drop?");
+		return { text: needsOperator(`the closing reflection ran before cleanup — nothing was removed yet.\n\n${r.text}\n\nThe fold/drop answer is the Finish? answer: apply it, then run flow finish --confirmed without asking again — the worktree, branch and .dev-flow/${state!.slug}/ go on that run.`, "Fold or drop?"), isError: true };
+	}
+	const reflectSkipNote = skipReflect && !state!.reflectedAt ? ` Reflection skipped on the operator's word — nothing re-checked this session or the open reflections.` : "";
 	const askPending = !flag("confirmed") && !state!.yolo;
 	if (askPending) {
 		markPendingAsk(root, state!, "Finish?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}${reflectSkipNote}`, "Finish?"), isError: true };
+			return { text: needsOperator(`finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, "Finish?"), isError: true };
 		}
-		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote}${reflectSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
+		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 		if (!ok) {
 			delete state!.pendingAsk;
 			writeState(root, state!);
@@ -1601,7 +1625,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// finish is the moment between flows: name the fix / tidy suggestion when a rule fires, nothing otherwise
 	const nudge = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { between: true });
 	const nudgeNote = [nudge.fix, nudge.tidy].filter(Boolean).map((n) => ` ${n} — offer it to the operator.`).join("");
-	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
+	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}${reflectSkipNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 }
 
 /** The main-branch guard as a hook body — installed into .git/hooks, or printed for a hook manager to carry. */
@@ -2090,6 +2114,7 @@ interface GateCtx {
 	flag: (name: string) => boolean;
 	slugArg?: string;
 	takeYoloWord: (state: FlowState) => string | null;
+	hooks: FlowHooks;
 }
 
 async function gateVersion(o: GateCtx): Promise<RunResult> {
@@ -2550,7 +2575,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const cmd = parse(args);
 			const root = await flowRoot(ctx.cwd);
-			const res = await runFlow(cmd, root, uiFrom(ctx), sessFor(ctx, root));
+			const res = await runFlow(cmd, root, uiFrom(ctx), sessFor(ctx, root), finishReflectHook("flow-finish", ctx, root));
 			// gate output belongs to the conversation, not a toast: display:true renders a [flow] box (TUI + web), no triggerTurn so no model turn fires.
 			// bare reflect is the exception: its whole output is instructions for the agent — displayed without a turn, they would never execute.
 			const wake = cmd.length === 1 && cmd[0] === "reflect";
@@ -2568,9 +2593,9 @@ export default function devFlow(pi: ExtensionAPI) {
 		parameters: Type.Object({
 			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug"]' }),
 		}),
-		execute: async (_id, params, _signal, _onUpdate, ctx) => {
+		execute: async (id, params, signal, onUpdate, ctx) => {
 			const root = await flowRoot(ctx.cwd);
-			const res = await runFlow(params.args, root, uiFrom(ctx), sessFor(ctx, root));
+			const res = await runFlow(params.args, root, uiFrom(ctx), sessFor(ctx, root), finishReflectHook(id, ctx, root, signal, onUpdate));
 			if (!res.isError) maybeCompactNow(ctx, root);
 			return { content: [{ type: "text", text: res.text }], details: undefined, isError: res.isError };
 		},
@@ -2580,12 +2605,226 @@ export default function devFlow(pi: ExtensionAPI) {
 	/** Driver sessions with a worker running right now — one worker per session at a time. */
 	const runningWorkers = new Set<string>();
 
+	type WorkerResult = { content: { type: "text"; text: string }[]; details: { op: WorkerOp; outcome: string; verdict: string | null; commits: number; findings?: number; recorded?: boolean } | undefined; isError?: boolean };
+
+	/** One fresh-session worker run for a bound flow — the body of flow_stage, shared with flow finish,
+	 *  which runs the closing reflection itself before it removes anything (the worker reads the session
+	 *  transcripts and .dev-flow/<slug>/tmp, which finish deletes, and the binding finish drops). */
+	async function runStageWorker(a: {
+		id: string;
+		wop: WorkerOp;
+		st: FlowState;
+		root: string;
+		key: string;
+		note: string;
+		label?: string;
+		budgetMin?: number;
+		signal?: AbortSignal;
+		onUpdate?: (u: { content: { type: "text"; text: string }[]; details: unknown }) => void;
+		ctx: ExtensionContext;
+	}): Promise<WorkerResult> {
+		const { id, wop, st, root, key, signal, onUpdate, ctx } = a;
+		const params = { note: a.note, label: a.label, budgetMin: a.budgetMin };
+		const err = (text: string): WorkerResult => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
+		// a reflection reviews transcripts, not the branch: it runs in the main checkout, where the
+		// worktree may already be gone at finish time
+		const work = wop === "reflect" ? root : worktreeAbs(root, st);
+		if (!work || !existsSync(work)) return err(`feature ${st.slug} has no worktree on disk — nothing for a worker to work in`);
+		if (runningWorkers.has(key)) return err("a worker is already running for this session — wait for it to return");
+		runningWorkers.add(key);
+		const cfg = loadProject(dfDir(root)).cfg;
+		const budgetMin = clampBudgetMin(params.budgetMin, wop);
+		const glyph = wop === "implement" ? "🔨" : wop === "review" ? "🔍" : "🪞";
+		const name = workerName(glyph, st.slug, wop, params.label);
+		const started = Date.now();
+		const git = async (cmd: string) => { const r = await sh(cmd, work); return r.ok ? r.out : ""; };
+		const headBefore = (await git("git rev-parse HEAD")).trim();
+		// the reflect worker runs in the main checkout, which may already carry the operator's edits
+		const statusBefore = wop === "reflect" ? (await git("git status --short")).trim() : "";
+		let lineage: { id?: string; file?: string; dir?: string } = {};
+		try { lineage = { id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? undefined, dir: ctx.sessionManager.getSessionDir() ?? undefined }; } catch { /* unbacked driver: the worker is unlinked */ }
+		const selfRepo = isSelfRepo(root);
+		const brief =
+			wop === "reflect"
+				? await (async () => {
+						const items = readReflections(root);
+						const fold = await foldView(root, items);
+						const upstream = await pluginUpstream(root);
+						const children = lineage.file ? childSessionFiles(lineage.file, sessionHeaders(lineage.dir)) : [];
+						return buildReflectBrief({
+							slug: st.slug, root, today: now().slice(0, 10),
+							driverFile: lineage.file ?? null,
+							children,
+							digests: lineage.file ? writeTranscriptDigests(root, st.slug, [lineage.file, ...children.map((c) => c.file)]) : [],
+							upstreamIssues: (await reflectSeams.upstreamIssues(root, upstream)) ?? undefined,
+							budgetMin,
+							reflectionsFile: path.join(dfDir(root), "reflections.md"),
+							items,
+							projectMd: path.join(dfDir(root), "project.md"),
+							version: pluginVersion(import.meta.dirname).version,
+							upstream,
+							selfRepo,
+							projectIssues: fold.state === "ok" && !selfRepo ? { repo: fold.slug, issues: fold.result.upstreamOnly.map((i) => ({ number: i.number, title: i.title })) } : undefined,
+							note: String(params.note ?? ""),
+						});
+					})()
+				: buildWorkerBrief({
+						op: wop, slug: st.slug, workDir: work,
+						planFile: ((f) => (existsSync(f) ? f : null))(path.join(featDir(root, st.slug), "plan", "plan.md")),
+						defaultBranch: cfg.defaultBranch,
+						commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
+						status: await git("git status --short"),
+						checks: cfg.checkList.map((c) => ({ name: c.name, command: c.cmd })),
+						note: String(params.note ?? ""),
+					});
+		// pi-web visibility needs both halves of the lineage: the id the Agents menu links the child
+		// to, the file the parentSession header points at — without either the worker stays unlinked.
+		const subagent = !lineage.id || !lineage.file ? undefined : { parentId: lineage.id, parentFile: lineage.file, toolCallId: id, profile: `flow-${wop}`, description: name, task: brief };
+		let child: AgentSession | undefined;
+		let timedOut = false;
+		let steered = false;
+		let salvaged = false;
+		let crash: string | null = null;
+		let nudges = 0;
+		let report = parseWorkerReport("");
+		const abortChild = () => void Promise.resolve(child?.abort()).catch(() => {});
+		const hardMs = workerTiming.hardMs ?? budgetMin * 60_000;
+		// grace before the cliff (gh#142): steered at 75% to wrap up, so a long run hands back a REPORT
+		// instead of being cut mid-thought — the hard timer stays the backstop
+		const softTimer = setTimeout(() => {
+			steered = true;
+			try { void Promise.resolve(child?.steer(workerSteer(wop, budgetMin))).catch(() => {}); } catch { /* the hard cut follows */ }
+		}, workerTiming.softMs ?? Math.round(hardMs * WORKER_STEER_AT));
+		const timer = setTimeout(() => { timedOut = true; abortChild(); }, hardMs);
+		signal?.addEventListener("abort", abortChild);
+		let unsub: (() => void) | undefined;
+		let releaseLive: (status: string) => void = () => {};
+		try {
+			child = await stageWorkerSpawn.run({ work, model: ctx.model, name: `⏳ ${name}`, tools: WORKER_TOOLS[wop], parent: lineage.file, dir: lineage.dir, subagent });
+			if (subagent) {
+				piwebStamp(child.sessionManager, PIWEB_SUBAGENT.status, { version: 1, status: "running" });
+				releaseLive = piwebLiveClaim(child.sessionManager, subagent);
+			}
+			unsub = child.subscribe((ev: unknown) => {
+				const e = ev as { type?: string; toolName?: string };
+				if (e.type === "tool_execution_start") {
+					const min = Math.floor((Date.now() - started) / 60_000);
+					onUpdate?.({ content: [{ type: "text", text: `⏳ ${name} — ${min}/${budgetMin} min · ${e.toolName ?? "?"}` }], details: { running: true } });
+				}
+			});
+			await child.prompt(brief);
+			report = parseWorkerReport(child.getLastAssistantText() ?? "");
+			// a turn that ends in prose ("now let me write D4…") ends the session: tell it to keep going
+			while (!report.found && !timedOut && !signal?.aborted && nudges < WORKER_NUDGES) {
+				nudges++;
+				await child.prompt(wop === "implement" ? WORKER_NUDGE : WORKER_NUDGE_READONLY);
+				report = parseWorkerReport(child.getLastAssistantText() ?? "");
+			}
+			// cut at the budget without a REPORT: one short, tool-less turn to hand back what it found —
+			// an aborted reflection otherwise loses every finding it had already made
+			if (!report.found && timedOut && !signal?.aborted) {
+				salvaged = true;
+				const grace = setTimeout(abortChild, workerTiming.graceMs ?? WORKER_SALVAGE_MS);
+				try {
+					await child.prompt(WORKER_SALVAGE);
+					report = parseWorkerReport(child.getLastAssistantText() ?? "");
+				} catch {
+					/* a failed salvage is still an interrupted run, not a crash */
+				} finally {
+					clearTimeout(grace);
+				}
+			}
+		} catch (e) {
+			crash = e instanceof Error ? e.message : String(e);
+		} finally {
+			clearTimeout(softTimer);
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", abortChild);
+			unsub?.();
+			runningWorkers.delete(key);
+		}
+		const transcript = (() => { try { return child?.sessionManager.getSessionFile() ?? ""; } catch { return ""; } })();
+		const headAfter = (await git("git rev-parse HEAD")).trim();
+		const newCommits = headBefore && headAfter && headBefore !== headAfter ? await git(`git log --oneline ${sq(headBefore)}..HEAD`) : "";
+		const dirty = (await git("git status --short")).trim();
+		const outcome = crash
+			? `crashed: ${crash}`
+			: timedOut
+				? `interrupted at the ${budgetMin}-min budget${steered ? " (steered to wrap up at " + Math.round(WORKER_STEER_AT * 100) + "%)" : ""}${report.found ? " — REPORT salvaged after the cut, treat it as partial" : salvaged ? " — the salvage prompt got no REPORT either" : ""}`
+				: report.found
+					? `reported${steered ? " (after the wrap-up steer)" : ""}`
+					: `ended without REPORT after ${nudges} nudge(s)`;
+		// the terminal entry is what settles the Agents menu row (a persisted `running` the host
+		// cannot prove live displays as `interrupted`); a no-REPORT run is a failure, not a ✓.
+		if (subagent) {
+			const doneAt = now();
+			const final = crash
+				? { version: 1, status: "failed", completedAt: doneAt, error: crash }
+				: signal?.aborted || (timedOut && !report.found)
+					? { version: 1, status: "aborted", completedAt: doneAt }
+					: report.found
+						? { version: 1, status: "completed", completedAt: doneAt, result: report.body }
+						: { version: 1, status: "failed", completedAt: doneAt, error: `ended without REPORT after ${nudges} nudge(s)`, result: report.body };
+			piwebStamp(child?.sessionManager, PIWEB_SUBAGENT.result, final);
+			// leave the live map only once the result entry is down: the row is never neither
+			releaseLive(final.status);
+		}
+		releaseLive("failed"); // idempotent guard: a throw between claim and result must not leave a live row
+		try { if (child) workerSessions.delete(child.sessionManager.getSessionId()); } catch { /* id-less session: nothing was registered */ }
+		try { child?.setSessionName(`${report.found && !crash && !signal?.aborted ? (timedOut ? "◐" : "✓") : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
+		const parts = [`${glyph} ${wop} worker ${outcome} (${Math.round((Date.now() - started) / 60_000)} min)`];
+		let reflected: ReturnType<typeof parseReflectReport> | null = null;
+		if (wop === "reflect") {
+			reflected = report.found ? parseReflectReport(report.body) : null;
+			const rows = reflected && (reflected.findings.length || reflected.open.length || /^\s*F0\b/m.test(report.body)) ? renderReflectFindings(reflected, selfRepo) : null;
+			parts.push(rows ? rows.join("\n") : report.found ? `REPORT (rows did not parse — read them yourself):\n${report.body.slice(0, 6000)}` : `no REPORT — last words:\n${report.body}`);
+			if (report.found) {
+				// the record finish reads: a reflection ran for this flow, so finish goes on to its cleanup
+				const cur = readState(root, st.slug);
+				if (cur) { cur.reflectedAt = now(); writeState(root, cur); }
+			}
+			const recurred = reflected?.open.filter((x) => x.status === "recurred").length ?? 0;
+			const nudges = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { recurred });
+			parts.push(
+				"Next: show the operator this numbered list with your recommendation per item and ask fold or drop for each (one answer like 'fold 1,3 drop 2' is fine) — then STOP until they answer. " +
+					`Fold docs → flow reflect --playbook "<note>"; fold code → flow reflect --code "<note>"; fold plugin → ${selfRepo ? 'flow reflect --code "<note>" (this is the dev-flow repo)' : 'flow reflect --plugin "<note>" prints the upstream recipe (dedupe search, then gh issue create — the fold answer is the confirmation; never a reflections.md row)'}; drop → record nothing. Open items re-checked as fixed → propose checking them off.`,
+			);
+			if (nudges.fix) parts.push(`${nudges.fix} — offer it after the fold/drop answer.`);
+			if (nudges.tidy) parts.push(`${nudges.tidy} — offer it after the fold/drop answer.`);
+			if (newCommits.trim() || dirty !== statusBefore) parts.push("note: the reflect worker changed the tree — inspect the change; it was told to write nothing");
+			parts.push(`transcript: ${transcript || "(unknown)"}`);
+			return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: null, commits: 0, findings: reflected?.findings.length ?? 0, recorded: report.found } };
+		}
+		parts.push(
+			report.found ? `REPORT:\n${report.body.slice(0, 6000)}` : `no REPORT — last words:\n${report.body}`,
+			`new commits:\n${newCommits.trim() || "(none)"}`,
+			`uncommitted: ${dirty ? `\n${dirty}` : "clean"}`,
+		);
+		if (wop === "implement") {
+			const check = await runFlow(["check"], root, uiFrom(ctx), sessFor(ctx, root));
+			parts.push(`flow check after the worker: ${check.text.replace(/\s+/g, " ").trim().slice(0, 1500)}`);
+		} else if (newCommits.trim() || dirty) {
+			parts.push("note: the reviewer changed the tree — treat its verdict with suspicion and inspect the change");
+		}
+		parts.push(`transcript: ${transcript || "(unknown)"}`);
+		parts.push(wop === "implement" ? "Next: read the report, decide what is left, and drive the gates yourself." : "Advisory review: fix what is real (inline is fine for small things), then carry on — no gate waits on this verdict.");
+		return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: report.verdict, commits: newCommits.trim().split("\n").filter(Boolean).length } };
+	}
+
+	/** The hook flow finish calls for its closing reflection: the same reflect worker flow_stage runs. */
+	const finishReflectHook = (id: string, ctx: ExtensionContext, root: string, signal?: AbortSignal, onUpdate?: (u: { content: { type: "text"; text: string }[]; details: unknown }) => void): FlowHooks => ({
+		reflect: async (st, note) => {
+			const r = await runStageWorker({ id, wop: "reflect", st, root, key: sessionKey(ctx), note, label: "finish reflection", signal, onUpdate, ctx });
+			return { text: r.content.map((c) => c.text).join("\n"), recorded: !!r.details?.recorded, findings: r.details?.findings ?? 0, failed: !!r.isError };
+		},
+	});
+
 	const stageWorkerTool = defineTool({
 		name: "flow_stage",
 		label: "Stage worker",
 		description:
-			'Optional: hand a slice of work to a fresh pi session so this conversation stays lean. op "implement" (stage implement) — the worker edits and commits a slice on the feature branch; op "review" (implement or pre-release) — a fresh read-only reviewer that returns findings and a PASS/FAIL verdict (advisory: no gate depends on it); op "reflect" (any stage, standard at finish) — a fresh read-only reviewer of this session\'s transcript and every worker transcript that returns classified reflection findings (docs / code / plugin) with a fold-or-drop recommendation each, for the operator to decide. The plan path, branch, commits so far and the project checks are added to the brief automatically — `note` is just the slice: what to do, operator answers and decisions the worker cannot see. The worker holds no flow tool; gates and checkpoints stay with you. Delegate an implement slice when it is in the plan, provable by flow check, needs no operator input mid-slice and is big enough (≈4+ files or heavy reading) to crowd this context; small work, small fixes, mid-debug work, operator-judged work and final integration stay inline (criteria: references/implement.md). In pi-web the worker appears in the session\'s Agents menu as a subagent (running while it works, then its final status); the opened transcript holds its report.',
-		promptSnippet: 'flow_stage(op: "implement"|"review"|"reflect", note, label?) — optional fresh-session worker for a big implement slice, an independent review, or the end-of-session reflection (finish); gates stay with you; in pi-web workers show up as subagents in the Agents menu',
+			'Optional: hand a slice of work to a fresh pi session so this conversation stays lean. op "implement" (stage implement) — the worker edits and commits a slice on the feature branch; op "review" (implement or pre-release) — a fresh read-only reviewer that returns findings and a PASS/FAIL verdict (advisory: no gate depends on it); op "reflect" (any stage; flow finish runs it itself before cleanup) — a fresh read-only reviewer of this session\'s transcript and every worker transcript that returns classified reflection findings (docs / code / plugin) with a fold-or-drop recommendation each, for the operator to decide. The plan path, branch, commits so far and the project checks are added to the brief automatically — `note` is just the slice: what to do, operator answers and decisions the worker cannot see. The worker holds no flow tool; gates and checkpoints stay with you. Delegate an implement slice when it is in the plan, provable by flow check, needs no operator input mid-slice and is big enough (≈4+ files or heavy reading) to crowd this context; small work, small fixes, mid-debug work, operator-judged work and final integration stay inline (criteria: references/implement.md). In pi-web the worker appears in the session\'s Agents menu as a subagent (running while it works, then its final status); the opened transcript holds its report.',
+		promptSnippet: 'flow_stage(op: "implement"|"review"|"reflect", note, label?) — optional fresh-session worker for a big implement slice, an independent review, or a reflection (flow finish runs the closing one itself); gates stay with you; in pi-web workers show up as subagents in the Agents menu',
 		parameters: Type.Object({
 			op: Type.String({ description: '"implement" (a worker edits + commits a slice), "review" (read-only reviewer, findings + verdict) or "reflect" (read-only reviewer of the session transcripts, reflection findings + fold/drop recommendations)' }),
 			note: Type.String({ description: "The slice: what to do and anything from this conversation the worker must know (operator answers, decisions). Facts (plan path, commits, checks) are added for you." }),
@@ -2602,190 +2841,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (!st) return err("this session is not bound to a feature — flow start <slug> or flow use <slug> first");
 			const why = workerOpError(op, st.stage);
 			if (why) return err(why);
-			const wop = op as WorkerOp;
-			// a reflection reviews transcripts, not the branch: it runs in the main checkout, where the
-			// worktree may already be gone at finish time
-			const work = wop === "reflect" ? root : worktreeAbs(root, st);
-			if (!work || !existsSync(work)) return err(`feature ${st.slug} has no worktree on disk — nothing for a worker to work in`);
-			if (runningWorkers.has(key)) return err("a worker is already running for this session — wait for it to return");
-			runningWorkers.add(key);
-			const cfg = loadProject(dfDir(root)).cfg;
-			const budgetMin = clampBudgetMin(params.budgetMin, wop);
-			const glyph = wop === "implement" ? "🔨" : wop === "review" ? "🔍" : "🪞";
-			const name = workerName(glyph, st.slug, wop, params.label);
-			const started = Date.now();
-			const git = async (cmd: string) => { const r = await sh(cmd, work); return r.ok ? r.out : ""; };
-			const headBefore = (await git("git rev-parse HEAD")).trim();
-			// the reflect worker runs in the main checkout, which may already carry the operator's edits
-			const statusBefore = wop === "reflect" ? (await git("git status --short")).trim() : "";
-			let lineage: { id?: string; file?: string; dir?: string } = {};
-			try { lineage = { id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? undefined, dir: ctx.sessionManager.getSessionDir() ?? undefined }; } catch { /* unbacked driver: the worker is unlinked */ }
-			const selfRepo = isSelfRepo(root);
-			const brief =
-				wop === "reflect"
-					? await (async () => {
-							const items = readReflections(root);
-							const fold = await foldView(root, items);
-							const upstream = await pluginUpstream(root);
-							const children = lineage.file ? childSessionFiles(lineage.file, sessionHeaders(lineage.dir)) : [];
-							return buildReflectBrief({
-								slug: st.slug, root, today: now().slice(0, 10),
-								driverFile: lineage.file ?? null,
-								children,
-								digests: lineage.file ? writeTranscriptDigests(root, st.slug, [lineage.file, ...children.map((c) => c.file)]) : [],
-								upstreamIssues: (await reflectSeams.upstreamIssues(root, upstream)) ?? undefined,
-								budgetMin,
-								reflectionsFile: path.join(dfDir(root), "reflections.md"),
-								items,
-								projectMd: path.join(dfDir(root), "project.md"),
-								version: pluginVersion(import.meta.dirname).version,
-								upstream,
-								selfRepo,
-								projectIssues: fold.state === "ok" && !selfRepo ? { repo: fold.slug, issues: fold.result.upstreamOnly.map((i) => ({ number: i.number, title: i.title })) } : undefined,
-								note: String(params.note ?? ""),
-							});
-						})()
-					: buildWorkerBrief({
-							op: wop, slug: st.slug, workDir: work,
-							planFile: ((f) => (existsSync(f) ? f : null))(path.join(featDir(root, st.slug), "plan", "plan.md")),
-							defaultBranch: cfg.defaultBranch,
-							commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
-							status: await git("git status --short"),
-							checks: cfg.checkList.map((c) => ({ name: c.name, command: c.cmd })),
-							note: String(params.note ?? ""),
-						});
-			// pi-web visibility needs both halves of the lineage: the id the Agents menu links the child
-			// to, the file the parentSession header points at — without either the worker stays unlinked.
-			const subagent = !lineage.id || !lineage.file ? undefined : { parentId: lineage.id, parentFile: lineage.file, toolCallId: id, profile: `flow-${wop}`, description: name, task: brief };
-			let child: AgentSession | undefined;
-			let timedOut = false;
-			let steered = false;
-			let salvaged = false;
-			let crash: string | null = null;
-			let nudges = 0;
-			let report = parseWorkerReport("");
-			const abortChild = () => void Promise.resolve(child?.abort()).catch(() => {});
-			const hardMs = workerTiming.hardMs ?? budgetMin * 60_000;
-			// grace before the cliff (gh#142): steered at 75% to wrap up, so a long run hands back a REPORT
-			// instead of being cut mid-thought — the hard timer stays the backstop
-			const softTimer = setTimeout(() => {
-				steered = true;
-				try { void Promise.resolve(child?.steer(workerSteer(wop, budgetMin))).catch(() => {}); } catch { /* the hard cut follows */ }
-			}, workerTiming.softMs ?? Math.round(hardMs * WORKER_STEER_AT));
-			const timer = setTimeout(() => { timedOut = true; abortChild(); }, hardMs);
-			signal?.addEventListener("abort", abortChild);
-			let unsub: (() => void) | undefined;
-			let releaseLive: (status: string) => void = () => {};
-			try {
-				child = await stageWorkerSpawn.run({ work, model: ctx.model, name: `⏳ ${name}`, tools: WORKER_TOOLS[wop], parent: lineage.file, dir: lineage.dir, subagent });
-				if (subagent) {
-					piwebStamp(child.sessionManager, PIWEB_SUBAGENT.status, { version: 1, status: "running" });
-					releaseLive = piwebLiveClaim(child.sessionManager, subagent);
-				}
-				unsub = child.subscribe((ev: unknown) => {
-					const e = ev as { type?: string; toolName?: string };
-					if (e.type === "tool_execution_start") {
-						const min = Math.floor((Date.now() - started) / 60_000);
-						onUpdate?.({ content: [{ type: "text", text: `⏳ ${name} — ${min}/${budgetMin} min · ${e.toolName ?? "?"}` }], details: { running: true } });
-					}
-				});
-				await child.prompt(brief);
-				report = parseWorkerReport(child.getLastAssistantText() ?? "");
-				// a turn that ends in prose ("now let me write D4…") ends the session: tell it to keep going
-				while (!report.found && !timedOut && !signal?.aborted && nudges < WORKER_NUDGES) {
-					nudges++;
-					await child.prompt(wop === "implement" ? WORKER_NUDGE : WORKER_NUDGE_READONLY);
-					report = parseWorkerReport(child.getLastAssistantText() ?? "");
-				}
-				// cut at the budget without a REPORT: one short, tool-less turn to hand back what it found —
-				// an aborted reflection otherwise loses every finding it had already made
-				if (!report.found && timedOut && !signal?.aborted) {
-					salvaged = true;
-					const grace = setTimeout(abortChild, workerTiming.graceMs ?? WORKER_SALVAGE_MS);
-					try {
-						await child.prompt(WORKER_SALVAGE);
-						report = parseWorkerReport(child.getLastAssistantText() ?? "");
-					} catch {
-						/* a failed salvage is still an interrupted run, not a crash */
-					} finally {
-						clearTimeout(grace);
-					}
-				}
-			} catch (e) {
-				crash = e instanceof Error ? e.message : String(e);
-			} finally {
-				clearTimeout(softTimer);
-				clearTimeout(timer);
-				signal?.removeEventListener("abort", abortChild);
-				unsub?.();
-				runningWorkers.delete(key);
-			}
-			const transcript = (() => { try { return child?.sessionManager.getSessionFile() ?? ""; } catch { return ""; } })();
-			const headAfter = (await git("git rev-parse HEAD")).trim();
-			const newCommits = headBefore && headAfter && headBefore !== headAfter ? await git(`git log --oneline ${sq(headBefore)}..HEAD`) : "";
-			const dirty = (await git("git status --short")).trim();
-			const outcome = crash
-				? `crashed: ${crash}`
-				: timedOut
-					? `interrupted at the ${budgetMin}-min budget${steered ? " (steered to wrap up at " + Math.round(WORKER_STEER_AT * 100) + "%)" : ""}${report.found ? " — REPORT salvaged after the cut, treat it as partial" : salvaged ? " — the salvage prompt got no REPORT either" : ""}`
-					: report.found
-						? `reported${steered ? " (after the wrap-up steer)" : ""}`
-						: `ended without REPORT after ${nudges} nudge(s)`;
-			// the terminal entry is what settles the Agents menu row (a persisted `running` the host
-			// cannot prove live displays as `interrupted`); a no-REPORT run is a failure, not a ✓.
-			if (subagent) {
-				const doneAt = now();
-				const final = crash
-					? { version: 1, status: "failed", completedAt: doneAt, error: crash }
-					: signal?.aborted || (timedOut && !report.found)
-						? { version: 1, status: "aborted", completedAt: doneAt }
-						: report.found
-							? { version: 1, status: "completed", completedAt: doneAt, result: report.body }
-							: { version: 1, status: "failed", completedAt: doneAt, error: `ended without REPORT after ${nudges} nudge(s)`, result: report.body };
-				piwebStamp(child?.sessionManager, PIWEB_SUBAGENT.result, final);
-				// leave the live map only once the result entry is down: the row is never neither
-				releaseLive(final.status);
-			}
-			releaseLive("failed"); // idempotent guard: a throw between claim and result must not leave a live row
-			try { if (child) workerSessions.delete(child.sessionManager.getSessionId()); } catch { /* id-less session: nothing was registered */ }
-			try { child?.setSessionName(`${report.found && !crash && !signal?.aborted ? (timedOut ? "◐" : "✓") : "✗"} ${name}${report.verdict ? ` · ${report.verdict}` : ""}`); } catch { /* visibility only */ }
-			const parts = [`${glyph} ${wop} worker ${outcome} (${Math.round((Date.now() - started) / 60_000)} min)`];
-			let reflected: ReturnType<typeof parseReflectReport> | null = null;
-			if (wop === "reflect") {
-				reflected = report.found ? parseReflectReport(report.body) : null;
-				const rows = reflected && (reflected.findings.length || reflected.open.length || /^\s*F0\b/m.test(report.body)) ? renderReflectFindings(reflected, selfRepo) : null;
-				parts.push(rows ? rows.join("\n") : report.found ? `REPORT (rows did not parse — read them yourself):\n${report.body.slice(0, 6000)}` : `no REPORT — last words:\n${report.body}`);
-				if (report.found) {
-					// the record finish reads: a reflection ran for this flow (advisory — finish never blocks on it)
-					const cur = readState(root, st.slug);
-					if (cur) { cur.reflectedAt = now(); writeState(root, cur); }
-				}
-				const recurred = reflected?.open.filter((x) => x.status === "recurred").length ?? 0;
-				const nudges = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { recurred });
-				parts.push(
-					"Next: show the operator this numbered list with your recommendation per item and ask fold or drop for each (one answer like 'fold 1,3 drop 2' is fine) — then STOP until they answer. " +
-						`Fold docs → flow reflect --playbook "<note>"; fold code → flow reflect --code "<note>"; fold plugin → ${selfRepo ? 'flow reflect --code "<note>" (this is the dev-flow repo)' : 'flow reflect --plugin "<note>" prints the upstream recipe (dedupe search, then gh issue create — the fold answer is the confirmation; never a reflections.md row)'}; drop → record nothing. Open items re-checked as fixed → propose checking them off.`,
-				);
-				if (nudges.fix) parts.push(`${nudges.fix} — offer it after the fold/drop answer.`);
-				if (nudges.tidy) parts.push(`${nudges.tidy} — offer it after the fold/drop answer.`);
-				if (newCommits.trim() || dirty !== statusBefore) parts.push("note: the reflect worker changed the tree — inspect the change; it was told to write nothing");
-				parts.push(`transcript: ${transcript || "(unknown)"}`);
-				return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: null, commits: 0, findings: reflected?.findings.length ?? 0 } };
-			}
-			parts.push(
-				report.found ? `REPORT:\n${report.body.slice(0, 6000)}` : `no REPORT — last words:\n${report.body}`,
-				`new commits:\n${newCommits.trim() || "(none)"}`,
-				`uncommitted: ${dirty ? `\n${dirty}` : "clean"}`,
-			);
-			if (wop === "implement") {
-				const check = await runFlow(["check"], root, uiFrom(ctx), sessFor(ctx, root));
-				parts.push(`flow check after the worker: ${check.text.replace(/\s+/g, " ").trim().slice(0, 1500)}`);
-			} else if (newCommits.trim() || dirty) {
-				parts.push("note: the reviewer changed the tree — treat its verdict with suspicion and inspect the change");
-			}
-			parts.push(`transcript: ${transcript || "(unknown)"}`);
-			parts.push(wop === "implement" ? "Next: read the report, decide what is left, and drive the gates yourself." : "Advisory review: fix what is real (inline is fine for small things), then carry on — no gate waits on this verdict.");
-			return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: report.verdict, commits: newCommits.trim().split("\n").filter(Boolean).length } };
+			return runStageWorker({ id, wop: op as WorkerOp, st, root, key, note: String(params.note ?? ""), label: params.label, budgetMin: params.budgetMin, signal, onUpdate, ctx });
 		},
 	});
 	pi.registerTool(stageWorkerTool);
@@ -3066,7 +3122,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		// stage (finish runs the reflection), between flows, and in status/doctor
 		if (state.stage === "release") {
 			const refl = readReflections(root);
-			if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — the finish reflection (flow_stage op "reflect") re-checks them; fix them only on the operator's word.`);
+			if (refl.length) guidance.push(`↻ ${refl.length} reflection(s) open — flow finish runs the closing reflection over them before cleanup; fix them only on the operator's word.`);
 		}
 		const rmap = roadmapOpenCount(readRoadmap(root));
 		if (rmap) guidance.push(`◇ ${rmap} roadmap item(s) open — flow roadmap lists them (pick only on the operator's word).`);

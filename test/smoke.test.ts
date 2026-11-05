@@ -111,6 +111,13 @@ function trackPlaybook(repo: string) {
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 }
 
+/** A reflect worker already reported for this flow: finish goes straight to its cleanup (the tests
+ *  that cover the reflection itself stub the worker instead). */
+function markReflected(repo: string, slug: string) {
+	const f = path.join(repo, ".dev-flow", slug, "state.json");
+	writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), reflectedAt: "2026-01-01T00:00:00.000Z" }, null, 2));
+}
+
 /** verify proves a committed branch, so every test that walks a feature to Verified? needs a
  *  commit in the worktree — what a real flow does as it goes. Empty is fine: these tests carry
  *  no feature content, only the commit proof. */
@@ -907,6 +914,7 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	const rd = await flow(["release-done", "--confirmed"]); // flag still accepted, as a no-op — release-done asks nothing
 	assert.match(rd.content[0].text, /release recorded as complete/);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "ck", "state.json")), "release-done records the release; closing out is finish's job");
+	markReflected(repo, "ck"); // the closing reflection already ran — this test is about the cleanup
 	const fin = await flow(["finish", "--confirmed"]);
 	assert.match(fin.content[0].text, /feature ck done — worktree and branch feat\/ck removed.*Re-read flow status before reporting open flows/, "finish sends the agent to a fresh status — siblings may have finished mid-session");
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ck")), "feature dir gone after finish");
@@ -1167,6 +1175,7 @@ test("flow finish fast-forwards a main checkout that trails origin", async () =>
 	execFileSync("git", ["-C", other, "commit", "-qm", "landed after the release"]);
 	execFileSync("git", ["-C", other, "push", "-q", "origin", "main"]);
 	execFileSync("git", ["-C", repo, "fetch", "-q", "origin"]);
+	markReflected(repo, "ff"); // the closing reflection already ran — this test is about the cleanup
 	const fin = await flow(["finish", "--confirmed"]);
 	assert.match(fin.content[0].text, /local main fast-forwarded to origin\/main/, "close-out syncs the checkout it just released into");
 	const sha = (dir: string, ref: string) => execFileSync("git", ["-C", dir, "rev-parse", ref]).toString().trim();
@@ -1248,18 +1257,72 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "state.json")), "a refused finish removes nothing");
 	await flow(["release", "--confirmed"]);
 	await flow(["release-done", "--confirmed"]);
-	const ask = await flow(["finish"]);
-	assert.match(ask.content[0].text, /no reflection recorded for fin — the finish protocol runs flow_stage\(op: "reflect"\) first/, "finish names a skipped reflection");
-	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "state.json")), "advisory only: the ask removes nothing");
+	// the first finish — even with the operator's --confirmed — runs the closing reflection before it touches anything
+	const worker = fakeWorker([() => "REPORT\nF1 | fold | docs | the release chore push surprised the operator | dup: none | why: real friction | evidence: driver.jsonl:9"]);
+	const orig = stageWorkerSpawn.run;
+	let spawned: { work: string } | undefined;
+	stageWorkerSpawn.run = async (o) => { spawned = o; return worker as never; };
+	let ask: { content: [{ text: string }]; isError?: boolean };
+	try {
+		ask = await flow(["finish", "--confirmed", "--note=the operator disliked the double prompt"]);
+	} finally {
+		stageWorkerSpawn.run = orig;
+	}
+	assert.equal(spawned?.work, repo, "finish ran the reflect worker in the main checkout");
+	assert.match(worker.prompts[0], /Operator context: the operator disliked the double prompt/, "--note reaches the worker");
+	assert.ok(ask.isError && /NEEDS-OPERATOR Fold or drop\?/.test(ask.content[0].text), `finish stops for fold/drop: ${ask.content[0].text}`);
+	assert.match(ask.content[0].text, /1\. \[fold\] docs: the release chore push surprised the operator/, "the findings are shown");
+	assert.match(ask.content[0].text, /nothing was removed yet/);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "worktree")), "the reflection ran before cleanup: worktree still there");
+	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "fin", "state.json"), "utf8"));
+	assert.ok(st.reflectedAt, "the reflection is recorded");
+	assert.equal(st.pendingAsk, "Fold or drop?");
 	// three open playbook items: finish (the moment between flows) suggests one docs flow for them
 	writeFileSync(path.join(repo, ".dev-flow", "reflections.md"), "# dev-flow reflections\n\n## playbook\n\n- [ ] a — s 2099-01-01\n- [ ] b — s 2099-01-01\n- [ ] c — s 2099-01-01\n");
-	const done = await flow(["finish", "--confirmed"]);
+	const done = await flow(["finish", "--confirmed"]); // reflectedAt is set: no second worker, straight to cleanup
 	assert.match(done.content[0].text, /feature fin done — worktree and branch feat\/fin removed.*roadmap: 1 item\(s\) marked done/, "finish checks off the picked backlog item");
 	assert.match(done.content[0].text, /⚑ fix the open reflections now\? \(3 playbook items batch into one docs flow\)/, "finish suggests the fix when a rule fires");
-	assert.ok(!/no reflection recorded/.test(done.content[0].text), "the skipped-reflection note is for the question, not the close-out");
+	assert.ok(!/Reflection skipped/.test(done.content[0].text), "a reflected flow names no skip");
 	assert.match(readFileSync(path.join(repo, ".dev-flow", "roadmap.md"), "utf8"), /- \[x\] the finishing move \(fin\) — done: \d{4}-\d{2}-\d{2}/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "fin")), "the flow state folder is gone");
 	assert.throws(() => execFileSync("git", ["-C", repo, "rev-parse", "--verify", "feat/fin"]));
+});
+
+test("finish reflection: a failed worker removes nothing, yolo never skips it, only --no-reflect --confirmed does", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "nr"]);
+	mkdirSync(path.join(repo, ".dev-flow", "nr", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "nr", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "nr");
+	await flow(["verify", "--yolo", "--confirmed"]);
+	await flow(["release"]);
+	await flow(["release-done"]);
+	const orig = stageWorkerSpawn.run;
+	let spawns = 0;
+	try {
+		// a worker that never reports: finish removes nothing and says how to go on
+		stageWorkerSpawn.run = async () => { spawns++; return fakeWorker([() => "thinking out loud", () => "still no report", () => "nope", () => "nope", () => "nope"]) as never; };
+		const failed = await flow(["finish"]);
+		assert.equal(spawns, 1, "yolo does not skip the closing reflection");
+		assert.ok(failed.isError && /closing reflection did not report — nothing was removed/.test(failed.content[0].text), failed.content[0].text);
+		assert.match(failed.content[0].text, /--no-reflect --confirmed/, "the skip is named as the operator's word");
+		assert.ok(existsSync(path.join(repo, ".dev-flow", "nr", "worktree")), "a failed reflection removes nothing");
+		const selfGranted = await flow(["finish", "--no-reflect"]);
+		assert.ok(selfGranted.isError && /operator's word/.test(selfGranted.content[0].text), "--no-reflect alone is refused");
+		const skipped = await flow(["finish", "--no-reflect", "--confirmed"]);
+		assert.equal(spawns, 1, "the operator's skip spawns no worker");
+		assert.match(skipped.content[0].text, /feature nr done — .*Reflection skipped on the operator's word/, skipped.content[0].text);
+		assert.ok(!existsSync(path.join(repo, ".dev-flow", "nr")), "cleanup ran");
+	} finally {
+		stageWorkerSpawn.run = orig;
+	}
 });
 
 test("release gate (#97): the entry is prepared on the branch and pending lines survive the fold", async () => {
@@ -1346,6 +1409,7 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	const manual = await flow(["release-done", "--confirmed"]);
 	assert.match(manual.content[0].text, /Forge release skipped \(forge=self/);
 	assert.match(manual.content[0].text, /release recorded as complete/);
+	markReflected(repo, "chores"); // the closing reflection already ran — this test is about the cleanup
 	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature chores done/, "a manual-publication project finishes clean");
 });
 
@@ -1490,6 +1554,7 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
 	await flow(["release", "--confirmed"]);
 	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/, "release-done is check-only — asks the operator nothing");
+	markReflected(repo, "chore"); // the closing reflection already ran — this test is about the cleanup
 	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature chore done/);
 });
 
@@ -1507,6 +1572,7 @@ test("docs feature: no plan file, no tier-1 checks, full release end to end", as
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "docs verify passes with no flow check run");
 	await flow(["release", "--confirmed"]);
 	assert.match((await flow(["release-done"])).content[0].text, /release recorded as complete/);
+	markReflected(repo, "readme-typo"); // the closing reflection already ran — this test is about the cleanup
 	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature readme-typo done/);
 });
 
@@ -1787,6 +1853,7 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	const earlyFinish = await flow(["finish", "--confirmed"]);
 	assert.ok(earlyFinish.isError && /release-done/.test(earlyFinish.content[0].text), "finish refuses before the release is recorded");
 	await flow(["release-done", "--confirmed"]);
+	markReflected(repo, "rel"); // the closing reflection already ran — this test is about the cleanup
 	const finishNoAsk = await flow(["finish"]);
 	assert.ok(finishNoAsk.isError && /Finish\?/.test(finishNoAsk.content[0].text), "finish asks the operator first");
 	const fin = await flow(["finish", "--confirmed"]);
@@ -1882,6 +1949,7 @@ test("finish deletes merged feature branches on origin and keeps unverifiable on
 	git("push", "-q", "origin", "feat/gone");
 	git("merge", "-q", "--no-edit", "feat/gone"); // the case is a merged branch: now it really is contained in origin/main
 	git("push", "-q", "origin", "main");
+	markReflected(repo, "gone"); // the closing reflection already ran — this test is about the cleanup
 	const gone = await flow(["finish", "--confirmed"]);
 	assert.match(gone.content[0].text, /origin\/feat\/gone deleted \(verified merged\)/);
 	assert.ok(!remoteHas("feat/gone"), "the released branch is gone from origin too");
@@ -1892,6 +1960,7 @@ test("finish deletes merged feature branches on origin and keeps unverifiable on
 	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"]);
 	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "work"]);
 	git("push", "-q", "origin", "feat/kept");
+	markReflected(repo, "kept"); // the closing reflection already ran — this test is about the cleanup
 	const kept = await flow(["finish", "--confirmed"]);
 	assert.match(kept.content[0].text, /origin\/feat\/kept kept — merged state not verifiable/, "an unverifiable branch is never deleted");
 	assert.ok(remoteHas("feat/kept"), "the branch survives for the operator to judge");
@@ -1948,6 +2017,7 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	assert.match((await flow(["verify"])).content[0].text, /verified \(yolo: pre-confirmed\) — entering pre-release/);
 	await flow(["release"]);
 	await flow(["release-done"]);
+	markReflected(repo, "yo"); // the closing reflection already ran — this test is about the cleanup
 	assert.match((await flow(["finish"])).content[0].text, /feature yo done — worktree and branch feat\/yo removed/);
 	assert.equal(dialogs, 0, "yolo answered every checkpoint up front — gates must not ask");
 });
@@ -1973,6 +2043,7 @@ test("yolo at any gate: verify --yolo answers that question and pre-confirms the
 	// every later gate now runs with no flags and no dialogs — the flow completes on its own
 	await flow(["release"]);
 	await flow(["release-done"]);
+	markReflected(repo, "late"); // the closing reflection already ran — this test is about the cleanup
 	assert.match((await flow(["finish"])).content[0].text, /feature late done — worktree and branch feat\/late removed/);
 	assert.equal(dialogs, 0, "yolo said at Verify? — later gates must not ask");
 });

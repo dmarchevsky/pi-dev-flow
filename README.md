@@ -157,7 +157,10 @@ project**: `flow reflect --plugin "<note>"` prints the recipe for a GitHub issue
 keyword guess the printed line explains (`flow reflect list` numbers the queue, `flow reflect move
 <n> --code` re-files one). The open count surfaces in `flow status` and `flow doctor`.
 
-**At finish, a separate reviewer reflects on the session.** `flow_stage` op `reflect` starts a fresh
+**At finish, a separate reviewer reflects on the session.** `flow finish` runs it before it removes
+anything (the worktree, `.dev-flow/<slug>/` and the session binding are still there), stops for your
+answer, and cleans up on the re-run; only your explicit `--no-reflect` skips it. The worker (also
+callable earlier as `flow_stage` op `reflect`) is a fresh
 read-only pi session that reads the whole driving transcript *and every worker's*, re-checks the
 open items, dedupes against them and the upstream issues, and returns a numbered list — each
 finding classified docs / code / plugin with a **fold or drop** recommendation. You answer per item

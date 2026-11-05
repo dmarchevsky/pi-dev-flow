@@ -64,4 +64,5 @@ the worktree unless noted:
 
 
 Once `flow release-done` has recorded the release, the playbook continues in
-[finish.md](finish.md) — reflect first, then **Finish?**, then cleanup.
+[finish.md](finish.md) — `flow finish` runs the closing reflection first and stops for
+fold/drop (that answer is **Finish?**); its re-run with `--confirmed` cleans up.
