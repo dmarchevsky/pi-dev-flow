@@ -2413,9 +2413,12 @@ function tail(out: string, n = 15): string {
 
 // ------------------------------------------------------------------ extension
 
-/** The pi-web chip's current key: the chip's label IS the widget key, so it changes with the footer text
- *  and the previous one must be cleared on every repaint. */
-let webChipKey: string | undefined;
+/** The pi-web chip's current key, per session: the chip's label IS the widget key, so it changes with the
+ *  footer text and the previous one must be cleared on every repaint. Per session, not per process — one
+ *  pi-web server repaints many sessions (drivers, chats, workers), and a single shared slot let session B's
+ *  repaint overwrite A's key, so A's next repaint cleared a key A never had and left its old chip beside
+ *  the new one. On globalThis so a /reload or a duplicate copy still knows the chip already painted. */
+const WEB_CHIP_KEYS: Map<string, string> = ((globalThis as { __piDevFlowChipKeys?: Map<string, string> }).__piDevFlowChipKeys ??= new Map());
 
 /** Compact footer: bound flow = stage glyph, slug, mode markers, ⚠️ on its failing checks; unbound = the
  *  unfinished-flow count, or `💬 no flows` — an initiated repo always carries the footer. An uninitiated
@@ -2425,10 +2428,15 @@ let webChipKey: string | undefined;
 function refreshStatus(ctx: ExtensionContext, root: string): void {
 	if (!ctx.hasUI) return;
 	const web = ctx.mode !== "tui";
+	const sk = sessionKey(ctx);
 	const setChip = (key: string | undefined, lines?: string[]) => {
-		if (webChipKey !== undefined && webChipKey !== key) ctx.ui.setWidget(webChipKey, undefined);
-		webChipKey = key;
-		if (key !== undefined) ctx.ui.setWidget(key, lines);
+		const prev = WEB_CHIP_KEYS.get(sk);
+		if (prev !== undefined && prev !== key) ctx.ui.setWidget(prev, undefined);
+		if (key === undefined) WEB_CHIP_KEYS.delete(sk);
+		else {
+			WEB_CHIP_KEYS.set(sk, key);
+			ctx.ui.setWidget(key, lines);
+		}
 	};
 	if (!initiated(root)) {
 		ctx.ui.setStatus("dev-flow", undefined);
@@ -2796,6 +2804,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	// The session, not the process, owns the binding and the claim: pi-web keeps serving other sessions
 	// after one ends, and a stale claim there is a permanent lock (its pid is the server's, always alive).
 	pi.on("session_shutdown", async (_event, ctx) => {
+		WEB_CHIP_KEYS.delete(sessionKey(ctx)); // the session's UI is gone; a long-lived server must not keep its slot
 		if (!guardsAreMine()) return;
 		const root = await flowRoot(ctx.cwd);
 		if (!existsSync(dfDir(root))) return;
