@@ -129,7 +129,8 @@ Your answers at a checkpoint:
 - **yes** — or **no**, with the reason. The agent fixes it and asks again; that loop is free.
 - **yolo** — answers this checkpoint *and* pre-confirms the rest, so the remaining gates run back to
   back with every check still enforced. Attach your wishes to the word: *"yolo, patch bump"*,
-  *"yolo, no tag"*.
+  *"yolo, no tag"*. Release? is asked anyway when commits landed after Verified?, or always when
+  the playbook sets `yolo = until-release` under `## release`.
 - **no version this time** (at Release?) — merge and changelog land, no bump or tag; the next
   versioned release folds your `Unreleased` entry under its heading.
 
@@ -230,7 +231,8 @@ While a feature is active, every tool call passes a guard:
 - no commit, merge or push to the default branch outside the release stage (plus a git hook for work outside Pi);
 - at plan stage the agent can only write inside its own feature folder;
 - at implement/pre-release it can only write inside its own worktree;
-- with a `.dev-flow/` present, an unbound session cannot edit source at all — everything goes through the flow;
+- with a `.dev-flow/` present, an unbound session cannot edit source at all — everything goes through the flow
+  (a path git ignores, such as a per-machine secrets file, stays writable: it can never reach a commit);
 - `.dev-flow/*/state.json` is unwritable by the agent, so gates cannot be skipped or forged;
 - `project.md` is yours: the agent cannot write it (except inside a docs/patch flow), and every
   sanctioned overwrite keeps a `.bak`;

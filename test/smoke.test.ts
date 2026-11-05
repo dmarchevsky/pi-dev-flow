@@ -568,6 +568,10 @@ test("flow-by-default: unbound writes blocked; start needs default branch; featu
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	const edit = () => pi.handlers.tool_call[0]({ toolName: "edit", input: { path: "src/app.ts" } }, ctx);
 	assert.match((await edit())?.reason ?? "", /no active flow/, "clean repo still requires a flow");
+	// gh#175: a git-ignored per-machine path is writable without a flow; an unignored one names the route
+	writeFileSync(path.join(repo, ".git", "info", "exclude"), ".pi/local-secrets/\n");
+	assert.equal(await pi.handlers.tool_call[0]({ toolName: "write", input: { path: ".pi/local-secrets/pw.md", content: "x" } }, ctx), undefined, "an ignored path passes");
+	assert.match((await pi.handlers.tool_call[0]({ toolName: "write", input: { path: "notes/pw.md", content: "x" } }, ctx))?.reason ?? "", /\.git\/info\/exclude/);
 	const r1 = await flow(["start", "x"]);
 	assert.ok(!r1.isError, "start on main works");
 	execFileSync("git", ["-C", repo, "checkout", "-qb", "work/two"]);
@@ -2020,6 +2024,40 @@ test("yolo: approve --yolo pre-confirms every later gate question, checks still 
 	markReflected(repo, "yo"); // the closing reflection already ran — this test is about the cleanup
 	assert.match((await flow(["finish"])).content[0].text, /feature yo done — worktree and branch feat\/yo removed/);
 	assert.equal(dialogs, 0, "yolo answered every checkpoint up front — gates must not ask");
+});
+
+test("yolo stops short of Release? when commits landed after Verified?, or when the playbook says until-release (gh#176)", async () => {
+	const run = async (md: string, slug: string) => {
+		const pi = makePi();
+		const repo = makeRepo();
+		const ctx = makeCtx(repo);
+		const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+		await flow(["init", "--write", md]);
+		trackPlaybook(repo);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--yolo", "--confirmed"]); // the word given at plan, before any commit existed
+		await flow(["check"]);
+		commitWt(repo, slug);
+		assert.match((await flow(["verify"])).content[0].text, /yolo: pre-confirmed/);
+		return { flow, repo };
+	};
+	const base = "# dev-flow\n\n## implement\n\n```flow\ntest = exit 0\n```\n\n## release\n\n```flow\nmerge = merge\n";
+	// (a) a commit after Verified?: the plan-stage yolo does not answer Release? for it
+	const a = await run(`${base}\`\`\`\n`, "late2");
+	commitWt(a.repo, "late2", "fix after the review");
+	await a.flow(["check"]);
+	const held = await a.flow(["release"]);
+	assert.ok(held.isError && /NEEDS-OPERATOR Release\?/.test(held.content[0].text), held.content[0].text);
+	assert.match(held.content[0].text, /does not cover commits that landed after Verified\?/);
+	assert.match(held.content[0].text, /fix after the review/, "the late commit is named");
+	assert.match((await a.flow(["release", "--confirmed"])).content[0].text, /release approved \(confirmed by operator instruction\)/, "the operator's own Release? answer stands");
+	// (b) until-release: no late commits, still asked; a yolo given AT Release? answers it
+	const b = await run(`${base}yolo = until-release\n\`\`\`\n`, "strict");
+	const asked = await b.flow(["release"]);
+	assert.ok(asked.isError && /yolo = until-release/.test(asked.content[0].text), asked.content[0].text);
+	assert.match((await b.flow(["release", "--yolo", "--confirmed"])).content[0].text, /release approved/);
 });
 
 test("yolo at any gate: verify --yolo answers that question and pre-confirms the rest to finish", async () => {
