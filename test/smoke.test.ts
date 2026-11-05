@@ -654,6 +654,14 @@ test("status bar: compact refresh follows the gates", async () => {
 	const b = { ...ctx, sessionManager: { getSessionId: () => "sess-foot-B", getBranch: () => [] as never[] }, ui: { ...ctx.ui, setWidget: setWidget(chipsB) } };
 	await pi.cmds.flow.handler("status", b);
 	assert.deepEqual(chip(chipsB), ["💬 1 open", ["📝 demo-feature · plan"]], "unbound chip reads the count, not the slug, and lists every open flow");
+	// A's label changes after B repainted: A must clear ITS old chip, not B's — one shared "last key" slot left
+	// A with a stale 📝 chip beside the new one (the two-stage-chips bug)
+	const stFile = path.join(repo, ".dev-flow", "demo-feature", "state.json");
+	writeFileSync(stFile, JSON.stringify({ ...JSON.parse(readFileSync(stFile, "utf8")), stage: "implement" }));
+	await pi.cmds.flow.handler("status", ctx);
+	assert.equal(chips.size, 1, "A's previous-stage chip was cleared after another session repainted in between");
+	assert.ok(!chips.has("📝demo-feature"), "the plan-stage chip is gone");
+	assert.deepEqual([...chipsB.keys()], ["💬 1 open"], "A's repaint never touches B's chips");
 });
 
 test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {
