@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.83.1] - 2026-11-05
+
+**A worker whose model is down is reported as down, not nudged as a stall.**
+
 ### Fixed
 - **A worker whose model is failing is reported as such, not nudged as a stall** (fixes #173). A review worker's turns all ended in `stopReason: "error"` ("Request timed out.", after pi's own retries). `flow_stage` spent both nudges on it, which only bought two more retry storms, and then printed `ended without REPORT after 2 nudge(s)` with empty last words. The driver read that as a stall, re-briefed the slice and lost the review. Now when the newest turn ended in a model error, the worker stops at once: no nudges, no salvage prompt. The result says `model failed: stopReason=error "<message>" (N consecutive error turn(s)) — not a stall` and tells the driver to take the work inline or retry later. The pi-web Agents row records the same error.
 
