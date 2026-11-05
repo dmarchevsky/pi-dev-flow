@@ -218,7 +218,8 @@ GitHub issue on the dev-flow repo. `flow reflect --playbook|--code "<note>"` app
 wording and prints why), `flow reflect list` numbers the open ones, `flow reflect move <n>
 --playbook|--code` re-files one, `flow reflect tidy` drops the closed (`- [x]`) ones, plain
 `flow doctor` reviews the open ones and routes each fix to the flow that implements it. At finish
-a fresh read-only **reflect worker** (`flow_stage` op `reflect`) reviews the whole session — the
+— run by `flow finish` itself, before it removes anything — a fresh read-only **reflect worker**
+(`flow_stage` op `reflect`) reviews the whole session — the
 driver's and every worker's transcript — and returns classified findings with a fold/drop
 recommendation each; the operator decides per item (fold = a queue row or an upstream issue, drop
 = nothing recorded). Suggestions to fix open items or tidy closed ones are timed (finish, between

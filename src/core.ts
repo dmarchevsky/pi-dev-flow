@@ -49,7 +49,7 @@ export interface FlowState {
 	pendingAsk?: string; // the checkpoint word a gate asked for and has not been given ("Approve?", "Verified?", …) — presentation only (💬 in the footer), it never gates
 	releaseOnly?: boolean; // verify found nothing on the branch but unreleased work on main: this flow only cuts the version (#161)
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
-	reflectedAt?: string; // a flow_stage reflect worker reported for this flow — finish names a missing one (advisory, never a block)
+	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
@@ -2115,7 +2115,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog} (a heading for the new version, carrying every pending Unreleased line over as it stands)` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
 		case "release":
 			return state.approvals.release
-				? "release recorded — commit and push the release chores in the main checkout (prefix the commit with DEV_FLOW_ALLOW_MAIN=1 — the installed pre-commit hook otherwise blocks main commits), ask the operator Finish? and run flow finish (removes worktree, branch and .dev-flow/" + state.slug + "/)"
+				? "release recorded — commit and push the release chores in the main checkout (prefix the commit with DEV_FLOW_ALLOW_MAIN=1 — the installed pre-commit hook otherwise blocks main commits), then run flow finish: it runs the closing reflection first and stops for the operator's fold/drop (that answer is Finish?) — the re-run with --confirmed removes worktree, branch and .dev-flow/" + state.slug + "/"
 				: state.noVersion
 					? `publish: commit and push the branch, open the PR, merge only once CI is green (gh pr checks <n> --watch — a locally-green branch can still fail CI-only jobs)${mergeHintFor(cfg)} — unversioned release: no manifest bump, no tag, your changelog entry rides under Unreleased; then run flow release-done (no further question)`
 					: `publish: commit and push the branch, open the PR, merge only once CI is green (gh pr checks <n> --watch — a locally-green branch can still fail CI-only jobs)${mergeHintFor(cfg)}, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)`;

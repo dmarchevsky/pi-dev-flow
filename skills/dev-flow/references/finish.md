@@ -4,10 +4,16 @@
 
 ## Stage: finish
 
-**Reflect before you finish** — `flow finish` deletes `.dev-flow/<slug>/` and
-the session context goes with it. Run the end-of-session reflection now:
+**`flow finish` reflects before it removes anything** — it deletes
+`.dev-flow/<slug>/` and unbinds the session, and a reflection asked for after
+that has nothing to run against. So the first `flow finish` (with or without
+`--confirmed`) runs the end-of-session reflection itself and stops; cleanup
+happens on the re-run:
 
-1. `flow_stage({ op: "reflect", note })` — a fresh **read-only** reviewer reads
+1. `flow finish [--note="<friction the operator mentioned>"]` — while no
+   reflection is recorded for the flow, it starts the reflect worker (the same
+   one `flow_stage({ op: "reflect", note })` runs — call that earlier if you
+   want, and finish skips straight to cleanup). A fresh **read-only** reviewer reads
    this session's transcript **and every `flow_stage` worker transcript**,
    re-checks the open items in `.dev-flow/reflections.md`, dedupes against them
    and the upstream issues, and returns numbered findings, each classified
@@ -17,7 +23,9 @@ the session context goes with it. Run the end-of-session reflection now:
    `note` = anything the operator said about friction this session. The tool
    prebuilds a line-tagged digest of every transcript and prefetches the
    upstream issues, so the worker reads instead of dumping and searching. If the
-   worker fails, run the review inline (bare `flow reflect` prints the protocol).
+   worker fails, finish removes nothing: re-run it, or review inline (bare `flow
+   reflect` prints the protocol). Only the operator's explicit word skips the
+   reflection — `flow finish --no-reflect --confirmed`; **yolo never does**.
 2. Show the operator the list with your recommendation per item and ask
    **fold or drop** for each (`fold 1,3 drop 2` is a fine answer) — then stop.
 3. Apply the answer: fold docs → `flow reflect --playbook "<note>"`; fold code →
@@ -32,8 +40,9 @@ the session context goes with it. Run the end-of-session reflection now:
 
 The fold/drop answer replaces **Finish?** — act on it, then run
 `flow finish --confirmed` without asking again. Nothing found → ask the
-operator **Finish?** → `flow finish --confirmed`. A finish question with no
-reflection recorded for the flow names it (advisory, never a block).
+operator **Finish?** → `flow finish --confirmed`. Never tell the operator the
+open items were "classified" or "reviewed" unless the worker's list is what
+you are showing.
 Checkpoint report: stage line **🏁 finish · `<slug>`** — release recorded ·
 main state · unmerged count · reflections open · release-checklist open,
 then `Done:`/`Next steps:` per the Stage reports rule.

@@ -33,8 +33,9 @@ flagged by `flow doctor` / `reflect list`: file it upstream and check it off
 prints an investigation brief without queueing.
 
 - Reflect real friction only, one line each, never the same issue twice.
-- **The end-of-session reflection runs at finish** (see Stage: finish): a
-  `flow_stage({ op: "reflect" })` worker reviews the whole session — driver and
+- **The end-of-session reflection runs at finish** (see Stage: finish): `flow
+  finish` itself starts the `flow_stage({ op: "reflect" })` worker before it
+  removes anything (only `--no-reflect --confirmed` skips it); the worker reviews the whole session — driver and
   every worker transcript — and the operator decides **fold or drop** per
   finding. Bare `flow reflect` prints that protocol (bound: delegate to the
   worker; unbound: review inline); the command writes nothing.

@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.83.0] - 2026-11-05
+
+**`flow finish` reflects before it cleans up, so a session's review can no longer be lost.**
+
+### Fixed
+- **`flow finish` runs the closing reflection itself, before it removes anything.** Before this, the reflection was a step the agent had to remember. `release-done` said "ask Finish? and run flow finish" without mentioning it, and the only reminder was a note inside the Finish? dialog. An agent that skipped it called `flow_stage reflect` after finish, which refused because the session was already unbound, and the session's review was lost. Now, while no reflection is recorded for the flow, the first `flow finish` runs the reflect worker while the worktree, `.dev-flow/<slug>/` and the binding still exist. It then stops for the operator's fold/drop, or for Finish? when nothing was found, and the re-run with `--confirmed` cleans up. If the worker fails, nothing is removed. `--no-reflect --confirmed` skips the reflection, but only on the operator's explicit word; yolo never skips it. `--note=` passes the operator's friction notes to the worker.
+
 ## [0.82.1] - 2026-11-05
 
 **pi-web shows one dev-flow chip per session again.**
