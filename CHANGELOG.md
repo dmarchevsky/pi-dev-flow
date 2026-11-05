@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-11-05
+
+**A yolo given early no longer ships commits nobody saw, and per-machine ignored files are writable without a flow.**
+
 ### Fixed
 - **A yolo given early no longer ships commits nobody saw** (fixes #176). In this case a yolo at plan pre-answered Release?, and a fix that landed after Verified? shipped with only an after-the-fact warning. Now a standing yolo does not answer Release? while non-prep commits sit after Verified?: the gate asks Release? and names those commits. `--confirmed` (the operator's own answer, including a yolo said at Release?) still passes.
 - **An unbound session can write a path git ignores** (fixes #175). This covers a per-machine file such as a local secrets note listed in `.git/info/exclude`. Before this, the guard refused it, so agents wrote it from bash instead. Tracked and untracked-unignored paths are still refused, and the refusal now names the `.git/info/exclude` route.
