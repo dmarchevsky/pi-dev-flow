@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bashTimeout, BUILD_S, CLAMP_S, DEFAULT_S, LOCAL_GIT_S, NETWORK_S, QUICK_S, requireTimeout, SERVICE_S, WATCH_S } from "../src/timeouts.ts";
+import { bashTimeout, BUILD_S, CLAMP_S, DEFAULT_S, LOCAL_GIT_S, NETWORK_S, QUICK_S, requireTimeout, SERVICE_S, timeoutClass, WATCH_S, WRAPPER_MARGIN_S } from "../src/timeouts.ts";
 
 const cases: [string, number][] = [
 	// quick inspection
@@ -77,4 +77,23 @@ test("requireTimeout: an explicit timeout passes, a missing one is refused with 
 	// the reason must carry the exact number the injection would have armed — the retry is then a one-token fix
 	assert.match(requireTimeout("git push origin main") ?? "", /class default here is 180s/);
 	assert.match(requireTimeout("ls") ?? "", /class default here is 30s/);
+});
+
+test("a command's own `timeout N` sets its cap: N plus a margin, so the shell's timer fires first", () => {
+	assert.equal(bashTimeout("timeout 600 bun test bff"), 600 + WRAPPER_MARGIN_S, "not the 120s default the head `timeout` used to get");
+	assert.equal(bashTimeout("cd wt && export PATH=$HOME/.bun/bin:$PATH && timeout 600 bun test bff 2>&1 | tail -5"), 615, "inside a chain, piped");
+	assert.equal(bashTimeout("timeout -k 5 2m make"), 135, "options with values are skipped; suffixes are read");
+	assert.equal(bashTimeout("timeout -s KILL --foreground 1.5m curl x"), 105);
+	assert.equal(bashTimeout("timeout bogus bun x"), BUILD_S, "an unreadable duration falls back to the wrapped command's class, not the default");
+	assert.equal(bashTimeout("timeout 0 npm test"), BUILD_S, "0 means no limit to coreutils — the wrapped command's class applies");
+	assert.equal(bashTimeout("timeout 99999 make"), CLAMP_S, "clamped like an explicit value");
+	assert.equal(bashTimeout("timeout 600 bun test", 60), 60, "an explicit tool timeout still wins");
+	assert.equal(bashTimeout("gtimeout 10 sleep 100"), 25);
+});
+
+test("timeoutClass names what decided the cap — the kill note reports it", () => {
+	assert.deepEqual(timeoutClass("awk 1 f"), { s: QUICK_S, cls: "quick" });
+	assert.deepEqual(timeoutClass("git status && npm test"), { s: BUILD_S, cls: "build" });
+	assert.deepEqual(timeoutClass("timeout 600 bun test"), { s: 615, cls: "its own timeout 600" });
+	assert.deepEqual(timeoutClass(""), { s: DEFAULT_S, cls: "default" });
 });
