@@ -3563,7 +3563,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (ref) guidance.push(`Stage playbook: read ${path.join(SKILL_DIR, ref)} before gate work in this stage.`);
 		const prose = stageGuidance(cfg, state.stage);
 		if (prose) guidance.push(`Stage guidance (${prose.source}): ${prose.text}`);
-		guidance.push("Stage reports: open every report with the stage line (statusbar glyph + slug + provenance-marked decision fields); close a checkpoint with an event title and `Done:` / `Next steps:` on own lines — italic verbs, recommended first, yolo last. See Stage reports in the ground rules.");
+		guidance.push("Stage reports: open with the stage line the last gate returned, pasted as is; a checkpoint closes with `Done:` / `Next steps:` (see the ground rules).");
 		const pend = checklistPending(cfg, state, state.stage);
 		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
 		// mid-feature is the wrong moment to divert into old reflections — they surface at the release
@@ -3576,7 +3576,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (rmap) guidance.push(`◇ ${rmap} roadmap item(s) open — flow roadmap lists them (pick only on the operator's word).`);
 		const stageNote = `[dev-flow] this session is bound to: ${state.slug}${state.patch ? " (patch)" : state.docs ? " (docs)" : ""} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
 Next: ${nextHint(state, cfg)}.
-${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: follow the dev-flow skill playbook; gates run through the flow tool only — \`flow\` is not a shell command, and the operator answers words in chat, never commands: you run the gate. \`/flow\` is the operator's manual override, not yours. Stage guards block out-of-stage edits and main-branch git ops — do not work around them.`;
+${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: gates run through the flow tool only; the operator answers words in chat — never ask them to type a flow command.`;
 		const short = `[dev-flow] still bound to ${state.slug} at ${state.stage} — unchanged since the last [dev-flow] note; follow it.`;
 		return { message: { customType: "dev-flow-context", display: false, content: `${core}${sameAsLast(key, stageNote, short)}` } };
 	});

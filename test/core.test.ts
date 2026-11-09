@@ -1146,7 +1146,7 @@ test("--docs --no-version: no changelog proof (#163); (versioned) items stand do
 	assert.equal(checklistPending(c, docs, "release"), 1);
 	assert.deepEqual(applicableItems(c, { ...docs, noVersion: false }, "release").map((i) => i.text), ["image tag matches", "PR merged"]);
 	const hint = nextHint({ ...docs, noVersion: false }, c);
-	assert.match(hint, /docs flow: it usually ships unversioned — ask the operator; with their word, flow release --no-version needs no bump/);
+	assert.match(hint, /a docs flow usually ships unversioned — ask the operator \(flow release --no-version on their word\)/);
 	assert.match(nextHint({ ...newState("v", false), stage: "pre-release" as const }, c), /bump version in VERSION/, "a normal flow keeps the versioned hint");
 });
 
@@ -1627,7 +1627,7 @@ test("mergeStyleInvocation: the merge command is where the policy is enforced", 
 test("nextHint: the UI clause appends to the plan path instead of replacing it", () => {
 	const ui = newState("u", true);
 	assert.match(nextHint(ui, DEFAULTS), /plan\/plan\.md and render mockups to plan\/mockups\/ \(\*\.png\) with headless chromium/);
-	assert.match(nextHint({ ...ui, ui: false }, DEFAULTS), /plan\/plan\.md, then ask the operator Approve\?/);
+	assert.match(nextHint({ ...ui, ui: false }, DEFAULTS), /plan\/plan\.md, then ask Approve\?/);
 });
 
 test("nextHint names the playbook merge style at the release stage", () => {

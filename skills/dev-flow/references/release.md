@@ -1,68 +1,35 @@
-> Part of the **dev-flow** playbook. The always-on ground rules live in
-> [../SKILL.md](../SKILL.md); this file is the detail for one stage — read it
-> when the session reaches that stage.
+> Part of the **dev-flow** playbook. Ground rules: [../SKILL.md](../SKILL.md).
 
 ## Stage: release
 
-Cleared for main-repo git (merge/tag/push on the default branch is allowed only
-here) — this stage publishes; the preparation happened in pre-release. Run in
-the worktree unless noted:
+Main-repo git (merge, tag, push on the default branch) is allowed only here.
+Nothing in this stage asks the operator anything — Release? covered it. Report
+each step with the gate's stage line, **🚀 release · `<slug>`**; no `Done:` /
+`Next steps:` block.
 
-1. Commit everything, push the feature branch, open the PR, and **merge only once
-   CI is green**: `gh pr checks <n> --watch` (or your forge's equivalent) first — a
-   locally-green branch can still fail checks that only CI runs (the host may lack the
-   tool entirely), and the merge is what turns the default branch red (gh#134). Then
-   wait for the merge
-   (`gh pr merge <n> --merge` or ask the user) — with the **playbook's merge style spelled out**
-   (`gh pr merge <n> --squash` under `merge = squash`), and **the PR number before the flag**: a bare
-   `gh pr merge --merge main` makes gh read `main` as the PR selector ("no pull requests found for
-   main"). The guard blocks a style that contradicts the
-   playbook and asks the operator about a merge with no style flag, so let the playbook decide rather
-   than the forge default. Merge without `--delete-branch`: it fails when
-   the default branch is checked out in the main worktree, and `flow finish`
-   deletes the branch on merge proof anyway.
-2. `git fetch`, confirm the merge landed, create the **annotated** tag
-   (`git tag -a`) and push the ref explicitly (`git push origin v<ver>`) —
-   never `--follow-tags` (it silently skips lightweight tags: they never reach
-   the remote, CI never publishes). After the merge a tag points at what
-   actually shipped. If CI builds from the tag, set `release.preflight` (e.g.
-   `docker build .`) so `flow release` proves that build before the tag exists,
-   and `release.artifact` in
-   the playbook — `release-done` then verifies the published artifact and
-   refuses local-only tags outright. Unversioned flow (`--no-version` granted):
-   no bump, no tag — publish the merge only (your entry rides under
-   `Unreleased` until the next versioned release folds it), `release-done`
-   asks nothing version-side.
-3. `flow release-done` — **no question** (the Release? answer covered the
-   publication). Reporting at this stage is stage lines only, one per step —
-   **🚀 release · `<slug>`** — PR + state · merge style used · tag state ·
-   artifact · forge release (all values `✓` — the Release? verb locked them);
-   no `Done:`/`Next steps:` block, nothing is asked. It re-verifies (tag on the default branch, on origin, artifact
-   when configured) against **the version the release gate stamped** — never a
-   re-read from a checkout that may be behind — and refuses anything older than
-   the newest matching tag on origin (lists come from `git ls-remote`, so an
-   unfetched clone never decides what is tagged). It creates the forge release
-   — `gh` for GitHub, `glab` for GitLab, nothing for `forge = self`, advisory
-   note if a CLI or remote is missing; body = the `release.changelog` entry for
-   that version — the changelog is what the release page must read like — else
-   the tag's annotation, else nothing with the reason printed (annotate with
-   `git tag -a`), and it reads the stored body back and refuses a mismatch
-   (#97) — and records the release;
-   `flow finish` closes the feature out. Skipping the forge release
-   (`--no-release-create`, once, or `release.releases = false`, always) and
-   the artifact check (`--no-artifact-check`, once) are operator calls only —
-   act when told, never on your own. If this session runs an older build than
-   the checkout, **the release gate asks instead of blocking**: it prints both
-   builds, lists what shipped between them (those proofs will not run), and
-   puts the choice to the operator — **update (`/reload` and re-run) or
-   proceed with the old release?** Publishing under an older gate is a
-   legitimate choice (hotfix, offline reload); the answer is recorded in the
-   release output and `release-done` repeats the acknowledgement as the
-   backstop for headless runs.
-   Release-stage checklist items have no gate of their own: `release-done`
-   lists the open ones and the Finish? answer closes them.
-
-
-Once `flow release-done` has recorded the release, the playbook continues in
-[finish.md](finish.md) — `flow finish` runs the closing reflection first and stops for
-fold/drop (that answer is **Finish?**); its re-run with `--confirmed` cleans up.
+1. **PR and merge.** Commit everything, push the feature branch, open the PR.
+   - **Merge only once CI is green**: `gh pr checks <n> --watch` (or your
+     forge's equivalent) first — CI runs jobs the host may not.
+   - Merge in the **playbook's style**, PR number before the flag:
+     `gh pr merge <n> --squash` under `merge = squash`, `--merge` under
+     `merge = merge`. (`gh pr merge --merge main` reads `main` as the PR.)
+   - No `--delete-branch` — finish deletes the branch on merge proof.
+2. **Tag** (versioned flows). `git fetch`, confirm the merge landed, create an
+   **annotated** tag (`git tag -a v<ver> -m …`) and push it explicitly:
+   `git push origin v<ver>`. Never `--follow-tags`.
+   - CI builds from the tag? `release.preflight` proves that build at
+     `flow release`; `release.artifact` makes the record step verify the
+     published artifact.
+   - `--no-version` flow: no bump, no tag — publish the merge only.
+3. **Hand over to finish.** Once merged and tagged, the playbook continues in
+   [finish.md](finish.md): `flow finish` records the release itself first
+   (the same proofs `flow release-done` runs — tag on the default branch and
+   on origin, artifact, forge release created from the changelog entry and
+   read back) and then closes the feature out.
+   - Skipping the forge release (`--no-release-create`, or `release.releases
+     = false`) or the artifact check (`--no-artifact-check`) is the
+     operator's call only.
+   - Session on an older build than the checkout: the release gate prints
+     both builds and what shipped between them and asks **update (`/reload`
+     and re-run) or proceed?** — a recorded choice, not a block.
+   - Release-stage checklist items close with the Finish? answer.

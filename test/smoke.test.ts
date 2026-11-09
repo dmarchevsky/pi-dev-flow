@@ -2402,7 +2402,7 @@ test("threshold compaction takeover: flow-aware compact() returned as custom com
 		const t = mk();
 		const res = await takeover(t.event, t.c);
 		assert.match(res?.compaction?.summary ?? "", /^flow-aware summary\n/, "our summary lands via the custom-compaction channel — no cancel dance, no re-entry");
-		assert.match(res?.compaction?.summary ?? "", /\[dev-flow state on disk — authoritative[^\n]*\]\n- feature demo-feature — stage: plan\n- approvals recorded: none\n- checks: none recorded\n- next: investigate/, "the disk's flow state is appended, not left to the summarizer");
+		assert.match(res?.compaction?.summary ?? "", /\[dev-flow state on disk — authoritative[^\n]*\]\n- feature demo-feature — stage: plan\n- approvals recorded: none\n- checks: none recorded\n- next: clarify the direction/, "the disk's flow state is appended, not left to the summarizer");
 		assert.equal(res?.cancel, undefined, "pi appends the returned compaction itself — nothing to cancel");
 		assert.match(String(calls[0].instructions), /demo-feature/, "the summary carries the flow-aware instructions");
 		assert.equal(calls[0].apiKey, "k", "request-time auth is resolved and forwarded");
@@ -2656,12 +2656,12 @@ test("an unchanged stage context is one line; a stage change or a compaction han
 	initPlaybook(repo);
 	await pi.cmds.flow.handler("start dedupe", ctx);
 	const inject = async () => ((await pi.handlers.before_agent_start[0]({}, session("sess-dedupe"))) as { message: { content: string } }).message.content;
-	assert.match(await inject(), /Next: investigate/, "the first run carries the full note");
+	assert.match(await inject(), /Next: clarify the direction/, "the first run carries the full note");
 	const again = await inject();
 	assert.match(again, /still bound to dedupe at plan — unchanged/);
 	assert.doesNotMatch(again, /Next:/, "the unchanged note is not repeated");
 	await pi.handlers.session_compact[0]({}, session("sess-dedupe"));
-	assert.match(await inject(), /Next: investigate/, "a compaction may have dropped the note — it comes back whole");
+	assert.match(await inject(), /Next: clarify the direction/, "a compaction may have dropped the note — it comes back whole");
 });
 
 test("an answer that hands the operator a flow command gets a hidden correction for the next run", async () => {
