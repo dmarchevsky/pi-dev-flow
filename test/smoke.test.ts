@@ -308,8 +308,10 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	await toImplement("ran", "test = node --version\ndev = touch dev-up\n");
 	// the commands run before the operator is asked, so even the walk-out path must report them
 	const early = await flow(["verify"]);
-	assert.ok(early.isError, "no UI and no --confirmed: verification still needs the operator");
+	assert.ok(!early.isError, "the agent's bare verify is the review deploy, not a failure (#181)");
+	assert.match(early.content[0].text, /^NEEDS-OPERATOR Verified\? — deployed for review — .*flow verify --confirmed/, "it hands the chat question back to the agent");
 	assert.match(early.content[0].text, /dev ran \(touch dev-up\)/);
+	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ran", "state.json"), "utf8")).stage, "implement", "nothing was recorded on the operator's behalf");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); .*dev ran \(touch dev-up\)/, "a commit after the check made the record stale — the gate reruns it and says so");
 	await toImplement("nodev", "test = node --version\n");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /dev: none configured/);
@@ -471,7 +473,7 @@ test("the health probe waits for a service that lags its deploy; healthWait 0 ke
 	const ok = await flow(["verify", "--confirmed"]);
 	assert.match(ok.content[0].text, /health: PASS \(.*, 3 attempts\)/, `the gate waited and says how it tried: ${ok.content[0].text}`);
 	await toImplement("single", bootLag("0"));
-	const fast = await flow(["verify", "--confirmed"]);
+	const fast = await flow(["verify", "--confirmed", "--replace"]); // bootlag still holds the dev stack: the operator said replace it
 	assert.ok(fast.isError, "an opt-out of the wait fails as fast as it used to");
 	assert.match(fast.content[0].text, /gave up after 1 attempt\(s\)/);
 });
@@ -3177,4 +3179,162 @@ test("a bound feature's processes get TMPDIR in .dev-flow/<slug>/tmp/ — finish
 	assert.ok(existsSync(path.join(tmp, "probe")), "flow test runs the suite with the same TMPDIR — its fixtures land in the feature dir");
 	await flow(["abort"]);
 	assert.ok(!existsSync(tmp), "abort unbinds and drops the scratch with the binding");
+});
+
+/** A main-checkout commit, past the pre-commit hook the tests' own init installed. */
+function commitMain(repo: string, file: string, text: string, msg: string) {
+	writeFileSync(path.join(repo, file), text);
+	execFileSync("git", ["-C", repo, "add", file]);
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", msg], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
+}
+
+/** One flow walked to implement with a committed change in its worktree. */
+async function walkToImplement(flow: (a: string[]) => Promise<{ content: [{ text: string }]; isError?: boolean }>, repo: string, slug: string, file = "work.txt", text = `${slug}\n`) {
+	await flow(["start", slug]);
+	mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	writeFileSync(path.join(repo, ".dev-flow", slug, "worktree", file), text);
+	commitWt(repo, slug);
+}
+
+test("the agent's flow call never opens a dialog; the /flow command does and says who answered (#181)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	let dialogs = 0;
+	const ctx = { cwd: repo, hasUI: true, notices: [] as string[], ui: { notify: () => {}, confirm: async () => { dialogs++; return true; }, setStatus: () => {}, setWidget: () => {}, theme: { fg: (_c: string, s: string) => s } } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\ndev = touch dev-up\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "nd"]);
+	mkdirSync(path.join(repo, ".dev-flow", "nd", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "nd", "plan", "plan.md"), "# plan\n");
+	const ask = await flow(["approve"]);
+	assert.ok(ask.isError && /^NEEDS-OPERATOR Approve\?/.test(ask.content[0].text), "a UI host's tool call gets the chat question, not a dialog");
+	assert.equal(dialogs, 0);
+	await pi.cmds.flow.handler("approve", ctx);
+	assert.match(ctx.notices.at(-1) ?? "", /plan approved \(confirmed in dialog\)/, "a dialog answer is attributed");
+	assert.equal(dialogs, 1, "the slash command — a human at the keyboard — still asks in a dialog");
+	await flow(["check"]);
+	commitWt(repo, "nd");
+	const review = await flow(["verify"]);
+	assert.ok(!review.isError && /deployed for review/.test(review.content[0].text), review.content[0].text);
+	assert.equal(dialogs, 1, "the review deploy returned to the agent instead of waiting in a dialog");
+	await pi.cmds.flow.handler("verify", ctx);
+	assert.match(ctx.notices.at(-1) ?? "", /verified \(confirmed in dialog\) — entering pre-release/);
+});
+
+test("verify rebases a branch that fell behind main before the review deploy; --confirmed never rewrites it", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "rb");
+	const wt = path.join(repo, ".dev-flow", "rb", "worktree");
+	commitMain(repo, "shipped.txt", "another flow's release\n", "release: someone else's feature");
+	const stale = await flow(["verify", "--confirmed"]);
+	assert.ok(stale.isError && /main moved 1 commit\(s\) past this branch/.test(stale.content[0].text), "an answer over a stale tree is refused, not rebased under it");
+	const review = await flow(["verify"]);
+	assert.ok(!review.isError, review.content[0].text);
+	assert.match(review.content[0].text, /rebased onto main \(was 1 commit\(s\) behind\)/);
+	assert.ok(existsSync(path.join(wt, "shipped.txt")), "the review build carries what main shipped");
+	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "up to date: the answer records");
+	// a conflict leaves the branch exactly as it was
+	await walkToImplement(flow, repo, "cf", "README.md", "# the branch's readme\n");
+	const cwt = path.join(repo, ".dev-flow", "cf", "worktree");
+	const before = execFileSync("git", ["-C", cwt, "rev-parse", "HEAD"], { encoding: "utf8" });
+	commitMain(repo, "README.md", "# main's readme\n", "docs: main rewrites the readme");
+	const clash = await flow(["verify"]);
+	assert.ok(clash.isError && /rebase stopped on conflicts \(README\.md\) — aborted/.test(clash.content[0].text), clash.content[0].text);
+	assert.equal(execFileSync("git", ["-C", cwt, "rev-parse", "HEAD"], { encoding: "utf8" }), before, "the aborted rebase left HEAD where it was");
+	assert.equal(execFileSync("git", ["-C", cwt, "status", "--porcelain"], { encoding: "utf8" }), "", "and no half-applied state");
+});
+
+test("a dev port held by another flow is asked about, with the resources; --port runs alongside and finish stops it", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const port = 39000 + Math.floor(Math.random() * 2000);
+	const down = path.join(repo, "..", `${path.basename(repo)}-down`);
+	const md = (extra: string) =>
+		`# dev-flow\n\n## implement\n\n\`\`\`flow\ntest = node --version\nport = ${port}\ninstanceMem = 1K\ndev = echo $DEV_FLOW_PORT$DEV_FLOW_SUFFIX > dev-port\ndevDown = echo $DEV_FLOW_PORT > ${down}\n${extra}\`\`\`\n\n## release\n\n\`\`\`flow\nmerge = merge\n\`\`\`\n`;
+	await flow(["init", "--write", md("parallelDev = yes\n")]);
+	trackPlaybook(repo);
+	writeFileSync(path.join(repo, ".git", "info", "exclude"), "dev-port\n"); // the deploy's artifact, ignored like real build output
+	await walkToImplement(flow, repo, "pa");
+	const a = await flow(["verify"]);
+	assert.match(a.content[0].text, new RegExp(`deployed for review on port ${port}`));
+	await walkToImplement(flow, repo, "pb");
+	const clash = await flow(["verify"]);
+	assert.ok(clash.isError, "another flow's review stack is not taken silently");
+	assert.match(clash.content[0].text, new RegExp(`^NEEDS-OPERATOR Dev port\\? — port ${port} is serving pa \\(stage implement, waiting on Verified\\?`));
+	assert.match(clash.content[0].text, /RAM available \S+ \(one instance needs 1K\)/, "the question carries the measured resources");
+	const alongside = clash.content[0].text.match(/run alongside on port (\d+): flow verify --port=\1/);
+	assert.ok(alongside, clash.content[0].text);
+	assert.match(clash.content[0].text, /nothing was built or deployed yet/);
+	const side = Number(alongside![1]);
+	const b = await flow(["verify", `--port=${side}`]);
+	assert.ok(!b.isError && new RegExp(`deployed for review on port ${side}`).test(b.content[0].text), b.content[0].text);
+	assert.equal(readFileSync(path.join(repo, ".dev-flow", "pb", "worktree", "dev-port"), "utf8").trim(), `${side}-pb`, "dev got the side port and a suffix that keeps the instance names apart");
+	assert.equal(readFileSync(path.join(repo, ".dev-flow", "pa", "worktree", "dev-port"), "utf8").trim(), `${port}`, "pa's stack was left alone");
+	const st = (await flow(["status"])).content[0].text;
+	assert.match(st, new RegExp(`dev: port ${port} → pa @ [0-9a-f]{7}`));
+	assert.match(st, new RegExp(`dev: port ${side} → pb @ [0-9a-f]{7}`));
+	// parallelDev = no: only replace or wait are offered
+	await flow(["init", "--write", md("parallelDev = no\n")]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "pc");
+	const no = await flow(["verify"]);
+	assert.ok(no.isError && !/run alongside/.test(no.content[0].text) && /parallelDev = no/.test(no.content[0].text), no.content[0].text);
+	assert.match(no.content[0].text, /replace pa's deploy: flow verify --replace/);
+	// finish of the side-by-side flow stops its instance and frees its slot
+	await flow(["use", "pb"]);
+	assert.match((await flow(["verify"])).content[0].text, /rebased onto main/, "the playbook commit moved main: the review deploy catches up first");
+	await flow(["verify", "--yolo", "--confirmed"]);
+	await flow(["release"]);
+	await flow(["release-done"]);
+	markReflected(repo, "pb");
+	const fin = await flow(["finish"]);
+	assert.match(fin.content[0].text, new RegExp(`dev instance on port ${side} stopped`), fin.content[0].text);
+	assert.equal(readFileSync(down, "utf8").trim(), `${side}`, "devDown ran with the flow's own port");
+	assert.ok(!new RegExp(`port ${side} →`).test((await flow(["status"])).content[0].text), "the slot is freed");
+	rmSync(down, { force: true });
+});
+
+test("servedBuild proves the deployed app serves this branch's HEAD", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (served: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\ntest = node --version\ndev = true\nservedBuild = ${served}\n\`\`\`\n\n## release\n\n\`\`\`flow\nmerge = merge\n\`\`\`\n`;
+	await flow(["init", "--write", md("echo GIT_SHA=0000000")]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "sb");
+	const wrong = await flow(["verify"]);
+	assert.ok(wrong.isError && /served-build check FAILED .* does not serve this branch's HEAD/.test(wrong.content[0].text), wrong.content[0].text);
+	await flow(["init", "--write", md("git rev-parse HEAD")]);
+	trackPlaybook(repo);
+	assert.match((await flow(["verify"])).content[0].text, /serves [0-9a-f]{7} \(HEAD\)/);
+});
+
+test("the post-Verified? warning lists the branch's own commits, not what came in from main (gh#180)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "pv");
+	await flow(["verify", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "pv", "worktree");
+	for (const n of [1, 2, 3]) commitMain(repo, `up${n}.txt`, `${n}\n`, `upstream ${n}`);
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "merge", "-q", "--no-edit", "main"]);
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- pv ships\n");
+	commitWt(repo, "pv", "changelog: pv ships");
+	const r = await flow(["release", "--no-version", "--confirmed"]);
+	assert.match(r.content[0].text, /Warning: 1 commit\(s\) landed after the operator's Verified\? \(given over [0-9a-f]{7}\): [0-9a-f]+ changelog: pv ships \(\+4 merged in from main, not listed\)/, r.content[0].text);
 });

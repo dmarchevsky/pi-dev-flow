@@ -7,7 +7,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseMergeStyle, parseVersion, toSeconds, type GuardRules, type StageCheck } from "./core.ts";
+import { applyAnswer, type ChecklistItem, type Config, DEFAULTS, healthProbe, parseMergeStyle, parseVersion, parseSize, toSeconds, type GuardRules, type StageCheck } from "./core.ts";
 
 export const MD_STAGES = ["global", "plan", "implement", "pre-release", "release"] as const;
 export type MdStage = (typeof MD_STAGES)[number];
@@ -46,6 +46,12 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		health: "commands.health",
 		dev: "commands.dev",
 		healthWait: "healthWait", // seconds the post-deploy probe may keep retrying (#42)
+		port: "devPort", // the dev deploy's default port — exported to dev/health as $DEV_FLOW_PORT
+		parallelDev: "parallelDev", // yes | no — can two dev instances run side by side?
+		instanceMem: "instanceMem", // what one dev instance needs, e.g. 2G — the side-by-side check
+		instanceDisk: "instanceDisk",
+		devDown: "commands.devDown", // stops a flow's non-default-port instance at finish
+		servedBuild: "commands.servedBuild", // prints the commit the deployed app serves — verify proves it is HEAD
 	},
 	release: {
 		versionFile: "versioning.file",
@@ -258,6 +264,13 @@ function mergeInto(c: Config, r: Record<string, unknown>): void {
 	// playbook values arrive as strings; a junk healthWait must not make the gate wait forever
 	const wait = toSeconds(r.healthWait);
 	if (wait !== undefined) c.healthWait = wait;
+	const port = toSeconds(r.devPort);
+	if (port !== undefined && port > 0 && port < 65536) c.devPort = port;
+	if (typeof r.parallelDev === "string") c.parallelDev = /^(yes|true)$/i.test(r.parallelDev) ? true : /^(no|false)$/i.test(r.parallelDev) ? false : undefined;
+	const mem = parseSize(r.instanceMem);
+	if (mem !== undefined) c.instanceMem = mem;
+	const disk = parseSize(r.instanceDisk);
+	if (disk !== undefined) c.instanceDisk = disk;
 }
 
 /**
@@ -335,6 +348,7 @@ export function setPlaybookCheck(text: string, name: string, cmd: string): { tex
 const ANSWER_STAGE: Record<string, MdStage> = {
 	defaultBranch: "global", forge: "global", worktreeDir: "global", branchPattern: "global", mainHook: "global", mockupGlobs: "global", bashTimeout: "global",
 	setup: "implement", test: "implement", build: "implement", run: "implement", seedData: "implement", health: "implement", dev: "implement", healthWait: "implement",
+	port: "implement", parallelDev: "implement", instanceMem: "implement", instanceDisk: "implement", devDown: "implement", servedBuild: "implement",
 	versionFile: "pre-release", versionTag: "pre-release", changelog: "pre-release", review: "pre-release",
 	releases: "release", artifact: "release", preflight: "release", merge: "release", yolo: "release",
 };
