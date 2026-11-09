@@ -25,7 +25,7 @@ import { createServer } from "node:net";
 import { freemem } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { compact, createAgentSession, DefaultResourceLoader, defineTool, getAgentDir, isToolCallEventType, SessionManager, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import {
@@ -161,7 +161,7 @@ import {
 } from "../src/core.ts";
 import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd, setPlaybookKey } from "../src/projectmd.ts";
 import { dedupeReflections, linkedTag, parseGhIssues, similarNote, type FoldResult, type GhIssue } from "../src/fold.ts";
-import { bashTimeout, requireTimeout } from "../src/timeouts.ts";
+import { bashTimeout, requireTimeout, timeoutClass } from "../src/timeouts.ts";
 import { detectProject, type Detection } from "../src/detect.ts";
 
 const execAsync = promisify(exec);
@@ -241,7 +241,7 @@ function copyWarning(): string | null {
 }
 /** Test seam: the smoke suite cannot load a second copy of this module, so it plants registry
  * entries and asserts the warnings the real duplicate would print. */
-export const testSeams = { copies: COPIES, skillCore: { value: undefined as string | null | undefined }, piweb: { meta: piwebWorkerMeta, stamp: piwebStamp, liveClaim: piwebLiveClaim, workerName } };
+export const testSeams = { copies: COPIES, skillCore: { value: undefined as string | null | undefined }, bashTimeout: { cap: undefined as number | undefined }, piweb: { meta: piwebWorkerMeta, stamp: piwebStamp, liveClaim: piwebLiveClaim, workerName } };
 
 interface Ui {
 	hasUI: boolean;
@@ -2708,6 +2708,14 @@ async function askOperator(ctx: ExtensionContext, what: string, why: string): Pr
 	return ok ? null : `operator declined — ${why}`;
 }
 
+/** What a kill by dev-flow's own timeout tells the agent (and the operator reading the transcript). */
+export function timeoutKillNote(armed: { s: number; cls: string }): string {
+	const why = armed.cls.startsWith("its own timeout")
+		? `the command's ${armed.cls.replace(/^its own /, "")} plus a 15s margin — it outlived its own timer`
+		: `dev-flow's default for ${armed.cls} commands, armed because the call stated no timeout`;
+	return `[dev-flow] stopped at ${armed.s}s: ${why}. If it needs longer, rerun with an explicit timeout (seconds) on the call.`;
+}
+
 export default function devFlow(pi: ExtensionAPI) {
 	registerCopy(); // which copy of dev-flow this is — see COPIES
 	/** Parse "flow <sub> [slug] [--flags]" args shared by command and tool. */
@@ -3171,6 +3179,26 @@ export default function devFlow(pi: ExtensionAPI) {
 		return undefined;
 	});
 
+	// A kill by dev-flow's silent default must say so: the transcript shows the call without a timeout, so
+	// "Command timed out after 30 seconds" otherwise reads like pi misbehaving, and the agent cannot tell a
+	// policy cap from a hang. Keyed by tool call id; a call blocked before it ran never reports, so the map
+	// is bounded rather than trusted to drain.
+	const armedTimeouts = new Map<string, { s: number; cls: string }>();
+	const rememberArmed = (id: string, v: { s: number; cls: string }) => {
+		armedTimeouts.set(id, v);
+		if (armedTimeouts.size > 500) armedTimeouts.delete(armedTimeouts.keys().next().value as string);
+	};
+	pi.on("tool_result", async (event) => {
+		const armed = armedTimeouts.get(event.toolCallId);
+		if (!armed) return undefined;
+		armedTimeouts.delete(event.toolCallId);
+		if (!event.isError) return undefined;
+		const text = event.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+		const m = text.match(/timed out after (\d+) seconds/);
+		if (!m || Number(m[1]) !== armed.s) return undefined;
+		return { content: [...event.content, { type: "text" as const, text: `\n${timeoutKillNote(armed)}` }] };
+	});
+
 	async function guardToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<ToolCallEventResult | undefined> {
 		if (!guardsAreMine()) return undefined; // election: only the newest loaded copy judges
 		// pi kills a shell call only when a timeout was passed, and the model omits it in ~75% of
@@ -3182,7 +3210,14 @@ export default function devFlow(pi: ExtensionAPI) {
 		const noDf = !initiated(ctx.cwd);
 		// in an initiated repo the silent default stays armed either way: it is the safety net for an
 		// `inject` project and the number the refusal quotes; an uninitiated folder is not touched at all
-		if (shellCmd && shellInput && !noDf) shellInput.timeout = bashTimeout(shellCmd, explicitTimeout);
+		if (shellCmd && shellInput && !noDf) {
+			// the e2e test shortens only the silent default — an explicit timeout is never touched
+			const cls = explicitTimeout === undefined && testSeams.bashTimeout.cap !== undefined ? { ...timeoutClass(shellCmd), s: testSeams.bashTimeout.cap } : timeoutClass(shellCmd);
+			shellInput.timeout = explicitTimeout === undefined ? cls.s : bashTimeout(shellCmd, explicitTimeout);
+			// the armed value never reaches the transcript (the call records what the model wrote), so a kill
+			// by it would read as a mystery hang — remember it, and the tool_result hook names it on a kill
+			if (explicitTimeout === undefined) rememberArmed(event.toolCallId, cls);
+		}
 		// an uninitiated folder hears nothing from dev-flow at all — flow init is the opt-in that arms
 		// the guards, the no-playbook bash-timeout default included
 		if (noDf) return undefined;

@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **A command's own `timeout N` sets its cap.** `timeout 600 bun test` used to get the 120s default class, because `timeout` was read as the command, so dev-flow would kill a long test run at two minutes even though the agent had asked for ten. A `timeout`/`gtimeout` wrapper now gives N + 15s, so the shell's own timer fires first. Option forms such as `-k 5` and `-s KILL` and `s`/`m`/`h` suffixes are understood, and an unreadable N falls back to the wrapped command's class.
+- **dev-flow loads outside pi on pi 1.5.0.** The extension imported TypeBox's `Type` from `@earendil-works/pi-ai`, which the published 1.5.0 package no longer exports; only pi's own loader still provided it. It now imports from `typebox`, which is declared as a peer dependency, and the tests run against pi 1.5.0, the version pi-web runs.
+
+### Changed
+- **dev-flow's silent bash timeout says so when it kills a command.** The timeout dev-flow arms on a call that states none never appears in the transcript or pi-web's tool card, so since 0.73.0 it looked as if no timeout was being set. It was: an end-to-end run under pi 1.5.0 killed a 60s command at 30s. Now a kill by that default appends `[dev-flow] stopped at <N>s: dev-flow's default for <class> commands…` to the result, and the always-on ground rules tell the agent the default exists and how to ask for longer. A new end-to-end test drives a real pi session to prove the kill happens.
+
 ## [0.85.0] - 2026-11-08
 
 **`flow verify` deploys for review without a dialog, catches up with main first, and asks before taking another flow's dev port.**

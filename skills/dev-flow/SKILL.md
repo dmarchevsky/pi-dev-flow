@@ -54,10 +54,8 @@ Ground rules:
     version heading (default is versioned: bump + tag).
 - **One session = exactly one feature** (flow + branch + worktree); parallel
   sessions, one feature each, are the model. A session binds **explicitly and
-  only**: `flow start <slug>` binds its own feature (main checkout must be on
-  the default branch); `flow use <slug>` takes one over. Nothing auto-binds.
-  Both bind commands rename the Pi session to the slug, so the picker names each
-  session after its feature. Unbound: gates demand an explicit slug and main-checkout writes stay
+  only**: `flow start <slug>` binds its own feature; `flow use <slug>` takes
+  one over. Nothing auto-binds. Unbound: gates demand an explicit slug and main-checkout writes stay
   blocked — there is no bypass, an unbound session cannot edit source.
 - **Project `flow-guard` rules** (`deny`/`confirm`/`protect`/`forbid` in
   project.md `## global`) apply at **every** stage and are judged ahead of
@@ -67,12 +65,15 @@ Ground rules:
 - **`.dev-flow/<slug>/state.json` is flow-owned** — never read or write it;
   `flow status` is your view. **project.md is the operator-owned playbook**:
   read freely, **never edit** — it changes through `flow init --write` on the
-  operator's word (`flow doctor` reviews what it lacks).
+  operator's word.
 - **A guard blocking you means you are skipping a stage or writing outside your
   feature** — run the gate instead of working around it. The guard reads
   **commands**: quoted text is an argument's prose (a PR body discussing a
   commit is not a commit), and a wrapper that execs its argument
   (`sh -c "git push origin main"`) is judged on its payload.
+- **Every bash call has a timeout**: none stated → dev-flow arms its class
+  default (quick 30s … build 900s, a `timeout N` wrapper → N+15s). Pass
+  `timeout` (seconds) when a run needs longer.
 - Abandon a feature with `flow abort <slug>` — never unbind by hand. A gate
   refusal lists exactly what is missing: fix that, rerun the gate.
 - Also obey the repo's own AGENTS.md and project skills: dev-flow sequences
