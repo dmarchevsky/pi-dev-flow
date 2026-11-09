@@ -2496,7 +2496,7 @@ test("flow start asks for the merge policy once and writes the answer into the p
 	// unanswered: a refusal that names the question, the re-run, and (from history) a suggestion
 	const refused = await flow(["start", "needspolicy"]);
 	assert.ok(refused.isError && /NEEDS-OPERATOR Merge policy\?/.test(refused.content[0].text), `start refuses until the policy is answered: ${refused.content[0].text}`);
-	assert.match(refused.content[0].text, /--merge=<style> --confirmed/, "the refusal spells the re-run");
+	assert.match(refused.content[0].text, /--merge=<style> \[--ui\] \[--patch\|--docs\] --confirmed/, "the refusal spells the re-run");
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "needspolicy", "state.json")), "a refused start creates no feature");
 	// an invalid answer is refused before anything is written
 	assert.match((await flow(["start", "needspolicy", "--merge=fast-forward", "--confirmed"])).content[0].text, /not a policy/);

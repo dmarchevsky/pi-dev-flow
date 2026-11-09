@@ -2144,9 +2144,12 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 	// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
 	if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
 	const mode = flag("patch") ? "patch" : flag("docs") ? "docs" : null;
-	if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — the operator must grant it in chat, then re-run with --confirmed`, isError: true };
+	// every grant start needs goes into one question: a refusal for one names the others still open, so
+	// the operator answers mode, mockups and merge policy in a single message
+	const alsoMerge = !cfg.release.merge && flagValue(rest, "merge") === null ? `\n${AGENT_MARK}the playbook also has no merge policy — put it in the same question (squash | merge | rebase | any) and pass --merge=<style> on the same re-run` : "";
+	if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — the operator must grant it in chat, then re-run with --confirmed${alsoMerge}`, isError: true };
 	// --ui adds the rendered-mockup gate to plan: worth it only when screens change, and the operator says so
-	if (flag("ui") && !flag("confirmed")) return { text: "--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate, so use it only when the feature changes screens; ask the operator, then re-run with --confirmed", isError: true };
+	if (flag("ui") && !flag("confirmed")) return { text: `--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate, so use it only when the feature changes screens; ask the operator, then re-run with --confirmed${alsoMerge}`, isError: true };
 	// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
 	const curBr = await currentBranch(root);
 	if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
@@ -2175,7 +2178,7 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 				text: needsOperator(
 					`how should a merged PR land on ${cfg.defaultBranch}: squash, merge (a merge commit), rebase, or any (no policy)?${ev ? ` ${ev.note}${ev.recent ? ` Detected suggestion: ${ev.recent}.` : ""}` : ""} The answer is written into the playbook once.`,
 					"Merge policy?",
-					`ask the operator, then re-run: flow start ${slugArg} --merge=<style> --confirmed`,
+					`ask the operator — in the same message as any mode or --ui grant you propose — then re-run once with everything: flow start ${slugArg} --merge=<style> [--ui] [--patch|--docs] --confirmed`,
 				),
 				isError: true,
 			};
