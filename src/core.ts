@@ -2185,9 +2185,13 @@ export function nextHint(state: FlowState, cfg: Config): string {
 /** Stable token prefixing every no-UI operator refusal, so a headless orchestrator can route refusals without grepping prose. */
 export const NEEDS_OPERATOR = "NEEDS-OPERATOR";
 
-/** Refusal for "the gate needs the operator's word and no UI is present": `<TOKEN> [Question?] — <what to do>`. */
-export function needsOperator(detail: string, question?: string): string {
-	return `${NEEDS_OPERATOR}${question ? ` ${question}` : ""} — ${detail}`;
+/** Prefix of a gate-output line meant for the agent only: the operator's view (src/present.ts) leaves it out. */
+export const AGENT_MARK = "↪ ";
+
+/** Refusal for "the gate needs the operator's word and no UI is present": `<TOKEN> [Question?] — <what the
+ *  operator should know>`, then the agent's own instructions on an agent-only line (`todo`). */
+export function needsOperator(detail: string, question?: string, todo?: string): string {
+	return `${NEEDS_OPERATOR}${question ? ` ${question}` : ""} — ${detail}${todo ? `\n${AGENT_MARK}${todo}` : ""}`;
 }
 
 /** Machine-readable `flow status --json`: the prose view's facts as stable JSON (no git probes, same as prose). */

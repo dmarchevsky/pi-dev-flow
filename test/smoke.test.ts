@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import devFlow, { compactionTakeover, reflectSeams, stageWorkerSpawn, testSeams, workerTiming } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
+import { commandish, viewHeader, type GateView } from "../src/present.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
@@ -23,6 +24,9 @@ interface Stub {
 	/** The session display name as last set through pi.setSessionName (undefined = still unnamed). */
 	sessionName?: string;
 }
+
+/** How many operator views the wrapped flow tool checked — the closing test proves the check ran at all. */
+let viewsChecked = 0;
 
 function makePi(): Stub & ((...a: never[]) => void) {
 	const stub = { cmds: {}, tools: {}, handlers: {}, entries: [] } as Stub;
@@ -37,8 +41,22 @@ function makePi(): Stub & ((...a: never[]) => void) {
 				},
 			} as never;
 		},
-		registerTool: (t: { name: string }) => {
-			stub.tools[t.name] = t as never;
+		registerTool: (t: { name: string; execute: (...a: unknown[]) => Promise<{ details?: { view?: GateView } }> }) => {
+			// every gate this suite drives also proves the operator's view: facts and a question, never a command to type
+			const execute = t.execute;
+			stub.tools[t.name] = {
+				...t,
+				execute: async (...a: unknown[]) => {
+					const r = await execute(...a);
+					const view = r?.details?.view;
+					if (view) {
+						viewsChecked++;
+						const shown = [viewHeader(view), view.stageLine ?? "", ...view.lines, view.ask ?? ""];
+						for (const line of shown) assert.ok(!commandish(line), `operator view names a flow command: ${JSON.stringify(line)}`);
+					}
+					return r;
+				},
+			} as never;
 		},
 		on: (e: string, h: Handler) => {
 			(stub.handlers[e] ??= []).push(h);
@@ -169,8 +187,8 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	mkdirSync(path.join(repo, ".dev-flow", "demo-feature", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "demo-feature", "plan", "plan.md"), "# plan\n");
 	await pi.cmds.flow.handler("approve", ctx);
-	assert.ok(ctx.notices.at(-1)?.includes("needs the operator"), "approve without an operator answer refuses");
-	assert.match(ctx.notices.at(-1) ?? "", /NEEDS-OPERATOR Approve\? — plan approval needs the operator/, "no-UI refusal carries the machine marker before the prose");
+	assert.ok(ctx.notices.at(-1)?.includes("waiting for your approval"), "approve without an operator answer refuses");
+	assert.match(ctx.notices.at(-1) ?? "", /NEEDS-OPERATOR Approve\? — the plan is waiting for your approval/, "no-UI refusal carries the machine marker before the prose");
 
 	// stage context injection
 	const inj = (await pi.handlers.before_agent_start[0]({}, ctx)) as { message?: { content: string } };
@@ -309,7 +327,7 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	// the commands run before the operator is asked, so even the walk-out path must report them
 	const early = await flow(["verify"]);
 	assert.ok(!early.isError, "the agent's bare verify is the review deploy, not a failure (#181)");
-	assert.match(early.content[0].text, /^NEEDS-OPERATOR Verified\? — deployed for review — .*flow verify --confirmed/, "it hands the chat question back to the agent");
+	assert.match(early.content[0].text, /^NEEDS-OPERATOR Verified\? — deployed for review — [\s\S]*flow verify --confirmed/, "it hands the chat question back to the agent");
 	assert.match(early.content[0].text, /dev ran \(touch dev-up\)/);
 	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ran", "state.json"), "utf8")).stage, "implement", "nothing was recorded on the operator's behalf");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); .*dev ran \(touch dev-up\)/, "a commit after the check made the record stale — the gate reruns it and says so");
@@ -1530,7 +1548,7 @@ test("pending checkpoint: 💬 rides the footer until the word arrives, and is n
 	trackPlaybook(repo);
 	await flow(["start", "plan-gate"]);
 	writeFileSync(path.join(repo, ".dev-flow", "plan-gate", "plan", "plan.md"), "# plan\n\n- do it\n");
-	assert.match((await flow(["approve"])).content[0].text, /needs the operator/, "without the word the gate refuses and goes pending");
+	assert.match((await flow(["approve"])).content[0].text, /NEEDS-OPERATOR Approve\?/, "without the word the gate refuses and goes pending");
 	assert.equal((await flow(["status"])).content[0].text.includes("💬 Approve?"), true, "flow status names the pending checkpoint");
 	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, uiCtx);
 	assert.equal(seen.at(-1), "📝💬plan-gate", "the pi-web chip carries the checkpoint glyph up front on a bound flow");
@@ -1852,7 +1870,7 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	assert.ok(stale.isError && /has not passed|stale/.test(stale.content[0].text), "release gate demands re-greened checks after the prep commit: " + stale.content[0].text);
 	await flow(["check"]);
 	const noOp = await flow(["release"]);
-	assert.ok(noOp.isError && /needs the operator/.test(noOp.content[0].text), "Release? needs an operator answer");
+	assert.ok(noOp.isError && /NEEDS-OPERATOR Release\?/.test(noOp.content[0].text), "Release? needs an operator answer");
 	assert.equal(stage(), "pre-release");
 	await flow(["release", "--confirmed"]);
 	assert.equal(stage(), "release");
@@ -3337,4 +3355,8 @@ test("the post-Verified? warning lists the branch's own commits, not what came i
 	commitWt(repo, "pv", "changelog: pv ships");
 	const r = await flow(["release", "--no-version", "--confirmed"]);
 	assert.match(r.content[0].text, /Warning: 1 commit\(s\) landed after the operator's Verified\? \(given over [0-9a-f]{7}\): [0-9a-f]+ changelog: pv ships \(\+4 merged in from main, not listed\)/, r.content[0].text);
+});
+
+test("the operator-view check above ran over the gates this suite drives", () => {
+	assert.ok(viewsChecked > 50, `only ${viewsChecked} operator views were checked`);
 });

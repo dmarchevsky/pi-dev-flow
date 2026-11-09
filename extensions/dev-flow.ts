@@ -46,6 +46,7 @@ import {
 	claimBlocks,
 	classifyMergeHistory,
 	cmpVersions,
+	DEFAULTS,
 	doneItemCount,
 	detectForge,
 	extractSkillCore,
@@ -163,6 +164,8 @@ import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, lineDiff, l
 import { dedupeReflections, linkedTag, parseGhIssues, similarNote, type FoldResult, type GhIssue } from "../src/fold.ts";
 import { bashTimeout, requireTimeout, timeoutClass } from "../src/timeouts.ts";
 import { detectProject, type Detection } from "../src/detect.ts";
+import { agentText, AGENT_MARK, operatorCommandAsks, operatorCommandCorrection, presentGate, renderPlain, viewHeader, askLine, type GateView, type StageFacts } from "../src/present.ts";
+import { Text } from "@earendil-works/pi-tui";
 
 const execAsync = promisify(exec);
 
@@ -902,6 +905,64 @@ async function unreleasedOnMain(cwd: string, pattern: string): Promise<{ count: 
 	return { count: r.ok && Number.isFinite(n) ? n : null, since };
 }
 
+/** Gates whose result carries the feature's stage line (the rest answer about the repo, not one feature). */
+const STAGE_LINE_GATES = new Set(["start", "use", "approve", "check", "test", "verify", "release", "release-done", "finish"]);
+
+/** Cheap facts for the stage line: the plan file and mockups at plan, commit counts and HEAD once a
+ *  worktree exists, the manifest version at pre-release. Measurement failures leave a field out. */
+async function stageFacts(root: string, state: FlowState, cfg: Config): Promise<StageFacts> {
+	const f: StageFacts = {};
+	if (state.stage === "plan") {
+		const planDir = path.join(featDir(root, state.slug), "plan");
+		const planMd = path.join(planDir, "plan.md");
+		f.plan = existsSync(planMd) ? (/\bdraft\b/i.test(readFileSync(planMd, "utf8").slice(0, 400)) ? "draft" : "written") : "missing";
+		if (state.ui) {
+			const files = listFiles(planDir);
+			const html = files.filter((x) => x.startsWith("mockups/") && x.endsWith(".html"));
+			const rendered = html.filter((h) => files.some((x) => x.startsWith(h.replace(/\.html$/, "-")) && x.endsWith(".png"))).length;
+			f.mockups = { rendered, total: html.length };
+		}
+		return f;
+	}
+	const wt = worktreeAbs(root, state);
+	if (wt && existsSync(wt) && (state.stage === "implement" || state.stage === "pre-release")) {
+		const b = await branchState(wt, cfg.defaultBranch);
+		if (b.commitsAhead !== null) {
+			f.ahead = b.commitsAhead;
+			f.uncommitted = b.uncommitted;
+		}
+		const head = await sh("git rev-parse HEAD", wt, 10_000);
+		if (head.ok) f.head = head.out.trim();
+		if (state.stage === "pre-release" && cfg.versioning.file && existsSync(path.join(wt, cfg.versioning.file))) {
+			try {
+				f.manifest = parseVersion(cfg.versioning.file, readFileSync(path.join(wt, cfg.versioning.file), "utf8"));
+			} catch {
+				/* the version field stays pending */
+			}
+		}
+	}
+	return f;
+}
+
+/** A gate result as both readers need it: the agent's text (with its stage line) and the operator's view. */
+async function presentRun(args: string[], root: string, key: string, res: RunResult): Promise<{ agent: string; view: GateView }> {
+	const sub = args[0] ?? "status";
+	const cfg = initiated(root) ? loadProject(dfDir(root)).cfg : DEFAULTS;
+	let state: FlowState | null = null;
+	if (STAGE_LINE_GATES.has(sub) && initiated(root)) {
+		const slugArg = args.slice(1).find((a) => !a.startsWith("--"));
+		state = boundFeature(root, key) ?? (slugArg && validSlug(slugArg) ? readState(root, slugArg) : null);
+	}
+	let facts: StageFacts | undefined;
+	try {
+		facts = state ? await stageFacts(root, state, cfg) : undefined;
+	} catch {
+		facts = undefined;
+	}
+	const view = presentGate(sub, res.text, !!res.isError, state, cfg, facts);
+	return { agent: agentText(res.text, view), view };
+}
+
 function describeBranchState(b: BranchState, defaultBranch: string): string {
 	if (b.commitsAhead === null) return `commits: unknown (no merge base with ${defaultBranch} — the commit proof is skipped)`;
 	const line = `commits: ${b.commitsAhead} ahead of ${defaultBranch}, ${b.uncommitted} uncommitted path(s)`;
@@ -1002,7 +1063,7 @@ function renderQuestions(qs: SetupQuestion[]): string[] {
 	return out;
 }
 
-const GIT_TRACK_NOTE = 'the playbook belongs in git: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering; the env prefix is for the pre-commit hook, dev-flow itself lets a main commit whose only change is the playbook)';
+const GIT_TRACK_NOTE = AGENT_MARK + 'the playbook belongs in git: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering; the env prefix is for the pre-commit hook, dev-flow itself lets a main commit whose only change is the playbook)';
 
 /** The dev-flow repo plugin notes are filed against: the manifest's repository field; the dev-flow
  *  checkout itself falls back to its origin. */
@@ -1344,7 +1405,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		if (!ui.hasUI) {
 			const port = devPortOf(state!, cfg);
 			const what = state!.docs ? "ready for review" : cfg.commands.dev ? `deployed for review${port !== undefined ? ` on port ${port}` : ""}` : "live app re-probed for review";
-			return { text: `${needsOperator(`${what} — look at the change in the running app yourself first (the playbook's self-check), then ask the operator Verified? in chat and run flow verify --confirmed once they answer. Keep it running until they answer.`, "Verified?")}\n${ran}` };
+			return { text: `${needsOperator(`${what} — the app stays up until you answer`, "Verified?", "look at the change in the running app yourself first (the playbook's self-check), then ask the operator Verified? in chat and run flow verify --confirmed once they answer. Keep it running until they answer.")}\n${ran}` };
 		}
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 		if (!ok) {
@@ -1367,7 +1428,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	state!.stage = "pre-release";
 	delete state!.pendingAsk;
 	writeState(root, state!);
-	return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${nextHint(state!, cfg)}` };
+	return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
 async function gateRelease(o: GateCtx): Promise<RunResult> {
@@ -1501,7 +1562,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (askPending) {
 		markPendingAsk(root, state!, "Release?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`release confirmation needs the operator${yoloHeld ? ` (${yoloHeld})` : ""}: confirm interactively, or re-run with --confirmed once the operator answered 'Release?' in chat${stale ? ` — the operator must also answer the stale-build question: ${staleAsk}` : ""}${postVerify ? ` — tell them: ${postVerify}` : ""}`, "Release?"), isError: true };
+			return { text: needsOperator(`ready to publish${yoloHeld ? ` (${yoloHeld})` : ""}${stale ? ` — also: ${staleAsk}` : ""}${postVerify ? ` — ${postVerify}` : ""}`, "Release?", `re-run with --confirmed once the operator answered 'Release?' in chat${stale ? " (and the stale-build question)" : ""}`), isError: true };
 		}
 		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}${postVerify ? `\n\n${postVerify}` : ""}${yoloHeld ? `\n\n(${yoloHeld})` : ""}`);
 		if (!ok) {
@@ -1529,7 +1590,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
 	delete state!.pendingAsk;
 	writeState(root, state!);
-	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}${postVerify ? ` Warning: ${postVerify}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${nextHint(state!, cfg)}` };
+	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}${postVerify ? ` Warning: ${postVerify}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
 async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
@@ -1680,7 +1741,7 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 		artNote,
 	].filter(Boolean).join(" ");
 	writeState(root, state!);
-	return { text: `release recorded as complete${state!.noVersion ? " (unversioned — the changelog entry ships under Unreleased; the next versioned release folds it)" : ""}.${tailNote ? ` ${tailNote}` : ""}\n${nextHint(state!, cfg)}` };
+	return { text: `release recorded as complete${state!.noVersion ? " (unversioned — the changelog entry ships under Unreleased; the next versioned release folds it)" : ""}.${tailNote ? ` ${tailNote}` : ""}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
 async function gateFinish(o: GateCtx): Promise<RunResult> {
@@ -1739,7 +1800,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 			// answer it, only the operator does
 			if (policy === "merge" && measurable && !flag("confirmed")) {
 				markPendingAsk(root, state!, "Merge policy violation?");
-				return { text: needsOperator(`the playbook says merge = merge, but ${unmergedLines.length} commit(s) of ${state!.slug} are not on ${cfg.defaultBranch} — the PR landed as a squash or a rebase. Ask the operator how to proceed, then re-run with --confirmed`, "Merge policy violation?"), isError: true };
+				return { text: needsOperator(`the playbook says merge = merge, but ${unmergedLines.length} commit(s) of ${state!.slug} are not on ${cfg.defaultBranch} — the PR landed as a squash or a rebase`, "Merge policy violation?", "ask the operator how to proceed, then re-run with --confirmed"), isError: true };
 			}
 		}
 	}
@@ -1764,17 +1825,17 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 			return { text: `finish: the closing reflection did not report — nothing was removed.\n\n${r.text}\n\nNext: re-run flow finish to retry, or review inline (bare flow reflect prints the protocol) and then flow_stage(op: "reflect"), ${skipHint}.`, isError: true };
 		if (!r.findings) {
 			markPendingAsk(root, cur, "Finish?");
-			return { text: needsOperator(`the closing reflection ran before cleanup and found nothing new to fold — nothing was removed yet.\n\n${r.text}\n\nAsk the operator Finish? and run flow finish --confirmed when they answer: the worktree, branch and .dev-flow/${state!.slug}/ go on that run.`, "Finish?"), isError: true };
+			return { text: needsOperator(`the closing reflection found nothing new to fold — nothing was removed yet; on your word the worktree, branch and .dev-flow/${state!.slug}/ go.\n\n${r.text}`, "Finish?", "ask the operator Finish? and run flow finish --confirmed when they answer"), isError: true };
 		}
 		markPendingAsk(root, cur, "Fold or drop?");
-		return { text: needsOperator(`the closing reflection ran before cleanup — nothing was removed yet.\n\n${r.text}\n\nThe fold/drop answer is the Finish? answer: apply it, then run flow finish --confirmed without asking again — the worktree, branch and .dev-flow/${state!.slug}/ go on that run.`, "Fold or drop?"), isError: true };
+		return { text: needsOperator(`the closing reflection has findings — nothing was removed yet; your fold/drop answer also finishes the feature.\n\n${r.text}`, "Fold or drop?", `the fold/drop answer is the Finish? answer: apply it, then run flow finish --confirmed without asking again — the worktree, branch and .dev-flow/${state!.slug}/ go on that run`), isError: true };
 	}
 	const reflectSkipNote = skipReflect && !state!.reflectedAt ? ` Reflection skipped on the operator's word — nothing re-checked this session or the open reflections.` : "";
 	const askPending = !flag("confirmed") && !state!.yolo;
 	if (askPending) {
 		markPendingAsk(root, state!, "Finish?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`finish needs the operator: ask them Finish? in chat, then re-run with --confirmed (or run /flow finish interactively)${forgeSkipNote}`, "Finish?"), isError: true };
+			return { text: needsOperator(`cleanup removes the worktree, branch and feature folder${forgeSkipNote}`, "Finish?", "ask the operator Finish? in chat, then re-run with --confirmed"), isError: true };
 		}
 		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 		if (!ok) {
@@ -1911,7 +1972,7 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 		// confirmation and must not open a second question — it commits on --track
 		const track = flag("track") || (offer && ui.hasUI && (await ui.confirm("Commit project.md?", "The playbook belongs in git. Commit .dev-flow/project.md now (only that file, as a playbook chore)?")));
 		if (!track) {
-			notes.push(GIT_TRACK_NOTE, "(or re-run the same call with --track on the operator's word)");
+			notes.push(GIT_TRACK_NOTE, AGENT_MARK + "(or re-run the same call with --track on the operator's word)");
 			return;
 		}
 		const c = await sh(`git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -q -m ${sq(before ? "chore: update dev-flow playbook" : "chore: add dev-flow playbook")} -- .dev-flow/project.md`, root, 60_000);
@@ -1961,7 +2022,7 @@ async function gateInit(o: GateCtx): Promise<RunResult> {
 			...det.report.map((r) => `  ${r}`),
 			"questions for the operator (detected value shown; `accept` is the answer that keeps it):",
 			...renderQuestions(questions),
-			"agent: ask these in chat — group the ones with an `accept` line as \"keep these?\", explain the rest in a line each. Then apply every answer in one call: flow init --answers key=value … (previews the digest and diff, writes nothing); on the operator's confirmation re-run it with --confirmed (add --track to commit the playbook). Free-text additions — checklist items, prose, flow-guard rules — go in through flow init --write-file <path> with the full file (flow init --draft prints the current draft).",
+			AGENT_MARK + "ask these in chat — group the ones with an `accept` line as \"keep these?\", explain the rest in a line each. Then apply every answer in one call: flow init --answers key=value … (previews the digest and diff, writes nothing); on the operator's confirmation re-run it with --confirmed (add --track to commit the playbook). Free-text additions — checklist items, prose, flow-guard rules — go in through flow init --write-file <path> with the full file (flow init --draft prints the current draft).",
 		];
 		let wrote = false;
 		if (ui.hasUI) {
@@ -2072,8 +2133,9 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 			const ev = await mergeHistoryEvidence(root, cfg.defaultBranch);
 			return {
 				text: needsOperator(
-					`the playbook has no merge policy — ask the operator how a merged PR should land on ${cfg.defaultBranch}: squash, merge (a merge commit), rebase, or any (no policy).${ev ? ` ${ev.note}${ev.recent ? ` Detected suggestion: ${ev.recent}.` : ""}` : ""} Then re-run: flow start ${slugArg} --merge=<style> --confirmed (the answer is written into .dev-flow/project.md)`,
+					`how should a merged PR land on ${cfg.defaultBranch}: squash, merge (a merge commit), rebase, or any (no policy)?${ev ? ` ${ev.note}${ev.recent ? ` Detected suggestion: ${ev.recent}.` : ""}` : ""} The answer is written into the playbook once.`,
 					"Merge policy?",
+					`ask the operator, then re-run: flow start ${slugArg} --merge=<style> --confirmed`,
 				),
 				isError: true,
 			};
@@ -2104,7 +2166,7 @@ async function gateStart(o: GateCtx): Promise<RunResult> {
 	writeState(root, state);
 	sess.bind(slugArg);
 	sess.rename(slugArg);
-	return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}); session renamed to ${slugArg}.${notes.length ? `\n${notes.join("\n")}` : ""}\n${nextHint(state, cfg)}` };
+	return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}); session renamed to ${slugArg}.${notes.length ? `\n${notes.join("\n")}` : ""}\n${AGENT_MARK}next: ${nextHint(state, cfg)}` };
 }
 
 async function gateApprove(o: GateCtx): Promise<RunResult> {
@@ -2125,7 +2187,7 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	if (askPending) {
 		markPendingAsk(root, state!, "Approve?");
 		if (!ui.hasUI) {
-			return { text: needsOperator("plan approval needs the operator: approve interactively, or re-run with --confirmed once the operator answered in chat", "Approve?"), isError: true };
+			return { text: needsOperator("the plan is waiting for your approval", "Approve?", "re-run with --confirmed once the operator answered in chat"), isError: true };
 		}
 		const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
 		if (!ok) {
@@ -2166,7 +2228,7 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	state!.approvals.plan = now();
 	delete state!.pendingAsk;
 	writeState(root, state!);
-	return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${nextHint(state!, cfg)}` };
+	return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
 async function gateStatus(o: GateCtx): Promise<RunResult> {
@@ -2429,7 +2491,7 @@ async function gateAbort(o: GateCtx): Promise<RunResult> {
 		const written = listFiles(path.join(featDir(root, target), "plan"));
 		if (written.length && !flag("confirmed")) {
 			const ok = ui.hasUI && (await ui.confirm("Drop plan?", `Abort ${target}? Its plan/ (${written.join(", ")}) is deleted for good.`));
-			if (!ok) return { text: needsOperator(`aborting ${target} deletes its written plan (${written.join(", ")}) — ask the operator, then re-run with --confirmed`, "Drop plan?"), isError: true };
+			if (!ok) return { text: needsOperator(`aborting ${target} deletes its written plan (${written.join(", ")})`, "Drop plan?", "ask the operator, then re-run with --confirmed"), isError: true };
 		}
 		if (sess.slug === target) sess.bind(null);
 		rmSync(featDir(root, target), { recursive: true, force: true });
@@ -2807,7 +2869,11 @@ export default function devFlow(pi: ExtensionAPI) {
 			// gate output belongs to the conversation, not a toast: display:true renders a [flow] box (TUI + web), no triggerTurn so no model turn fires.
 			// bare reflect is the exception: its whole output is instructions for the agent — displayed without a turn, they would never execute.
 			const wake = cmd.length === 1 && cmd[0] === "reflect";
-			pi.sendMessage({ customType: "flow", content: res.text, display: true }, wake ? { triggerTurn: true } : undefined);
+			// the operator typed a command, so the full text (commands included) is theirs to read; the header and
+			// stage line give it the same shape as an agent-run gate
+			const { view } = await presentRun(cmd, root, sessionKey(ctx), res);
+			const shown = [`**${viewHeader(view)}**`, ...(view.stageLine ? [view.stageLine] : []), "", res.text.split("\n").map((l) => (l.startsWith(AGENT_MARK) ? l.slice(AGENT_MARK.length) : l)).join("\n")].join("\n");
+			pi.sendMessage({ customType: "flow", content: wake ? res.text : shown, display: true }, wake ? { triggerTurn: true } : undefined);
 			refreshStatus(ctx, root);
 			if (!res.isError) maybeCompactNow(ctx, root);
 		},
@@ -2828,7 +2894,26 @@ export default function devFlow(pi: ExtensionAPI) {
 			// chat word to ask instead; the /flow slash command (a human at the keyboard) keeps its dialogs.
 			const res = await runFlow(params.args, root, NO_DIALOGS, sessFor(ctx, root), finishReflectHook(id, ctx, root, signal, onUpdate));
 			if (!res.isError) maybeCompactNow(ctx, root);
-			return { content: [{ type: "text", text: res.text }], details: undefined, isError: res.isError };
+			// two readers: the model gets every instruction, the operator's row renders the view (renderResult) —
+			// facts, the stage line and the question waiting on them, never a command to type
+			const { agent, view } = await presentRun(params.args, root, sessionKey(ctx), res);
+			return { content: [{ type: "text", text: agent }], details: { view }, isError: res.isError };
+		},
+		renderResult: (result, options, theme) => {
+			const view = (result.details as { view?: GateView } | undefined)?.view;
+			if (!view) {
+				const t = result.content[0];
+				return new Text(t?.type === "text" ? t.text : "", 0, 0);
+			}
+			const color = view.ask ? "warning" : view.ok ? "success" : "error";
+			const out = [theme.fg(color, theme.bold(viewHeader(view)))];
+			if (view.stageLine) out.push(theme.fg("muted", view.stageLine.replace(/\*\*/g, "").replace(/`/g, "")));
+			const body = options.expanded ? view.lines : view.lines.slice(0, 12);
+			if (body.length) out.push(...body.map((l) => theme.fg("text", l)));
+			if (!options.expanded && view.lines.length > body.length) out.push(theme.fg("dim", `… ${view.lines.length - body.length} more line(s)`));
+			if (view.ask) out.push(theme.fg("warning", askLine(view.ask).replace(/\*\*/g, "")));
+			if (options.expanded && view.agent.length) out.push(...view.agent.map((l) => theme.fg("dim", `agent: ${l}`)));
+			return new Text(out.join("\n"), 0, 0);
 		},
 	});
 	pi.registerTool(flowTool);
