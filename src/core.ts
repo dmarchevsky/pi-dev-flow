@@ -51,6 +51,7 @@ export interface FlowState {
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
+	friction?: number; // gate refusals and guard blocks this feature hit — finish skips the closing reflection at 0 (playbook reflect = on-friction)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
@@ -118,7 +119,7 @@ export interface Config {
 	/** Bytes one dev instance needs (playbook `instanceMem` / `instanceDisk`, e.g. 2G) — the side-by-side feasibility check. */
 	instanceMem?: number;
 	instanceDisk?: number;
-	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release" };
+	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */

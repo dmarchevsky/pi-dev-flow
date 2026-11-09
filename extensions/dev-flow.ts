@@ -106,6 +106,7 @@ import {
 	listFiles,
 	looksLikeShellError,
 	needsOperator,
+	NEEDS_OPERATOR,
 	newestTaggedVersion,
 	newState,
 	nextHint,
@@ -410,6 +411,18 @@ function readState(root: string, slug: string): FlowState | null {
 
 function writeState(root: string, state: FlowState): void {
 	atomicWrite(stateFile(root, state.slug), `${JSON.stringify(state, null, "\t")}\n`);
+}
+
+/** Count one refusal or guard block against the session's bound feature (best effort, never throws). */
+function noteFriction(root: string, key: string): void {
+	try {
+		const st = boundFeature(root, key);
+		if (!st) return;
+		st.friction = (st.friction ?? 0) + 1;
+		writeState(root, st);
+	} catch {
+		/* a counter must never fail the call it watches */
+	}
 }
 
 /** Replace a file in one move. Gates write state after every check, and a kill in the middle left a
@@ -1749,7 +1762,20 @@ async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 	return { text: `release recorded as complete${state!.noVersion ? " (unversioned — the changelog entry ships under Unreleased; the next versioned release folds it)" : ""}.${tailNote ? ` ${tailNote}` : ""}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
+/** finish, with the release record folded in: published but not yet recorded, finish runs release-done's
+ *  proofs itself — that gate asks nothing, so a separate call was a round trip with no decision in it.
+ *  Its refusal is finish's refusal; its report heads finish's. */
 async function gateFinish(o: GateCtx): Promise<RunResult> {
+	const { state, err } = needState(o.root, o.sess, o.slugArg);
+	if (err || !state || state.approvals.release || state.stage !== "release" || !state.approvals["pre-release"]) return gateFinishCore(o);
+	const rec = await gateReleaseDone({ ...o, rest: o.rest.filter((a) => a !== "--confirmed" && a !== "--yolo") });
+	if (rec.isError) return rec;
+	const fin = await gateFinishCore(o);
+	const recorded = rec.text.split("\n").filter((l) => !l.startsWith(AGENT_MARK)).join("\n");
+	return { ...fin, text: `${recorded}\n\n${fin.text}` };
+}
+
+async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg, takeYoloWord } = o;
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
@@ -1821,6 +1847,15 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// --no-reflect skips it; yolo never does (it answers checkpoints, it does not waive the review).
 	const skipReflect = flag("no-reflect");
 	if (skipReflect && !flag("confirmed")) return { text: "--no-reflect is the operator's word — ask them whether to skip the closing reflection, then re-run with --no-reflect --confirmed", isError: true };
+	// a flow that never hit a refusal or a guard block, with no friction note from the operator, has nothing
+	// for the reflection worker to find — skip the worker run unless the playbook says reflect = always
+	const note = flagValue(o.rest, "note") ?? "";
+	const quiet = !state!.reflectedAt && !skipReflect && cfg.release.reflect !== "always" && !(state!.friction ?? 0) && !note.trim();
+	if (quiet) {
+		state!.reflectedAt = now();
+		writeState(root, state!);
+	}
+	const quietNote = quiet ? " closing reflection skipped: no refusals or guard blocks this flow (playbook reflect = always runs it anyway)." : "";
 	if (!state!.reflectedAt && !skipReflect) {
 		const skipHint = "or — only on the operator's explicit word — flow finish --no-reflect --confirmed";
 		if (!o.hooks.reflect) return { text: `finish: no reflection recorded for ${state!.slug} and no reflect worker available here — run flow_stage(op: "reflect") first, ${skipHint}`, isError: true };
@@ -1840,7 +1875,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	if (askPending) {
 		markPendingAsk(root, state!, "Finish?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`cleanup removes the worktree, branch and feature folder${forgeSkipNote}`, "Finish?", "ask the operator Finish? in chat, then re-run with --confirmed"), isError: true };
+			return { text: needsOperator(`cleanup removes the worktree, branch and feature folder.${quietNote}${forgeSkipNote}`, "Finish?", "ask the operator Finish? in chat, then re-run with --confirmed"), isError: true };
 		}
 		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 		if (!ok) {
@@ -1907,7 +1942,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// finish is the moment between flows: name the fix / tidy suggestion when a rule fires, nothing otherwise
 	const nudge = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { between: true });
 	const nudgeNote = [nudge.fix, nudge.tidy].filter(Boolean).map((n) => ` ${n} — offer it to the operator.`).join("");
-	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${forgeSkipNote}${reflectSkipNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
+	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${forgeSkipNote}${reflectSkipNote}${quietNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 }
 
 /** The main-branch guard as a hook body — installed into .git/hooks, or printed for a hook manager to carry. */
@@ -2917,6 +2952,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (!res.isError) maybeCompactNow(ctx, root);
 			// two readers: the model gets every instruction, the operator's row renders the view (renderResult) —
 			// facts, the stage line and the question waiting on them, never a command to type
+			// a refusal (not a question for the operator) is friction the closing reflection should look at
+			if (res.isError && !res.text.startsWith(NEEDS_OPERATOR) && initiated(root)) noteFriction(root, sessionKey(ctx));
 			const { agent, view } = await presentRun(params.args, root, sessionKey(ctx), res);
 			return { content: [{ type: "text", text: agent }], details: { view }, isError: res.isError };
 		},
@@ -3277,6 +3314,8 @@ export default function devFlow(pi: ExtensionAPI) {
 	// them. Prefixed only after the verdict, so no guard ever judges the prefix.
 	pi.on("tool_call", async (event, ctx) => {
 		const verdict = await guardToolCall(event, ctx);
+		// a guard block is friction the closing reflection should look at
+		if (verdict?.block && guardsAreMine() && initiated(ctx.cwd)) noteFriction(await flowRoot(ctx.cwd), sessionKey(ctx));
 		if (verdict || !isToolCallEventType("bash", event) || !guardsAreMine() || !initiated(ctx.cwd)) return verdict;
 		const root = await flowRoot(ctx.cwd);
 		const bound = boundFeature(root, sessionKey(ctx));

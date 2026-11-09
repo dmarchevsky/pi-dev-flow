@@ -1349,6 +1349,81 @@ test("finish reflection: a failed worker removes nothing, yolo never skips it, o
 	}
 });
 
+test("finish skips the closing reflection on a flow with no friction, unless the playbook says reflect = always", async () => {
+	for (const always of [false, true]) {
+		const pi = makePi();
+		const repo = makeRepo();
+		const ctx = makeCtx(repo);
+		const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nmerge = merge\n${always ? "reflect = always\n" : ""}\`\`\`\n`]);
+		trackPlaybook(repo);
+		await flow(["start", "quiet"]);
+		mkdirSync(path.join(repo, ".dev-flow", "quiet", "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", "quiet", "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		await flow(["check"]);
+		commitWt(repo, "quiet");
+		await flow(["verify", "--confirmed"]);
+		await flow(["release", "--confirmed"]);
+		await flow(["release-done"]);
+		// whatever the fixture tripped on the way, this flow's record says it went smoothly
+		const f = path.join(repo, ".dev-flow", "quiet", "state.json");
+		writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), friction: 0 }, null, 2));
+		const orig = stageWorkerSpawn.run;
+		let spawns = 0;
+		stageWorkerSpawn.run = async () => { spawns++; return fakeWorker([() => "REPORT\nnothing new"]) as never; };
+		try {
+			const r = await flow(["finish", "--confirmed"]);
+			if (always) assert.equal(spawns, 1, "reflect = always runs the worker on a quiet flow too");
+			else {
+				assert.equal(spawns, 0, "a quiet flow spawns no reflection worker");
+				assert.match(r.content[0].text, /feature quiet done — .*closing reflection skipped: no refusals or guard blocks/, r.content[0].text);
+			}
+		} finally {
+			stageWorkerSpawn.run = orig;
+		}
+	}
+});
+
+test("finish records an unrecorded release itself — release-done asks nothing, so it is not a separate round trip", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "fold-in"]);
+	mkdirSync(path.join(repo, ".dev-flow", "fold-in", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "fold-in", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "fold-in");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]);
+	markReflected(repo, "fold-in");
+	const r = await flow(["finish", "--confirmed"]);
+	assert.match(r.content[0].text, /release recorded as complete[\s\S]*feature fold-in done/, r.content[0].text);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "fold-in")), "cleanup ran");
+});
+
+test("a refused gate counts as friction on the bound feature", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "rub"]);
+	const friction = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "rub", "state.json"), "utf8")).friction ?? 0;
+	assert.equal(friction(), 0);
+	mkdirSync(path.join(repo, ".dev-flow", "rub", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "rub", "plan", "plan.md"), "# plan\n");
+	await flow(["approve"]); // a question for the operator, not a refusal
+	assert.equal(friction(), 0, "NEEDS-OPERATOR is not friction");
+	await flow(["verify", "--confirmed"]); // wrong stage: a real refusal
+	assert.equal(friction(), 1);
+});
+
 test("release gate (#97): the entry is prepared on the branch and pending lines survive the fold", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -1874,11 +1949,10 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	assert.equal(stage(), "pre-release");
 	await flow(["release", "--confirmed"]);
 	assert.equal(stage(), "release");
-	const earlyFinish = await flow(["finish", "--confirmed"]);
-	assert.ok(earlyFinish.isError && /release-done/.test(earlyFinish.content[0].text), "finish refuses before the release is recorded");
-	await flow(["release-done", "--confirmed"]);
 	markReflected(repo, "rel"); // the closing reflection already ran — this test is about the cleanup
+	// published but unrecorded: finish records the release itself, then asks its one question
 	const finishNoAsk = await flow(["finish"]);
+	assert.match(finishNoAsk.content[0].text, /release recorded as complete/, "finish ran release-done's proofs first");
 	assert.ok(finishNoAsk.isError && /Finish\?/.test(finishNoAsk.content[0].text), "finish asks the operator first");
 	const fin = await flow(["finish", "--confirmed"]);
 	assert.match(fin.content[0].text, /done/);
