@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.85.0] - 2026-11-08
+
+**`flow verify` deploys for review without a dialog, catches up with main first, and asks before taking another flow's dev port.**
+
 ### Fixed
 - **The agent's `flow` call never opens a dialog** (fixes #181). In pi-web a bare `flow verify` deployed, then sat in a Yes/No dialog inside the tool call: once for 87 minutes, during which nobody could talk to the agent. Another time the operator clicked Yes, the result did not say so, and the agent reported that the stage had advanced on its own. Now every gate the agent calls answers with `NEEDS-OPERATOR <Question?>` and the agent asks in chat. A `/flow` command you type still asks in a dialog, and its answer is labelled `(confirmed in dialog)`.
 - **`flow verify` reviews the tree that ships.** A branch 18 commits behind main was deployed for review, without the two releases that had just shipped, and verified that way. Now `flow verify` fetches and rebases a branch that is behind before it deploys. A conflict aborts the rebase and leaves the branch as it was. `flow verify --confirmed` refuses when main moved since the review deploy.
