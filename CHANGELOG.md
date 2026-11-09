@@ -4,6 +4,8 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-11-08
+
 **Gate results show you facts and the one question waiting on you, never a command to type, and the stage line is written by the gate.**
 
 ### Changed
