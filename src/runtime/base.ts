@@ -546,9 +546,24 @@ export function tail(out: string, n = 15): string {
 
 // ------------------------------------------------------------------ extension
 
-/** The pi-web chip's current key, per session: the chip's label IS the widget key, so it changes with the
- *  footer text and the previous one must be cleared on every repaint. Per session, not per process — one
- *  pi-web server repaints many sessions (drivers, chats, workers), and a single shared slot let session B's
- *  repaint overwrite A's key, so A's next repaint cleared a key A never had and left its old chip beside
- *  the new one. On globalThis so a /reload or a duplicate copy still knows the chip already painted. */
-export const WEB_CHIP_KEYS: Map<string, string> = ((globalThis as { __piDevFlowChipKeys?: Map<string, string> }).__piDevFlowChipKeys ??= new Map());
+/** The pi-web chip keys a session has painted, oldest first, the current one last: the chip's label IS the
+ *  widget key, so it changes with the footer text and the old ones must be cleared. Every repaint re-sends
+ *  the clear for each old key, not just once: pi-web delivers a clear to the browser only over a live
+ *  event stream and does not re-sync widgets on reconnect, so a phone that was backgrounded across a stage
+ *  change kept the old chip beside the new one (one per missed stage). Clearing a key the browser no
+ *  longer has is a no-op, and the next repaint after reconnect retracts what was missed. Bounded to
+ *  CHIP_KEY_HISTORY keys. Per session, not per process — one pi-web server repaints many sessions, and a
+ *  shared slot let session B's repaint overwrite A's key. On globalThis so a /reload or a duplicate copy
+ *  still knows what was painted (a new name: older copies kept a single string per session there). */
+export const WEB_CHIP_KEYS: Map<string, string[]> = ((globalThis as { __piDevFlowChipKeyHistory?: Map<string, string[]> }).__piDevFlowChipKeyHistory ??= new Map());
+export const CHIP_KEY_HISTORY = 8;
+/** The previous copy's single-key slot, read once per session so the first repaint after an upgrade still
+ *  retracts the chip that copy painted. */
+export const LEGACY_CHIP_KEYS: Map<string, string> | undefined = (globalThis as { __piDevFlowChipKeys?: Map<string, string> }).__piDevFlowChipKeys;
+
+/** Next chip-key history for a repaint: every key except the current one is to be cleared (again), and
+ *  the current key moves to the end. `key` undefined (uninitiated folder) clears them all. Pure. */
+export function nextChipKeys(prev: readonly string[], key: string | undefined): { clear: string[]; keys: string[] } {
+	const clear = prev.filter((k) => k !== key);
+	return { clear, keys: key === undefined ? clear.slice(-CHIP_KEY_HISTORY) : [...clear, key].slice(-CHIP_KEY_HISTORY) };
+}

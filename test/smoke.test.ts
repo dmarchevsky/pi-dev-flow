@@ -10,6 +10,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import devFlow, { compactionTakeover, reflectSeams, stageWorkerSpawn, testSeams, workerTiming } from "../extensions/dev-flow.ts";
+import { CHIP_KEY_HISTORY, nextChipKeys } from "../src/runtime/base.ts";
 import { tagNotesCommand } from "../src/core.ts";
 import { commandish, viewHeader, type GateView } from "../src/present.ts";
 
@@ -693,6 +694,30 @@ test("status bar: compact refresh follows the gates", async () => {
 	assert.equal(chips.size, 1, "A's previous-stage chip was cleared after another session repainted in between");
 	assert.ok(!chips.has("📝demo-feature"), "the plan-stage chip is gone");
 	assert.deepEqual([...chipsB.keys()], ["💬 1 open"], "A's repaint never touches B's chips");
+	// The phone's event stream is down across a stage change: the browser misses the clear of the 🔨 chip
+	// but later receives a repaint of the new one (pi-web never re-syncs widgets on reconnect). The next
+	// repaint must re-send the old key's clear, or the stale chip sits beside the new one for good.
+	const browser = new Map<string, string[]>([...chips]);
+	let online = false;
+	const flaky = { ...ctx, ui: { ...ctx.ui, setWidget: (k: string, l?: string[]) => { setWidget(chips)(k, l); if (online) setWidget(browser)(k, l); } } };
+	writeFileSync(stFile, JSON.stringify({ ...JSON.parse(readFileSync(stFile, "utf8")), stage: "pre-release" }));
+	await pi.cmds.flow.handler("status", flaky);
+	assert.ok(browser.has("🔨demo-feature"), "precondition: the browser missed the clear while offline");
+	online = true;
+	await pi.cmds.flow.handler("status", flaky);
+	assert.deepEqual([...browser.keys()], ["🔍demo-feature"], "the repaint after reconnect retracts the chip whose clear was missed");
+	assert.deepEqual([...chips.keys()], ["🔍demo-feature"], "the host still holds exactly one chip");
+});
+
+test("nextChipKeys: every old key is cleared on each repaint, the history is bounded", () => {
+	assert.deepEqual(nextChipKeys([], "a"), { clear: [], keys: ["a"] });
+	assert.deepEqual(nextChipKeys(["a"], "a"), { clear: [], keys: ["a"] }, "an unchanged label clears nothing");
+	assert.deepEqual(nextChipKeys(["a", "b"], "c"), { clear: ["a", "b"], keys: ["a", "b", "c"] }, "old keys stay to be cleared again");
+	assert.deepEqual(nextChipKeys(["a", "b", "c"], "a"), { clear: ["b", "c"], keys: ["b", "c", "a"] }, "a label that comes back moves to the end");
+	assert.deepEqual(nextChipKeys(["a", "b"], undefined), { clear: ["a", "b"], keys: ["a", "b"] }, "an uninitiated folder clears every chip");
+	const many = Array.from({ length: 20 }, (_, i) => `k${i}`);
+	assert.equal(nextChipKeys(many, "now").keys.length, CHIP_KEY_HISTORY, "bounded");
+	assert.equal(nextChipKeys(many, "now").keys.at(-1), "now");
 });
 
 test("initiated repos always carry the footer, repainted at run start; uninitiated folders are silent", async () => {

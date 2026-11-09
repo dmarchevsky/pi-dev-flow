@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **pi-web no longer piles up old stage chips beside the current one.** dev-flow's chip in pi-web is labelled with the stage, so each stage change removes the old chip and adds a new one. If the browser's connection was down at that moment (a phone in the background, say), it missed the removal, and pi-web does not re-sync chips on reconnect, so one stale chip was left per missed stage change. Every repaint now re-sends the removal for the last few chips the session showed, so a missed one disappears at the next turn.
+
 ## [0.86.1] - 2026-11-08
 
 **A reply that stops mid-thought resumes on its own instead of stalling the flow.**

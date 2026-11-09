@@ -29,7 +29,7 @@ import { loadProject } from "../src/projectmd.ts";
 import { bashTimeout, requireTimeout, timeoutClass } from "../src/timeouts.ts";
 import { AGENT_MARK, operatorCommandAsks, operatorCommandCorrection, viewHeader, askLine, type GateView } from "../src/present.ts";
 import { Text } from "@earendil-works/pi-tui";
-import { CONTEXT_EMITTED, COPIES, GATE_HELP, SELF_BUILD, SKILL_DIR, type Ui, WEB_CHIP_KEYS, baseSeams, bindings, boundFeature, claimBlocker, claimFile, compacting, compactionTakeover, coreInjected, coreStale, currentBranch, dfDir, featDir, featureRefs, flowCompactInstructions, flowRoot, guardsAreMine, initiated, lastContext, loadedVersion, maybeCompactNow, noteFriction, now, readClaim, readReflections, readReflectionsText, readRoadmap, readState, registerCopy, releaseSession, sessionKey, sh, skillCore, unfinishedStates, worktreeAbs, writeClaim, writeState } from "../src/runtime/base.ts";
+import { CONTEXT_EMITTED, COPIES, GATE_HELP, SELF_BUILD, SKILL_DIR, type Ui, WEB_CHIP_KEYS, LEGACY_CHIP_KEYS, nextChipKeys, baseSeams, bindings, boundFeature, claimBlocker, claimFile, compacting, compactionTakeover, coreInjected, coreStale, currentBranch, dfDir, featDir, featureRefs, flowCompactInstructions, flowRoot, guardsAreMine, initiated, lastContext, loadedVersion, maybeCompactNow, noteFriction, now, readClaim, readReflections, readReflectionsText, readRoadmap, readState, registerCopy, releaseSession, sessionKey, sh, skillCore, unfinishedStates, worktreeAbs, writeClaim, writeState } from "../src/runtime/base.ts";
 import { type Session, presentRun } from "../src/runtime/checks.ts";
 import { isSelfRepo } from "../src/runtime/setup.ts";
 import { foldView, pluginUpstream } from "../src/runtime/reflect.ts";
@@ -51,14 +51,20 @@ function refreshStatus(ctx: ExtensionContext, root: string): void {
 	if (!ctx.hasUI) return;
 	const web = ctx.mode !== "tui";
 	const sk = sessionKey(ctx);
+	// Old keys are cleared on EVERY repaint, not once — a clear the browser missed while its event stream
+	// was down (pi-web never re-syncs widgets on reconnect) is re-sent until the history ages it out.
 	const setChip = (key: string | undefined, lines?: string[]) => {
-		const prev = WEB_CHIP_KEYS.get(sk);
-		if (prev !== undefined && prev !== key) ctx.ui.setWidget(prev, undefined);
-		if (key === undefined) WEB_CHIP_KEYS.delete(sk);
-		else {
-			WEB_CHIP_KEYS.set(sk, key);
-			ctx.ui.setWidget(key, lines);
+		let prev = WEB_CHIP_KEYS.get(sk);
+		if (prev === undefined) {
+			const legacy = LEGACY_CHIP_KEYS?.get(sk);
+			LEGACY_CHIP_KEYS?.delete(sk);
+			prev = legacy === undefined ? [] : [legacy];
 		}
+		const next = nextChipKeys(prev, key);
+		for (const k of next.clear) ctx.ui.setWidget(k, undefined);
+		if (next.keys.length) WEB_CHIP_KEYS.set(sk, next.keys);
+		else WEB_CHIP_KEYS.delete(sk);
+		if (key !== undefined) ctx.ui.setWidget(key, lines);
 	};
 	if (!initiated(root)) {
 		ctx.ui.setStatus("dev-flow", undefined);
