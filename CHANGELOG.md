@@ -4,6 +4,20 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+**Gate results show you facts and the one question waiting on you, never a command to type, and the stage line is written by the gate.**
+
+### Changed
+- **Gate results are split between you and the agent.** Every `flow` tool row now shows a header (`✅ Verification · dark-mode`, `❌ … refused`, `💬` when it waits on you), the stage line, the facts, and the question to answer in chat. The agent's instructions ("ask Verified? and run flow verify --confirmed") stay in the model's copy and appear dimmed only when you expand the row. The test suite checks every gate it drives: no operator view names a flow command.
+- **The gate writes the stage line.** It is built from state (mode, ui, plan and mockups, commits ahead and uncommitted, checks, tier-2, version, merge style, `branch@sha`, what is waiting on you), so reports open with the same line every time instead of one the model rebuilt from memory.
+- **An answer that asks you to type a flow command gets corrected.** The next run carries a hidden note telling the agent to ask the checkpoint word and run the gate itself.
+- **`flow status` is one readable row per feature**, and its hints read as things to say ("say “check the playbook”") instead of commands.
+- **`flow start` asks every grant in one question**: mode, `--ui` and the merge policy, with one re-run.
+- **`flow finish` records the release itself** when it was published but `release-done` never ran — that gate asks nothing, so it was a round trip with no decision in it.
+- **A flow with no friction skips the closing reflection worker.** Friction is a gate refusal or a guard block on the feature; `--note` still runs it. `reflect = always` under `## release` keeps the old behavior.
+- **The stage context is sent in full only when it changed** (or after a compaction); an unchanged run gets one line instead of the ~200-word note.
+- **The skill is shorter.** The always-on core drops from ~4,500 to ~2,700 characters and the stage files are short rule lists; the reasons live in `docs/gates.md`.
+- `extensions/dev-flow.ts` is the pi wiring only (~840 lines); the runtime moved to `src/runtime/`.
+
 ## [0.85.1] - 2026-11-08
 
 **dev-flow's bash timeout says so when it kills a command, and a command's own `timeout N` sets the cap.**
