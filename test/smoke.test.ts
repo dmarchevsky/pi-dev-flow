@@ -1549,7 +1549,7 @@ test("pending checkpoint: 💬 rides the footer until the word arrives, and is n
 	await flow(["start", "plan-gate"]);
 	writeFileSync(path.join(repo, ".dev-flow", "plan-gate", "plan", "plan.md"), "# plan\n\n- do it\n");
 	assert.match((await flow(["approve"])).content[0].text, /NEEDS-OPERATOR Approve\?/, "without the word the gate refuses and goes pending");
-	assert.equal((await flow(["status"])).content[0].text.includes("💬 Approve?"), true, "flow status names the pending checkpoint");
+	assert.equal((await flow(["status"])).content[0].text.includes("💬 waiting on you: Approve?"), true, "flow status names the pending checkpoint");
 	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, uiCtx);
 	assert.equal(seen.at(-1), "📝💬plan-gate", "the pi-web chip carries the checkpoint glyph up front on a bound flow");
 	await flow(["abort", "plan-gate", "--confirmed"]);
@@ -1750,8 +1750,8 @@ test("flow init without a UI prints the findings; flow status reports them even 
 	assert.match(ctx.notices.at(-1) ?? "", /doctor: 1 finding\(s\):/);
 	assert.match(ctx.notices.at(-1) ?? "", /ghosty has a plan\/ but no state\.json/);
 	const st = await flow(["status"]);
-	assert.match(st.content[0].text, /no features/);
-	assert.match(st.content[0].text, /⚠ doctor: 1 finding\(s\) — run flow doctor/);
+	assert.match(st.content[0].text, /no features in flight/);
+	assert.match(st.content[0].text, /⚠ 1 playbook finding\(s\)[\s\S]*run flow doctor/);
 });
 
 test("flow doctor: a feature's own branch (checked out in its worktree) is not an orphan", async () => {
@@ -3162,7 +3162,7 @@ test("aborting a plan-stage feature with a written plan needs the operator's wor
 	const refused = await flow(["abort", "drafted"]);
 	assert.ok(refused.isError && /NEEDS-OPERATOR Drop plan\?/.test(refused.content[0].text), refused.content[0].text);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "drafted", "plan", "plan.md")), "the plan survives a refused abort");
-	assert.match((await flow(["status"])).content[0].text, /→ drafted/, "the session stays bound");
+	assert.match((await flow(["status"])).content[0].text, /→ \*\*drafted\*\* \(this session\)/, "the session stays bound");
 	assert.match((await flow(["abort", "drafted", "--confirmed"])).content[0].text, /feature removed/);
 });
 
@@ -3300,8 +3300,8 @@ test("a dev port held by another flow is asked about, with the resources; --port
 	assert.equal(readFileSync(path.join(repo, ".dev-flow", "pb", "worktree", "dev-port"), "utf8").trim(), `${side}-pb`, "dev got the side port and a suffix that keeps the instance names apart");
 	assert.equal(readFileSync(path.join(repo, ".dev-flow", "pa", "worktree", "dev-port"), "utf8").trim(), `${port}`, "pa's stack was left alone");
 	const st = (await flow(["status"])).content[0].text;
-	assert.match(st, new RegExp(`dev: port ${port} → pa @ [0-9a-f]{7}`));
-	assert.match(st, new RegExp(`dev: port ${side} → pb @ [0-9a-f]{7}`));
+	assert.match(st, new RegExp(`dev port ${port} → pa @ [0-9a-f]{7}`));
+	assert.match(st, new RegExp(`dev port ${side} → pb @ [0-9a-f]{7}`));
 	// parallelDev = no: only replace or wait are offered
 	await flow(["init", "--write", md("parallelDev = no\n")]);
 	trackPlaybook(repo);

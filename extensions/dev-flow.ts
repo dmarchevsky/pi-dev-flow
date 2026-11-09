@@ -154,6 +154,7 @@ import {
 	formatSize,
 	servedBuildMatches,
 	sideBySide,
+	STAGE_EMOJI,
 	type FeatureRef,
 	type FlowState,
 	type StageCheck,
@@ -2240,34 +2241,49 @@ async function gateStatus(o: GateCtx): Promise<RunResult> {
 	// a session running an older build than the disk ships is the one thing a glance must say: every
 	// gate proof printed since the drift began belongs to the older code.
 	const skew = buildSkew(root);
-	const warn = [...(findings.length ? [`⚠ doctor: ${findings.length} finding(s) — run flow doctor`] : []), ...(skew.line ? [`⚠ ${skew.line}`] : []), ...(copyWarning() ? [copyWarning()!] : [])];
+	// hints read as something the operator could say; the agent's command for each rides an agent-only line
+	const warn = [
+		...(findings.length ? [`⚠ ${findings.length} playbook finding(s) — say "check the playbook" to go through them`, `${AGENT_MARK}playbook findings: run flow doctor`] : []),
+		...(skew.line ? [`⚠ ${skew.line}`] : []),
+		...(copyWarning() ? [copyWarning()!] : []),
+	];
 	// the backlog nudge belongs to the no-features answer too — that is when a pick is most useful
 	const rmap = roadmapOpenCount(readRoadmap(root));
-	const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — flow roadmap`] : [];
+	const rmapLine = rmap ? [`◇ ${rmap} roadmap item(s) open — say "show the roadmap"`, `${AGENT_MARK}roadmap: flow roadmap lists them`] : [];
 	const slugs = slugArg ? [slugArg] : unfinishedStates(root).map((s) => s.slug);
 	const cur = sess.slug; // only a bound session has a current feature — the lone-unfinished hint would pose unbound sessions as owning it
 	if (flag("json")) {
 		const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
 		return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
 	}
-	if (!slugs.length) return { text: ["no features — start one: flow start <slug> [--ui] [--patch|--docs --confirmed]", ...warn, ...rmapLine].join("\n") };
+	if (!slugs.length) return { text: ["no features in flight — describe what you want built to start one", `${AGENT_MARK}start one: flow start <slug> [--ui] [--patch|--docs --confirmed]`, ...warn, ...rmapLine].join("\n") };
+	// one readable row per feature for the operator; the identifiers an agent needs stay on agent-only lines
 	const lines = slugs.flatMap((s) => {
 		const st = readState(root, s);
 		if (!st) return [];
+		const checks = Object.entries(st.checks).map(([k, v]) => `${k} ${v.ok ? "✓" : "✗"}`).join(" ");
+		const tags = [st.ui ? "ui" : "", st.patch ? "patch" : st.docs ? "docs" : "", st.yolo ? "yolo" : "", st.noVersion ? "no-version" : ""].filter(Boolean);
+		const row = [
+			`${STAGE_EMOJI[st.stage]} ${st.stage}`,
+			...(tags.length ? [tags.join(", ")] : []),
+			...(checks ? [`checks ${checks}`] : []),
+			...(st.confirmations?.implement ? ["checklist ✓"] : []),
+			...(st.pendingAsk ? [`💬 waiting on you: ${st.pendingAsk}`] : []),
+		];
 		return [
-			`${s === cur ? "→" : " "} ${s}: stage=${st.stage}${st.ui ? " [ui]" : ""}${st.yolo ? " [yolo]" : ""}${st.noVersion ? " [no-version]" : ""}${st.pendingAsk ? ` 💬 ${st.pendingAsk}` : ""} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""}`,
-			`  approvals: ${Object.keys(st.approvals).join(", ") || "none"} | checks: ${Object.entries(st.checks).map(([k, v]) => `${k}:${v.ok ? "ok" : "FAILED"}`).join(", ") || "none"}${st.confirmations?.implement ? " | checklist: confirmed" : ""}`,
-			`  next: ${nextHint(st, cfg)}`,
+			`${s === cur ? "→" : "-"} **${s}**${s === cur ? " (this session)" : ""} — ${row.join(" · ")}`,
+			`${AGENT_MARK}${s}: stage=${st.stage} branch=${st.branch || "-"} worktree=${st.worktree || "-"}${st.flowVersion ? ` flow=${st.flowVersion}` : ""} approvals: ${Object.keys(st.approvals).join(", ") || "none"}`,
+			`${AGENT_MARK}${s} next: ${nextHint(st, cfg)}`,
 		];
 	});
 	// who holds the dev stack: the one thing two parallel flows on one machine must not guess
-	for (const [k, v] of Object.entries(readDevPorts(root))) lines.push(`dev: ${k === "default" ? "stack" : `port ${k}`} → ${v.slug} @ ${v.head.slice(0, 7)}, deployed ${ago(v.at)}`);
+	for (const [k, v] of Object.entries(readDevPorts(root))) lines.push(`dev ${k === "default" ? "stack" : `port ${k}`} → ${v.slug} @ ${v.head.slice(0, 7)}, deployed ${ago(v.at)}`);
 	if (warn.length) lines.push(...warn);
 	// which identity this session's state is keyed by: a claim fight is undiagnosable when the key
 	// could be a session id or a shared directory and the output does not say which
-	lines.push(`session: ${sess.key}${sess.key.startsWith("cwd:") ? " — no session id from pi, so every pi session in this directory shares one dev-flow binding (pass flow use <slug> in each)" : ""}`);
+	lines.push(`${AGENT_MARK}session: ${sess.key}${sess.key.startsWith("cwd:") ? " — no session id from pi, so every pi session in this directory shares one dev-flow binding (pass flow use <slug> in each)" : ""}`);
 	const refl = readReflections(root);
-	if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — run flow doctor (it reviews and routes them)`);
+	if (refl.length) lines.push(`↻ ${refl.length} reflection(s) open — say "review the reflections" to go through them`, `${AGENT_MARK}reflections: run flow doctor (it reviews and routes them)`);
 	lines.push(...rmapLine);
 	return { text: lines.join("\n") || "no features" };
 }
