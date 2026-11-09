@@ -1,88 +1,54 @@
-> Part of the **dev-flow** playbook. The always-on ground rules live in
-> [../SKILL.md](../SKILL.md); this file is the detail for one stage — read it
-> when the session reaches that stage.
+> Part of the **dev-flow** playbook. Ground rules: [../SKILL.md](../SKILL.md).
 
 ## Reflect (this project's suggestion queue)
 
-Anything this project's playbook or code should improve (drifted commands, a
-checklist that no longer fits, a script that keeps biting) gets parked, not
-complained about. `.dev-flow/reflections.md` is **this project's** queue only:
+Friction worth fixing gets parked, not complained about. One line each, real
+friction only, never the same issue twice. `.dev-flow/reflections.md` holds
+**this project's** items only.
 
-- `flow reflect --playbook "<note>"` — the fix lives only in `project.md` →
-  `## playbook`, fixed by a **docs flow** (`flow start fold-<topic> --docs --confirmed`).
-- `flow reflect --code "<note>"` — the fix touches this project's code (maybe
-  the playbook too) → `## code`, fixed by a **patch flow**
-  (`flow start fix-<topic> --patch --confirmed`; a normal flow when bigger).
-- `flow reflect --plugin "<note>"` — dev-flow itself. **Never written to
-  reflections.md**: it prints the upstream recipe — `gh issue list --repo
-  <dev-flow repo> --state all --search "<keywords>"` first (an issue the author
-  already answered is reported back, never re-filed), then `gh issue create`
-  with a detailed body ending `— reflection from <slug> <date>` so the fold
-  matches it. File it only on the operator's word. In the dev-flow repo itself
-  plugin is code, so `--plugin` files under `## code`.
+| Command | Files under | Fixed by |
+| --- | --- | --- |
+| `flow reflect --playbook "<note>"` | `## playbook` (fix lives in `project.md`) | a docs flow: `flow start fold-<topic> --docs --confirmed` |
+| `flow reflect --code "<note>"` | `## code` (this project's code, maybe the playbook) | a patch flow: `flow start fix-<topic> --patch --confirmed` (normal when bigger) |
+| `flow reflect --plugin "<note>"` | nothing — prints the upstream recipe | a GitHub issue, filed only on the operator's word |
 
-Gate flags are ignored (`flow reflect "<note>" --confirmed` queues the note
-alone). With no flag the wording guesses (plugin-shaped → the upstream recipe,
-otherwise `## playbook`) and the printed line says why; `flow reflect list`
-numbers the queue and `flow reflect move <n> --playbook|--code` re-files an
-item — never hand-retype it. `flow reflect done <n> ["<what fixed it>"]` checks
-an item off once a flow has fixed it (`— fixed: <date> <slug> — <what>`), so
-doctor stops re-reporting it. A legacy `## plugin` row from an older dev-flow is
-flagged by `flow doctor` / `reflect list`: file it upstream and check it off
-`— filed: gh#NNN`. For a note to chase **now**: `flow doctor "<observation>"`
-prints an investigation brief without queueing.
+- `--plugin`: search first (`gh issue list --repo <dev-flow repo> --state all
+  --search "<keywords>"`); an issue already answered is reported back, never
+  re-filed. Body ends `— reflection from <slug> <date>`. In the dev-flow repo
+  itself, plugin feedback is code.
+- No flag → the wording decides and the printed line says why.
+- `flow reflect list` numbers the queue; `flow reflect move <n>
+  --playbook|--code` re-files; `flow reflect done <n> ["<what fixed it>"]`
+  checks one off; `flow reflect tidy` drops closed items.
+- `flow doctor "<observation>"` prints an investigation brief without queueing.
+- The end-of-session reflection runs at finish (see [finish.md](finish.md)).
 
-- Reflect real friction only, one line each, never the same issue twice.
-- **The end-of-session reflection runs at finish** (see Stage: finish): `flow
-  finish` itself starts the `flow_stage({ op: "reflect" })` worker before it
-  removes anything (only `--no-reflect --confirmed` skips it); the worker reviews the whole session — driver and
-  every worker transcript — and the operator decides **fold or drop** per
-  finding. Bare `flow reflect` prints that protocol (bound: delegate to the
-  worker; unbound: review inline); the command writes nothing.
-- **When to suggest fixing open items** — the tool prints `⚑ fix the open
-  reflections now?` only when a rule fires: an open item **recurred** this
-  session (strongest signal), an item is **≥ 14 days** old, **≥ 3 playbook
-  items** (one docs flow takes them all), or a **code** item while **between
-  flows**. It surfaces at finish, in an unbound session, and in `flow doctor` —
-  never mid-feature. Offer it in one line; the operator decides.
-- **When to suggest the tidy** — `flow reflect tidy` drops the closed (`- [x]`)
-  items (the `— fixed:` note already recorded the outcome). The hint
-  `↻ N closed reflection(s)` prints when **≥ 5** are closed, when closed
-  **≥ open** with at least 3 closed, or when a closed item was filed **≥ 30
-  days** ago — at finish, after a `reflect` write, in bare `reflect` and doctor.
-- Plain `flow doctor` reviews the open items and **routes** each — `## playbook`
-  → docs flow, `## code` → patch flow. To fold items in on the operator's word:
-  investigate, propose the fix, get confirmation, open the routed flow and apply
-  it there — project.md is editable only in a docs/patch worktree. Once it is
-  merged, check the item off with `flow reflect done <n> "<what>"` (or by hand in
-  the gitignored `.dev-flow/reflections.md`: `- [x]` and a `— folded: <what>` or
-  `— fixed: <what>` note).
-- **Open GitHub issues fold into the view** when the repo has a GitHub remote: `flow doctor` and
-  `flow reflect list` list them under the local queue (read-time fold — issues are never imported,
-  each item keeps one home). A local row an open issue already covers carries `⟷ gh#NNN` — fold it
-  by checking the row off `— filed: gh#NNN` and resolving on GitHub. Unmatched upstream rows get a
-  route, but their resolution is on GitHub (close there, never in reflections.md). A
-  `~ gh#NNN may duplicate` hint is your verdict to make, never an auto-merge. No GitHub remote =
-  silent; missing/offline `gh` or `DEV_FLOW_NO_ISSUES=1` = one skip line.
+**When to suggest a fix** — only when the tool prints `⚑ fix the open
+reflections now?` (an item recurred, is ≥ 14 days old, ≥ 3 playbook items, or
+a code item between flows). It surfaces at finish, unbound, and in `flow
+doctor` — never mid-feature. One line; the operator decides.
 
+**Folding items in** on the operator's word: investigate, propose, confirm,
+open the routed flow and apply it there (`project.md` is editable only in a
+docs/patch worktree), then `flow reflect done <n> "<what>"` once merged.
 
-## Roadmap (your backlog)
+**GitHub issues** fold into `flow doctor` / `reflect list` when the repo has a
+GitHub remote: a local row an open issue covers shows `⟷ gh#NNN` (check it off
+`— filed: gh#NNN`); `~ gh#NNN may duplicate` is your call, never an auto-merge.
+`DEV_FLOW_NO_ISSUES=1` turns it off.
 
-`.dev-flow/roadmap.md` — a gitignored `- [ ]` checklist; the operator owns the
-content, you maintain and honor it. Advisory like reflections, never gating:
+## Roadmap (the operator's backlog)
 
-- `flow roadmap` lists the open items (the count is surfaced in status and
-  stage context). Update on the operator's request —
-  `flow roadmap add "<feature>"` or direct file edits are equally fine.
-- Handed a feature: `flow roadmap pick <n> <slug>` stamps the item with the
-  slug (pick is one verb — it starts nothing), then `flow start <slug>` builds
-  it as a normal flow; its `flow finish` checks the item off automatically.
-- **Spin-off** (a new feature surfaced mid-flow, split off on the operator's
-  word): `flow roadmap add "<title>" --slug=<slug> --brief=<notes>` (or
-  `--brief-file=<path>`) adds and stamps in one call; the brief sits under the
-  item as `  > ` lines and a bound session's slug is recorded as `— split from
-  <slug>`. `flow start <slug>` seeds `plan/plan.md` with the item and brief (a
-  draft — plan and approve as usual). A hand-made `.dev-flow/<slug>/plan/` with
-  no `state.json` is a ghost: `flow start <slug> --confirmed` adopts it.
-- Shipped outside a flow: `flow roadmap done <n>` (date-stamped by hand);
-  `flow roadmap tidy` drops checked lines when history clutters the list.
+`.dev-flow/roadmap.md` — a gitignored `- [ ]` list the operator owns. Advisory,
+never gating.
+
+- `flow roadmap` lists open items; `flow roadmap add "<feature>"` (or editing
+  the file) adds one, on the operator's request.
+- Handed a feature: `flow roadmap pick <n> <slug>` stamps it, then `flow start
+  <slug>`; its finish checks the item off.
+- Spin-off mid-flow (on the operator's word): `flow roadmap add "<title>"
+  --slug=<slug> --brief=<notes>` — `flow start <slug>` later seeds the plan
+  from the brief. A hand-made `.dev-flow/<slug>/plan/` is a ghost; `flow start
+  <slug> --confirmed` adopts it.
+- Shipped outside a flow: `flow roadmap done <n>`; `flow roadmap tidy` drops
+  checked lines.

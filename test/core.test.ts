@@ -1146,7 +1146,7 @@ test("--docs --no-version: no changelog proof (#163); (versioned) items stand do
 	assert.equal(checklistPending(c, docs, "release"), 1);
 	assert.deepEqual(applicableItems(c, { ...docs, noVersion: false }, "release").map((i) => i.text), ["image tag matches", "PR merged"]);
 	const hint = nextHint({ ...docs, noVersion: false }, c);
-	assert.match(hint, /docs flow: it usually ships unversioned — ask the operator; with their word, flow release --no-version needs no bump/);
+	assert.match(hint, /a docs flow usually ships unversioned — ask the operator \(flow release --no-version on their word\)/);
 	assert.match(nextHint({ ...newState("v", false), stage: "pre-release" as const }, c), /bump version in VERSION/, "a normal flow keeps the versioned hint");
 });
 
@@ -1545,9 +1545,9 @@ test("needsOperator: marker-first refusal for no-UI gates", () => {
 });
 
 test("gateHelpJson splits the real GATE_HELP without losing a gate", () => {
-	const src = readFileSync(new URL("../extensions/dev-flow.ts", import.meta.url), "utf8");
+	const src = readFileSync(new URL("../src/runtime/base.ts", import.meta.url), "utf8");
 	const m = src.match(/const GATE_HELP =\s*("(?:[^"\\]|\\.)*");/);
-	assert.ok(m, "GATE_HELP literal found in the extension source");
+	assert.ok(m, "GATE_HELP literal found in the runtime source");
 	const j = JSON.parse(gateHelpJson(JSON.parse(m![1]), "9.9.9"));
 	assert.ok(j.gates.length >= 15, `every gate survived the split (${j.gates.length})`);
 	assert.ok(j.gates.every((g: string) => !g.includes(" — ") && !g.includes(" | ")), "no note prose leaked into the command list");
@@ -1627,7 +1627,7 @@ test("mergeStyleInvocation: the merge command is where the policy is enforced", 
 test("nextHint: the UI clause appends to the plan path instead of replacing it", () => {
 	const ui = newState("u", true);
 	assert.match(nextHint(ui, DEFAULTS), /plan\/plan\.md and render mockups to plan\/mockups\/ \(\*\.png\) with headless chromium/);
-	assert.match(nextHint({ ...ui, ui: false }, DEFAULTS), /plan\/plan\.md, then ask the operator Approve\?/);
+	assert.match(nextHint({ ...ui, ui: false }, DEFAULTS), /plan\/plan\.md, then ask Approve\?/);
 });
 
 test("nextHint names the playbook merge style at the release stage", () => {

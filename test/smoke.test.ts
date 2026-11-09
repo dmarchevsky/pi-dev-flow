@@ -11,6 +11,7 @@ import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import devFlow, { compactionTakeover, reflectSeams, stageWorkerSpawn, testSeams, workerTiming } from "../extensions/dev-flow.ts";
 import { tagNotesCommand } from "../src/core.ts";
+import { commandish, viewHeader, type GateView } from "../src/present.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
 
@@ -23,6 +24,9 @@ interface Stub {
 	/** The session display name as last set through pi.setSessionName (undefined = still unnamed). */
 	sessionName?: string;
 }
+
+/** How many operator views the wrapped flow tool checked — the closing test proves the check ran at all. */
+let viewsChecked = 0;
 
 function makePi(): Stub & ((...a: never[]) => void) {
 	const stub = { cmds: {}, tools: {}, handlers: {}, entries: [] } as Stub;
@@ -37,8 +41,22 @@ function makePi(): Stub & ((...a: never[]) => void) {
 				},
 			} as never;
 		},
-		registerTool: (t: { name: string }) => {
-			stub.tools[t.name] = t as never;
+		registerTool: (t: { name: string; execute: (...a: unknown[]) => Promise<{ details?: { view?: GateView } }> }) => {
+			// every gate this suite drives also proves the operator's view: facts and a question, never a command to type
+			const execute = t.execute;
+			stub.tools[t.name] = {
+				...t,
+				execute: async (...a: unknown[]) => {
+					const r = await execute(...a);
+					const view = r?.details?.view;
+					if (view) {
+						viewsChecked++;
+						const shown = [viewHeader(view), view.stageLine ?? "", ...view.lines, view.ask ?? ""];
+						for (const line of shown) assert.ok(!commandish(line), `operator view names a flow command: ${JSON.stringify(line)}`);
+					}
+					return r;
+				},
+			} as never;
 		},
 		on: (e: string, h: Handler) => {
 			(stub.handlers[e] ??= []).push(h);
@@ -169,8 +187,8 @@ test("init → start → guards → gate ordering, end to end", async () => {
 	mkdirSync(path.join(repo, ".dev-flow", "demo-feature", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "demo-feature", "plan", "plan.md"), "# plan\n");
 	await pi.cmds.flow.handler("approve", ctx);
-	assert.ok(ctx.notices.at(-1)?.includes("needs the operator"), "approve without an operator answer refuses");
-	assert.match(ctx.notices.at(-1) ?? "", /NEEDS-OPERATOR Approve\? — plan approval needs the operator/, "no-UI refusal carries the machine marker before the prose");
+	assert.ok(ctx.notices.at(-1)?.includes("waiting for your approval"), "approve without an operator answer refuses");
+	assert.match(ctx.notices.at(-1) ?? "", /NEEDS-OPERATOR Approve\? — the plan is waiting for your approval/, "no-UI refusal carries the machine marker before the prose");
 
 	// stage context injection
 	const inj = (await pi.handlers.before_agent_start[0]({}, ctx)) as { message?: { content: string } };
@@ -309,7 +327,7 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	// the commands run before the operator is asked, so even the walk-out path must report them
 	const early = await flow(["verify"]);
 	assert.ok(!early.isError, "the agent's bare verify is the review deploy, not a failure (#181)");
-	assert.match(early.content[0].text, /^NEEDS-OPERATOR Verified\? — deployed for review — .*flow verify --confirmed/, "it hands the chat question back to the agent");
+	assert.match(early.content[0].text, /^NEEDS-OPERATOR Verified\? — deployed for review — [\s\S]*flow verify --confirmed/, "it hands the chat question back to the agent");
 	assert.match(early.content[0].text, /dev ran \(touch dev-up\)/);
 	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ran", "state.json"), "utf8")).stage, "implement", "nothing was recorded on the operator's behalf");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); .*dev ran \(touch dev-up\)/, "a commit after the check made the record stale — the gate reruns it and says so");
@@ -1331,6 +1349,81 @@ test("finish reflection: a failed worker removes nothing, yolo never skips it, o
 	}
 });
 
+test("finish skips the closing reflection on a flow with no friction, unless the playbook says reflect = always", async () => {
+	for (const always of [false, true]) {
+		const pi = makePi();
+		const repo = makeRepo();
+		const ctx = makeCtx(repo);
+		const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nmerge = merge\n${always ? "reflect = always\n" : ""}\`\`\`\n`]);
+		trackPlaybook(repo);
+		await flow(["start", "quiet"]);
+		mkdirSync(path.join(repo, ".dev-flow", "quiet", "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", "quiet", "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		await flow(["check"]);
+		commitWt(repo, "quiet");
+		await flow(["verify", "--confirmed"]);
+		await flow(["release", "--confirmed"]);
+		await flow(["release-done"]);
+		// whatever the fixture tripped on the way, this flow's record says it went smoothly
+		const f = path.join(repo, ".dev-flow", "quiet", "state.json");
+		writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), friction: 0 }, null, 2));
+		const orig = stageWorkerSpawn.run;
+		let spawns = 0;
+		stageWorkerSpawn.run = async () => { spawns++; return fakeWorker([() => "REPORT\nnothing new"]) as never; };
+		try {
+			const r = await flow(["finish", "--confirmed"]);
+			if (always) assert.equal(spawns, 1, "reflect = always runs the worker on a quiet flow too");
+			else {
+				assert.equal(spawns, 0, "a quiet flow spawns no reflection worker");
+				assert.match(r.content[0].text, /feature quiet done — .*closing reflection skipped: no refusals or guard blocks/, r.content[0].text);
+			}
+		} finally {
+			stageWorkerSpawn.run = orig;
+		}
+	}
+});
+
+test("finish records an unrecorded release itself — release-done asks nothing, so it is not a separate round trip", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "fold-in"]);
+	mkdirSync(path.join(repo, ".dev-flow", "fold-in", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "fold-in", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "fold-in");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]);
+	markReflected(repo, "fold-in");
+	const r = await flow(["finish", "--confirmed"]);
+	assert.match(r.content[0].text, /release recorded as complete[\s\S]*feature fold-in done/, r.content[0].text);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "fold-in")), "cleanup ran");
+});
+
+test("a refused gate counts as friction on the bound feature", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "rub"]);
+	const friction = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "rub", "state.json"), "utf8")).friction ?? 0;
+	assert.equal(friction(), 0);
+	mkdirSync(path.join(repo, ".dev-flow", "rub", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "rub", "plan", "plan.md"), "# plan\n");
+	await flow(["approve"]); // a question for the operator, not a refusal
+	assert.equal(friction(), 0, "NEEDS-OPERATOR is not friction");
+	await flow(["verify", "--confirmed"]); // wrong stage: a real refusal
+	assert.equal(friction(), 1);
+});
+
 test("release gate (#97): the entry is prepared on the branch and pending lines survive the fold", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -1530,8 +1623,8 @@ test("pending checkpoint: 💬 rides the footer until the word arrives, and is n
 	trackPlaybook(repo);
 	await flow(["start", "plan-gate"]);
 	writeFileSync(path.join(repo, ".dev-flow", "plan-gate", "plan", "plan.md"), "# plan\n\n- do it\n");
-	assert.match((await flow(["approve"])).content[0].text, /needs the operator/, "without the word the gate refuses and goes pending");
-	assert.equal((await flow(["status"])).content[0].text.includes("💬 Approve?"), true, "flow status names the pending checkpoint");
+	assert.match((await flow(["approve"])).content[0].text, /NEEDS-OPERATOR Approve\?/, "without the word the gate refuses and goes pending");
+	assert.equal((await flow(["status"])).content[0].text.includes("💬 waiting on you: Approve?"), true, "flow status names the pending checkpoint");
 	await (pi.handlers.turn_end[0] as unknown as (e: unknown, c: unknown) => Promise<void>)({}, uiCtx);
 	assert.equal(seen.at(-1), "📝💬plan-gate", "the pi-web chip carries the checkpoint glyph up front on a bound flow");
 	await flow(["abort", "plan-gate", "--confirmed"]);
@@ -1732,8 +1825,8 @@ test("flow init without a UI prints the findings; flow status reports them even 
 	assert.match(ctx.notices.at(-1) ?? "", /doctor: 1 finding\(s\):/);
 	assert.match(ctx.notices.at(-1) ?? "", /ghosty has a plan\/ but no state\.json/);
 	const st = await flow(["status"]);
-	assert.match(st.content[0].text, /no features/);
-	assert.match(st.content[0].text, /⚠ doctor: 1 finding\(s\) — run flow doctor/);
+	assert.match(st.content[0].text, /no features in flight/);
+	assert.match(st.content[0].text, /⚠ 1 playbook finding\(s\)[\s\S]*run flow doctor/);
 });
 
 test("flow doctor: a feature's own branch (checked out in its worktree) is not an orphan", async () => {
@@ -1852,15 +1945,14 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	assert.ok(stale.isError && /has not passed|stale/.test(stale.content[0].text), "release gate demands re-greened checks after the prep commit: " + stale.content[0].text);
 	await flow(["check"]);
 	const noOp = await flow(["release"]);
-	assert.ok(noOp.isError && /needs the operator/.test(noOp.content[0].text), "Release? needs an operator answer");
+	assert.ok(noOp.isError && /NEEDS-OPERATOR Release\?/.test(noOp.content[0].text), "Release? needs an operator answer");
 	assert.equal(stage(), "pre-release");
 	await flow(["release", "--confirmed"]);
 	assert.equal(stage(), "release");
-	const earlyFinish = await flow(["finish", "--confirmed"]);
-	assert.ok(earlyFinish.isError && /release-done/.test(earlyFinish.content[0].text), "finish refuses before the release is recorded");
-	await flow(["release-done", "--confirmed"]);
 	markReflected(repo, "rel"); // the closing reflection already ran — this test is about the cleanup
+	// published but unrecorded: finish records the release itself, then asks its one question
 	const finishNoAsk = await flow(["finish"]);
+	assert.match(finishNoAsk.content[0].text, /release recorded as complete/, "finish ran release-done's proofs first");
 	assert.ok(finishNoAsk.isError && /Finish\?/.test(finishNoAsk.content[0].text), "finish asks the operator first");
 	const fin = await flow(["finish", "--confirmed"]);
 	assert.match(fin.content[0].text, /done/);
@@ -2310,7 +2402,7 @@ test("threshold compaction takeover: flow-aware compact() returned as custom com
 		const t = mk();
 		const res = await takeover(t.event, t.c);
 		assert.match(res?.compaction?.summary ?? "", /^flow-aware summary\n/, "our summary lands via the custom-compaction channel — no cancel dance, no re-entry");
-		assert.match(res?.compaction?.summary ?? "", /\[dev-flow state on disk — authoritative[^\n]*\]\n- feature demo-feature — stage: plan\n- approvals recorded: none\n- checks: none recorded\n- next: investigate/, "the disk's flow state is appended, not left to the summarizer");
+		assert.match(res?.compaction?.summary ?? "", /\[dev-flow state on disk — authoritative[^\n]*\]\n- feature demo-feature — stage: plan\n- approvals recorded: none\n- checks: none recorded\n- next: clarify the direction/, "the disk's flow state is appended, not left to the summarizer");
 		assert.equal(res?.cancel, undefined, "pi appends the returned compaction itself — nothing to cancel");
 		assert.match(String(calls[0].instructions), /demo-feature/, "the summary carries the flow-aware instructions");
 		assert.equal(calls[0].apiKey, "k", "request-time auth is resolved and forwarded");
@@ -2404,7 +2496,7 @@ test("flow start asks for the merge policy once and writes the answer into the p
 	// unanswered: a refusal that names the question, the re-run, and (from history) a suggestion
 	const refused = await flow(["start", "needspolicy"]);
 	assert.ok(refused.isError && /NEEDS-OPERATOR Merge policy\?/.test(refused.content[0].text), `start refuses until the policy is answered: ${refused.content[0].text}`);
-	assert.match(refused.content[0].text, /--merge=<style> --confirmed/, "the refusal spells the re-run");
+	assert.match(refused.content[0].text, /--merge=<style> \[--ui\] \[--patch\|--docs\] --confirmed/, "the refusal spells the re-run");
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "needspolicy", "state.json")), "a refused start creates no feature");
 	// an invalid answer is refused before anything is written
 	assert.match((await flow(["start", "needspolicy", "--merge=fast-forward", "--confirmed"])).content[0].text, /not a policy/);
@@ -2553,6 +2645,59 @@ test("the stage injection names the one playbook file the stage needs", async ()
 	const inj = (await pi.handlers.before_agent_start[0]({}, session("sess-ref"))) as { message: { content: string } };
 	assert.match(inj.message.content, /Stage playbook: read .*references\/plan\.md before gate work/, "the plan stage names plan.md outright, absolute");
 	assert.ok(existsSync(inj.message.content.match(/Stage playbook: read (\S+) before gate work/)![1]), "the named file is a real path, not a wish");
+});
+
+test("the flow tool row renders the operator view: header, stage line, facts, the question — no command", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const tool = pi.tools.flow as unknown as { execute: (...a: unknown[]) => Promise<unknown>; renderResult: (r: unknown, o: { expanded: boolean; isPartial: boolean }, t: unknown) => { render: (w: number) => string[] } };
+	const flow = (args: string[]) => tool.execute("id", { args }, undefined, undefined, ctx);
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "rendered"]);
+	mkdirSync(path.join(repo, ".dev-flow", "rendered", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "rendered", "plan", "plan.md"), "# plan\n");
+	const r = await flow(["approve"]);
+	const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+	const collapsed = tool.renderResult(r, { expanded: false, isPartial: false }, theme).render(200).map((l) => l.trimEnd()).join("\n");
+	assert.match(collapsed, /💬 Plan approval · rendered/);
+	assert.match(collapsed, /📝 plan · rendered/, "the stage line, without markdown marks");
+	assert.match(collapsed, /Your call: Approve\? — answer in chat/);
+	assert.doesNotMatch(collapsed, /--confirmed|flow approve/, "the collapsed row names no command");
+	const expanded = tool.renderResult(r, { expanded: true, isPartial: false }, theme).render(200).join("\n");
+	assert.match(expanded, /agent: re-run with --confirmed/, "expanded, the agent's instructions show, marked as such");
+});
+
+test("an unchanged stage context is one line; a stage change or a compaction hands over the full note again", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
+	const ctx = session("sess-dedupe");
+	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
+	await pi.cmds.flow.handler("start dedupe", ctx);
+	const inject = async () => ((await pi.handlers.before_agent_start[0]({}, session("sess-dedupe"))) as { message: { content: string } }).message.content;
+	assert.match(await inject(), /Next: clarify the direction/, "the first run carries the full note");
+	const again = await inject();
+	assert.match(again, /still bound to dedupe at plan — unchanged/);
+	assert.doesNotMatch(again, /Next:/, "the unchanged note is not repeated");
+	await pi.handlers.session_compact[0]({}, session("sess-dedupe"));
+	assert.match(await inject(), /Next: clarify the direction/, "a compaction may have dropped the note — it comes back whole");
+});
+
+test("an answer that hands the operator a flow command gets a hidden correction for the next run", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	initPlaybook(repo);
+	const ctx = { ...makeCtx(repo), sessionManager: { getSessionId: () => "sess-ask", getBranch: () => [] as never[] } };
+	const turnEnd = (text: string, toolResults: unknown[] = []) =>
+		pi.handlers.turn_end[0]({ outcome: "completed", toolResults, entries: [], message: { role: "assistant", content: [{ type: "text", text }] } } as never, ctx) as Promise<{ entries?: { customType?: string; content?: string }[] } | undefined>;
+	const fixed = await turnEnd("The plan is ready. Please run `/flow approve --confirmed` when you are happy.");
+	assert.equal(fixed?.entries?.[0]?.customType, "dev-flow-correction");
+	assert.match(fixed?.entries?.[0]?.content ?? "", /operator answers in words/);
+	assert.equal(await turnEnd("I ran the checks — all green. **Verified?**"), undefined, "a plain checkpoint question passes");
+	assert.equal(await turnEnd("Please run flow approve", [{}]), undefined, "a turn still calling tools is not the final answer");
 });
 
 test("a session inside a feature worktree is judged by the main checkout's flow truth", async () => {
@@ -3144,7 +3289,7 @@ test("aborting a plan-stage feature with a written plan needs the operator's wor
 	const refused = await flow(["abort", "drafted"]);
 	assert.ok(refused.isError && /NEEDS-OPERATOR Drop plan\?/.test(refused.content[0].text), refused.content[0].text);
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "drafted", "plan", "plan.md")), "the plan survives a refused abort");
-	assert.match((await flow(["status"])).content[0].text, /→ drafted/, "the session stays bound");
+	assert.match((await flow(["status"])).content[0].text, /→ \*\*drafted\*\* \(this session\)/, "the session stays bound");
 	assert.match((await flow(["abort", "drafted", "--confirmed"])).content[0].text, /feature removed/);
 });
 
@@ -3282,8 +3427,8 @@ test("a dev port held by another flow is asked about, with the resources; --port
 	assert.equal(readFileSync(path.join(repo, ".dev-flow", "pb", "worktree", "dev-port"), "utf8").trim(), `${side}-pb`, "dev got the side port and a suffix that keeps the instance names apart");
 	assert.equal(readFileSync(path.join(repo, ".dev-flow", "pa", "worktree", "dev-port"), "utf8").trim(), `${port}`, "pa's stack was left alone");
 	const st = (await flow(["status"])).content[0].text;
-	assert.match(st, new RegExp(`dev: port ${port} → pa @ [0-9a-f]{7}`));
-	assert.match(st, new RegExp(`dev: port ${side} → pb @ [0-9a-f]{7}`));
+	assert.match(st, new RegExp(`dev port ${port} → pa @ [0-9a-f]{7}`));
+	assert.match(st, new RegExp(`dev port ${side} → pb @ [0-9a-f]{7}`));
 	// parallelDev = no: only replace or wait are offered
 	await flow(["init", "--write", md("parallelDev = no\n")]);
 	trackPlaybook(repo);
@@ -3337,4 +3482,8 @@ test("the post-Verified? warning lists the branch's own commits, not what came i
 	commitWt(repo, "pv", "changelog: pv ships");
 	const r = await flow(["release", "--no-version", "--confirmed"]);
 	assert.match(r.content[0].text, /Warning: 1 commit\(s\) landed after the operator's Verified\? \(given over [0-9a-f]{7}\): [0-9a-f]+ changelog: pv ships \(\+4 merged in from main, not listed\)/, r.content[0].text);
+});
+
+test("the operator-view check above ran over the gates this suite drives", () => {
+	assert.ok(viewsChecked > 50, `only ${viewsChecked} operator views were checked`);
 });

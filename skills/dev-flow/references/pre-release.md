@@ -1,55 +1,44 @@
-> Part of the **dev-flow** playbook. The always-on ground rules live in
-> [../SKILL.md](../SKILL.md); this file is the detail for one stage — read it
-> when the session reaches that stage.
+> Part of the **dev-flow** playbook. Ground rules: [../SKILL.md](../SKILL.md).
 
 ## Stage: pre-release
 
-Implemented, tested, running locally; prepare the release entirely in the
-worktree — main-repo git state stays off-limits until this gate hands over.
-**Versioning:** the `versioning.file` manifest is the single source of truth
-and tags are `versioning.pattern` rendered from it — one number everywhere. If
-`versioning.file` is unset, stop and clarify the scheme with the user; never
-invent one mid-release. Sequence:
+Prepare the release entirely in the worktree; main stays off-limits until the
+release gate hands over.
 
-1. `/flow-review` the change; fix every **Must fix** and **Should fix**
-   finding; `flow test` again if code changed.
-2. Update documentation to reflect the change.
-3. Update the changelog and bump the manifest to the exact version you will
-   tag — manifest, changelog and tag must agree; commit the prep on the feature
-   branch. **The changelog writer reviews the branch, not its commit list**:
-   read `git log <default>..HEAD` *and* `git diff <default>…HEAD` first and
-   write the entry from the net change the branch delivers, in the reader's
-   terms (what was broken, what works now) — this entry is also the forge
-   release body, so it publishes verbatim. **One entry per net change, never
-   one per commit:** a feature that needed iteration commits (the fix, its
-   follow-up, the test that chases it) is **one** line telling the final state;
-   two lines sharing a subject are the tell to merge them. Work that never
-   reached the reader — reverted mid-branch, dropped on the way, pure moves —
-   gets no line. Consolidating your own entry is fold-safe: the fold proofs
-   below guard lines that were already pending under `Unreleased` (another
-   flow's), which you move verbatim; your own prose is yours until the heading
-   ships. A versioned release **folds the `Unreleased` section** (entries
-   `--no-version` flows left there) under the new version heading: the gate
-   refuses while entries remain, refuses a fold that **drops or rewrites** one
-   (move the lines as they are and reword afterwards in a follow-up), and
-   refuses a changelog this branch never touched. `--no-fold-check` skips only
-   the line proofs, on the operator's word.
-4. `flow check` — the prep edits made the implement checks stale; the release
-   gate demands them green again.
-5. State what the PR will contain, present version and changelog entry,
-   **stop** — **Release?** → `flow release --confirmed`. Under a standing
-   yolo you run `flow release` without asking. If it returns **NEEDS-OPERATOR
-   Release?**, ask anyway: either commits landed after Verified? (the yolo
-   predates them, and the gate names them), or the playbook sets
-   `yolo = until-release`. Checkpoint report:
-   stage line **🔍 pre-release · `<slug>`** — version decision (`pending` /
-   `bump <level> → vX.Y.Z ~` / `no-version ✓`) · tag · changelog · fold ·
-   review tally · merge style, then `Done:`/`Next steps:` per the Stage
-   reports rule. The gate re-checks
-   tier-1, requires the manifest **ahead of the last tag**, a changelog
-   **heading** naming that version (a mention in prose is not an entry) and that
-   this branch prepared the entry. Operator ships this flow **without
-   version/tag** → `flow release --no-version --confirmed` — no bump, but the
-   changelog entry under `Unreleased` is still required: the gate proves the
-   branch **added a line there**, not that it edited some older section.
+**Versioning:** the `versioning.file` manifest is the single source of truth;
+tags are `versioning.pattern` rendered from it. No `versioning.file` → stop
+and settle the scheme with the operator; never invent one.
 
+1. **Review**: `/flow-review` the change; fix every **Must fix** and **Should
+   fix**; `flow check` again if code changed.
+2. **Docs**: update them to match the change.
+3. **Changelog + bump** — manifest, changelog heading and tag must agree;
+   commit the prep on the feature branch.
+   - **The changelog writer reviews the branch, not its commit list**: read
+     `git log <default>..HEAD` *and* `git diff <default>...HEAD`, then write
+     what the branch delivers in the reader's terms (what was broken, what
+     works now). The entry is also the forge release body.
+   - **One entry per net change, never one per commit.** Iteration commits
+     are one line about the final state; reverted or invisible work gets none.
+     Rewriting your own entry is fold-safe — the proofs guard only lines that
+     were already pending.
+   - A versioned release **folds `Unreleased`** under the new heading: move
+     pending lines verbatim (reword in a later flow). The gate refuses a
+     dropped or rewritten pending line, leftovers under `Unreleased`, and a
+     changelog this branch never touched. `--no-fold-check` only on the
+     operator's word.
+4. `flow check` — the prep made the earlier checks stale.
+5. **Ask Release? and stop.** Show what the PR contains, the version and the
+   changelog entry. Report opening: **🔍 pre-release · `<slug>`** (the gate's
+   stage line; the version field reads `pending` until decided — never
+   invent a bump or a no-version decision). Answer → `flow release
+   --confirmed`.
+   - Standing yolo → run `flow release` without asking. It still returns
+     `NEEDS-OPERATOR Release?` when commits landed after Verified? or the
+     playbook says `yolo = until-release` — then ask.
+   - Operator ships **without a version** → `flow release --no-version
+     --confirmed`: no bump or tag, but the branch must add its line under
+     `Unreleased`.
+
+The gate re-checks tier-1, requires the manifest ahead of the last tag and a
+changelog **heading** for that version written on this branch.

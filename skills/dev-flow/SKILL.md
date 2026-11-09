@@ -10,88 +10,65 @@ description: >
 
 <!-- dev-flow:core:start -->
 
-# dev-flow: the stage-by-stage playbook
+# dev-flow: ground rules
 
-Only the **flow tool** advances stages, and each gate refuses until its exit
-criteria hold. Drive it with args arrays — `["start", "dark-mode"]`,
-`["test"]`, `["status"]`.
+Only the **flow tool** advances stages; each gate refuses until its exit
+criteria hold. Call it with an args array — `["start", "dark-mode"]`,
+`["check"]`, `["status"]`.
 
-Ground rules:
-
-- **The flow tool is the only invocation.** `flow` is **not a shell command**: a
-  bash call named `flow` has no binary behind it (the guard refuses it and names
-  the tool call) — never reach for bash, `npx`, or a path to run a gate.
-- **You run the gates; the operator says words.** Ask the checkpoint word in
-  chat, then run the gate yourself. **Checkpoints are one verb: Approve? /
-  Verified? / Release? / Finish?** — ask exactly that word as a **plain chat
-  message**, mention that **yolo** is an available answer, and stop. The same
-  verb (or an explicit equivalent) in chat is the answer; then run that gate
-  with `--confirmed` — zero dialogs, **exactly one checkpoint per stage**. A
-  structured question tool is not chat and never
-  licenses `--confirmed`; never infer the answer. Never ask the operator to type
-  a `/flow ...` command: `/flow` is their **manual override** — surface it only
-  when the session is demonstrably wrong, stuck, or claiming a gate result it
-  never ran (and `/reload` when `flow version` says this session runs an older
-  build).
-  - **Stage reports** — a gate message = a **stage line** (statusbar glyph 💬 pre-flow / 📝 / 🔨 / 🔍 / 🚀 / 🏁
-    + slug + `·`-separated decision fields, provenance-marked `✓` operator · `✓playbook`/`✓detected` rule
-    · `~` agent-assumed · `?` pending; never fenced; undecided reads `pending`, never invented) + event
-    title + **`Done:`**/**`Next steps:`** on own lines: verbs italic (***bold italic*** = recommended),
-    no gate commands; recommended first, *yolo* last, plain closing line
-    "or say what to do differently". Long form: docs/playbook.md;
-    per-stage fields: the stage reference file.
-  - **yolo** at any checkpoint → run that gate `--yolo --confirmed`; every later
-    checkpoint is pre-confirmed — run the remaining gates back to back without
-    asking, honoring guidance attached to the word ("yolo, create a patch
-    version release" → bump patch; "yolo, no tag" → `--no-version`); a
-    NEEDS-OPERATOR is still asked. Yolo never
-    skips a gate: merge/tag/publish follow `flow release`. Checks and
-    guardrails stay fully enforced — a flow-guard `confirm` rule still asks the
-    operator.
-  - At Release?, choosing **no version/tag for this flow** →
-    `flow release --no-version --confirmed` — the merge still owes a changelog
-    entry under `Unreleased`, which the next versioned release folds under its
-    version heading (default is versioned: bump + tag).
-- **One session = exactly one feature** (flow + branch + worktree); parallel
-  sessions, one feature each, are the model. A session binds **explicitly and
-  only**: `flow start <slug>` binds its own feature; `flow use <slug>` takes
-  one over. Nothing auto-binds. Unbound: gates demand an explicit slug and main-checkout writes stay
-  blocked — there is no bypass, an unbound session cannot edit source.
-- **Project `flow-guard` rules** (`deny`/`confirm`/`protect`/`forbid` in
-  project.md `## global`) apply at **every** stage and are judged ahead of
-  dev-flow's verdicts — operator safety rules, not flow discipline. When one
-  fires, its reason is the answer: stop, show it, let the operator decide;
-  never route around it.
-- **`.dev-flow/<slug>/state.json` is flow-owned** — never read or write it;
-  `flow status` is your view. **project.md is the operator-owned playbook**:
-  read freely, **never edit** — it changes through `flow init --write` on the
-  operator's word.
-- **A guard blocking you means you are skipping a stage or writing outside your
-  feature** — run the gate instead of working around it. The guard reads
-  **commands**: quoted text is an argument's prose (a PR body discussing a
-  commit is not a commit), and a wrapper that execs its argument
-  (`sh -c "git push origin main"`) is judged on its payload.
-- **Every bash call has a timeout**: none stated → dev-flow arms its class
-  default (quick 30s … build 900s, a `timeout N` wrapper → N+15s). Pass
-  `timeout` (seconds) when a run needs longer.
-- Abandon a feature with `flow abort <slug>` — never unbind by hand. A gate
-  refusal lists exactly what is missing: fix that, rerun the gate.
-- Also obey the repo's own AGENTS.md and project skills: dev-flow sequences
-  stages, the project defines its conventions.
+- **The flow tool is the only invocation.** There is no `flow` shell command —
+  never bash, `npx` or a path.
+- **You run the gates; the operator says words.** Never ask the operator to
+  type a `flow` or `/flow` command. A checkpoint is one word asked in plain
+  chat — **Approve? / Verified? / Release? / Finish?** — mentioning that
+  *yolo* is an answer, then stop. Their word (or a clear equivalent) in chat →
+  run that gate with `--confirmed`. A structured question tool is not chat;
+  never infer the answer. A gate returning `NEEDS-OPERATOR <Question?>` means:
+  ask exactly that, in chat. `/flow` is the operator's own override; mention it
+  only when the session is demonstrably stuck or wrong (and `/reload` when
+  `flow version` says this session runs an older build).
+- **Stage reports** — open every report with the **stage line the gate
+  returned** (`stage line for your report`), pasted as is — the gate builds it
+  from state. A checkpoint message then has an event title and, on their own
+  lines, **`Done:`** (paths, SHAs, counts) and **`Next steps:`** — the
+  operator's options as italic verbs, the recommended one ***bold italic***
+  first, *yolo* last with what it pre-confirms, then the line
+  "or say what to do differently". Plain markdown, never fenced, never a gate
+  command.
+- **yolo** at a checkpoint → that gate with `--yolo --confirmed`; run the
+  remaining gates back to back without asking, honoring guidance attached to
+  the word ("yolo, patch bump", "yolo, no tag" → `--no-version`). Checks,
+  guard rules and any `NEEDS-OPERATOR` still apply.
+- **One session = one feature** (flow + branch + worktree). `flow start <slug>`
+  binds a new one, `flow use <slug>` takes one over; nothing auto-binds, and an
+  unbound session cannot edit source.
+- **Project `flow-guard` rules** apply at every stage, ahead of dev-flow's own.
+  When one fires, show its reason and let the operator decide.
+- **Hands off**: never read or write `.dev-flow/<slug>/state.json` (`flow
+  status` is your view); never edit `project.md` (it changes through `flow
+  init` on the operator's word, or inside a docs/patch flow).
+- **A guard blocking you means you skipped a stage or wrote outside your
+  feature** — run the gate instead of working around it. A refusal lists what
+  is missing: fix that, rerun.
+- **Every bash call has a timeout** (class default when unstated); pass
+  `timeout` (seconds) for longer runs.
+- Abandon a feature with `flow abort <slug>`. The repo's own AGENTS.md and
+  project skills still apply.
 
 <!-- dev-flow:core:end -->
 
 ## Which stage you are in
 
-Everything the stage demands lives beside this file, one file per stage: the
-session's stage injection names the file to read now, and this is the map.
+The stage injection names the file to read now; this is the map.
 
 | Read | For |
 | --- | --- |
-| `references/start.md` | `flow init` (no `.dev-flow/` yet), mode grants (`--patch`, `--docs`), playbook ownership |
-| `references/plan.md` | plan stage — research, clarify, plan file, mockups, Approve? |
-| `references/implement.md` | implement stage — worktree, commits, checks, tier-2 list, Verified? |
-| `references/pre-release.md` | pre-release — `/flow-review`, docs, changelog + bump, Release? |
-| `references/release.md` | release — PR and merge style, tag, forge release, release-done; hands over to finish |
-| `references/finish.md` | the close-out after `release-done` — `flow finish` runs the reflect worker first, fold/drop (= Finish?), then the re-run cleans up |
-| `references/reflect.md` | reflections (this project's queue; plugin feedback → upstream issues), when to fix or tidy, and the roadmap backlog |
+| `references/start.md` | `flow init`, starting a feature, modes (`--patch`, `--docs`, `--ui`), merge policy |
+| `references/plan.md` | plan — research, clarify, plan file, mockups, Approve? |
+| `references/implement.md` | implement — worktree, commits, checks, workers, Verified? |
+| `references/pre-release.md` | pre-release — review, docs, changelog + bump, Release? |
+| `references/release.md` | release — PR, CI, merge, tag; hands over to finish |
+| `references/finish.md` | finish — closing reflection, fold/drop, cleanup |
+| `references/reflect.md` | reflections and the roadmap backlog |
+
+Why each gate checks what it checks: [docs/gates.md](../../docs/gates.md).

@@ -12,10 +12,8 @@ defaultBranch = main
 
 - [ ] (ui) rendered mockups attached for every changed screen
 
-Every stage report opens with one inline stage line (plain markdown, never fenced): `◆ <stage> · <slug>`
-— mode (+grant ✓/?) · ui · stage fields, `·`-separated — and closes with exactly one plain-chat
-checkpoint (context | options incl. yolo | recommend | verb). Plan stage fields: plan.md status,
-mockups rendered/total, open questions. See docs/playbook.md — Structured stage reports.
+Every stage report opens with the stage line the gate returned, pasted as is, and closes with one
+plain-chat checkpoint. Name open questions in the report — the stage line does not carry them.
 
 <!-- what the plan must contain, UI expectations -->
 
@@ -28,8 +26,7 @@ test = npm test
 
 - [ ] (ui) app runs locally with real data; visual pass: no overflows or stray scrollbars
 
-Stage line adds: commits `N ahead, M uncommitted`, tier-1, tier-2, deploy/health, branch@sha;
-mid-stage additions go to plan.md as `**Added mid-stage:**` lines, never a second checkpoint.
+Mid-stage additions go to plan.md as `**Added mid-stage:**` lines, never a second checkpoint.
 
 <!-- tier-3: standing guidance for this stage -->
 
@@ -40,9 +37,8 @@ versionFile = package.json
 versionTag = v{version}
 ```
 
-Stage line carries the full version decision: pending | bump patch/minor/major → vX.Y.Z | no-version
-(only on the operator's explicit word), plus tag, changelog, Unreleased-fold status and
-/flow-review tally. Never invent a version or a no-version decision.
+Say the version decision in the report (bump patch/minor/major → vX.Y.Z, or no-version only on the
+operator's explicit word) with the /flow-review tally. Never invent a version or a no-version decision.
 
 <!-- e.g. semver rules, changelog policy, who confirms the version -->
 

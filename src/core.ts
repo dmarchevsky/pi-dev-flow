@@ -51,6 +51,7 @@ export interface FlowState {
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
+	friction?: number; // gate refusals and guard blocks this feature hit — finish skips the closing reflection at 0 (playbook reflect = on-friction)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
@@ -118,7 +119,7 @@ export interface Config {
 	/** Bytes one dev instance needs (playbook `instanceMem` / `instanceDisk`, e.g. 2G) — the side-by-side feasibility check. */
 	instanceMem?: number;
 	instanceDisk?: number;
-	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release" };
+	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
@@ -2138,10 +2139,9 @@ export function shouldTakeOverCompaction(d: { reason: "manual" | "threshold" | "
 /** The playbook's merge style spelled for a hint: "" when the project has no policy. */
 function mergeHintFor(cfg: Config): string {
 	const m = cfg.release.merge;
-	return m && m !== "any" ? ` (the playbook says merge = ${m} — gh pr merge <n> --${m === "merge" ? "merge" : m}, number before the flag: a trailing one reads as the PR selector)` : "";
+	return m && m !== "any" ? ` (merge = ${m} — gh pr merge <n> --${m === "merge" ? "merge" : m}, number before the flag)` : "";
 }
 
-/** What the agent/user should do next, per stage. */
 /** The block a flow-aware compaction appends to its summary: the flow's state as the disk holds it.
  *  A summarizer merging an older summary can carry a stale stage forward (lettuce rail-ui-fixes: a
  *  pre-release compaction still said "implement, next: flow verify"); this block is written from
@@ -2160,34 +2160,38 @@ export function compactionStateBlock(state: FlowState, cfg: Config): string {
 	].join("\n");
 }
 
+/** The next action for the agent, per stage — one line. The stage file (skills/dev-flow/references/)
+ *  holds the how; this carries only what the gate knows and the file cannot: paths, the playbook's
+ *  merge command, which versioning steps apply. */
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
-			if (state.patch) return `patch: describe the change to the operator in one line, then ask them Approve? in chat and run flow approve --confirmed when they answer — no plan file needed (all gates still apply)`;
-			if (state.docs) return `docs: describe the change to the operator in one line, then ask them Approve? in chat and run flow approve --confirmed when they answer — no plan file and no tier-1 checks (worktree and release stay intact)`;
-			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask the operator Approve? in chat and run flow approve --confirmed when they answer`;
+			if (state.patch || state.docs) return `${state.patch ? "patch" : "docs"}: describe the change in one line, ask Approve? in chat, then flow approve --confirmed — no plan file${state.docs ? ", no tier-1 checks" : ""}`;
+			return `clarify the direction in chat, write .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask Approve? and run flow approve --confirmed on the answer`;
 		case "implement":
-			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
-			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then run flow verify — it rebases onto the default branch when behind and deploys for review (asking first when another flow holds the dev port) — look at the change yourself, then ask the operator Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
-		case "pre-release":
-			if (state.docs && (cfg.versioning.file || cfg.release.changelog))
-				return `${cfg.release.review} → fix must-have/should-have → docs flow: it usually ships unversioned — ask the operator; with their word, flow release --no-version needs no bump, no tag and (docs mode) no changelog entry. Shipping it versioned instead:${cfg.release.changelog ? ` prepare ${cfg.release.changelog}` : ""}${cfg.versioning.file ? `${cfg.release.changelog ? " and" : ""} bump version in ${cfg.versioning.file}` : ""}. Then show the operator the PR summary, ask Release? and run flow release`;
-			return `${cfg.release.review} → fix must-have/should-have → update docs${cfg.release.changelog ? ` → prepare ${cfg.release.changelog} (a heading for the new version, carrying every pending Unreleased line over as it stands)` : ""}${cfg.versioning.file ? ` → bump version in ${cfg.versioning.file}` : ""}, re-run flow check, then show the operator the PR summary, version and changelog, ask Release? and run flow release`;
+			if (state.docs) return `edit in ${state.worktree} (docs mode: no project commands), tick the tier-2 checklist with the operator, ask Verified?, then flow verify --confirmed`;
+			return `build and test in ${state.worktree}, commit as you go, flow check; then flow verify (deploys for review), look yourself, keep the app running, ask Verified? and run flow verify --confirmed on the answer`;
+		case "pre-release": {
+			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}` : ""].filter(Boolean).join(" and ");
+			if (state.docs && prep) return `${cfg.release.review}, fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
+			return `${cfg.release.review}, fix must/should, update docs${prep ? `, ${prep}` : ""}, flow check; show the PR summary, version and changelog, ask Release? and run flow release`;
+		}
 		case "release":
-			return state.approvals.release
-				? "release recorded — commit and push the release chores in the main checkout (prefix the commit with DEV_FLOW_ALLOW_MAIN=1 — the installed pre-commit hook otherwise blocks main commits), then run flow finish: it runs the closing reflection first and stops for the operator's fold/drop (that answer is Finish?) — the re-run with --confirmed removes worktree, branch and .dev-flow/" + state.slug + "/"
-				: state.noVersion
-					? `publish: commit and push the branch, open the PR, merge only once CI is green (gh pr checks <n> --watch — a locally-green branch can still fail CI-only jobs)${mergeHintFor(cfg)} — unversioned release: no manifest bump, no tag, your changelog entry rides under Unreleased; then run flow release-done (no further question)`
-					: `publish: commit and push the branch, open the PR, merge only once CI is green (gh pr checks <n> --watch — a locally-green branch can still fail CI-only jobs)${mergeHintFor(cfg)}, create the annotated tag from the manifest version and push it, then run flow release-done (no further question)`;
+			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then flow finish (closing reflection first; its fold/drop answer is Finish?)`;
+			return `publish: push the branch, open the PR, merge once CI is green (gh pr checks <n> --watch)${mergeHintFor(cfg)}${state.noVersion ? " — unversioned: no bump, no tag" : ", push the annotated tag"}; then flow finish records the release and closes out`;
 	}
 }
 
 /** Stable token prefixing every no-UI operator refusal, so a headless orchestrator can route refusals without grepping prose. */
 export const NEEDS_OPERATOR = "NEEDS-OPERATOR";
 
-/** Refusal for "the gate needs the operator's word and no UI is present": `<TOKEN> [Question?] — <what to do>`. */
-export function needsOperator(detail: string, question?: string): string {
-	return `${NEEDS_OPERATOR}${question ? ` ${question}` : ""} — ${detail}`;
+/** Prefix of a gate-output line meant for the agent only: the operator's view (src/present.ts) leaves it out. */
+export const AGENT_MARK = "↪ ";
+
+/** Refusal for "the gate needs the operator's word and no UI is present": `<TOKEN> [Question?] — <what the
+ *  operator should know>`, then the agent's own instructions on an agent-only line (`todo`). */
+export function needsOperator(detail: string, question?: string, todo?: string): string {
+	return `${NEEDS_OPERATOR}${question ? ` ${question}` : ""} — ${detail}${todo ? `\n${AGENT_MARK}${todo}` : ""}`;
 }
 
 /** Machine-readable `flow status --json`: the prose view's facts as stable JSON (no git probes, same as prose). */

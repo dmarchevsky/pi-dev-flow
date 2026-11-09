@@ -63,6 +63,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		preflight: "release.preflight", // run in the worktree at flow release, before anything ships (e.g. docker build .)
 		merge: "release.merge", // how a merged branch lands: squash | merge | rebase | any
 		yolo: "release.yolo", // how far a standing yolo reaches: all (default) | until-release (gh#176)
+		reflect: "release.reflect", // when finish runs the closing reflection: on-friction (default) | always
 	},
 };
 // pre-release owns release preparation; the release keys are accepted under both sections so
@@ -171,6 +172,10 @@ export function parseProjectMd(text: string): ParsedMd {
 						// a typo must not quietly widen what a yolo answers
 						if (mapped === "release.yolo" && !/^(all|until-release)$/.test(m[2].trim())) {
 							p.warn.push(`${where}: yolo = "${m[2]}" — expected all or until-release, keeping all`);
+							return;
+						}
+						if (mapped === "release.reflect" && !/^(always|on-friction)$/.test(m[2].trim())) {
+							p.warn.push(`${where}: reflect = "${m[2]}" — expected always or on-friction, keeping on-friction`);
 							return;
 						}
 						p.flow[stage as MdStage][mapped] = m[2];
@@ -350,7 +355,7 @@ const ANSWER_STAGE: Record<string, MdStage> = {
 	setup: "implement", test: "implement", build: "implement", run: "implement", seedData: "implement", health: "implement", dev: "implement", healthWait: "implement",
 	port: "implement", parallelDev: "implement", instanceMem: "implement", instanceDisk: "implement", devDown: "implement", servedBuild: "implement",
 	versionFile: "pre-release", versionTag: "pre-release", changelog: "pre-release", review: "pre-release",
-	releases: "release", artifact: "release", preflight: "release", merge: "release", yolo: "release",
+	releases: "release", artifact: "release", preflight: "release", merge: "release", yolo: "release", reflect: "release",
 };
 /** The draft's placeholder comment per key (buildDraft) — stale once the key has an answer. */
 const DRAFT_HINTS: Record<string, RegExp> = { versionFile: /<!-- versionFile = /, merge: /<!-- merge = /, changelog: /<!-- no changelog found/ };

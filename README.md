@@ -143,7 +143,8 @@ are the only things dev-flow cannot do for you.
 
 Nothing here trusts the agent in either direction: a checkpoint gate refuses if you never answered
 (its refusal begins `NEEDS-OPERATOR Approve?`), and the agent is told never to ask *you* to type a
-`flow` command. `/flow …` is your manual override — for when the session is stuck, wrong, or
+`flow` command — gate results show you facts and the one question waiting on you, never the command
+behind it, and an answer that slips one in gets corrected on the next run. `/flow …` is your manual override — for when the session is stuck, wrong, or
 claiming a gate result it never produced. → [Gate reference](docs/gates.md)
 
 ### Reflections: the agent's notes to you

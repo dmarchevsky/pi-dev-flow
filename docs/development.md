@@ -21,6 +21,16 @@ A release cannot update a session that is already running — pi keeps the code 
 After merging and tagging, `/reload` in every session that must carry the new behavior; shared-process
 hosts (pi-web) keep stale code until restarted, so reload there re-binds state but does not swap code.
 
+## Layout
+
+- `extensions/dev-flow.ts` — the pi wiring only: the `/flow` command, the `flow` and `flow_stage` tools,
+  the event hooks (guards, injections, footer, compaction).
+- `src/runtime/` — what the wiring runs: `base` (shell, paths, state, sessions, claims), `checks` (dev
+  deploy, health, tier-1 checks, the stage-line facts), `gates` (the runner and the non-shipping gates),
+  `ship` (verify, release, release-done, finish), `setup` (init questions), `reflect`, `workers`.
+- `src/core.ts`, `src/projectmd.ts`, `src/present.ts`, … — pure logic, unit-tested without pi.
+  `present.ts` splits every gate result into the operator's view and the agent's text.
+
 ## The skill: an injected core, plus references a stage reads
 
 Pi advertises a skill (name, description, path) and loads `SKILL.md` only when the model decides to
