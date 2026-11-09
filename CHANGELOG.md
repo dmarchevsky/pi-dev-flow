@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.86.1] - 2026-11-08
+
+**A reply that stops mid-thought resumes on its own instead of stalling the flow.**
+
 ### Fixed
 - **A reply that stops mid-thought no longer stalls a flow.** Some providers end a reply inside the model's reasoning with a normal "stop": no answer, no tool call. pi took that as a finished turn and went idle, so the flow sat mid-stage until you typed "continue". With a flow bound, dev-flow now shows a one-line note and asks pi for one more request. It does this once in a row: a second hollow stop is reported instead of retried, so a broken model cannot loop. Errors, aborts and stage workers (which have their own nudges) are left alone.
 
