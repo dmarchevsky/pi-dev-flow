@@ -69,6 +69,8 @@ import {
 	mainCheckoutRoot,
 	parseWorkerReport,
 	workerTurnError,
+	hollowStop,
+	hollowStopNote,
 	workerOpError,
 	clampBudgetMin,
 	tagCreates,
@@ -1758,6 +1760,21 @@ test("workerTurnError: a trailing model-error storm is a dead model, not a stall
 	assert.equal(workerTurnError([err("Request timed out."), ok]), null, "an error a retry recovered from");
 	assert.deepEqual(workerTurnError([ok, err("terminated"), err("Request timed out."), { role: "user" }, err("Request timed out.")]), { reason: "error", message: "Request timed out.", streak: 3 });
 	assert.equal(workerTurnError([{ role: "assistant", stopReason: "error" }])?.message, "(no error message)");
+});
+
+test("hollowStop: a normal stop with no answer and no tool call", () => {
+	const a = (content: unknown[], stopReason = "stop") => ({ role: "assistant", stopReason, content });
+	assert.deepEqual(hollowStop(a([{ type: "thinking", thinking: "Let me check if the working tree exists, though it might" }])), { thinking: true }, "reasoning cut off mid-thought");
+	assert.deepEqual(hollowStop(a([])), { thinking: false }, "an empty reply");
+	assert.deepEqual(hollowStop(a([{ type: "thinking", thinking: "x" }, { type: "text", text: "  \n" }])), { thinking: true }, "blank text is no answer");
+	assert.equal(hollowStop(a([{ type: "thinking", thinking: "x" }, { type: "text", text: "Approve?" }])), null, "an answer");
+	assert.equal(hollowStop(a([{ type: "toolCall", name: "bash" }], "toolUse")), null, "a tool call");
+	assert.equal(hollowStop(a([{ type: "thinking", thinking: "x" }], "error")), null, "a model error is pi's to handle");
+	assert.equal(hollowStop(a([], "aborted")), null, "an abort is the operator's");
+	assert.equal(hollowStop({ role: "user", content: [] }), null);
+	assert.equal(hollowStop(undefined), null);
+	assert.match(hollowStopNote({ thinking: true }), /ended inside your reasoning/);
+	assert.match(hollowStopNote({ thinking: false }), /was empty/);
 });
 
 test("parseSize / formatSize read the playbook's instance costs", () => {

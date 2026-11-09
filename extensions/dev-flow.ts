@@ -24,7 +24,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import { compact, defineTool, isToolCallEventType, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type ExtensionAPI, type ToolCallEvent, type ToolCallEventResult, type TurnEndEvent, type TurnEndEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOW_REWRITE, applicableItems, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
+import { ALLOW_REWRITE, applicableItems, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
 import { loadProject } from "../src/projectmd.ts";
 import { bashTimeout, requireTimeout, timeoutClass } from "../src/timeouts.ts";
 import { AGENT_MARK, operatorCommandAsks, operatorCommandCorrection, viewHeader, askLine, type GateView } from "../src/present.ts";
@@ -508,6 +508,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	// after one ends, and a stale claim there is a permanent lock (its pid is the server's, always alive).
 	pi.on("session_shutdown", async (_event, ctx) => {
 		WEB_CHIP_KEYS.delete(sessionKey(ctx)); // the session's UI is gone; a long-lived server must not keep its slot
+		hollowStreak.delete(sessionKey(ctx));
 		if (!guardsAreMine()) return;
 		const root = await flowRoot(ctx.cwd);
 		if (!existsSync(dfDir(root))) return;
@@ -519,7 +520,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		refreshStatus(ctx, root);
 		// pi checks its compaction threshold between every turn; our safe points must be as frequent.
 		maybeCompactNow(ctx, root);
-		return commandAskCorrection(event, ctx, root);
+		return commandAskCorrection(event, ctx, root) ?? hollowStopResume(event, ctx, root);
 	});
 	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
 	pi.on("agent_settled", async (_event, ctx) => {
@@ -767,6 +768,36 @@ export default function devFlow(pi: ExtensionAPI) {
 		return { entries: [...event.entries, { type: "custom_message", customType: "dev-flow-correction", content: operatorCommandCorrection(hits), display: false } as unknown as TurnEndEvent["entries"][number]] };
 	};
 
+	/** Hollow stops in a row per session: one resume, then stop resuming so a broken model cannot loop. */
+	const hollowStreak = new Map<string, number>();
+
+	/** The model ended its reply as a normal stop with no answer and no tool call (a provider that closed the
+	 *  stream inside the reasoning). pi would go idle and a bound flow would sit mid-stage with nothing for the
+	 *  operator to answer, so dev-flow appends a visible note and asks pi for one more request. Only when a flow
+	 *  is bound in this session and it is not a stage worker (workers have their own nudge loop). */
+	const hollowStopResume = (event: TurnEndEvent, ctx: ExtensionContext, root: string): TurnEndEventResult | undefined => {
+		const e = event as { outcome?: string; toolResults?: unknown[]; message?: unknown };
+		const key = sessionKey(ctx);
+		const hollow = e.outcome === "completed" && (e.toolResults?.length ?? 0) === 0 ? hollowStop(e.message) : null;
+		if (!hollow) {
+			hollowStreak.delete(key);
+			return undefined;
+		}
+		if (!initiated(root) || !boundFeature(root, key)) return undefined;
+		try {
+			if (workerSessions.has(ctx.sessionManager.getSessionId())) return undefined;
+		} catch {
+			/* not a worker */
+		}
+		const streak = (hollowStreak.get(key) ?? 0) + 1;
+		hollowStreak.set(key, streak);
+		const resume = streak === 1;
+		const content = resume ? hollowStopNote(hollow) : "[dev-flow] The model ended with no answer again after one resume, so dev-flow stopped resuming. Say continue to retry, or check the provider.";
+		// SAFETY: a custom_message draft is one of the documented boundary entry types; the draft union is not re-exported
+		const entry = { type: "custom_message", customType: "dev-flow-resume", content, display: true } as unknown as TurnEndEvent["entries"][number];
+		return resume ? { entries: [...event.entries, entry], continue: true } : { entries: [...event.entries, entry] };
+	};
+
 	/** The full note when it changed (or the core was just re-sent), else the one-line reminder. */
 	const sameAsLast = (key: string, full: string, short: string): string => {
 		if (lastContext.get(key) === full) return short;
@@ -776,6 +807,7 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!guardsAreMine()) return undefined;
+		hollowStreak.delete(sessionKey(ctx)); // a new prompt earns a fresh resume
 		// One [dev-flow] line per run, whatever number of copies of this package are installed. The same
 		// package can reach one runtime twice (a project pin beside the npm install) and pi dedupes
 		// extensions by file path only; equal-version copies both pass the election, so the first pass
