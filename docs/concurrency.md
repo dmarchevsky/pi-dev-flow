@@ -28,6 +28,21 @@ binding, so `flow status` prints the key and says so instead of leaving a shared
 guessed from a path. Dev-flow keeps no per-process session state beyond that keyed map, released on
 shutdown; the one other process-wide cache (`compile()` in `src/core.ts`) holds flag-less regexes,
 which carry no mutable state to leak between sessions.
+**One dev stack, several flows.** A dev deploy is machine state, not branch state, so `flow verify`
+keeps a small registry (`.dev-flow/dev-ports.json`: port → slug, commit, time) and `flow status` prints
+it (`dev: port 8090 → <slug> @ <sha>`). Before deploying, verify checks whether its port was last
+deployed by **another live flow**. If so it does not deploy: it returns `NEEDS-OPERATOR Dev port?` with
+who holds the port (stage, commit, age), the available RAM and free disk against the playbook's
+`instanceMem` / `instanceDisk`, and the options — run alongside on the next free port
+(`flow verify --port=<n>`), replace that deploy (`--replace`), or wait. Running alongside is offered
+only when the playbook allows it (`parallelDev` is not `no`, `dev`/`health` read `$DEV_FLOW_PORT`) and
+the resources fit. A finished or aborted flow holds no port. `flow finish` stops a flow's
+non-default-port instance with `devDown`.
+
+**The review is of the tree that ships.** Parallel flows release while others are still implementing,
+so `flow verify` rebases a branch that fell behind the default branch before it deploys for review,
+and `flow verify --confirmed` refuses if the default branch moved again before the answer.
+
 Enforcement is by attribution: a write inside worktree X is judged
 by X's own feature stage no matter which session touches it; main-checkout code stays closed
 while your bound feature is in `plan`/`implement` and while any feature is unbound-and-ambiguous.

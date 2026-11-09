@@ -42,8 +42,15 @@ feature).
    up to `healthWait` (default 30s) — a service needing a moment after its
    container starts is not a failed deploy; say so rather than declaring a
    healthy deploy broken. Walk the **tier-2 checklist** (`- [ ]`) with the
-   operator honestly — it cannot be scripted. Keep the app **running** when
-   you ask **Verified?** → `flow verify --confirmed` — the operator reviews
+   operator honestly — it cannot be scripted. **Verify is two steps.**
+   `flow verify` prepares the review: it rebases onto the default branch when
+   the branch is behind (a conflict aborts and hands it to you), deploys, and
+   returns `deployed for review` — it never opens a dialog. If another flow
+   holds the dev port it returns `NEEDS-OPERATOR Dev port?` with the free RAM
+   and disk instead of deploying: put the options to the operator and re-run
+   with their answer (`--port=<n>` alongside, or `--replace`). Then look at the
+   change yourself, keep the app **running** while you ask **Verified?**, and
+   record the answer with `flow verify --confirmed` — the operator reviews
    the live app, so never tear the test server down before the checkpoint is
    answered (with no `dev` deploy configured, `flow verify` live-re-probes
    `health` itself and refuses while nothing is answering). Checkpoint report: stage line **🔨 implement ·
@@ -132,7 +139,10 @@ runs past 15 min), re-runs the health probe **against what it just deployed**
 `healthWait`, then refuses the gate reporting its attempts — a pre-deploy PASS
 describes a container that no longer exists; no probe prints
 `health: none configured` and the doctor flags it), and demands all tier-1
-checks green before the single question. The operator's confirm covers the
+checks green before the single question. With `servedBuild` set it also proves
+the app serves the worktree's HEAD, not just that something answers. A
+`--confirmed` run refuses when the default branch moved since the review
+deploy: run `flow verify` again so the answer covers the tree that ships. The operator's confirm covers the
 tier-2 list as a set (hashed; edits reset it). A `--docs` feature prints
 `docs mode: project commands skipped` and asks only the verify question.
 Verify lands the feature in **pre-release**.

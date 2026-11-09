@@ -20,7 +20,9 @@
  * Inactive (fully pass-through) in repos without a .dev-flow/ directory.
  */
 import { exec } from "node:child_process";
-import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { freemem } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
@@ -147,6 +149,10 @@ import {
 	releaseOrderInvocation,
 	type BranchState,
 	type Config,
+	type DevSlot,
+	formatSize,
+	servedBuildMatches,
+	sideBySide,
 	type FeatureRef,
 	type FlowState,
 	type StageCheck,
@@ -385,7 +391,7 @@ async function releaseTags(root: string): Promise<string[] | null> {
 }
 
 const GATE_HELP =
-	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code|done <n> [<what>]] | roadmap [add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] | release [--yolo|--no-version|--no-fold-check|--no-marker-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [--no-reflect] [--note=<text>] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it they ask in a dialog, or refuse with NEEDS-OPERATOR when no UI is present — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word; --no-marker-check lets a branch add conflict-marker-shaped lines on purpose — finish runs the closing reflection worker first (before removing anything) and stops for the operator's fold/drop; the re-run with --confirmed cleans up; --no-reflect --confirmed skips it on the operator's explicit word (yolo never does), --note= hands the worker the operator's friction notes — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, done <n> checks a fixed one off, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> (or add --slug=) stamps an item for flow start, which seeds the new plan from its brief; finish checks it off — a new feature asked for mid-flow is parked there, never as a hand-made .dev-flow/<slug>/; start <slug> --confirmed adopts such a ghost dir — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
+	"help [--json] | init [--force|--draft|--write <text>|--write-file <path>|--answers key=value…|--answers-file <path>] [--confirmed] [--track] | reflect [<note>|list|tidy|move <n> --playbook|--code|done <n> [<what>]] | roadmap [add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|tidy] | doctor [<issue note>] | status [slug] [--json] | start <slug> [--ui|--patch|--docs --confirmed] [--force] [--merge=squash|merge|rebase|any] [--check-upstream] | use <slug> | test | check | health | approve [--yolo] | verify [--yolo] [--port=<n>|--replace] | release [--yolo|--no-version|--no-fold-check|--no-marker-check] | release-done [--no-artifact-check|--no-release-create] | finish [--yolo] [--no-reflect] [--note=<text>] [slug] | abort [slug] | version [--check-upstream] — state gates take [slug] and --confirmed (the operator already answered in chat); without it the agent's call returns NEEDS-OPERATOR with the question to ask in chat (it never opens a dialog), and the /flow slash command asks in a dialog — verify without --confirmed rebases a branch that is behind the default branch and deploys for review; --port=<n> / --replace answer its Dev port? question when another flow holds the stack — --ui/--patch/--docs and --merge=<style> on start are operator-granted (--confirmed); start refuses until the playbook has a merge policy and writes the answer into project.md — --yolo (with --confirmed) answers that checkpoint and pre-confirms every later one; checks and guardrails stay — release --no-version ships merge + changelog only (no bump, tag or forge release); --no-fold-check skips the changelog fold line proofs on the operator's word; --no-marker-check lets a branch add conflict-marker-shaped lines on purpose — finish runs the closing reflection worker first (before removing anything) and stops for the operator's fold/drop; the re-run with --confirmed cleans up; --no-reflect --confirmed skips it on the operator's explicit word (yolo never does), --note= hands the worker the operator's friction notes — release names a session running an older dev-flow build than the disk ships and asks update (/reload) or proceed — recorded, never a block — reflect <note> queues a project suggestion in reflections.md (--playbook = docs-flow fix, --code = patch-flow fix); --plugin never writes — dev-flow feedback goes upstream and it prints the GitHub issue recipe; bare reflect prints the session-reflection protocol (bound: run flow_stage op reflect); list numbers open items, move <n> re-files one, done <n> checks a fixed one off, tidy drops closed ones — roadmap manages .dev-flow/roadmap.md: pick <n> <slug> (or add --slug=) stamps an item for flow start, which seeds the new plan from its brief; finish checks it off — a new feature asked for mid-flow is parked there, never as a hand-made .dev-flow/<slug>/; start <slug> --confirmed adopts such a ghost dir — doctor reviews structure, git consistency and open reflections (never writes); doctor <note> prints an investigation brief — version prints the build the disk ships and any other dev-flow copies in this process (--check-upstream asks the registry)";
 const featDir = (root: string, slug: string) => path.join(dfDir(root), slug);
 const stateFile = (root: string, slug: string) => path.join(featDir(root, slug), "state.json");
 const claimFile = (root: string, slug: string) => path.join(featDir(root, slug), "claim.json");
@@ -629,6 +635,159 @@ function featureEnv(root: string, state: FlowState): Record<string, string> {
 	return featureTmpEnv(dir);
 }
 
+/** The port this flow's dev deploy uses: the operator's pick for it, else the playbook default. */
+const devPortOf = (state: FlowState, cfg: Config): number | undefined => state.devPort ?? cfg.devPort;
+
+/** featureEnv plus where this flow's dev instance lives: $DEV_FLOW_PORT, $DEV_FLOW_INSTANCE (the slug) and
+ *  $DEV_FLOW_SUFFIX — "" on the default port, "-<slug>" on another — for a compose project name or container
+ *  prefix that must not collide with the instance already running. */
+function devEnv(root: string, state: FlowState, cfg: Config): Record<string, string> {
+	const port = devPortOf(state, cfg);
+	const side = state.devPort !== undefined && state.devPort !== cfg.devPort;
+	return { ...featureEnv(root, state), ...(port !== undefined ? { DEV_FLOW_PORT: String(port) } : {}), DEV_FLOW_INSTANCE: state.slug, DEV_FLOW_SUFFIX: side ? `-${state.slug}` : "" };
+}
+
+// ---------------------------------------------------------------- dev stack registry
+// One machine, one dev port, several flows: who deployed last is what decides whether a verify may
+// redeploy there or must ask first. Keyed by port ("default" when the playbook names none).
+const devPortsFile = (root: string) => path.join(dfDir(root), "dev-ports.json");
+const slotKey = (port: number | undefined) => (port === undefined ? "default" : String(port));
+
+/** Live slots only: a slot whose flow finished (state.json gone) or was aborted holds nothing. */
+function readDevPorts(root: string): Record<string, DevSlot> {
+	let raw: Record<string, DevSlot>;
+	try {
+		raw = JSON.parse(readFileSync(devPortsFile(root), "utf8")) as Record<string, DevSlot>;
+	} catch {
+		return {};
+	}
+	return Object.fromEntries(
+		Object.entries(raw).filter(([, v]) => {
+			const st = v?.slug ? readState(root, v.slug) : null;
+			return !!st && !st.aborted;
+		}),
+	);
+}
+
+function writeDevPorts(root: string, reg: Record<string, DevSlot>): void {
+	atomicWrite(devPortsFile(root), `${JSON.stringify(reg, null, "\t")}\n`);
+}
+
+function portFree(port: number): Promise<boolean> {
+	return new Promise((resolve) => {
+		const srv = createServer();
+		srv.once("error", () => resolve(false));
+		srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
+	});
+}
+
+async function nextFreePort(from: number, taken: Set<number>): Promise<number | null> {
+	for (let p = from + 1; p < Math.min(from + 50, 65536); p++) if (!taken.has(p) && (await portFree(p))) return p;
+	return null;
+}
+
+/** MemAvailable (what a new process can really get) where Linux reports it, else the OS free figure. */
+function memAvailable(): number | null {
+	try {
+		const m = readFileSync("/proc/meminfo", "utf8").match(/^MemAvailable:\s+(\d+)\s*kB/m);
+		if (m) return Number(m[1]) * 1024;
+	} catch {
+		/* not Linux */
+	}
+	const f = freemem();
+	return Number.isFinite(f) ? f : null;
+}
+
+function diskFreeAt(dir: string): number | null {
+	try {
+		const st = statfsSync(dir);
+		return Number(st.bavail) * Number(st.bsize);
+	} catch {
+		return null;
+	}
+}
+
+function ago(iso: string): string {
+	const min = Math.round((Date.now() - Date.parse(iso)) / 60_000);
+	if (!Number.isFinite(min)) return "at an unknown time";
+	return min < 1 ? "just now" : min < 90 ? `${min} min ago` : `${Math.round(min / 60)} h ago`;
+}
+
+const portLabel = (port: number | undefined) => (port === undefined ? "the dev stack" : `port ${port}`);
+
+/** Before a verify deploys: is the stack it would replace held by another live flow? Applies the
+ *  operator's `--port=<n>` / `--replace` answer, or asks — with the measured resources — which to do. */
+async function devSlotCheck(o: GateCtx, state: FlowState): Promise<RunResult | { note: string }> {
+	const { root, cfg, flag, rest } = o;
+	const portArg = flagValue(rest, "port");
+	if (portArg !== null) {
+		const n = Number(portArg);
+		if (!Number.isInteger(n) || n < 1 || n > 65535) return { text: `--port=${portArg} is not a port`, isError: true };
+		if (cfg.devPort === undefined) return { text: "--port needs a default `port` in the playbook's ## implement flow block — dev-flow exports the chosen one to dev/health as $DEV_FLOW_PORT", isError: true };
+		if (n === cfg.devPort) delete state.devPort;
+		else state.devPort = n;
+		writeState(root, state);
+	}
+	const port = devPortOf(state, cfg);
+	const reg = readDevPorts(root);
+	const slot = reg[slotKey(port)];
+	if (!slot || slot.slug === state.slug) return { note: "" };
+	if (flag("replace")) return { note: `dev: replaced ${slot.slug}'s deploy on ${portLabel(port)} (operator's answer)` };
+	const other = readState(root, slot.slug);
+	const taken = new Set(Object.keys(reg).map(Number).filter(Number.isFinite));
+	const nextPort = port !== undefined ? await nextFreePort(port, taken) : null;
+	const mem = memAvailable();
+	const disk = diskFreeAt(root);
+	const side = sideBySide({ cfg, nextPort, memAvail: mem, diskFree: disk });
+	const res = [
+		`RAM available ${mem !== null ? formatSize(mem) : "unknown"}${cfg.instanceMem !== undefined ? ` (one instance needs ${formatSize(cfg.instanceMem)})` : ""}`,
+		`disk free ${disk !== null ? formatSize(disk) : "unknown"}${cfg.instanceDisk !== undefined ? ` (one instance needs ${formatSize(cfg.instanceDisk)})` : ""}`,
+	].join(", ");
+	const caveat = side.ok
+		? cfg.parallelDev === undefined
+			? " The playbook does not say whether two instances can share this machine (parallelDev = yes|no) — tell the operator that when you ask."
+			: ""
+		: ` Running alongside is not offered: ${side.why.join("; ")}.`;
+	const opts = [
+		...(side.ok ? [`run alongside on port ${nextPort}: flow verify --port=${nextPort}`] : []),
+		`replace ${slot.slug}'s deploy: flow verify --replace`,
+		`wait until ${slot.slug} is done with it`,
+	];
+	const held = `${portLabel(port)} is serving ${slot.slug} (stage ${other?.stage ?? "?"}${other?.pendingAsk ? `, waiting on ${other.pendingAsk}` : ""}, ${slot.head.slice(0, 7)}, deployed ${ago(slot.at)})`;
+	return { text: needsOperator(`${held} — this verify would replace it. Resources: ${res}.${caveat} Ask the operator which: ${opts.join(" | ")} — nothing was built or deployed yet.`, "Dev port?"), isError: true };
+}
+
+/** Before a review deploy: bring the branch up to date with the default branch, so the operator reviews
+ *  the tree that will ship. Rebases a clean branch that is behind; refuses on a conflict (aborted, branch
+ *  untouched) or on uncommitted work. With the operator's answer in hand (--confirmed) it never rewrites
+ *  history: a default branch that moved since the review deploy sends the flow back to `flow verify`. */
+async function catchUp(root: string, state: FlowState, cfg: Config, confirmed: boolean): Promise<RunResult | { note: string }> {
+	const cwd = gateCwd(root, state);
+	if (cwd === root) return { note: "" };
+	const d = cfg.defaultBranch;
+	const hasOrigin = !!(await originUrl(root));
+	let fetchNote = "";
+	if (hasOrigin && !(await sh(`git fetch -q origin ${sq(d)}`, cwd, 60_000)).ok) fetchNote = ` (fetch of origin/${d} failed — compared with the last fetched state)`;
+	const base = hasOrigin && (await sh(`git rev-parse --verify -q ${sq(`refs/remotes/origin/${d}`)}`, cwd)).ok ? `origin/${d}` : d;
+	const r = await sh(`git rev-list --count HEAD..${sq(base)}`, cwd);
+	const behind = Number.parseInt(r.out.trim(), 10);
+	if (!r.ok || !Number.isFinite(behind)) return { note: `behind ${base}: unknown${fetchNote}` };
+	if (behind === 0) return { note: fetchNote ? `up to date with ${base}${fetchNote}` : "" };
+	if (confirmed)
+		return { text: `verify gate FAILED:\n- ${base} moved ${behind} commit(s) past this branch — the operator's answer would cover a tree that is not the one that ships. Run flow verify (it rebases and redeploys for review), then ask Verified? again`, isError: true };
+	// untracked build output (a deploy's artifacts) does not stop a rebase; uncommitted tracked edits do
+	const dirty = await sh("git status --porcelain --untracked-files=no", cwd);
+	if (dirty.ok && dirty.out.trim()) return { text: `verify gate FAILED:\n- the branch is ${behind} commit(s) behind ${base} and has uncommitted changes — commit them, then re-run flow verify (it rebases before the review deploy)`, isError: true };
+	const rb = await sh(`git rebase ${sq(base)}`, cwd, 120_000);
+	if (!rb.ok) {
+		const conflicts = (await sh("git diff --name-only --diff-filter=U", cwd)).out.split("\n").filter(Boolean);
+		await sh("git rebase --abort", cwd);
+		return { text: `verify gate FAILED:\n- the branch is ${behind} commit(s) behind ${base} and the rebase stopped on conflicts${conflicts.length ? ` (${conflicts.join(", ")})` : ""} — aborted, the branch is as it was. Rebase by hand in ${state.worktree} (git rebase ${base}), resolve, then re-run flow verify\n${tail(rb.out)}`, isError: true };
+	}
+	const pushed = hasOrigin && state.branch && (await sh(`git rev-parse --verify -q ${sq(`refs/remotes/origin/${state.branch}`)}`, cwd)).ok;
+	return { note: `rebased onto ${base} (was ${behind} commit(s) behind)${fetchNote}${pushed ? ` — origin/${state.branch} now differs: the next push needs --force-with-lease (dev-flow asks the operator)` : ""}` };
+}
+
 /** Tier-1 checks the gate still has to see green. Entering a stage — and every edit of the worktree —
  * clears the records, so "run flow check first" cost three round trips to say what one could (#84).
  * `health` is left to the post-deploy probe when there is a deploy to prove: probing twice only waits twice. */
@@ -669,7 +828,7 @@ const healthRerunsAfterDeploy = (cfg: Config) => !!cfg.commands.dev && !!healthP
  *  deploy probe both do this). Returns an error result on failure, null when seeded or not configured. */
 async function seedStep(root: string, state: FlowState, cfg: Config): Promise<{ text: string; isError: true } | null> {
 	if (!cfg.commands.seedData) return null;
-	const seed = await sh(cfg.commands.seedData, gateCwd(root, state), undefined, featureEnv(root, state));
+	const seed = await sh(cfg.commands.seedData, gateCwd(root, state), undefined, devEnv(root, state, cfg));
 	state.checks.seedData = { ok: seed.ok, at: now() };
 	writeState(root, state);
 	return seed.ok ? null : { text: `seedData FAILED (${cfg.commands.seedData}):\n${tail(seed.out)}`, isError: true };
@@ -680,7 +839,7 @@ type HealthRun = { ok: boolean; out: string; attempts: number } | { seedFail: Ru
 /** Seed (when configured), then run the health probe within the playbook's wait budget. */
 async function seededProbe(root: string, state: FlowState, cfg: Config, probe: string): Promise<HealthRun> {
 	const seedFail = await seedStep(root, state, cfg);
-	return seedFail ? { seedFail } : runHealthProbe(probe, gateCwd(root, state), cfg.healthWait, featureEnv(root, state));
+	return seedFail ? { seedFail } : runHealthProbe(probe, gateCwd(root, state), cfg.healthWait, devEnv(root, state, cfg));
 }
 
 /** seededProbe, recorded and stamped as the `health` check — `flow health` and both verify probes. */
@@ -1091,6 +1250,9 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
 	const items = applicableItems(cfg, state!, "implement");
+	// the operator reviews the tree that ships: catch up with the default branch before anything runs
+	const caught = state!.stage === "implement" ? await catchUp(root, state!, cfg, flag("confirmed")) : { note: "" };
+	if ("text" in caught) return caught;
 	const branch = await branchState(gateCwd(root, state!), cfg.defaultBranch);
 	if (branch.commitsAhead === 0 && cfg.versioning.file) branch.unreleased = await unreleasedOnMain(gateCwd(root, state!), cfg.versioning.pattern);
 	const branchLine = describeBranchState(branch, cfg.defaultBranch);
@@ -1105,9 +1267,14 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 	// tier-1 gate first (tier-2 confirmation is recorded by this very command, so it is excluded here)
 	const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg, branch);
 	if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}\n${branchLine}`, isError: true };
+	// a stack another flow is reviewing or releasing on is not this gate's to take — ask before deploying
+	const slotted = cfg.commands.dev && !state!.docs ? await devSlotCheck(o, state!) : { note: "" };
+	if ("text" in slotted) return slotted;
 	// commands that take minutes and touch live services must say so (#38): a terse gate let the
 	// agent tell the operator the dev deploy had never run, right after it recreated a container.
 	const did: string[] = [];
+	if (caught.note) did.push(caught.note);
+	if (slotted.note) did.push(slotted.note);
 	if (gateRun) did.push(`checks ran at the gate (${pending.map((c) => c.name).join(", ")})`);
 	if (staleAtGate.length) did.push(`stale record(s) rerun after a worktree change: ${staleAtGate.join(", ")}`);
 	if (state!.docs) {
@@ -1115,7 +1282,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		did.push("docs mode: project commands skipped (build/dev/health)");
 	} else {
 		if (cfg.commands.build) {
-			const res = await sh(cfg.commands.build, gateCwd(root, state!), undefined, featureEnv(root, state!));
+			const res = await sh(cfg.commands.build, gateCwd(root, state!), undefined, devEnv(root, state!, cfg));
 			state!.checks.build = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			if (!res.ok) return { text: `build FAILED (${cfg.commands.build}):\n${tail(res.out)}`, isError: true };
@@ -1124,11 +1291,11 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 		// deploy to dev before asking — the operator reviews the running dev app, not a promise
 		const probe = healthProbe(cfg);
 		if (cfg.commands.dev) {
-			const res = await sh(cfg.commands.dev, gateCwd(root, state!), undefined, featureEnv(root, state!));
+			const res = await sh(cfg.commands.dev, gateCwd(root, state!), undefined, devEnv(root, state!, cfg));
 			state!.checks.dev = { ok: res.ok, at: now() };
 			writeState(root, state!);
 			if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev}):\n${tail(res.out)}`, isError: true };
-			did.push(`dev ran (${cfg.commands.dev})`);
+			did.push(`dev ran (${cfg.commands.dev})${devPortOf(state!, cfg) !== undefined ? ` on port ${devPortOf(state!, cfg)}` : ""}`);
 			// the deploy is what must be proven, not just run: a container that came back unhealthy, or
 			// still serves the previous build, must not pass on a health PASS recorded before it was
 			// recreated. What "the expected version" means is the project's business — the probe runs in
@@ -1152,17 +1319,32 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 			did.push(`health: live re-probe PASS (${probe}${triedNote(probed.attempts)})`);
 		}
 	}
+	if (!state!.docs && cfg.commands.servedBuild) {
+		// "something answers" is not "this branch answers": the served commit must be the worktree's HEAD
+		const head = (await sh("git rev-parse HEAD", gateCwd(root, state!))).out.trim();
+		const sb = await sh(cfg.commands.servedBuild, gateCwd(root, state!), 60_000, devEnv(root, state!, cfg));
+		if (!sb.ok || !servedBuildMatches(sb.out, head))
+			return { text: `served-build check FAILED (${cfg.commands.servedBuild}) — the app is up but does not serve this branch's HEAD ${head.slice(0, 12)}:\n${tail(sb.out)}`, isError: true };
+		did.push(`serves ${head.slice(0, 7)} (HEAD)`);
+	}
+	if (!state!.docs && cfg.commands.dev) {
+		const head = (await sh("git rev-parse HEAD", gateCwd(root, state!))).out.trim();
+		writeDevPorts(root, { ...readDevPorts(root), [slotKey(devPortOf(state!, cfg))]: { slug: state!.slug, head, at: now() } });
+	}
 	const ran = [branchLine, ...did].join("; ");
 	// yolo is the operator's word at Verified? — answers this question and pre-confirms the later ones
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
-	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
+	let audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 	const askPending = !flag("confirmed") && !state!.yolo;
 	if (askPending) {
 		markPendingAsk(root, state!, "Verified?"); // pending however it is asked — a chat question or a dialog
-		// these commands already ran — say so even on the way out
+		// the agent's call never opens a dialog (#181): this is the review deploy — the app is up for the
+		// operator, and the answer comes back in chat as flow verify --confirmed
 		if (!ui.hasUI) {
-			return { text: `${needsOperator("verification needs the operator: confirm interactively, or re-run with --confirmed once the operator answered in chat.", "Verified?")}\n${ran}`, isError: true };
+			const port = devPortOf(state!, cfg);
+			const what = state!.docs ? "ready for review" : cfg.commands.dev ? `deployed for review${port !== undefined ? ` on port ${port}` : ""}` : "live app re-probed for review";
+			return { text: `${needsOperator(`${what} — look at the change in the running app yourself first (the playbook's self-check), then ask the operator Verified? in chat and run flow verify --confirmed once they answer. Keep it running until they answer.`, "Verified?")}\n${ran}` };
 		}
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 		if (!ok) {
@@ -1170,6 +1352,7 @@ async function gateVerify(o: GateCtx): Promise<RunResult> {
 			writeState(root, state!);
 			return { text: "verification declined — stay in implement and fix what failed" };
 		}
+		audit = " (confirmed in dialog)";
 	}
 	state!.confirmations = { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } };
 	const final = verifyGate(state!, cfg, branch);
@@ -1288,14 +1471,20 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// so. A warning, never a refusal — doc-only moves after verify are normal; the operator decides.
 	let postVerify = "";
 	if (state!.verifiedHead) {
-		const since = await sh(`git log --oneline --no-decorate ${sq(state!.verifiedHead)}..HEAD`, wtCwd);
+		// gh#180: upstream work merged in after the verdict was approved on its own branch — only the branch's
+		// own commits are news to the operator; the merged-in ones are a count, not a list to wade through
+		const d = cfg.defaultBranch;
+		const upstream = (await sh(`git rev-parse --verify -q ${sq(`refs/remotes/origin/${d}`)}`, wtCwd)).ok ? `origin/${d}` : (await sh(`git rev-parse --verify -q ${sq(`refs/heads/${d}`)}`, wtCwd)).ok ? d : "";
+		const since = await sh(`git log --oneline --no-decorate ${upstream ? "--no-merges " : ""}${sq(state!.verifiedHead)}..HEAD${upstream ? ` --not ${sq(upstream)}` : ""}`, wtCwd);
 		const commits = since.ok ? since.out.split("\n").filter((l) => l.trim()) : [];
+		const all = upstream ? await sh(`git rev-list --count ${sq(state!.verifiedHead)}..HEAD`, wtCwd) : null;
+		const mergedIn = all?.ok ? Math.max(0, Number.parseInt(all.out.trim(), 10) - commits.length) : 0;
 		// a release-only flow commits its bump and changelog after verify by design — only other files count
 		const prepFiles = new Set([cfg.versioning.file, cfg.release.changelog, cfg.versioning.file === "package.json" ? "package-lock.json" : ""].filter(Boolean) as string[]);
 		const touched = state!.releaseOnly && commits.length ? await sh(`git diff --name-only ${sq(state!.verifiedHead)} HEAD`, wtCwd) : null;
 		const prepOnly = !!touched?.ok && touched.out.split("\n").filter((l) => l.trim()).every((f) => prepFiles.has(f.trim()));
 		if (commits.length && !prepOnly)
-			postVerify = `${commits.length} commit(s) landed after the operator's Verified? (given over ${state!.verifiedHead.slice(0, 7)}): ${commits.slice(0, 6).join(" | ")}${commits.length > 6 ? ` …(${commits.length - 6} more)` : ""} — the verify verdict does not cover them: if behaviour changed, have the operator check the current build before Release?, and either way say in the PR body which commit the verdict was given over`;
+			postVerify = `${commits.length} commit(s) landed after the operator's Verified? (given over ${state!.verifiedHead.slice(0, 7)}): ${commits.slice(0, 6).join(" | ")}${commits.length > 6 ? ` …(${commits.length - 6} more)` : ""}${mergedIn ? ` (+${mergedIn} merged in from ${upstream}, not listed)` : ""} — the verify verdict does not cover them: if behaviour changed, have the operator check the current build before Release?, and either way say in the PR body which commit the verdict was given over`;
 	}
 	// a standing yolo (given at an earlier checkpoint) stops short of Release? when the playbook says so, or
 	// when commits landed after Verified? — the word was given before those commits existed (gh#176).
@@ -1307,7 +1496,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 			: postVerify
 				? "a yolo given earlier does not cover commits that landed after Verified? — ask Release? with them named"
 				: "";
-	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
+	let audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
 	const askPending = !flag("confirmed") && (!state!.yolo || !!yoloHeld);
 	if (askPending) {
 		markPendingAsk(root, state!, "Release?");
@@ -1320,6 +1509,7 @@ async function gateRelease(o: GateCtx): Promise<RunResult> {
 			writeState(root, state!);
 			return { text: "release declined — keep preparing in pre-release" };
 		}
+		audit = " (confirmed in dialog)";
 	}
 	if (noVersion) state!.noVersion = true;
 	state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
@@ -1593,6 +1783,21 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 			return { text: "finish declined" };
 		}
 	}
+	// a side-by-side dev instance (a port the operator picked at verify) is this flow's to stop; the default
+	// port's stack stays up — it is the machine's shared app, and the next flow redeploys over it
+	let devDownNote = "";
+	if (state!.devPort !== undefined && state!.devPort !== cfg.devPort) {
+		if (cfg.commands.devDown) {
+			const down = await sh(cfg.commands.devDown, gateCwd(root, state!), 5 * 60_000, devEnv(root, state!, cfg));
+			devDownNote = down.ok ? ` dev instance on port ${state!.devPort} stopped (${cfg.commands.devDown}).` : ` dev instance on port ${state!.devPort} did NOT stop (${cfg.commands.devDown}) — stop it by hand:\n${tail(down.out)}\n`;
+		} else devDownNote = ` dev instance on port ${state!.devPort} is still running — the playbook has no devDown to stop it; stop it by hand.`;
+	}
+	const reg = readDevPorts(root);
+	const mine = Object.keys(reg).filter((k) => reg[k].slug === state!.slug);
+	if (mine.length) {
+		for (const k of mine) delete reg[k];
+		writeDevPorts(root, reg);
+	}
 	if (wt && existsSync(wt)) {
 		const rm = await sh(`git worktree remove ${sq(wt)} && git branch -D ${sq(state!.branch)}`, root);
 		if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow finish`, isError: true };
@@ -1636,7 +1841,7 @@ async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// finish is the moment between flows: name the fix / tidy suggestion when a rule fires, nothing otherwise
 	const nudge = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { between: true });
 	const nudgeNote = [nudge.fix, nudge.tidy].filter(Boolean).map((n) => ` ${n} — offer it to the operator.`).join("");
-	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${roadmapNote}${forgeSkipNote}${reflectSkipNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
+	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${forgeSkipNote}${reflectSkipNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 }
 
 /** The main-branch guard as a hook body — installed into .git/hooks, or printed for a hook manager to carry. */
@@ -1915,7 +2120,7 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 	const errs = approveGate(state!, cfg, planFiles, existsSync(planMd) ? readFileSync(planMd, "utf8") : undefined, foreignWorktreeLinks(dfDir(root), state!.slug, mockupHtml));
 	if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 	const planItems = applicableItems(cfg, state!, "plan");
-	const audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
+	let audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
 	const askPending = !flag("confirmed");
 	if (askPending) {
 		markPendingAsk(root, state!, "Approve?");
@@ -1928,6 +2133,7 @@ async function gateApprove(o: GateCtx): Promise<RunResult> {
 			writeState(root, state!);
 			return { text: "approval declined — keep iterating on the plan" };
 		}
+		audit = " (confirmed in dialog)";
 	}
 	// the operator's word at Approve?, recorded only once given: every later gate question is pre-confirmed; checks and guardrails stay
 	if (flag("yolo")) state!.yolo = true;
@@ -1992,6 +2198,8 @@ async function gateStatus(o: GateCtx): Promise<RunResult> {
 			`  next: ${nextHint(st, cfg)}`,
 		];
 	});
+	// who holds the dev stack: the one thing two parallel flows on one machine must not guess
+	for (const [k, v] of Object.entries(readDevPorts(root))) lines.push(`dev: ${k === "default" ? "stack" : `port ${k}`} → ${v.slug} @ ${v.head.slice(0, 7)}, deployed ${ago(v.at)}`);
 	if (warn.length) lines.push(...warn);
 	// which identity this session's state is keyed by: a claim fight is undiagnosable when the key
 	// could be a session id or a shared directory and the output does not say which
@@ -2508,6 +2716,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		return String(input ?? "").trim().split(/\s+/).filter(Boolean);
 	};
 
+	const NO_DIALOGS: Ui = { hasUI: false, confirm: async () => false };
 	const uiFrom = (ctx: ExtensionContext): Ui => ({
 		hasUI: ctx.hasUI,
 		confirm: async (title, message) => (ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false)),
@@ -2606,7 +2815,10 @@ export default function devFlow(pi: ExtensionAPI) {
 		}),
 		execute: async (id, params, signal, onUpdate, ctx) => {
 			const root = await flowRoot(ctx.cwd);
-			const res = await runFlow(params.args, root, uiFrom(ctx), sessFor(ctx, root), finishReflectHook(id, ctx, root, signal, onUpdate));
+			// the agent's call never opens a dialog (#181): a dialog inside a tool call blocks the turn, so nobody
+			// can talk to the agent while it waits, and the agent cannot see who answered. Gates answer with the
+			// chat word to ask instead; the /flow slash command (a human at the keyboard) keeps its dialogs.
+			const res = await runFlow(params.args, root, NO_DIALOGS, sessFor(ctx, root), finishReflectHook(id, ctx, root, signal, onUpdate));
 			if (!res.isError) maybeCompactNow(ctx, root);
 			return { content: [{ type: "text", text: res.text }], details: undefined, isError: res.isError };
 		},

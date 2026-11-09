@@ -4,6 +4,16 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **The agent's `flow` call never opens a dialog** (fixes #181). In pi-web a bare `flow verify` deployed, then sat in a Yes/No dialog inside the tool call: once for 87 minutes, during which nobody could talk to the agent. Another time the operator clicked Yes, the result did not say so, and the agent reported that the stage had advanced on its own. Now every gate the agent calls answers with `NEEDS-OPERATOR <Question?>` and the agent asks in chat. A `/flow` command you type still asks in a dialog, and its answer is labelled `(confirmed in dialog)`.
+- **`flow verify` reviews the tree that ships.** A branch 18 commits behind main was deployed for review, without the two releases that had just shipped, and verified that way. Now `flow verify` fetches and rebases a branch that is behind before it deploys. A conflict aborts the rebase and leaves the branch as it was. `flow verify --confirmed` refuses when main moved since the review deploy.
+- **The post-Verified? warning at `flow release` lists only the branch's own commits** (fixes #180). Commits merged in from main are a count (`+N merged in from main, not listed`).
+
+### Added
+- **The bare `flow verify` is the review deploy.** It runs checks, build, `dev` and the health probe, then returns `deployed for review` with the question to ask. `flow verify --confirmed` records the answer.
+- **Parallel flows no longer overwrite each other's dev deploy silently.** `flow verify` records who deployed on which port, and `flow status` shows it. When the port belongs to another live flow, verify asks first, with the free RAM and disk against the playbook's `instanceMem`/`instanceDisk`. The options are: run alongside on the next free port (`--port=<n>`), replace (`--replace`), or wait. New `## implement` keys: `port`, `parallelDev`, `instanceMem`, `instanceDisk`, `devDown` (run by `flow finish` for a side-port instance) and `servedBuild`. `dev`, `health` and `servedBuild` get `$DEV_FLOW_PORT`, `$DEV_FLOW_INSTANCE` and `$DEV_FLOW_SUFFIX`.
+- **`servedBuild`** proves the deployed app serves the worktree's HEAD. Verify refuses when it doesn't.
+
 ## [0.84.0] - 2026-11-05
 
 **A yolo given early no longer ships commits nobody saw, and per-machine ignored files are writable without a flow.**

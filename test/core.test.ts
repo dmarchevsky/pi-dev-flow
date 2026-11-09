@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { buildConfig } from "./util/config.ts";
+import { mdToConfig, parseProjectMd } from "../src/projectmd.ts";
 import {
 	applyAnswer,
 	appendReflection,
@@ -125,6 +126,10 @@ import {
 	stageReference,
 	SKILL_CORE_START,
 	SKILL_CORE_END,
+	formatSize,
+	parseSize,
+	servedBuildMatches,
+	sideBySide,
 } from "../src/core.ts";
 
 const cfg = structuredClone(DEFAULTS);
@@ -1753,4 +1758,35 @@ test("workerTurnError: a trailing model-error storm is a dead model, not a stall
 	assert.equal(workerTurnError([err("Request timed out."), ok]), null, "an error a retry recovered from");
 	assert.deepEqual(workerTurnError([ok, err("terminated"), err("Request timed out."), { role: "user" }, err("Request timed out.")]), { reason: "error", message: "Request timed out.", streak: 3 });
 	assert.equal(workerTurnError([{ role: "assistant", stopReason: "error" }])?.message, "(no error message)");
+});
+
+test("parseSize / formatSize read the playbook's instance costs", () => {
+	assert.equal(parseSize("2G"), 2 * 1024 ** 3);
+	assert.equal(parseSize("512M"), 512 * 1024 ** 2);
+	assert.equal(parseSize("1.5GB"), 1.5 * 1024 ** 3);
+	assert.equal(parseSize("4096"), 4096);
+	assert.equal(parseSize("lots"), undefined, "junk is no size, not zero");
+	assert.equal(formatSize(9.1 * 1024 ** 3), "9.1G");
+	assert.equal(formatSize(2 * 1024 ** 3), "2G");
+});
+
+test("servedBuildMatches: any 7+ hex token that prefixes HEAD", () => {
+	const head = "0382a2270dc087e8aafc9c23509b6a0c33522eb6";
+	assert.ok(servedBuildMatches("GIT_SHA=0382a22\n", head));
+	assert.ok(servedBuildMatches(`{"build":"${head}"}`, head));
+	assert.ok(!servedBuildMatches("GIT_SHA=653d450", head), "another commit is a mismatch");
+	assert.ok(!servedBuildMatches("v0.34.1", head), "a version is not a commit");
+});
+
+test("sideBySide offers a second instance only when the playbook and the machine allow it", () => {
+	const md = (body: string) => mdToConfig(parseProjectMd(`## implement\n\n\`\`\`flow\n${body}\`\`\`\n`));
+	const ok = md("port = 8090\nparallelDev = yes\ninstanceMem = 2G\ndev = BFF_PORT=$DEV_FLOW_PORT up\n");
+	assert.equal(ok.devPort, 8090);
+	assert.equal(ok.parallelDev, true);
+	assert.equal(ok.instanceMem, 2 * 1024 ** 3);
+	assert.deepEqual(sideBySide({ cfg: ok, nextPort: 8091, memAvail: 8 * 1024 ** 3, diskFree: null }), { ok: true, why: [] });
+	assert.match(sideBySide({ cfg: ok, nextPort: 8091, memAvail: 1024 ** 3, diskFree: null }).why.join(), /RAM available 1G < 2G/);
+	assert.match(sideBySide({ cfg: md("port = 8090\nparallelDev = no\ndev = x $DEV_FLOW_PORT\n"), nextPort: 8091, memAvail: null, diskFree: null }).why.join(), /parallelDev = no/);
+	assert.match(sideBySide({ cfg: md("port = 8090\ndev = docker compose up -d\n"), nextPort: 8091, memAvail: null, diskFree: null }).why.join(), /do not read \$DEV_FLOW_PORT/, "a dev command that ignores the port would collide");
+	assert.match(sideBySide({ cfg: md("dev = x\n"), nextPort: null, memAvail: null, diskFree: null }).why.join(), /names no `port`/);
 });

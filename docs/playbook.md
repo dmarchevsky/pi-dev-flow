@@ -76,6 +76,24 @@ Prefer feature flags for risky paths.
 whose readiness lags its container start needs a wait, not a poll loop hand-written into the playbook.
 `healthWait = 0` restores the single shot.
 
+**Dev port and parallel flows.** Two flows on one machine share one dev stack unless you say otherwise:
+
+```flow
+port = 8090                 # the default dev port — exported to dev/health/servedBuild as $DEV_FLOW_PORT
+parallelDev = yes           # can two instances run side by side? (no = only replace or wait are offered)
+instanceMem = 2G            # what one instance needs — checked against available RAM
+instanceDisk = 5G           # …and against free disk
+dev = BFF_PORT=$DEV_FLOW_PORT COMPOSE_PROJECT_NAME=app$DEV_FLOW_SUFFIX docker compose up -d
+devDown = COMPOSE_PROJECT_NAME=app$DEV_FLOW_SUFFIX docker compose down
+servedBuild = curl -fsS http://127.0.0.1:$DEV_FLOW_PORT/version   # must print the served commit
+```
+
+`$DEV_FLOW_SUFFIX` is empty on the default port and `-<slug>` on any other, so a second instance gets its own
+compose project. `flow verify` records who deployed on which port in `.dev-flow/dev-ports.json`; when the
+port it would use belongs to another live flow it asks you first (see [concurrency](concurrency.md)).
+`flow finish` runs `devDown` for an instance on a non-default port. `servedBuild` turns "something answers"
+into "this branch answers": verify refuses when its output names no prefix of the worktree's HEAD.
+
 Your project's own safety rules are a `flow-guard` block in `## global` — the reason a project
 adopting dev-flow can delete its own guard extension:
 

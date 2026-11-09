@@ -50,6 +50,7 @@ export interface FlowState {
 	releaseOnly?: boolean; // verify found nothing on the branch but unreleased work on main: this flow only cuts the version (#161)
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
+	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
@@ -71,6 +72,10 @@ export interface Commands {
 	run?: string;
 	/** Deploy to a dev/staging environment before verification — operator reviews the running dev app. */
 	dev?: string;
+	/** Stop a dev instance this flow started on a non-default port (run by flow finish). */
+	devDown?: string;
+	/** Print the commit the deployed app serves — verify refuses when it is not the worktree's HEAD. */
+	servedBuild?: string;
 }
 
 /** How a merged feature branch lands on the default branch (playbook key `merge`).
@@ -106,6 +111,13 @@ export interface Config {
 	versioning: Versioning;
 	/** Seconds the post-deploy health probe may keep retrying before the gate gives up (0 = single shot). */
 	healthWait: number;
+	/** The dev deploy's default port (playbook `port`). Unset: dev-flow cannot run a second instance, only name who holds the stack. */
+	devPort?: number;
+	/** Can two dev instances run side by side (playbook `parallelDev`)? undefined = the playbook does not say. */
+	parallelDev?: boolean;
+	/** Bytes one dev instance needs (playbook `instanceMem` / `instanceDisk`, e.g. 2G) — the side-by-side feasibility check. */
+	instanceMem?: number;
+	instanceDisk?: number;
 	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
@@ -190,6 +202,49 @@ export function healthProbe(c: Config): string | undefined {
 export function toSeconds(raw: unknown): number | undefined {
 	const n = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN;
 	return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+}
+
+/** A playbook size (`2G`, `512M`, `1.5GB`, plain bytes) in bytes; undefined for junk. */
+export function parseSize(raw: unknown): number | undefined {
+	const m = typeof raw === "string" ? raw.trim().match(/^(\d+(?:\.\d+)?)\s*([kmgt]?)i?b?$/i) : null;
+	if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) return Math.floor(raw);
+	if (!m) return undefined;
+	const mult = { "": 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3, t: 1024 ** 4 }[m[2].toLowerCase() as "" | "k" | "m" | "g" | "t"];
+	return Math.floor(Number(m[1]) * mult);
+}
+
+/** Bytes as the operator reads them: 9.1G, 512M. */
+export function formatSize(n: number): string {
+	for (const [u, d] of [["T", 1024 ** 4], ["G", 1024 ** 3], ["M", 1024 ** 2], ["K", 1024]] as const) if (n >= d) return `${(n / d).toFixed(1).replace(/\.0$/, "")}${u}`;
+	return `${n}B`;
+}
+
+/** Does a `servedBuild` printout name this HEAD? Any hex token of 7+ characters that is a prefix of the full sha counts. */
+export function servedBuildMatches(out: string, head: string): boolean {
+	const full = head.trim().toLowerCase();
+	if (full.length < 7) return false;
+	return (out.toLowerCase().match(/[0-9a-f]{7,40}/g) ?? []).some((t) => full.startsWith(t));
+}
+
+/** Who last deployed dev on a port (`.dev-flow/dev-ports.json`, key = port or "default"). */
+export interface DevSlot {
+	slug: string;
+	head: string;
+	at: string;
+}
+
+/** What the clash question offers, from measured resources and the playbook's declared costs. */
+export function sideBySide(o: { cfg: Config; nextPort: number | null; memAvail: number | null; diskFree: number | null }): { ok: boolean; why: string[] } {
+	const { cfg } = o;
+	const why: string[] = [];
+	if (cfg.devPort === undefined) why.push("the playbook names no `port`, so dev-flow cannot place a second instance");
+	if (cfg.parallelDev === false) why.push("the playbook says `parallelDev = no` (instances would share state)");
+	const dev = `${cfg.commands.dev ?? ""}\n${cfg.commands.health ?? ""}`;
+	if (cfg.devPort !== undefined && !/DEV_FLOW_PORT/.test(dev)) why.push("the playbook's `dev`/`health` commands do not read $DEV_FLOW_PORT, so a second instance would land on the same port");
+	if (o.nextPort === null && cfg.devPort !== undefined) why.push("no free port found above the default");
+	if (cfg.instanceMem !== undefined && o.memAvail !== null && o.memAvail < cfg.instanceMem) why.push(`RAM available ${formatSize(o.memAvail)} < ${formatSize(cfg.instanceMem)} one instance needs`);
+	if (cfg.instanceDisk !== undefined && o.diskFree !== null && o.diskFree < cfg.instanceDisk) why.push(`disk free ${formatSize(o.diskFree)} < ${formatSize(cfg.instanceDisk)} one instance needs`);
+	return { ok: why.length === 0, why };
 }
 
 /**
@@ -2113,7 +2168,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			return `investigate, present your direction and proposed mode to the operator and clarify in chat, then write the plan into .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask the operator Approve? in chat and run flow approve --confirmed when they answer`;
 		case "implement":
 			if (state.docs) return `implement in the worktree ${state.worktree} — docs mode runs no project command (no build, no dev deploy, no health probe); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer`;
-			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then ask them Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
+			return `implement in the worktree ${state.worktree}, add tests, run flow check (tier-1 checks, incl. health with seeded data); tick the tier-2 checklist with the operator, then run flow verify — it rebases onto the default branch when behind and deploys for review (asking first when another flow holds the dev port) — look at the change yourself, then ask the operator Verified? in chat and run flow verify --confirmed when they answer — keep the app running when you ask Verified?: the operator reviews the live app; never clean up the test server before the checkpoint is answered (with no dev deploy configured, verify live-re-probes health itself and refuses while nothing is answering)`;
 		case "pre-release":
 			if (state.docs && (cfg.versioning.file || cfg.release.changelog))
 				return `${cfg.release.review} → fix must-have/should-have → docs flow: it usually ships unversioned — ask the operator; with their word, flow release --no-version needs no bump, no tag and (docs mode) no changelog entry. Shipping it versioned instead:${cfg.release.changelog ? ` prepare ${cfg.release.changelog}` : ""}${cfg.versioning.file ? `${cfg.release.changelog ? " and" : ""} bump version in ${cfg.versioning.file}` : ""}. Then show the operator the PR summary, ask Release? and run flow release`;
