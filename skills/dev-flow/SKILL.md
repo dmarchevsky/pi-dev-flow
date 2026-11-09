@@ -30,11 +30,16 @@ criteria hold. Call it with an args array — `["start", "dark-mode"]`,
 - **Stage reports** — open every report with the **stage line the gate
   returned** (`stage line for your report`), pasted as is — the gate builds it
   from state. A checkpoint message then has an event title and, on their own
-  lines, **`Done:`** (paths, SHAs, counts) and **`Next steps:`** — the
-  operator's options as italic verbs, the recommended one ***bold italic***
+  lines, **`Done:`** (outcomes; a path or SHA only when useful) and
+  **`Next steps:`** — the operator's options as italic verbs, the recommended one ***bold italic***
   first, *yolo* last with what it pre-confirms, then the line
   "or say what to do differently". Plain markdown, never fenced, never a gate
   command.
+- **Talk outcomes, not internals.** Chat is for the operator: what changed or
+  is wrong, why it matters, in plain words and a few lines. Name a file or
+  function only when they must act on it — no code-path walkthroughs or
+  internal identifiers. Depth lives in plan.md, commits and the diff; give it
+  in full when asked.
 - **yolo** at a checkpoint → that gate with `--yolo --confirmed`; run the
   remaining gates back to back without asking, honoring guidance attached to
   the word ("yolo, patch bump", "yolo, no tag" → `--no-version`). Checks,

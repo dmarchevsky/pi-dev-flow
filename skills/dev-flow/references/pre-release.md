@@ -28,8 +28,8 @@ and settle the scheme with the operator; never invent one.
      changelog this branch never touched. `--no-fold-check` only on the
      operator's word.
 4. `flow check` — the prep made the earlier checks stale.
-5. **Ask Release? and stop.** Show what the PR contains, the version and the
-   changelog entry. Report opening: **🔍 pre-release · `<slug>`** (the gate's
+5. **Ask Release? and stop.** Say in a few lines what the PR delivers (the
+   changelog entry usually is that), plus the version. Report opening: **🔍 pre-release · `<slug>`** (the gate's
    stage line; the version field reads `pending` until decided — never
    invent a bump or a no-version decision). Answer → `flow release
    --confirmed`.

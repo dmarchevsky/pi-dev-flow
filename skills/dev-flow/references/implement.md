@@ -31,7 +31,9 @@ note). Other sessions' worktrees are theirs.
      RAM/disk: ask, then re-run with `--port=<n>` or `--replace`.
    - The health probe retries every 2s up to `healthWait` (default 30s); a
      service that needs a moment is not a broken deploy.
-2. Look at the change yourself, **keep the app running**, ask **Verified?**.
+2. Look at the change yourself, **keep the app running**, ask **Verified?**
+   — say what changed for the user and how to see it, not which modules
+   changed.
    Report opening: **🔨 implement · `<slug>`** (the gate's stage line).
 3. Answer → `flow verify --confirmed` (yolo → `--yolo --confirmed`). If the
    default branch moved since the review deploy it refuses: run `flow verify`
