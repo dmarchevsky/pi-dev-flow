@@ -2573,6 +2573,37 @@ test("the stage injection names the one playbook file the stage needs", async ()
 	assert.ok(existsSync(inj.message.content.match(/Stage playbook: read (\S+) before gate work/)![1]), "the named file is a real path, not a wish");
 });
 
+test("an unchanged stage context is one line; a stage change or a compaction hands over the full note again", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
+	const ctx = session("sess-dedupe");
+	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
+	await pi.cmds.flow.handler("start dedupe", ctx);
+	const inject = async () => ((await pi.handlers.before_agent_start[0]({}, session("sess-dedupe"))) as { message: { content: string } }).message.content;
+	assert.match(await inject(), /Next: investigate/, "the first run carries the full note");
+	const again = await inject();
+	assert.match(again, /still bound to dedupe at plan — unchanged/);
+	assert.doesNotMatch(again, /Next:/, "the unchanged note is not repeated");
+	await pi.handlers.session_compact[0]({}, session("sess-dedupe"));
+	assert.match(await inject(), /Next: investigate/, "a compaction may have dropped the note — it comes back whole");
+});
+
+test("an answer that hands the operator a flow command gets a hidden correction for the next run", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	initPlaybook(repo);
+	const ctx = { ...makeCtx(repo), sessionManager: { getSessionId: () => "sess-ask", getBranch: () => [] as never[] } };
+	const turnEnd = (text: string, toolResults: unknown[] = []) =>
+		pi.handlers.turn_end[0]({ outcome: "completed", toolResults, entries: [], message: { role: "assistant", content: [{ type: "text", text }] } } as never, ctx) as Promise<{ entries?: { customType?: string; content?: string }[] } | undefined>;
+	const fixed = await turnEnd("The plan is ready. Please run `/flow approve --confirmed` when you are happy.");
+	assert.equal(fixed?.entries?.[0]?.customType, "dev-flow-correction");
+	assert.match(fixed?.entries?.[0]?.content ?? "", /operator answers in words/);
+	assert.equal(await turnEnd("I ran the checks — all green. **Verified?**"), undefined, "a plain checkpoint question passes");
+	assert.equal(await turnEnd("Please run flow approve", [{}]), undefined, "a turn still calling tools is not the final answer");
+});
+
 test("a session inside a feature worktree is judged by the main checkout's flow truth", async () => {
 	// A linked worktree's own .dev-flow/ holds only the tracked playbook; read from there, every guard
 	// answered "no active flow" and sessions working in the worktree (stage workers) could not edit.

@@ -27,7 +27,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { Type } from "typebox";
 import { compact, createAgentSession, DefaultResourceLoader, defineTool, getAgentDir, isToolCallEventType, SessionManager, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult, TurnEndEvent, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
 import {
 	ALLOW_REWRITE,
 	approveGate,
@@ -440,6 +440,10 @@ const compacting = new Set<string>();
 const coreInjected = new Set<string>();
 /** Sessions whose last compaction dropped the core out of context — the next run pays it once more. */
 const coreStale = new Set<string>();
+/** The last stage context each session was handed. The context rides a hidden message on every run, and
+ *  a long session at one stage used to carry the same ~200-word note dozens of times: an unchanged one
+ *  is now one line. Cleared by a compaction (the summary may have dropped it) and by a reload. */
+const lastContext = new Map<string, string>();
 /** The skill dir of THIS loaded copy: the copy a session runs and a development checkout can be
  *  different installs, so playbook paths resolve from the code actually loaded — never from cwd. */
 const SKILL_DIR = path.join(import.meta.dirname, "..", "skills", "dev-flow");
@@ -2849,6 +2853,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		}
 		const key = sessionKey(ctx);
 		bindings.set(key, slug);
+		lastContext.delete(key); // a restored branch may not hold the last note — hand the next run the full one
 		// The branch is the truth about what the restored context holds: a marker means the core is in it
 		// (do not pay twice), no marker means the branch was rewound or forked past the injection (give it
 		// back), and a stale marker means a compaction summarized it away before the reload (give it back).
@@ -3210,12 +3215,13 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (!existsSync(dfDir(root))) return;
 		releaseSession(root, sessionKey(ctx));
 	});
-	pi.on("turn_end", async (_event, ctx) => {
+	pi.on("turn_end", async (event, ctx) => {
 		if (!guardsAreMine()) return;
 		const root = await flowRoot(ctx.cwd);
 		refreshStatus(ctx, root);
 		// pi checks its compaction threshold between every turn; our safe points must be as frequent.
 		maybeCompactNow(ctx, root);
+		return commandAskCorrection(event, ctx, root);
 	});
 	// Idle backstop: long between-gate runs compact here instead of letting pi hit the threshold mid-work.
 	pi.on("agent_settled", async (_event, ctx) => {
@@ -3262,6 +3268,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (!guardsAreMine()) return;
 		if (!initiated(await flowRoot(ctx.cwd))) return;
 		coreStale.add(sessionKey(ctx));
+		lastContext.delete(sessionKey(ctx));
 		pi.appendEntry("dev-flow-skill", { core: true, stale: true });
 	});
 
@@ -3441,6 +3448,32 @@ export default function devFlow(pi: ExtensionAPI) {
 		return undefined;
 	}
 
+	/** The model's final answer handed the operator a dev-flow command to type: the operator answers in
+	 *  words, so the next run carries a hidden correction. It never re-runs the turn (no continue) — the
+	 *  answer already reached the operator; the point is that the next one does not repeat it. */
+	const commandAskCorrection = (event: TurnEndEvent, ctx: ExtensionContext, root: string): TurnEndEventResult | undefined => {
+		const e = event as { outcome?: string; toolResults?: unknown[]; message?: { role?: string; content?: unknown }; entries?: unknown[] };
+		if (!initiated(root) || e.outcome !== "completed" || (e.toolResults?.length ?? 0) > 0 || e.message?.role !== "assistant") return undefined;
+		try {
+			if (workerSessions.has(ctx.sessionManager.getSessionId())) return undefined;
+		} catch {
+			/* not a worker */
+		}
+		const parts = Array.isArray(e.message.content) ? (e.message.content as { type?: string; text?: string }[]) : [];
+		const text = parts.filter((p) => p.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n");
+		const hits = operatorCommandAsks(text);
+		if (!hits.length) return undefined;
+		// SAFETY: a custom_message draft is one of the documented boundary entry types; the draft union is not re-exported
+		return { entries: [...event.entries, { type: "custom_message", customType: "dev-flow-correction", content: operatorCommandCorrection(hits), display: false } as unknown as TurnEndEvent["entries"][number]] };
+	};
+
+	/** The full note when it changed (or the core was just re-sent), else the one-line reminder. */
+	const sameAsLast = (key: string, full: string, short: string): string => {
+		if (lastContext.get(key) === full) return short;
+		lastContext.set(key, full);
+		return full;
+	};
+
 	pi.on("before_agent_start", async (_event, ctx) => {
 		if (!guardsAreMine()) return undefined;
 		// One [dev-flow] line per run, whatever number of copies of this package are installed. The same
@@ -3478,7 +3511,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const rmap0 = roadmapOpenCount(readRoadmap(root));
 			if (rmap0) content += ` Also: ${rmap0} roadmap item(s) open — flow roadmap lists them, flow roadmap pick <n> <slug> hands one to flow start.`;
 			content += ` Also: the playbook map is ${path.join(SKILL_DIR, "SKILL.md")} — per-stage detail sits in references/ beside it (start: flow init, modes, ownership).`;
-			return { message: { customType: "dev-flow-context", display: false, content: `${core}${content}` } };
+			return { message: { customType: "dev-flow-context", display: false, content: `${core}${sameAsLast(key, content, `[dev-flow] no flow bound — unchanged since the last [dev-flow] note (playbook map is ${path.join(SKILL_DIR, "SKILL.md")}).`)}` } };
 		}
 		const guidance: string[] = [];
 		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every gate question from here on (Verified?/Release?/Finish?) — run the remaining gates (verify → release → release-done → finish) back to back without stopping to ask; guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
@@ -3499,14 +3532,10 @@ export default function devFlow(pi: ExtensionAPI) {
 		}
 		const rmap = roadmapOpenCount(readRoadmap(root));
 		if (rmap) guidance.push(`◇ ${rmap} roadmap item(s) open — flow roadmap lists them (pick only on the operator's word).`);
-		return {
-			message: {
-				customType: "dev-flow-context",
-				display: false,
-				content: `${core}[dev-flow] this session is bound to: ${state.slug}${state.patch ? " (patch)" : state.docs ? " (docs)" : ""} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
+		const stageNote = `[dev-flow] this session is bound to: ${state.slug}${state.patch ? " (patch)" : state.docs ? " (docs)" : ""} — stage: ${state.stage}${state.ui ? " (UI)" : ""}${state.worktree ? `, worktree: ${state.worktree} (branch ${state.branch})` : ""}.
 Next: ${nextHint(state, cfg)}.
-${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: follow the dev-flow skill playbook; gates run through the flow tool only — \`flow\` is not a shell command, and the operator answers words in chat, never commands: you run the gate. \`/flow\` is the operator's manual override, not yours. Stage guards block out-of-stage edits and main-branch git ops — do not work around them.`,
-			},
-		};
+${guidance.length ? guidance.join("\n") + "\n" : ""}Rules: follow the dev-flow skill playbook; gates run through the flow tool only — \`flow\` is not a shell command, and the operator answers words in chat, never commands: you run the gate. \`/flow\` is the operator's manual override, not yours. Stage guards block out-of-stage edits and main-branch git ops — do not work around them.`;
+		const short = `[dev-flow] still bound to ${state.slug} at ${state.stage} — unchanged since the last [dev-flow] note; follow it.`;
+		return { message: { customType: "dev-flow-context", display: false, content: `${core}${sameAsLast(key, stageNote, short)}` } };
 	});
 }
