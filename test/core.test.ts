@@ -1545,9 +1545,9 @@ test("needsOperator: marker-first refusal for no-UI gates", () => {
 });
 
 test("gateHelpJson splits the real GATE_HELP without losing a gate", () => {
-	const src = readFileSync(new URL("../extensions/dev-flow.ts", import.meta.url), "utf8");
+	const src = readFileSync(new URL("../src/runtime/base.ts", import.meta.url), "utf8");
 	const m = src.match(/const GATE_HELP =\s*("(?:[^"\\]|\\.)*");/);
-	assert.ok(m, "GATE_HELP literal found in the extension source");
+	assert.ok(m, "GATE_HELP literal found in the runtime source");
 	const j = JSON.parse(gateHelpJson(JSON.parse(m![1]), "9.9.9"));
 	assert.ok(j.gates.length >= 15, `every gate survived the split (${j.gates.length})`);
 	assert.ok(j.gates.every((g: string) => !g.includes(" — ") && !g.includes(" | ")), "no note prose leaked into the command list");
