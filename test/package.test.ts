@@ -55,7 +55,7 @@ test("the dev-flow skill keeps its always-on core inside the budget", () => {
 	const core = md.slice(open + "<!-- dev-flow:core:start -->".length, close).trim();
 	// the gate writes the stage line now, so the Stage reports rule is a pointer, not a spec: the core went 4500 → ~2700
 	assert.ok(core.length <= 3200, `the core costs every session ~${Math.round(core.length / 4)} tokens; stage detail belongs in references/ (now ${core.length} chars)`);
-	for (const rule of ["flow tool is the only invocation", "Approve?", "flow abort"])
+	for (const rule of ["flow tool is the only invocation", "Approve?", "flow abort", "Talk outcomes, not internals"])
 		assert.ok(core.includes(rule), `the core has to carry "${rule}" — it is what a session gets wrong without it`);
 });
 

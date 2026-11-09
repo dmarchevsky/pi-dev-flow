@@ -5,9 +5,10 @@
 No code edits before approval. Reads are always allowed.
 
 1. **Research** the code the plan needs.
-2. **Clarify before drafting**: give your direction in chat — findings, shape
-   of the fix, open unknowns, the mode you propose and why — and ask your
-   questions. Draft only after the direction is confirmed.
+2. **Clarify before drafting**: give your direction in chat — the problem in
+   one sentence, the fix in a few plain lines, open unknowns, the mode you
+   propose and why — and ask your questions. File-by-file detail belongs in
+   plan.md, not chat. Draft only after the direction is confirmed.
 3. **Write `.dev-flow/<slug>/plan/plan.md`** — problem, approach, files to
    touch, test strategy, risks. Reviewable, not exhaustive.
    - Create it as soon as the direction is confirmed and keep it current: chat

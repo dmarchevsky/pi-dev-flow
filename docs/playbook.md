@@ -296,8 +296,9 @@ recorded / main-state / unmerged / reflections at 🏁.
 
 **The checkpoint** closes exactly one message per stage (the operator's verb stays a plain-chat word
 — a structured-question tool is not chat). Event title, then the labels **`Done:`** and
-**`Next steps:`** standing alone on their own lines. `Done:` names the review surface — paths, SHAs,
-counts, not vibes. `Next steps:` lists the operator's verbs in italics (the recommended one
+**`Next steps:`** standing alone on their own lines. `Done:` says what now works, in plain words and
+counts, not vibes; a path or SHA only when the operator needs it. Internals (modules, code paths)
+stay out of chat unless asked. `Next steps:` lists the operator's verbs in italics (the recommended one
 ***bold italic***, and no line needs a "(recommended)" tag when the styling carries it) and **never
 gate commands** (the agent runs those): recommended first, then alternatives, then *yolo* last with
 what it pre-confirms, then the plain closing line "or say what to do differently". Example:

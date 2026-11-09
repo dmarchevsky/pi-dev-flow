@@ -18,7 +18,8 @@ unbinds the session — so anything that needs them runs first.
    - Worker failed → nothing is removed: re-run, or review inline (bare `flow
      reflect` prints the protocol). Only the operator's explicit word skips
      it: `flow finish --no-reflect --confirmed` — yolo never does.
-2. **Findings → ask fold or drop** per item, with your recommendation (`fold
+2. **Findings → ask fold or drop** per item — one plain line each — with
+   your recommendation (`fold
    1,3 drop 2` is a fine answer), and stop. That answer **is** Finish?.
 3. **Apply it**: fold docs → `flow reflect --playbook "<note>"`; fold code →
    `flow reflect --code "<note>"`; fold plugin → `flow reflect --plugin

@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.86.3] - 2026-11-09
+
+**dev-flow talks to you in outcomes, not internals.**
+
+### Changed
+- **Chat reports are shorter and plainer.** Messages to you often walked through module names, function names and code paths you didn't need. The always-on rules now tell the agent to lead with what changed or is wrong and why it matters, in a few plain lines, and to name a file or function only when you have to act on it. The plan direction, Verified?, Release? and finish findings each got the same nudge. The full technical detail is still in plan.md, the commits and the diff, and the agent gives it in full when you ask.
+
 ## [0.86.2] - 2026-11-09
 
 **Stale stage chips in pi-web clear themselves after a dropped connection.**
