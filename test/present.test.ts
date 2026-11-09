@@ -68,4 +68,19 @@ test("operatorCommandAsks flags a message that hands the operator a command, not
 	assert.equal(operatorCommandAsks("You can type flow verify --confirmed to continue.").length, 1);
 	assert.equal(operatorCommandAsks("I ran flow check and everything is green. Verified?").length, 0);
 	assert.equal(operatorCommandAsks("Output:\n```\nflow verify --confirmed\n```\nVerified?").length, 0);
+	assert.equal(operatorCommandAsks("- ***Run `flow verify`*** — it deploys the stack.").length, 1);
+});
+
+test("operatorCommandAsks leaves reports alone: generic CLI flags, verbs inside inline code, other clauses, reflection rows", () => {
+	// every one of these drew a correction in real sessions
+	const reports = [
+		"- **From `main`, clean tree:** pulled to `b283c97`, `bun run build`, `bun run build:bff`, `docker compose up -d --no-deps bff`, then `bun run deploy-check` green.",
+		"- `flow check`: `bun run verify` PASS; build + dev deploy + health PASS; **the container now serves this branch**.",
+		"*yolo* — docs mode granted and both gates run back to back without another word, `flow finish` included.",
+		"- `flow verify` state holds: stack healthy on 8090 — you can use the **Lens QA** agent for your own click-through.",
+		"**[fold · docs]** Release tail order drifted: deploy-check from `main` should run *before* `flow finish`.",
+		"F1 | fold | plugin | flow release-done's artifact gate failed while the publish CI was running; use the run list to wait | dup: gh#179",
+		"Merged with `gh pr merge 103 --merge` and pushed the tag.",
+	];
+	for (const r of reports) assert.deepEqual(operatorCommandAsks(r), [], r);
 });

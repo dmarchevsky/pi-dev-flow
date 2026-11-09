@@ -51,7 +51,7 @@ export interface FlowState {
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
-	friction?: number; // gate refusals and guard blocks this feature hit — finish skips the closing reflection at 0 (playbook reflect = on-friction)
+	friction?: number; // gate refusals, guard blocks and post-Verified? code changes this feature hit — finish skips the closing reflection at 0 (playbook reflect = on-friction)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
@@ -2081,6 +2081,23 @@ export function roadmapDone(text: string, n: number, stamp: string): string | nu
 		return stampItem(l, stamp);
 	});
 	return hit ? out.join("\n") : null;
+}
+
+/** Remove the nth open item (1-based, open items only) and its brief — an idea the operator no longer
+ *  wants, which `done` would record as shipped. Returns null when n is out of range. */
+export function roadmapDrop(text: string, n: number): { text: string; item: string } | null {
+	let seen = 0;
+	let item: string | null = null;
+	let dropping = false;
+	const out = text.split("\n").filter((l) => {
+		if (isBriefLine(l)) return !dropping;
+		dropping = false;
+		if (!isOpenItem(l) || ++seen !== n) return true;
+		item = l.trim().slice(6);
+		dropping = true;
+		return false;
+	});
+	return item === null ? null : { text: out.join("\n"), item };
 }
 
 /** Check every open item stamped `(slug)` by a pick — flow finish closes the backlog item a picked feature ships.

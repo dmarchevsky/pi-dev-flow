@@ -51,4 +51,5 @@ never gating.
   from the brief. A hand-made `.dev-flow/<slug>/plan/` is a ghost; `flow start
   <slug> --confirmed` adopts it.
 - Shipped outside a flow: `flow roadmap done <n>`; `flow roadmap tidy` drops
-  checked lines.
+  checked lines. Not wanted any more (never built): `flow roadmap drop <n>` —
+  `done` would claim it shipped.

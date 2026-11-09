@@ -114,6 +114,7 @@ import {
 	roadmapBriefFor,
 	roadmapDone,
 	roadmapDoneForSlug,
+	roadmapDrop,
 	roadmapOpenCount,
 	roadmapPick,
 	roadmapTidy,
@@ -625,6 +626,16 @@ test("roadmap: done checks the nth open item with a stamp", () => {
 	assert.match(roadmapDone(src, 2, "2025-10-19 fin")!, /- \[x\] b — done: 2025-10-19 fin/);
 	assert.equal(roadmapDone(src, 3, "x"), null);
 	assert.equal(doneItemCount(roadmapDone(src, 1, "d")!), 2);
+});
+
+test("roadmap: drop removes the nth open item and its brief, never marks it done", () => {
+	const src = "# head\n- [ ] a\n  > a's brief\n- [x] old\n- [ ] b\n  > b's brief\n  > more\n- [ ] c\n";
+	const r = roadmapDrop(src, 2)!;
+	assert.equal(r.item, "b");
+	assert.equal(r.text, "# head\n- [ ] a\n  > a's brief\n- [x] old\n- [ ] c\n");
+	assert.equal(doneItemCount(r.text), 1, "a dropped item is not counted as shipped");
+	assert.equal(roadmapDrop(src, 1)!.text, "# head\n- [x] old\n- [ ] b\n  > b's brief\n  > more\n- [ ] c\n");
+	assert.equal(roadmapDrop(src, 4), null);
 });
 
 test("roadmap: finish hook checks off every item stamped (slug)", () => {

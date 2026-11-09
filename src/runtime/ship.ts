@@ -232,6 +232,7 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// #162: Verified? was answered over one tree; commits after it ship under that word unless someone says
 	// so. A warning, never a refusal — doc-only moves after verify are normal; the operator decides.
 	let postVerify = "";
+	let unverifiedChange = false;
 	if (state!.verifiedHead) {
 		// gh#180: upstream work merged in after the verdict was approved on its own branch — only the branch's
 		// own commits are news to the operator; the merged-in ones are a count, not a list to wade through
@@ -245,6 +246,12 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 		const prepFiles = new Set([cfg.versioning.file, cfg.release.changelog, cfg.versioning.file === "package.json" ? "package-lock.json" : ""].filter(Boolean) as string[]);
 		const touched = state!.releaseOnly && commits.length ? await sh(`git diff --name-only ${sq(state!.verifiedHead)} HEAD`, wtCwd) : null;
 		const prepOnly = !!touched?.ok && touched.out.split("\n").filter((l) => l.trim()).every((f) => prepFiles.has(f.trim()));
+		// the branch's own commits after the verdict that touch more than the release prep (bump + changelog):
+		// changed code shipping under an earlier word is friction the closing reflection should look at
+		if (commits.length && !prepOnly) {
+			const files = await sh(`git log --name-only --format= --no-merges ${sq(state!.verifiedHead)}..HEAD${upstream ? ` --not ${sq(upstream)}` : ""}`, wtCwd);
+			unverifiedChange = files.ok && files.out.split("\n").some((f) => f.trim() && !prepFiles.has(f.trim()));
+		}
 		if (commits.length && !prepOnly)
 			postVerify = `${commits.length} commit(s) landed after the operator's Verified? (given over ${state!.verifiedHead.slice(0, 7)}): ${commits.slice(0, 6).join(" | ")}${commits.length > 6 ? ` …(${commits.length - 6} more)` : ""}${mergedIn ? ` (+${mergedIn} merged in from ${upstream}, not listed)` : ""} — the verify verdict does not cover them: if behaviour changed, have the operator check the current build before Release?, and either way say in the PR body which commit the verdict was given over`;
 	}
@@ -274,6 +281,7 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 		audit = " (confirmed in dialog)";
 	}
 	if (noVersion) state!.noVersion = true;
+	if (unverifiedChange) state!.friction = (state!.friction ?? 0) + 1;
 	state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
 	state!.approvals["pre-release"] = now();
 	state!.stage = "release";
@@ -530,7 +538,8 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	// --no-reflect skips it; yolo never does (it answers checkpoints, it does not waive the review).
 	const skipReflect = flag("no-reflect");
 	if (skipReflect && !flag("confirmed")) return { text: "--no-reflect is the operator's word — ask them whether to skip the closing reflection, then re-run with --no-reflect --confirmed", isError: true };
-	// a flow that never hit a refusal or a guard block, with no friction note from the operator, has nothing
+	// a flow that never hit a refusal, a guard block or a change shipped after Verified?, with no friction note
+	// from the operator, has nothing
 	// for the reflection worker to find — skip the worker run unless the playbook says reflect = always
 	const note = flagValue(o.rest, "note") ?? "";
 	const quiet = !state!.reflectedAt && !skipReflect && cfg.release.reflect !== "always" && !(state!.friction ?? 0) && !note.trim();
@@ -538,7 +547,7 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 		state!.reflectedAt = now();
 		writeState(root, state!);
 	}
-	const quietNote = quiet ? " closing reflection skipped: no refusals or guard blocks this flow (playbook reflect = always runs it anyway)." : "";
+	const quietNote = quiet ? " closing reflection skipped: no refusals, guard blocks or unverified changes this flow (playbook reflect = always runs it anyway)." : "";
 	if (!state!.reflectedAt && !skipReflect) {
 		const skipHint = "or — only on the operator's explicit word — flow finish --no-reflect --confirmed";
 		if (!o.hooks.reflect) return { text: `finish: no reflection recorded for ${state!.slug} and no reflect worker available here — run flow_stage(op: "reflect") first, ${skipHint}`, isError: true };
