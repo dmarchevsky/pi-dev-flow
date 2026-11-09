@@ -170,7 +170,10 @@ gate prints `health: none configured` and `flow doctor` flags the combination. T
 `versionFile`/`versionTag` (defaults `v{version}`; accepted under either section) and
 `merge = squash | merge | rebase | any` — how a merged PR lands on the default branch (see below) — and
 `yolo = all | until-release`: with `until-release` a yolo given at an earlier checkpoint never answers Release?
-(for repos whose rules want the release word given after the commits exist; default `all`). `## global` also takes
+(for repos whose rules want the release word given after the commits exist; default `all`) — and
+`reflect = on-friction | always`: when `flow finish` runs the closing reflection worker. `on-friction` (default)
+skips it for a flow that hit no gate refusal and no guard block and carries no `--note`; `always` runs it every
+time. `## global` also takes
 `forge = github | gitlab | self` — the release machinery's target; when unset it is detected from the
 `origin` URL at the moment of use (GitHub gets `gh`, GitLab gets `glab`, self-hosted stays forge-neutral:
 no automatic release creation, merge proof by ancestry only), and `release.releases = false` skips
@@ -255,6 +258,18 @@ the skill itself — the **Stage reports** clause in `SKILL.md` ground rules, ec
 `Stage reports:` line in every stage-context injection — so every repo using dev-flow gets the same
 output protocol without writing a word of playbook prose. This is the human explanation of it.
 
+**Two readers, one result.** Every `flow` tool result is split. The agent's copy keeps every
+instruction (what to run next, what to ask). Your copy — the tool row in the TUI — shows a header
+(`✅ Verification · dark-mode`, `❌ … refused`, `💬` when it waits on you), the stage line, the facts,
+and the one question waiting on you, phrased as a word to answer in chat. Lines the gate marks
+agent-only, and any clause that names a `flow` command, are left out of your copy (expand the row to see
+them dimmed). The test suite checks every gate it drives: no operator view names a command. If an answer
+still hands you a command to type, the next run gets a hidden correction.
+
+**The gate writes the stage line.** It is built from state on every gate that has a feature in scope,
+so it is the same every time; the agent pastes it as is (`stage line for your report`) instead of
+rebuilding glyphs and marks from memory.
+
 One gate message = **stage line** + event title + **`Done:`** / **`Next steps:`** blocks, all plain
 markdown, **never fenced** (a fenced block renders monospace with a horizontal scrollbar in web UIs;
 fences stay for diffs and command output).
@@ -287,7 +302,7 @@ counts, not vibes. `Next steps:` lists the operator's verbs in italics (the reco
 gate commands** (the agent runs those): recommended first, then alternatives, then *yolo* last with
 what it pre-confirms, then the plain closing line "or say what to do differently". Example:
 
-> **🔍 pre-release · `dark-mode`** — `normal` ✓ · ui `on ✓` · version **`bump minor → 0.56.0 ~`** · tag `v0.56.0 ~` · changelog `ready ~` · merge `merge ✓playbook`
+> **🔍 pre-release · `dark-mode`** — `normal` ✓playbook · ui `on` ✓ · commits `4 ahead, 0 uncommitted` · checks test ✓ build ✓ · version `0.56.0` ~ · merge `merge` ✓playbook · `feat/dark-mode@3f2c1a9`
 >
 > **Release prep done**
 >
