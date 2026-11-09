@@ -2647,6 +2647,28 @@ test("the stage injection names the one playbook file the stage needs", async ()
 	assert.ok(existsSync(inj.message.content.match(/Stage playbook: read (\S+) before gate work/)![1]), "the named file is a real path, not a wish");
 });
 
+test("the flow tool row renders the operator view: header, stage line, facts, the question — no command", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const tool = pi.tools.flow as unknown as { execute: (...a: unknown[]) => Promise<unknown>; renderResult: (r: unknown, o: { expanded: boolean; isPartial: boolean }, t: unknown) => { render: (w: number) => string[] } };
+	const flow = (args: string[]) => tool.execute("id", { args }, undefined, undefined, ctx);
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "rendered"]);
+	mkdirSync(path.join(repo, ".dev-flow", "rendered", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "rendered", "plan", "plan.md"), "# plan\n");
+	const r = await flow(["approve"]);
+	const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+	const collapsed = tool.renderResult(r, { expanded: false, isPartial: false }, theme).render(200).map((l) => l.trimEnd()).join("\n");
+	assert.match(collapsed, /💬 Plan approval · rendered/);
+	assert.match(collapsed, /📝 plan · rendered/, "the stage line, without markdown marks");
+	assert.match(collapsed, /Your call: Approve\? — answer in chat/);
+	assert.doesNotMatch(collapsed, /--confirmed|flow approve/, "the collapsed row names no command");
+	const expanded = tool.renderResult(r, { expanded: true, isPartial: false }, theme).render(200).join("\n");
+	assert.match(expanded, /agent: re-run with --confirmed/, "expanded, the agent's instructions show, marked as such");
+});
+
 test("an unchanged stage context is one line; a stage change or a compaction hands over the full note again", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
