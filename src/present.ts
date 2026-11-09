@@ -205,15 +205,27 @@ export function agentText(text: string, v: GateView): string {
 	return v.stageLine ? `${text}\n${AGENT_MARK}stage line for your report (paste as is): ${v.stageLine}` : text;
 }
 
+/** Flags only dev-flow's gates take. A generic CLI flag (`docker compose up -d --no-deps`, `gh pr merge --merge`)
+ *  in a report of what the agent ran is not a dev-flow command handed to the operator. */
+const GATE_FLAGS = "confirmed|ui|patch|docs|yolo|replace|port|no-version|no-fold-check|no-marker-check|no-artifact-check|no-release-create|no-reflect|check-upstream|answers|answers-file|write-file|brief|brief-file|playbook|note";
+const ASK_COMMAND_RE = new RegExp(`(?:^|[\\s\`'"(*_])/?flow (?:${FLOW_VERBS})\\b|(?:^|[\\s\`])--(?:${GATE_FLAGS})\\b|\\bflow_stage\\b|(?:^|[\\s\`])/flow\\b`);
+/** An imperative addressed to the operator: the verb opens a clause (or follows please/then/just), or a "you can" form. */
+const ASK_VERB_RE = /(?:^|[:;,.!?(—–]\s*|\b(?:please|then|just|now|simply|and)\s+)(?:run|type|enter|use|try|send|invoke)\b|\byou (?:can|could|may|should|need to|might)\b|\bplease\b/i;
+
 /** Sentences in an assistant message that hand the operator a dev-flow command to type. */
 export function operatorCommandAsks(message: string): string[] {
 	const hits: string[] = [];
 	// fenced code is command output being shown, not a request
 	const prose = message.replace(/```[\s\S]*?```/g, "");
-	for (const sentence of prose.split(/(?<=[.!?])\s+|\n+/)) {
-		if (!commandish(sentence)) continue;
-		// addressed to the operator: an imperative or a "you can / please" form around the command
-		if (/\b(you (can|could|may|should|need to|might)|please|type|run|enter|use|try|send|invoke)\b/i.test(sentence) && !/\bI('ll| will| am going to| ran|'m running| run)\b/.test(sentence)) hits.push(sentence.trim());
+	// a clause is the unit: "`flow verify` holds — you can use the QA agent" names a command and asks something else
+	for (const sentence of prose.split(/(?<=[.!?])\s+|\n+|\s[—–]\s|;\s/)) {
+		if (!ASK_COMMAND_RE.test(sentence)) continue;
+		// a reflection's report row (`F1 | fold | plugin | …`) describes a past session, it asks nothing
+		if (/^\s*[FO]\d+\s*\|/.test(sentence)) continue;
+		// the verb is read outside inline code (`bun run build` is a command named, not "run" said to the operator),
+		// with list bullets and emphasis markers dropped so a bullet's first word still opens its clause
+		const words = sentence.replace(/`[^`]*`/g, " ").replace(/^[\s>*_#-]*(?:\d+[.)]\s*)?/, "").replace(/[*_]+/g, "");
+		if (ASK_VERB_RE.test(words) && !/\bI('ll| will| am going to| ran|'m running| run)\b/.test(words)) hits.push(sentence.trim());
 	}
 	return hits;
 }

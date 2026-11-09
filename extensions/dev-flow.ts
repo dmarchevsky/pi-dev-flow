@@ -139,6 +139,21 @@ export default function devFlow(pi: ExtensionAPI) {
 		};
 	};
 
+	/** A flow_stage worker: registered in this module's set, or — for a worker pi-web hosts, whose extension
+	 *  instance never saw the registration — stamped with pi-web's subagent entry. */
+	const isWorkerSession = (ctx: ExtensionContext): boolean => {
+		try {
+			if (workerSessions.has(ctx.sessionManager.getSessionId())) return true;
+			// SAFETY: narrow structural view of the SessionEntry union; only the custom entry's type is read
+			return (ctx.sessionManager?.getBranch() ?? []).some((e) => {
+				const ce = e as unknown as { type: string; customType?: string };
+				return ce.type === "custom" && ce.customType === PIWEB_SUBAGENT.meta;
+			});
+		} catch {
+			return false;
+		}
+	};
+
 	/** Restore this session's binding from its branch history (survives resume/fork). */
 	const rebuildSession = (ctx: ExtensionContext, root: string) => {
 		let slug: string | null = null;
@@ -221,6 +236,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			// facts, the stage line and the question waiting on them, never a command to type
 			// a refusal (not a question for the operator) is friction the closing reflection should look at
 			if (res.isError && !res.text.startsWith(NEEDS_OPERATOR) && initiated(root)) noteFriction(root, sessionKey(ctx));
+			// a start that bound a feature takes over the refusals this session hit before it existed
+			else if (!res.isError && params.args[0] === "start" && initiated(root)) noteFriction(root, sessionKey(ctx), 0);
 			const { agent, view } = await presentRun(params.args, root, sessionKey(ctx), res);
 			return { content: [{ type: "text", text: agent }], details: { view }, isError: res.isError };
 		},
@@ -761,11 +778,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	const commandAskCorrection = (event: TurnEndEvent, ctx: ExtensionContext, root: string): TurnEndEventResult | undefined => {
 		const e = event as { outcome?: string; toolResults?: unknown[]; message?: { role?: string; content?: unknown }; entries?: unknown[] };
 		if (!initiated(root) || e.outcome !== "completed" || (e.toolResults?.length ?? 0) > 0 || e.message?.role !== "assistant") return undefined;
-		try {
-			if (workerSessions.has(ctx.sessionManager.getSessionId())) return undefined;
-		} catch {
-			/* not a worker */
-		}
+		if (isWorkerSession(ctx)) return undefined;
 		const parts = Array.isArray(e.message.content) ? (e.message.content as { type?: string; text?: string }[]) : [];
 		const text = parts.filter((p) => p.type === "text" && typeof p.text === "string").map((p) => p.text).join("\n");
 		const hits = operatorCommandAsks(text);
@@ -790,11 +803,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			return undefined;
 		}
 		if (!initiated(root) || !boundFeature(root, key)) return undefined;
-		try {
-			if (workerSessions.has(ctx.sessionManager.getSessionId())) return undefined;
-		} catch {
-			/* not a worker */
-		}
+		if (isWorkerSession(ctx)) return undefined;
 		const streak = (hollowStreak.get(key) ?? 0) + 1;
 		hollowStreak.set(key, streak);
 		const resume = streak === 1;

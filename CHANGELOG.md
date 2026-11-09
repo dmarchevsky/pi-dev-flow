@@ -4,6 +4,17 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.87.0] - 2026-11-09
+
+**Fewer false alarms, more reflections where they matter, and a way to drop a roadmap item.**
+
+### Fixed
+- **The "don't ask the operator to type commands" note stops firing on plain reports.** After a final reply, dev-flow checks whether the agent handed you a flow command to type and, if so, adds a hidden correction. In recent sessions every one of these corrections was wrong. The agent was only reporting what it had run, for example "`bun run build`, `docker compose up -d --no-deps`" or "`flow check`: PASS". Three things caused it: any `--flag` counted as a dev-flow flag, words inside inline code such as `bun run` counted as instructions to you, and stage workers hosted by pi-web were not recognised as workers. Now only dev-flow's own gate flags count, the check reads only the words outside code, each clause is judged separately, reflection report rows are skipped, and pi-web workers are excluded.
+- **The closing reflection now runs on flows that had real friction.** Finish skips the reflection when a flow went smoothly, but it judged that too narrowly. A refusal made before `flow start` was dropped, because no feature existed yet to count it against. Code changes committed after you answered Verified? also didn't count. Both now count: the pre-start refusal goes to the feature that `start` creates, and a post-Verified? commit that touches more than the version bump and changelog counts when you answer Release?.
+
+### Added
+- **`flow roadmap drop <n>`** (alias `remove`) deletes an open roadmap item and its brief. Before this, the only way to remove an idea you no longer wanted was `done`, which recorded it as shipped.
+
 ## [0.86.3] - 2026-11-09
 
 **dev-flow talks to you in outcomes, not internals.**

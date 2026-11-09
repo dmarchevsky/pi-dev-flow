@@ -1402,7 +1402,7 @@ test("finish skips the closing reflection on a flow with no friction, unless the
 			if (always) assert.equal(spawns, 1, "reflect = always runs the worker on a quiet flow too");
 			else {
 				assert.equal(spawns, 0, "a quiet flow spawns no reflection worker");
-				assert.match(r.content[0].text, /feature quiet done — .*closing reflection skipped: no refusals or guard blocks/, r.content[0].text);
+				assert.match(r.content[0].text, /feature quiet done — .*closing reflection skipped: no refusals, guard blocks or unverified changes/, r.content[0].text);
 			}
 		} finally {
 			stageWorkerSpawn.run = orig;
@@ -1447,6 +1447,47 @@ test("a refused gate counts as friction on the bound feature", async () => {
 	assert.equal(friction(), 0, "NEEDS-OPERATOR is not friction");
 	await flow(["verify", "--confirmed"]); // wrong stage: a real refusal
 	assert.equal(friction(), 1);
+});
+
+test("a refusal before start counts on the feature that start creates", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	const refused = await flow(["start", "early", "--ui"]); // operator-granted flag without --confirmed: a refusal
+	assert.equal(refused.isError, true, refused.content[0].text);
+	await flow(["start", "early", "--ui", "--confirmed"]);
+	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "early", "state.json"), "utf8"));
+	assert.equal(st.friction ?? 0, 1, "the pre-start refusal is the started feature's friction");
+});
+
+test("a code commit after Verified? counts as friction; the release-prep commit alone does not", async () => {
+	for (const code of [false, true]) {
+		const pi = makePi();
+		const repo = makeRepo();
+		const ctx = makeCtx(repo);
+		const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+		await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+		trackPlaybook(repo);
+		await flow(["start", "late"]);
+		mkdirSync(path.join(repo, ".dev-flow", "late", "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", "late", "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		await flow(["check"]);
+		commitWt(repo, "late");
+		await flow(["verify", "--confirmed"]);
+		const f = path.join(repo, ".dev-flow", "late", "state.json");
+		writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), friction: 0 }, null, 2));
+		if (code) {
+			writeFileSync(path.join(repo, ".dev-flow", "late", "worktree", "fix.js"), "// a review fix\n");
+			commitWt(repo, "late", "fix after verify");
+		}
+		const r = await flow(["release", "--confirmed"]);
+		assert.match(r.content[0].text, /release approved/, r.content[0].text);
+		assert.equal(JSON.parse(readFileSync(f, "utf8")).friction ?? 0, code ? 1 : 0);
+	}
 });
 
 test("release gate (#97): the entry is prepared on the branch and pending lines survive the fold", async () => {

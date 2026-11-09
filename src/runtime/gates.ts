@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gate runner and the gates that do not ship anything. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapOpenCount, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState } from "../core.ts";
+import { approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState } from "../core.ts";
 import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
 import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
@@ -558,13 +558,22 @@ export async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 			save(roadmapDone(text, idx, [new Date().toISOString().slice(0, 10), sess.slug].filter(Boolean).join(" "))!);
 			return { text: `roadmap: item ${idx} marked done (${open - 1} open)` };
 		}
+		case "drop":
+		case "remove":
+		case "delete": {
+			// not shipped, not wanted: gone from the backlog, so the done list never claims it was built
+			if (!validIdx) return { text: `drop: open item 1–${open} required — flow roadmap lists them`, isError: true };
+			const r = roadmapDrop(text, idx)!;
+			save(r.text);
+			return { text: `roadmap: item ${idx} dropped — "${r.item}" (${open - 1} open)` };
+		}
 		case "tidy": {
 			if (!done) return { text: `roadmap: nothing to tidy (${open} open, 0 done)` };
 			save(roadmapTidy(text));
 			return { text: `roadmap: dropped ${done} done item(s) — ${open} open` };
 		}
 		default:
-			return { text: "usage: flow roadmap [list|add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|tidy]", isError: true };
+			return { text: "usage: flow roadmap [list|add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|drop <n>|tidy]", isError: true };
 		}
 }
 
