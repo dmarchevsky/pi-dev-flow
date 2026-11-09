@@ -2362,6 +2362,26 @@ export function workerTurnError(messages: readonly unknown[]): { reason: string;
 	return { reason: last.stopReason, message: String(last.errorMessage ?? "").trim() || "(no error message)", streak };
 }
 
+/** A reply that ended as a normal stop yet said nothing: no visible text and no tool call (typically a
+ *  provider that closed the stream inside the reasoning block). pi reads it as a finished turn and goes idle,
+ *  so a flow stops mid-stage with nothing for the operator to answer. Error and aborted ends are not hollow:
+ *  pi has its own handling for those. Returns whether the reply carried reasoning, for the note. */
+export function hollowStop(message: unknown): { thinking: boolean } | null {
+	if (!message || typeof message !== "object") return null;
+	const m = message as { role?: unknown; stopReason?: unknown; content?: unknown };
+	if (m.role !== "assistant" || m.stopReason !== "stop") return null;
+	const parts = Array.isArray(m.content) ? (m.content as { type?: unknown; text?: unknown; thinking?: unknown }[]) : [];
+	if (parts.some((p) => p?.type === "toolCall" || (p?.type === "text" && typeof p.text === "string" && p.text.trim()))) return null;
+	return { thinking: parts.some((p) => p?.type === "thinking" && typeof p.thinking === "string" && p.thinking.trim() !== "") };
+}
+
+/** The note that resumes a hollow stop. The operator sees it too; the model reads it as the next user turn. */
+export function hollowStopNote(h: { thinking: boolean }): string {
+	return h.thinking
+		? "[dev-flow] Your last reply ended inside your reasoning: no answer and no tool call reached the operator. Continue from where your reasoning stopped."
+		: "[dev-flow] Your last reply was empty: no answer and no tool call reached the operator. Continue the task.";
+}
+
 /** The REPORT section of a worker's final message: everything after the last `REPORT` heading line. */
 export function parseWorkerReport(text: string): { found: boolean; body: string; verdict: "PASS" | "FAIL" | null } {
 	const lines = (text ?? "").split("\n");

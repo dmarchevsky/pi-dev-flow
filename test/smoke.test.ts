@@ -2700,6 +2700,34 @@ test("an answer that hands the operator a flow command gets a hidden correction 
 	assert.equal(await turnEnd("Please run flow approve", [{}]), undefined, "a turn still calling tools is not the final answer");
 });
 
+test("a reply that stops inside its reasoning with no answer is resumed once while a flow is bound", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const session = (id: string) => ({ ...makeCtx(repo), sessionManager: { getSessionId: () => id, getBranch: () => [] as never[] } });
+	const ctx = session("sess-hollow");
+	type R = { entries?: { customType?: string; content?: string; display?: boolean }[]; continue?: boolean } | undefined;
+	const turnEnd = (content: unknown[], c = ctx, outcome = "completed") => pi.handlers.turn_end[0]({ outcome, toolResults: [], entries: [], message: { role: "assistant", stopReason: "stop", content } } as never, c) as Promise<R>;
+	const hollow = [{ type: "thinking", thinking: "Let me check if the working tree exists, though it might already be there" }];
+	await pi.cmds.flow.handler("init", ctx);
+	initPlaybook(repo);
+	assert.equal(await turnEnd(hollow), undefined, "no flow bound: an unbound chat is left alone");
+	await pi.cmds.flow.handler("start hollow", ctx);
+	const first = await turnEnd(hollow);
+	assert.equal(first?.continue, true, "the first hollow stop asks pi for one more request");
+	assert.equal(first?.entries?.[0]?.customType, "dev-flow-resume");
+	assert.equal(first?.entries?.[0]?.display, true, "the operator sees why the run went on");
+	assert.match(first?.entries?.[0]?.content ?? "", /ended inside your reasoning/);
+	const second = await turnEnd(hollow);
+	assert.notEqual(second?.continue, true, "a second hollow stop in a row is not resumed: no loop");
+	assert.match(second?.entries?.[0]?.content ?? "", /stopped resuming/);
+	assert.equal(await turnEnd([{ type: "text", text: "Approve?" }]), undefined, "a real answer passes and clears the streak");
+	assert.equal((await turnEnd(hollow))?.continue, true, "after a real answer, the next hollow stop is resumed again");
+	await turnEnd(hollow);
+	await pi.handlers.before_agent_start[0]({}, session("sess-hollow"));
+	assert.equal((await turnEnd(hollow))?.continue, true, "a new prompt earns a fresh resume");
+	assert.equal(await turnEnd(hollow, ctx, "aborted"), undefined, "an aborted run is the operator's stop");
+});
+
 test("a session inside a feature worktree is judged by the main checkout's flow truth", async () => {
 	// A linked worktree's own .dev-flow/ holds only the tracked playbook; read from there, every guard
 	// answered "no active flow" and sessions working in the worktree (stage workers) could not edit.
