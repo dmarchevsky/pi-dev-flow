@@ -21,6 +21,8 @@ export interface ParsedMd {
 	guard: GuardRules;
 	checklist: Record<string, ChecklistItem[]>;
 	prose: Record<string, string>;
+	/** ## global `flow-worker` block lines — the setup every stage worker's brief carries (gh#201) */
+	workerPreamble: string[];
 }
 
 // stage → flow-key → config dot-path (aliases); unknown keys warn
@@ -123,7 +125,7 @@ function parseGuardRules(entries: { line: string; where: string }[], stage: stri
 }
 
 export function parseProjectMd(text: string): ParsedMd {
-	const p: ParsedMd = { hard: [], warn: [], global: {}, flow: Object.fromEntries(MD_STAGES.map((s) => [s, {}])) as Record<MdStage, Record<string, string>>, checks: [], guard: structuredClone(DEFAULTS.guard), checklist: {}, prose: {} };
+	const p: ParsedMd = { hard: [], warn: [], global: {}, flow: Object.fromEntries(MD_STAGES.map((s) => [s, {}])) as Record<MdStage, Record<string, string>>, checks: [], guard: structuredClone(DEFAULTS.guard), checklist: {}, prose: {}, workerPreamble: [] };
 	let stage: string | null = null;
 	const prose: Record<string, string[]> = {};
 	let inFence: string | null = null; // "flow" | "flow-check" | other lang
@@ -192,6 +194,11 @@ export function parseProjectMd(text: string): ParsedMd {
 					}
 				}
 			} else if (inFence === "flow-check") checkBody.push(line);
+			else if (inFence === "flow-worker") {
+				if (stage === "global") {
+					if (line.trim()) p.workerPreamble.push(line.trimEnd());
+				} else if (line.trim()) p.warn.push(`${where}: flow-worker lines belong to ## global — ignored under ## ${stage ?? "(no stage)"}`);
+			}
 			else if (inFence === "flow-guard") guardBody.push({ line, where });
 			return;
 		}
@@ -204,6 +211,7 @@ export function parseProjectMd(text: string): ParsedMd {
 				inFence = "flow-check";
 				checkName = lang.slice("flow-check".length).trim();
 			} else if (lang === "flow-guard") inFence = "flow-guard";
+			else if (lang === "flow-worker") inFence = "flow-worker";
 			else inFence = lang || "code";
 			return;
 		}
@@ -265,6 +273,7 @@ export function mdToConfig(p: ParsedMd): Config {
 	];
 	c.checklist = p.checklist;
 	c.prose = p.prose;
+	if (p.workerPreamble.length) c.workerPreamble = [...p.workerPreamble];
 	return c;
 }
 
@@ -555,6 +564,7 @@ export function mdDigest(text: string): string {
 		if (s === "global") {
 			const rules = (["deny", "confirm", "protect", "forbid"] as const).flatMap((v) => p.guard[v].map((r) => `${v} ${r.pattern}`));
 			if (rules.length) bits.push(`safety rules: ${rules.join(" · ")}`);
+			if (p.workerPreamble.length) bits.push(`stage-worker setup: ${p.workerPreamble.length} line(s) in every flow_stage brief`);
 		}
 		if (relStage && keys.file) {
 			bits.push(`version in ${keys.file} → tag ${keys.pattern ?? "v{version}"}`);

@@ -1855,3 +1855,19 @@ test("a --docs flow drops implement checklist items unless tagged (docs), and an
 	assert.equal(openItemsNote(none, docs, "implement"), "", "nothing applies, nothing is open");
 	assert.doesNotMatch(nextHint(docs, none), /checklist/, "and the hint stops asking for a tick nobody can make");
 });
+
+test("a playbook flow-worker block rides in every stage worker's brief, and a review cannot pass over unrun checks (gh#201)", () => {
+	const cfg = mdToConfig(parseProjectMd('# dev-flow\n\n## global\n\n```flow-worker\nexport APP_TEST_PASSWORD="$(cat /repo/.secrets/test-password)"\n```\n\n## implement\n\n```flow\ntest = npm test\n```\n'));
+	assert.deepEqual(cfg.workerPreamble, ['export APP_TEST_PASSWORD="$(cat /repo/.secrets/test-password)"']);
+	const base = { slug: "s", workDir: "/w", planFile: null, defaultBranch: "main", commits: "", status: "", checks: [{ name: "test", command: "npm test" }], preamble: cfg.workerPreamble, note: "check the fix" };
+	for (const op of ["implement", "review"] as const) {
+		const brief = buildWorkerBrief({ ...base, op });
+		assert.match(brief, /## Setup \(from the project's playbook\)[\s\S]*export APP_TEST_PASSWORD=/, op);
+		assert.match(brief, /run them before you report, in a shell that ran the setup below first/, op);
+	}
+	assert.match(buildWorkerBrief({ ...base, op: "review" }), /could not run .* is not a pass: name it and why under `checks not run:`/);
+	assert.doesNotMatch(buildWorkerBrief({ ...base, op: "implement", preamble: undefined }), /## Setup/, "no block, no section");
+	const misplaced = parseProjectMd("## implement\n\n```flow-worker\nexport X=1\n```\n");
+	assert.deepEqual(misplaced.workerPreamble, []);
+	assert.match(misplaced.warn.join("\n"), /flow-worker lines belong to ## global/);
+});

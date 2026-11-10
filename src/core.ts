@@ -130,6 +130,9 @@ export interface Config {
 	bashTimeout: "require" | "inject";
 	/** Operator safety rules from the project.md flow-guard block — stage-independent. */
 	guard: GuardRules;
+	/** Lines from the ## global `flow-worker` block: every flow_stage brief carries them, so a worker can run the
+	 *  project's checks (e.g. an export of a test password read from a gitignored file) — gh#201. */
+	workerPreamble?: string[];
 }
 
 export const DEFAULTS: Config = {
@@ -2406,6 +2409,8 @@ export interface WorkerBriefInput {
 	commits: string; // `git log --oneline <base>..HEAD`
 	status: string; // `git status --short`
 	checks: { name: string; command: string }[];
+	/** the playbook's `flow-worker` lines (gh#201): setup a worker needs before any project check can run */
+	preamble?: string[];
 	note: string;
 }
 
@@ -2424,9 +2429,12 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 		`- Branch base: ${o.defaultBranch}`,
 		`- Commits on the branch so far:\n${o.commits.trim() ? o.commits.trim().split("\n").map((l) => `  ${l}`).join("\n") : "  (none)"}`,
 		`- Uncommitted now: ${o.status.trim() ? `\n${o.status.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "clean"}`,
-		`- Project checks (run them before you report):\n${checks}`,
+		`- Project checks (run them before you report${o.preamble?.length ? ", in a shell that ran the setup below first" : ""}):\n${checks}`,
 		"- You hold no flow tool: gates, checkpoints and the operator stay with the driving session.",
 		"",
+		...(o.preamble?.length
+			? ["## Setup (from the project's playbook)", "Run these lines in every shell that runs a project check: each bash call is a fresh shell, so prefix the check with them or chain them with `&&`.", "```sh", ...o.preamble, "```", ""]
+			: []),
 		"## Your task",
 		o.note.trim() || "(no note — do what the plan's next unfinished step asks)",
 		"",
@@ -2448,6 +2456,7 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 					"## Contract",
 					`- Check, don't fix: read ${o.planFile ? "the plan" : "the task"}, the diff (\`git diff ${o.defaultBranch}...HEAD\`) and the code; run the checks and any probe that proves a claim. Change no files, make no commits.`,
 					"- Look for correctness bugs, claims in docs/changelog the code does not back, missing tests for risky paths, and plan items not delivered.",
+					"- A project check you could not run (a missing variable, file or service) is not a pass: name it and why under `checks not run:` in the REPORT, and say in the verdict line that the review is read-only for it.",
 					"- Finish with a final message whose last section starts with a line `REPORT` followed by: `verdict: PASS` or `verdict: FAIL`, then findings (most severe first, each with file:line and how you proved it).",
 				];
 	return [...head, ...contract].join("\n");

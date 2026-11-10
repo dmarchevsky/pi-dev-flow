@@ -341,6 +341,7 @@ export default function devFlow(pi: ExtensionAPI) {
 						commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
 						status: await git("git status --short"),
 						checks: cfg.checkList.map((c) => ({ name: c.name, command: c.cmd })),
+						preamble: cfg.workerPreamble,
 						note: String(params.note ?? ""),
 					});
 		// pi-web visibility needs both halves of the lineage: the id the Agents menu links the child

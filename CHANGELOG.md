@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Added
+- **Playbook setup for stage workers (gh#201).** A `flow-worker` block under `## global` in `project.md` holds the setup lines a stage worker needs before it can run your checks, for example exporting a test password read from a gitignored file. `flow_stage` copies those lines into every worker brief, so the driver no longer has to remember them. A review worker that still couldn't run a check now has to name it under `checks not run:` instead of returning a quiet PASS.
+
 ### Fixed
 - **`--replace` and `--port=<n>` need your answer too (gh#203).** When another flow holds the dev port, `flow verify` asks *Dev port?* and takes `--replace` or `--port=<n>` as the answer. Unlike `--confirmed`, those two were accepted without any message from you, and the deploy record then said the replacement was "the operator's answer". They now bind the same way: a re-run carrying either one is refused until you have sent a message since the question.
 - **A docs flow is no longer asked to tick checks it cannot run, and an open checklist says which items are open (gh#207).** A `--docs` flow skips build, deploy and health at implement, but the `## implement` checklist items (container tests, click-throughs) still counted as open. The stage line showed `tier-2 3 open` with no way to find them, since "tier-2" appears nowhere in `project.md`. On a docs flow, implement items now stand down unless you tag one `(docs)`. Wherever the count shows up (the verify and release refusals, the next-step hint, the stage guidance), it now lists the open items by their text and the `## <stage>` section that holds them.
