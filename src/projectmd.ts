@@ -464,6 +464,16 @@ export function ghostFeatureDirs(root: string): string[] {
 		.map((d) => `.dev-flow/${d.name}`);
 }
 
+/** A feature dir that survived without its state.json (gh#178): what is in it, and whether a stray
+ *  worktree/ blocks adopting it (a git worktree a new start would collide with). Null when the dir is
+ *  absent or a flow owns it. */
+export function ghostInfo(root: string, slug: string): { entries: string[]; plan: boolean; worktree: boolean } | null {
+	const dir = path.join(root, ".dev-flow", slug);
+	if (!existsSync(dir) || existsSync(path.join(dir, "state.json"))) return null;
+	const entries = readdirSync(dir, { withFileTypes: true }).map((d) => (d.isDirectory() ? `${d.name}/` : d.name)).sort();
+	return { entries, plan: existsSync(path.join(dir, "plan")), worktree: existsSync(path.join(dir, "worktree")) };
+}
+
 /**
  * Doctor: cheap file-level probes only — NEVER runs user commands.
  * Findings are advisory strings for `flow init` (fixer) and the status flag.

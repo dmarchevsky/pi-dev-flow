@@ -2,7 +2,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState } from "../core.ts";
-import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
+import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, ghostInfo, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
 import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
 import { AGENT_MARK } from "../present.ts";
@@ -278,10 +278,20 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --ui/--patch/--docs are operator-granted — ask the operator in chat, then add --confirmed", isError: true };
 	// a ghost (plan/ but no state.json — typically a spin-off someone wrote by hand) is adopted, never a dead end:
 	// "already exists, flow use it" sent the agent to use, which found no state, and doctor offered to delete it
-	const ghost = existsSync(featDir(root, slugArg)) && !existsSync(stateFile(root, slugArg)) && existsSync(path.join(featDir(root, slugArg), "plan"));
-	if (ghost && !flag("confirmed")) {
-		const files = listFiles(path.join(featDir(root, slugArg), "plan"));
-		return { text: `.dev-flow/${slugArg}/ is a ghost — plan/ (${files.join(", ") || "empty"}) but no state.json, so no flow owns it. Adopt it as this feature's draft plan: flow start ${slugArg} --confirmed (the operator agrees in chat), or delete the dir to start clean`, isError: true };
+	// gh#178: any feature dir without state.json is a ghost, not only one with a plan/ — a tmp/ or mockups
+	// left behind used to read as "already exists, flow use it", and flow use then found nothing
+	const gi = ghostInfo(root, slugArg);
+	if (gi?.worktree)
+		return { text: `.dev-flow/${slugArg}/ has a worktree/ but no state.json — a flow that lost its state; nothing can resume it, and a new start would collide with that worktree. Remove it first (git worktree remove --force .dev-flow/${slugArg}/worktree, or git worktree prune when git no longer lists it — after checking it holds nothing the operator wants), then flow start ${slugArg} --confirmed adopts the rest (${gi.entries.filter((e) => e !== "worktree/").join(", ") || "nothing else"})`, isError: true };
+	const ghost = !!gi;
+	if (gi && !flag("confirmed")) {
+		const files = gi.plan ? listFiles(path.join(featDir(root, slugArg), "plan")) : [];
+		return {
+			text: gi.plan
+				? `.dev-flow/${slugArg}/ is a ghost — plan/ (${files.join(", ") || "empty"}) but no state.json, so no flow owns it. Adopt it as this feature's draft plan: flow start ${slugArg} --confirmed (the operator agrees in chat), or delete the dir to start clean`
+				: `.dev-flow/${slugArg}/ is a ghost — ${gi.entries.join(", ") || "empty"} but no state.json, so no flow owns it. Start ${slugArg} over it, keeping those files: flow start ${slugArg} --confirmed (the operator agrees in chat), or delete the dir to start clean`,
+			isError: true,
+		};
 	}
 	if (existsSync(featDir(root, slugArg)) && !ghost) {
 		// --ui on the plan-stage feature this session drives: the operator asked for mockups after the start,
@@ -350,7 +360,7 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 	// the stamp is what ran, not what the disk claims (that mismatch is the warning above).
 	const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), loadedVersion() ?? undefined);
 	const planDir = path.join(featDir(root, slugArg), "plan");
-	if (ghost) notes.push(`adopted ghost .dev-flow/${slugArg}/ — its plan/ (${listFiles(planDir).join(", ") || "empty"}) is this feature's draft`);
+	if (ghost) notes.push(gi!.plan ? `adopted ghost .dev-flow/${slugArg}/ — its plan/ (${listFiles(planDir).join(", ") || "empty"}) is this feature's draft` : `adopted ghost .dev-flow/${slugArg}/ — kept ${gi!.entries.join(", ") || "nothing (it was empty)"}`);
 	mkdirSync(planDir, { recursive: true });
 	// a roadmap item stamped for this slug carries its brief into the plan: the spin-off's context outlives the session that split it
 	const picked = roadmapBriefFor(readRoadmap(root), slugArg);
@@ -681,8 +691,13 @@ export async function gateUse(o: GateCtx): Promise<RunResult> {
 	if (!slugArg) return { text: "usage: flow use <slug>", isError: true };
 	const st = readState(root, slugArg);
 	if (!st) {
-		const ghost = existsSync(path.join(featDir(root, slugArg), "plan"));
-		return { text: ghost ? `.dev-flow/${slugArg}/ is a ghost — plan/ but no state.json, so there is nothing to resume: flow start ${slugArg} --confirmed adopts its plan as a new feature` : `no unfinished feature ${slugArg}`, isError: true };
+		const gi = ghostInfo(root, slugArg);
+		return {
+			text: gi
+				? `.dev-flow/${slugArg}/ exists but has no state.json (a ghost: ${gi.entries.join(", ") || "empty"}) — there is nothing to resume. ${gi.worktree ? `Its worktree/ must go first (flow start ${slugArg} names the cleanup)` : `flow start ${slugArg} --confirmed adopts it as a new feature${gi.plan ? ", its plan/ as the draft" : ", keeping its files"}`}`
+				: `no unfinished feature ${slugArg}`,
+			isError: true,
+		};
 	}
 	const prior = readClaim(root, slugArg);
 	const takeover = claimBlocks(prior, sess.key) ? ` — taken over from live session (pid ${prior!.pid})` : "";
