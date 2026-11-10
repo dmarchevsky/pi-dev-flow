@@ -372,7 +372,8 @@ export const isReleaseOnly = (cfg: Config, branch?: BranchState | null): boolean
  *  committed the operator is asked to approve state no gate has ever seen. */
 export function verifyGate(state: FlowState, cfg: Config, branch?: BranchState | null): string[] {
 	const errs: string[] = [];
-	if (state.stage !== "implement") errs.push(`stage is "${state.stage}", verify only applies to "implement"`);
+	// pre-release: a re-verify after review fixes (gh#187) — the same proofs, over the tree that will ship
+	if (state.stage !== "implement" && state.stage !== "pre-release") errs.push(`stage is "${state.stage}", verify only applies to "implement" (or "pre-release", to re-ask Verified? after review fixes)`);
 	// a release-only flow (#161) proves main's committed tree here; its version bump is the pre-release commit
 	if (branch && branch.commitsAhead === 0 && !isReleaseOnly(cfg, branch))
 		errs.push(
@@ -2191,7 +2192,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "pre-release": {
 			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}` : ""].filter(Boolean).join(" and ");
 			if (state.docs && prep) return `${cfg.release.review}, fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
-			return `${cfg.release.review}, fix must/should, update docs${prep ? `, ${prep}` : ""}, flow check; show the PR summary, version and changelog, ask Release? and run flow release`;
+			return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}, flow check; show the PR summary, version and changelog, ask Release? and run flow release`;
 		}
 		case "release":
 			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then flow finish (closing reflection first; its fold/drop answer is Finish?)`;

@@ -2275,8 +2275,8 @@ test("unversioned release: --no-version ships merge + changelog and skips the bu
 	commitWt(repo, "nv", "changelog: nv ships"); // the line must be on the branch — release refuses an uncommitted worktree (gh#131)
 	const r = await flow(["release", "--no-version", "--confirmed"]);
 	assert.match(r.content[0].text, /unversioned: no bump or tag; your changelog entry rides under Unreleased/);
-	// #162: the changelog commits came after Verified? — the release names them instead of shipping them under that word
-	assert.match(r.content[0].text, /Warning: 2 commit\(s\) landed after the operator's Verified\? \(given over [0-9a-f]{7}\): [0-9a-f]+ changelog: nv ships \| [0-9a-f]+ changelog: nv ships \(bad merge\)/);
+	// gh#187: changelog-only commits after Verified? are release prep — no verdict could cover them, so no warning
+	assert.doesNotMatch(r.content[0].text, /landed after the operator's Verified\?/, r.content[0].text);
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "nv", "state.json"), "utf8"));
 	assert.match(st.verifiedHead, /^[0-9a-f]{40}$/, "verify stamped the tree it was given over");
 	assert.equal(st.noVersion, true, "the mode is persisted for release-done");
@@ -3573,9 +3573,64 @@ test("the post-Verified? warning lists the branch's own commits, not what came i
 	for (const n of [1, 2, 3]) commitMain(repo, `up${n}.txt`, `${n}\n`, `upstream ${n}`);
 	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "merge", "-q", "--no-edit", "main"]);
 	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- pv ships\n");
+	writeFileSync(path.join(wt, "pv.js"), "// the fix\n");
 	commitWt(repo, "pv", "changelog: pv ships");
 	const r = await flow(["release", "--no-version", "--confirmed"]);
 	assert.match(r.content[0].text, /Warning: 1 commit\(s\) landed after the operator's Verified\? \(given over [0-9a-f]{7}\): [0-9a-f]+ changelog: pv ships \(\+4 merged in from main, not listed\)/, r.content[0].text);
+});
+
+test("a re-verify at pre-release re-asks Verified? over the review fixes and moves the verdict to them (gh#187)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "rv");
+	await flow(["verify", "--confirmed"]);
+	const stf = path.join(repo, ".dev-flow", "rv", "state.json");
+	const state = () => JSON.parse(readFileSync(stf, "utf8"));
+	const first = state().verifiedHead;
+	const wt = path.join(repo, ".dev-flow", "rv", "worktree");
+	writeFileSync(path.join(wt, "fix.js"), "// review fix\n");
+	commitWt(repo, "rv", "fix the review findings");
+	await flow(["check"]);
+	// a yolo given before the fix existed does not answer the re-verify
+	writeFileSync(stf, JSON.stringify({ ...state(), yolo: true }, null, 2));
+	const asked = await flow(["verify"]);
+	assert.match(asked.content[0].text, /NEEDS-OPERATOR Verified\?[\s\S]*re-verify over the review fixes since [0-9a-f]{7}/, asked.content[0].text);
+	assert.equal(state().stage, "pre-release");
+	const r = await flow(["verify", "--confirmed"]);
+	assert.match(r.content[0].text, /re-verified \(confirmed by operator instruction\) over [0-9a-f]{7} — the Verified\? word now covers the review fixes; still in pre-release/, r.content[0].text);
+	assert.equal(state().stage, "pre-release");
+	assert.notEqual(state().verifiedHead, first, "the verdict moved to the tree that ships");
+	// the release prep that follows — a bump touching the version file and whatever else it rewrites — is not counted
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- rv ships\n");
+	commitWt(repo, "rv", "changelog: rv ships");
+	const rel = await flow(["release", "--no-version", "--confirmed"]);
+	assert.match(rel.content[0].text, /release approved/, rel.content[0].text);
+	assert.doesNotMatch(rel.content[0].text, /landed after the operator's Verified\?/, rel.content[0].text);
+});
+
+test("the post-Verified? warning leaves out the release-prep commit, even one that rewrites more than the bump (gh#187)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\nversionFile = VERSION\n```\n"]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "bp");
+	await flow(["verify", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "bp", "worktree");
+	writeFileSync(path.join(wt, "fix.js"), "// review fix\n");
+	commitWt(repo, "bp", "fix after verify");
+	writeFileSync(path.join(wt, "VERSION"), "1.0.0\n");
+	writeFileSync(path.join(wt, "compose.yml"), "image: app:1.0.0\n");
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- bp ships\n");
+	commitWt(repo, "bp", "chore(release): 1.0.0");
+	const r = await flow(["release", "--no-version"]);
+	assert.match(r.content[0].text, /1 commit\(s\) landed after the operator's Verified\? \(given over [0-9a-f]{7}\): [0-9a-f]+ fix after verify \(release prep [0-9a-f]+ not counted\)/, r.content[0].text);
+	assert.match(r.content[0].text, /re-run flow verify/);
 });
 
 test("the operator-view check above ran over the gates this suite drives", () => {
