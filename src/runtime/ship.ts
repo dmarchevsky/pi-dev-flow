@@ -1,17 +1,34 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches } from "../core.ts";
+import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind } from "../core.ts";
+import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type RunResult, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
 import { type GateCtx, markPendingAsk } from "./gates.ts";
+
+/** gh#198: the version question asked with Verified? — null when it is not the operator's to answer here
+ *  (no manifest to version, the playbook decides, or an earlier Verified? already recorded the call). */
+function versionQuestion(root: string, state: FlowState, cfg: Config): { ask: string; flags: string } | null {
+	if (!cfg.versioning.file || playbookVersionChoice(cfg) || state.versionChoice) return null;
+	const file = path.join(gateCwd(root, state), cfg.versioning.file);
+	const now = existsSync(file) ? parseVersion(cfg.versioning.file, readFileSync(file, "utf8")) : null;
+	const kinds = (["patch", "minor", "major"] as const).map((k) => `${k}${bumpVersion(now, k) ? ` (→ ${bumpVersion(now, k)})` : ""}`).join(", ");
+	return {
+		ask: `also ask the release call: a ${kinds} release — propose one by the playbook's versioning rule${now ? ` (${cfg.versioning.file} is at ${now})` : ""} — or merge unreleased (no bump, no tag)${state.docs ? "; a docs flow usually merges unreleased" : ""}`,
+		flags: "--version=patch|minor|major (or the exact version they named) or --no-version (merge unreleased)",
+	};
+}
 
 export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg, takeYoloWord } = o;
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
 	const items = applicableItems(cfg, state!, "implement");
+	// gh#198: the release call (versioned vs unreleased) rides on the Verified? answer — the prep that follows depends on it
+	const verArg = versionArg(flagValue(o.rest, "version"), flag("no-version"));
+	if ("error" in verArg) return { text: `verify gate FAILED:\n- ${verArg.error}`, isError: true };
 	// the operator reviews the tree that ships: catch up with the default branch before anything runs
 	const caught = state!.stage === "implement" ? await catchUp(root, state!, cfg, flag("confirmed")) : { note: "" };
 	if ("text" in caught) return caught;
@@ -109,7 +126,8 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 		if (!ui.hasUI) {
 			const port = devPortOf(state!, cfg);
 			const what = state!.docs ? "ready for review" : cfg.commands.dev ? `deployed for review${port !== undefined ? ` on port ${port}` : ""}` : "live app re-probed for review";
-			return { text: `${needsOperator(`${what}${reverify ? ` — a re-verify over the review fixes since ${state!.verifiedHead?.slice(0, 7) ?? "the last Verified?"}` : ""} — the app stays up until you answer`, "Verified?", "look at the change in the running app yourself first (the playbook's self-check), then ask the operator Verified? in chat and run flow verify --confirmed once they answer. Keep it running until they answer.")}\n${ran}` };
+			const vq = versionQuestion(root, state!, cfg);
+			return { text: `${needsOperator(`${what}${reverify ? ` — a re-verify over the review fixes since ${state!.verifiedHead?.slice(0, 7) ?? "the last Verified?"}` : ""} — the app stays up until you answer${vq ? ` — ${vq.ask}` : ""}`, "Verified?", `look at the change in the running app yourself first (the playbook's self-check), then ask the operator Verified? in chat and run flow verify --confirmed${vq ? ` ${vq.flags}` : ""} once they answer. Keep it running until they answer.`)}\n${ran}` };
 		}
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 		if (!ok) {
@@ -129,21 +147,38 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const vHead = await sh("git rev-parse HEAD", gateCwd(root, state!));
 	if (vHead.ok && vHead.out.trim()) state!.verifiedHead = vHead.out.trim();
 	else delete state!.verifiedHead;
+	// gh#198: the operator's call, else the playbook's, else whatever an earlier Verified? recorded
+	const choice = verArg.choice ?? state!.versionChoice ?? playbookVersionChoice(cfg);
+	if (choice) {
+		if (choice !== state!.versionChoice || !state!.versionFrom) {
+			const mf = cfg.versioning.file ? path.join(gateCwd(root, state!), cfg.versioning.file) : "";
+			const from = mf && existsSync(mf) ? parseVersion(cfg.versioning.file!, readFileSync(mf, "utf8")) : null;
+			if (from) state!.versionFrom = from;
+		}
+		state!.versionChoice = choice;
+		if (choice === "unreleased") state!.noVersion = true;
+		else delete state!.noVersion;
+	}
+	const choiceNote = choice ? `\nrelease call: ${describeVersionChoice(choice, state!.versionFrom)}` : "";
 	const before = state!.stage;
 	state!.stage = "pre-release";
 	delete state!.pendingAsk;
 	writeState(root, state!);
 	if (before === "pre-release")
-		return { text: `re-verified${audit} over ${state!.verifiedHead?.slice(0, 7) ?? "the current tree"} — the Verified? word now covers the review fixes; still in pre-release.\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
-	return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
+		return { text: `re-verified${audit} over ${state!.verifiedHead?.slice(0, 7) ?? "the current tree"} — the Verified? word now covers the review fixes; still in pre-release.${choiceNote}\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
+	return { text: `verified${audit} — entering pre-release stage.${choiceNote}\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
 export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg, takeYoloWord } = o;
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
-	// operator's word at Release?: this flow ships without a version bump or tag — recorded only once Release? is answered
-	const noVersion = flag("no-version") || !!state!.noVersion;
+	// operator's word at Release?: this flow ships without a version bump or tag — recorded only once Release? is answered.
+	// gh#198: --version=<v> / --no-version here re-make the call recorded with Verified? (the operator changed their mind)
+	const relArg = versionArg(flagValue(o.rest, "version"), flag("no-version"));
+	if ("error" in relArg) return { text: `release gate FAILED:\n- ${relArg.error}`, isError: true };
+	const choice = relArg.choice ?? state!.versionChoice ?? playbookVersionChoice(cfg);
+	const noVersion = choice === "unreleased" || (!relArg.choice && !!state!.noVersion);
 	// (versioned) items stand down on an unversioned flow — the set confirmed here is the one that applies to it
 	const items = applicableItems(cfg, { ...state!, noVersion }, "pre-release");
 	// yolo is the operator's word at Release? — pre-confirms Finish?; publishing guardrails stay enforced
@@ -205,6 +240,33 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const prep = { manifestVersion: manifestVer, remoteTags, changelog, changelogChanged, changelogBase, noFoldCheck: flag("no-fold-check"), conflictMarkers, noMarkerCheck: flag("no-marker-check") };
 	// same freshness rule as verify: a green predating a worktree write may not stand for the tree this gate blesses
 	if (freshenChecks(state!, await worktreeFingerprint(wtCwd)).length) writeState(root, state!);
+	// gh#198: the branch must carry the call the operator made — a bump they did not choose, or a bump on a flow
+	// they said merges unreleased, is prep that contradicts the word Release? would stand on. It runs before the
+	// generic proofs: when a parallel flow released first, "already tagged" alone would send the agent round a loop.
+	const tagOf = (v: string) => cfg.versioning.pattern.replace("{version}", v);
+	const newest = cfg.versioning.file && !noVersion ? newestTaggedVersion(cfg.versioning.pattern, remoteTags) : null;
+	if (cfg.versioning.file && choice && choice !== "next") {
+		const re = "ask the operator, then re-run with --version=<their call> or --no-version and --confirmed on their answer";
+		let baseVer: string | null = null;
+		if (markerBase) {
+			const was = await sh(`git show ${sq(`${markerBase}:${cfg.versioning.file}`)} 2>/dev/null`, wtCwd);
+			baseVer = was.ok && was.out.trim() ? parseVersion(cfg.versioning.file, was.out) : null;
+		}
+		if (isBumpKind(choice)) {
+			// counted from what actually shipped last, so a flow that took the number first moves this one along
+			const from = newest ?? baseVer ?? state!.versionFrom ?? null;
+			const want = bumpVersion(from, choice);
+			const moved = from && state!.versionFrom && from !== state!.versionFrom ? ` — ${tagOf(from)} was released since Verified? (the call was counted from ${state!.versionFrom} then)` : "";
+			if (want && manifestVer !== want)
+				return { text: `release gate FAILED:\n- the operator's call is a ${choice} release: bump ${cfg.versioning.file} to ${want} (${choice} past ${from})${moved}, and head its changelog entry ${want} — it says ${manifestVer ?? "no version"}`, isError: true };
+		} else if (choice !== "unreleased") {
+			if (remoteTags.includes(tagOf(choice)))
+				return { text: `release gate FAILED:\n- ${choice}, the operator's call at Verified?, is taken: ${tagOf(choice)} was released since (another flow got there first) — ${re}; propose the same kind of step past ${newest ?? choice}, never pick the number yourself`, isError: true };
+			if (manifestVer && manifestVer !== choice)
+				return { text: `release gate FAILED:\n- the operator's release call is ${choice}, but ${cfg.versioning.file} says ${manifestVer} — bump it to ${choice}, or, if the call changed, ${re}`, isError: true };
+		} else if (manifestVer && baseVer && baseVer !== manifestVer)
+			return { text: `release gate FAILED:\n- the operator's call is to merge unreleased, but the branch bumps ${cfg.versioning.file} ${baseVer} → ${manifestVer} — revert the bump (the entry goes under Unreleased), or, if the call changed, ${re}`, isError: true };
+	}
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 	const preGate = preReleaseGate({ ...state!, noVersion, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } }, cfg, prep);
 	if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
@@ -274,12 +336,34 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 			: postVerify
 				? "a yolo given earlier does not cover commits that landed after Verified? — ask Release? with them named"
 				: "";
-	let audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
-	const askPending = !flag("confirmed") && (!state!.yolo || !!yoloHeld);
+	// gh#198: release.ask = on-change — Release? answers itself when it would only re-confirm Verified?: the call
+	// is on record, nothing but release prep landed since, and no other question (stale build, a major bump) is open
+	const onChange = cfg.release.ask === "on-change" && !flag("confirmed") && !state!.yolo;
+	const askWhy = !onChange
+		? ""
+		: !state!.verifiedHead
+			? "no Verified? tree on record to compare against"
+			: cfg.versioning.file && !choice
+				? "no release call on record — ask it with Release?: patch, minor, major, or merge unreleased"
+				: relArg.choice && relArg.choice !== state!.versionChoice
+					? `the release call changed since Verified? (${state!.versionChoice ?? "none"} → ${relArg.choice}) — the operator makes that call`
+				: postVerify
+					? "commits beyond release prep landed after Verified?"
+					: stale
+						? "the session build is behind the checkout"
+						: cfg.release.yolo === "until-release"
+							? "the playbook sets yolo = until-release"
+							: choice === "next" && newest && manifestVer && majorBump(newest, manifestVer)
+								? `${newest} → ${manifestVer} is a major bump — the playbook's versioned call does not choose that`
+								: "";
+	const auto = onChange && !askWhy;
+	let audit = flag("confirmed") ? " (confirmed by operator instruction)" : auto ? ` (auto-answered: release.ask = on-change — ${describeVersionChoice(choice ?? "next", state!.versionFrom)} was the call at Verified?, and only release prep landed since)` : state!.yolo ? " (yolo: pre-confirmed)" : "";
+	const askPending = !auto && !flag("confirmed") && (!state!.yolo || !!yoloHeld);
 	if (askPending) {
 		markPendingAsk(root, state!, "Release?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`ready to publish${yoloHeld ? ` (${yoloHeld})` : ""}${stale ? ` — also: ${staleAsk}` : ""}${postVerify ? ` — ${postVerify}` : ""}`, "Release?", `re-run with --confirmed once the operator answered 'Release?' in chat${stale ? " (and the stale-build question)" : ""}`), isError: true };
+			const callAsk = cfg.versioning.file && !choice ? " — also ask the release call: a patch, minor or major release, or merge unreleased (no bump, no tag)?" : "";
+			return { text: needsOperator(`ready to publish${yoloHeld ? ` (${yoloHeld})` : ""}${askWhy ? ` (asked: ${askWhy})` : ""}${stale ? ` — also: ${staleAsk}` : ""}${postVerify ? ` — ${postVerify}` : ""}${callAsk}`, "Release?", `re-run with --confirmed once the operator answered 'Release?' in chat${stale ? " (and the stale-build question)" : ""}${callAsk ? " (add --version=patch|minor|major, an exact version, or --no-version for their release call)" : ""}`), isError: true };
 		}
 		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}${postVerify ? `\n\n${postVerify}` : ""}${yoloHeld ? `\n\n(${yoloHeld})` : ""}`);
 		if (!ok) {
@@ -290,6 +374,8 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 		audit = " (confirmed in dialog)";
 	}
 	if (noVersion) state!.noVersion = true;
+	else delete state!.noVersion;
+	if (choice) state!.versionChoice = choice;
 	if (unverifiedChange) state!.friction = (state!.friction ?? 0) + 1;
 	state!.confirmations = { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } };
 	state!.approvals["pre-release"] = now();

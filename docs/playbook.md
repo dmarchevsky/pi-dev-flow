@@ -171,6 +171,12 @@ gate prints `health: none configured` and `flow doctor` flags the combination. T
 `merge = squash | merge | rebase | any` — how a merged PR lands on the default branch (see below) — and
 `yolo = all | until-release`: with `until-release` a yolo given at an earlier checkpoint never answers Release?
 (for repos whose rules want the release word given after the commits exist; default `all`) — and
+`version = ask | versioned | unversioned` (gh#198): who makes the release call — `ask` (default) puts *a patch, minor or
+major release, or merge unreleased?* into the Verified? question (a kind is turned into a number at release, from the
+newest tag, so parallel flows never fight over one); the other two make it for every flow — and
+`ask = always | on-change`: with `on-change` Release? answers itself when the call is on record and nothing but
+release prep (the bump, the changelog) changed since Verified? (a stale build, `yolo = until-release` or a major
+bump the operator did not name still ask; default `always`) — and
 `reflect = on-friction | always`: when `flow finish` runs the closing reflection worker. `on-friction` (default)
 skips it for a flow that hit no gate refusal and no guard block and carries no `--note`; `always` runs it every
 time. `## global` also takes

@@ -48,6 +48,8 @@ export interface FlowState {
 	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
 	pendingAsk?: string; // the checkpoint word a gate asked for and has not been given ("Approve?", "Verified?", …) — presentation only (💬 in the footer), it never gates
 	releaseOnly?: boolean; // verify found nothing on the branch but unreleased work on main: this flow only cuts the version (#161)
+	versionChoice?: string; // the operator's release call, recorded with Verified? (gh#198): patch | minor | major (counted from the newest tag at release, so a parallel flow taking the number moves it), an exact version, "next" (playbook version = versioned: any bump past the last tag) or "unreleased"
+	versionFrom?: string; // the manifest version when the call was recorded — what a patch/minor/major call was counted from at Verified?
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
@@ -119,7 +121,7 @@ export interface Config {
 	/** Bytes one dev instance needs (playbook `instanceMem` / `instanceDisk`, e.g. 2G) — the side-by-side feasibility check. */
 	instanceMem?: number;
 	instanceDisk?: number;
-	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction" };
+	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction"; /** who decides versioned vs unreleased: asked with Verified? (`ask`, default) or fixed by the playbook (gh#198) */ version?: "ask" | "versioned" | "unversioned"; /** `on-change`: Release? answers itself when nothing but release prep changed since Verified? and the version choice is on record (gh#198) */ ask?: "always" | "on-change" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
@@ -495,6 +497,49 @@ export function pickReleaseNotes(src: { changelog: string | null; version: strin
 	const ann = src.annotation.trim();
 	if (ann && !looksLikeShellError(ann)) return { notes: ann, source: "annotation" };
 	return { notes: "", source: "none" };
+}
+
+/** gh#198 — the operator's release call: a bump kind (`patch|minor|major`, turned into a number at release from
+ *  the newest tag), an exact version (`1.2.0`, a pre-release suffix allowed), `next` (the playbook says
+ *  versioned: any bump past the last tag) or `unreleased` (merge + changelog only). */
+export const VERSION_ARG_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+export type BumpKind = "patch" | "minor" | "major";
+export const isBumpKind = (c: string | null | undefined): c is BumpKind => c === "patch" || c === "minor" || c === "major";
+
+/** `from` bumped by one `kind` step (a pre-release suffix is dropped), or null when `from` is not x.y.z. */
+export function bumpVersion(from: string | null | undefined, kind: BumpKind): string | null {
+	const m = from?.match(/^(\d+)\.(\d+)\.(\d+)/);
+	if (!m) return null;
+	const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+	return kind === "major" ? `${maj + 1}.0.0` : kind === "minor" ? `${maj}.${min + 1}.0` : `${maj}.${min}.${pat + 1}`;
+}
+
+/** The call a playbook makes for every flow (`release.version`), or undefined when the operator is asked. */
+export const playbookVersionChoice = (cfg: Config): string | undefined =>
+	cfg.release.version === "versioned" ? "next" : cfg.release.version === "unversioned" ? "unreleased" : undefined;
+
+/** `to` raises the major version over `from` (1.x → 2.0, and 0.x → 1.0). */
+export function majorBump(from: string, to: string): boolean {
+	const maj = (v: string) => Number.parseInt(v.split(".")[0] ?? "", 10);
+	return Number.isFinite(maj(from)) && Number.isFinite(maj(to)) && maj(to) > maj(from);
+}
+
+/** A recorded call in the operator's words. */
+export const describeVersionChoice = (c: string, from?: string | null): string =>
+	c === "unreleased"
+		? "merge unreleased (no bump, no tag)"
+		: c === "next"
+			? "a versioned release (playbook: version = versioned)"
+			: isBumpKind(c)
+				? `a ${c} release${bumpVersion(from, c) ? ` (${from} → ${bumpVersion(from, c)})` : ""}`
+				: `release ${c}`;
+
+/** Does the version flag pair on a verify/release call parse? Returns the call it makes, null for none, or an error. */
+export function versionArg(value: string | null, noVersion: boolean): { choice: string | null } | { error: string } {
+	if (value !== null && noVersion) return { error: "--version=<v> and --no-version contradict each other — pass the one the operator chose" };
+	if (value !== null && !isBumpKind(value.trim()) && !VERSION_ARG_RE.test(value.trim()))
+		return { error: `--version=${value} is not a release call — pass what the operator chose: patch, minor, major, or an exact version such as 1.4.0` };
+	return { choice: value !== null ? value.trim() : noVersion ? "unreleased" : null };
 }
 
 /**
@@ -2190,7 +2235,13 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			if (state.docs) return `edit in ${state.worktree} (docs mode: no project commands), tick the tier-2 checklist with the operator, ask Verified?, then flow verify --confirmed`;
 			return `build and test in ${state.worktree}, commit as you go, flow check; then flow verify (deploys for review), look yourself, keep the app running, ask Verified? and run flow verify --confirmed on the answer`;
 		case "pre-release": {
-			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}` : ""].filter(Boolean).join(" and ");
+			// gh#198: the release call made with Verified? decides which prep this is
+			const vc = state.versionChoice;
+			const auto = cfg.release.ask === "on-change" ? " (release.ask = on-change: it asks Release? only when something beyond the prep changed)" : "";
+			if (vc === "unreleased")
+				return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}, flow check; show the PR summary, then run flow release${auto || " and ask Release?"}`;
+			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}${isBumpKind(vc) ? ` to ${bumpVersion(state.versionFrom, vc) ?? `the next ${vc}`} (a ${vc} release, the operator's call — the gate counts it from the newest tag, so a flow that released first moves the number)` : vc && vc !== "next" ? ` to ${vc} (the operator's call)` : ""}` : ""].filter(Boolean).join(" and ");
+			if (vc && prep) return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}, flow check; show the PR summary, version and changelog, then run flow release${auto || " and ask Release?"}`;
 			if (state.docs && prep) return `${cfg.release.review}, fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
 			return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}, flow check; show the PR summary, version and changelog, ask Release? and run flow release`;
 		}

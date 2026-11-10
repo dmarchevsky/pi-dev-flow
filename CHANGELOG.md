@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+- The versioned-or-unreleased call is now made with Verified? instead of at Release? (gh#198). On a versioned project the Verified? question also asks "a patch, minor or major release, or merge unreleased?", and `flow verify --confirmed --version=patch|minor|major` (or an exact version) / `--no-version` records the answer, so pre-release prepares the right bump (or the Unreleased line) the first time. A playbook can make the call for every flow with `version = versioned | unversioned`. A patch/minor/major call is counted from the newest tag at release time, so when another flow ships the number first the gate names the next one instead of looping between "already tagged" and "not the chosen version". The release gate refuses a bump that doesn't match the call, an exact version another flow already took (with a request to ask the operator again), and a bump on a flow that merges unreleased.
+- New playbook key `ask = on-change` in `## release`: Release? answers itself when the call is on record and nothing but release prep landed after Verified?. It still asks, and says why, when code changed after Verified?, no call is recorded, the session build is stale, `yolo = until-release` is set, or a playbook-made versioned call turns out to be a major bump. The default stays `always`.
+
 ## [0.88.0] - 2026-11-09
 
 **Recording a release waits for its CI, review fixes can be re-verified, and `--confirmed` needs your actual word.**
