@@ -449,3 +449,8 @@ test("release version and ask parse; junk values warn and keep the defaults (gh#
 	assert.match(junk.warn.join(" "), /ask = "never" — expected on-change or always, keeping on-change/);
 	assert.deepEqual([mdToConfig(junk).release.version, mdToConfig(junk).release.ask], [undefined, undefined]);
 });
+
+test("parseProjectMd: (docs) keeps an implement item on a --docs flow, alongside the other qualifiers (gh#207)", () => {
+	const p = parseProjectMd("## implement\n- [ ] (docs) (ui) screenshots in the docs match\n- [ ] plain\n");
+	assert.deepEqual(p.checklist.implement, [{ text: "screenshots in the docs match", uiOnly: true, docs: true }, { text: "plain", uiOnly: false }]);
+});

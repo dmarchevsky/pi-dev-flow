@@ -46,6 +46,7 @@ import {
 	needsOperator,
 	nextHint,
 	applicableItems,
+	openItemsNote,
 	checklistPending,
 	parsePushRefs,
 	playbookTamper,
@@ -919,11 +920,11 @@ test("verifyGate: tier-1 checks green + tier-2 checklist confirmed (ui-aware)", 
 	const items = [{ text: "visual pass ok", uiOnly: true }, { text: "docs updated", uiOnly: false }];
 	const c = { ...buildConfig({}), checkList: [{ name: "health", cmd: "curl x" }], checklist: { implement: items } };
 	assert.ok(verifyGate(s, c).some((e) => e.includes('check "health"')));
-	assert.match(verifyGate(s, c).join(" "), /checklist not confirmed \(1 item/, "non-UI feature sees only the non-ui item");
+	assert.match(verifyGate(s, c).join(" "), /checklist not confirmed — 1 item\(s\) under ## implement in \.dev-flow\/project\.md: "docs updated";/, "non-UI feature sees only the non-ui item");
 	s.checks.health = { ok: true, at: "" };
 	s.confirmations = { implement: { hash: checklistHash([{ text: "docs updated", uiOnly: false }]), at: "" } };
 	assert.equal(verifyGate(s, c).length, 0, "non-UI feature satisfied without the ui item");
-	assert.match(verifyGate({ ...s, ui: true }, c).join(" "), /checklist not confirmed \(2 item/, "UI feature must confirm both");
+	assert.match(verifyGate({ ...s, ui: true }, c).join(" "), /checklist not confirmed — 2 item\(s\) under ## implement/, "UI feature must confirm both");
 	s.confirmations = { implement: { hash: checklistHash(items), at: "" } };
 	assert.equal(verifyGate({ ...s, ui: true }, c).length, 0);
 });
@@ -1839,4 +1840,18 @@ test("resolvedDevEnv names the DEV_FLOW_* values a dev command read and the comp
 	assert.match(resolvedDevEnv("docker compose up -d", { DEV_FLOW_SUFFIX: "" }), /compose project not set by the command/);
 	assert.equal(resolvedDevEnv("touch dev-up", { DEV_FLOW_PORT: "1" }), "", "a command that reads nothing says nothing");
 	assert.equal(resolvedDevEnv("echo $DEV_FLOW_SUFFIXED", { DEV_FLOW_SUFFIX: "" }), "", "a longer variable name is not this one");
+});
+
+test("a --docs flow drops implement checklist items unless tagged (docs), and an open count names its items (gh#207)", () => {
+	const cfg = mdToConfig(parseProjectMd("## implement\n- [ ] container test passes\n- [ ] (docs) docs read back for accuracy\n\n## pre-release\n- [ ] review done\n"));
+	const docs = { ...newState("d", false, false, true), stage: "implement" as const };
+	assert.deepEqual(applicableItems(cfg, docs, "implement").map((i) => i.text), ["docs read back for accuracy"]);
+	assert.deepEqual(applicableItems(cfg, { ...docs, docs: undefined }, "implement").map((i) => i.text), ["container test passes", "docs read back for accuracy"], "a normal flow keeps both");
+	assert.deepEqual(applicableItems(cfg, docs, "pre-release").map((i) => i.text), ["review done"], "later stages are unaffected");
+	assert.equal(openItemsNote(cfg, docs, "implement"), '1 item(s) under ## implement in .dev-flow/project.md: "docs read back for accuracy"');
+	assert.match(verifyGate(docs, cfg).join("\n"), /tier-2 checklist not confirmed — 1 item\(s\) under ## implement in \.dev-flow\/project\.md: "docs read back for accuracy"/);
+	assert.match(nextHint(docs, cfg), /go through the checklist with the operator \(1 item\(s\) under ## implement/);
+	const none = mdToConfig(parseProjectMd("## implement\n- [ ] container test passes\n"));
+	assert.equal(openItemsNote(none, docs, "implement"), "", "nothing applies, nothing is open");
+	assert.doesNotMatch(nextHint(docs, none), /checklist/, "and the hint stops asking for a tick nobody can make");
 });

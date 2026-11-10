@@ -216,16 +216,19 @@ export function parseProjectMd(text: string): ParsedMd {
 		if (!stage || stage === "global" || !MD_STAGES.includes(stage as MdStage)) return; // preamble/unknown → not injected
 		const item = line.match(CHECK_ITEM);
 		if (item) {
-			// qualifiers lead the item in any order: (ui) = --ui features only, (versioned) = not on a --no-version flow
+			// qualifiers lead the item in any order: (ui) = --ui features only, (versioned) = not on a --no-version flow,
+			// (docs) = an implement item that still applies on a --docs flow (gh#207)
 			let text = item[1].trim();
 			let uiOnly = false;
 			let versionedOnly = false;
-			for (let q = /^\((ui|versioned)\)\s+/.exec(text); q; q = /^\((ui|versioned)\)\s+/.exec(text)) {
+			let docs = false;
+			for (let q = /^\((ui|versioned|docs)\)\s+/.exec(text); q; q = /^\((ui|versioned|docs)\)\s+/.exec(text)) {
 				if (q[1] === "ui") uiOnly = true;
+				else if (q[1] === "docs") docs = true;
 				else versionedOnly = true;
 				text = text.slice(q[0].length);
 			}
-			(p.checklist[stage] ??= []).push(versionedOnly ? { text, uiOnly, versionedOnly } : { text, uiOnly });
+			(p.checklist[stage] ??= []).push({ text, uiOnly, ...(versionedOnly ? { versionedOnly } : {}), ...(docs ? { docs } : {}) });
 			return;
 		}
 		if (/^(#|```|<!--|\s*$)/.test(line) && !line.startsWith("### ")) return; // h1/html comments/blank are not prose
@@ -560,7 +563,7 @@ export function mdDigest(text: string): string {
 		}
 		if (s === "pre-release" && !keys.file && !p.flow.release["versioning.file"]) bits.push("version: no version file set — releases cannot bump or tag");
 		const items = p.checklist[s] ?? [];
-		if (items.length) bits.push(`manual check: ${items.map((i) => `${i.uiOnly ? "(UI only) " : ""}${i.versionedOnly ? "(versioned only) " : ""}\"${i.text}\"`).join(" · ")}`);
+		if (items.length) bits.push(`manual check: ${items.map((i) => `${i.uiOnly ? "(UI only) " : ""}${i.versionedOnly ? "(versioned only) " : ""}${i.docs ? "(docs flows too) " : ""}\"${i.text}\"`).join(" · ")}`);
 		if (p.prose[s]) bits.push(`guidance: "${p.prose[s].replace(/\s+/g, " ").trim()}"`);
 		if (bits.length) rows.push(`${label} — ${bits.join(" · ")}`);
 	}

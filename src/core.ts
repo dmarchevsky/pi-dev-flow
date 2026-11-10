@@ -58,11 +58,13 @@ export interface FlowState {
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features;
- *  versionedOnly items ("(versioned)") presuppose a bump/tag and stand down on a --no-version flow (#166). */
+ *  versionedOnly items ("(versioned)") presuppose a bump/tag and stand down on a --no-version flow (#166);
+ *  docs items ("(docs)") keep an implement item on a --docs flow, where implement items otherwise stand down (gh#207). */
 export interface ChecklistItem {
 	text: string;
 	uiOnly: boolean;
 	versionedOnly?: boolean;
+	docs?: boolean;
 }
 
 export interface Commands {
@@ -384,8 +386,8 @@ export function verifyGate(state: FlowState, cfg: Config, branch?: BranchState |
 				: "nothing committed on the feature branch yet — commit as you go, verify proves a committed state",
 		);
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
-	const pend = checklistPending(cfg, state, "implement");
-	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow verify after ticking them off`);
+	const pend = openItemsNote(cfg, state, "implement");
+	if (pend) errs.push(`tier-2 checklist not confirmed — ${pend}; confirm them with the operator, then run flow verify`);
 	return errs;
 }
 
@@ -555,8 +557,8 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 	const errs: string[] = [];
 	if (state.stage !== "pre-release") errs.push(`stage is "${state.stage}", the release gate only applies to "pre-release"`);
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
-	const pend = checklistPending(cfg, state, "pre-release");
-	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow release after ticking them off`);
+	const pend = openItemsNote(cfg, state, "pre-release");
+	if (pend) errs.push(`tier-2 checklist not confirmed — ${pend}; confirm them with the operator, then run flow release`);
 	if (prep.conflictMarkers?.length && !prep.noMarkerCheck)
 		errs.push(`the branch adds ${prep.conflictMarkers.length} merge-conflict marker line(s) — a hand-resolved merge kept them; fix and commit (or, when the lines are meant, re-run with --no-marker-check on the operator's word):\n  ${prep.conflictMarkers.slice(0, 5).join("\n  ")}${prep.conflictMarkers.length > 5 ? `\n  …(${prep.conflictMarkers.length - 5} more)` : ""}`);
 	if (state.noVersion) {
@@ -623,7 +625,7 @@ export function unreleasedPending(content: string): boolean {
 
 export function checklistHash(items: ChecklistItem[]): string {
 	return createHash("sha1")
-		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.versionedOnly ? "(versioned) " : ""}${i.text}`).join("\n"))
+		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.versionedOnly ? "(versioned) " : ""}${i.docs ? "(docs) " : ""}${i.text}`).join("\n"))
 		.digest("hex")
 		.slice(0, 12);
 }
@@ -677,9 +679,19 @@ export function resolvedDevEnv(cmd: string, env: Record<string, string>): string
 	return parts.length ? `resolved: ${parts.join(", ")}` : "";
 }
 
-/** Items that apply to this feature — "(ui)" items only when the UI flag is set. */
+/** Items that apply to this feature — "(ui)" items only when the UI flag is set. A --docs flow skips build,
+ *  deploy and health at implement, so the implement items that check the running app stand down there too:
+ *  only the ones tagged "(docs)" apply (gh#207). */
 export function applicableItems(cfg: Config, state: FlowState, stage: string): ChecklistItem[] {
-	return (cfg.checklist[stage] ?? []).filter((i) => (!i.uiOnly || state.ui) && (!i.versionedOnly || !state.noVersion));
+	return (cfg.checklist[stage] ?? []).filter((i) => (!i.uiOnly || state.ui) && (!i.versionedOnly || !state.noVersion) && (!state.docs || stage !== "implement" || !!i.docs));
+}
+
+/** gh#207: an open tier-2 count names its items and where they live — "tier-2 3 open" alone could not be found
+ *  in project.md (the word "tier-2" is not in it). "" when nothing is open. */
+export function openItemsNote(cfg: Config, state: FlowState, stage: string): string {
+	if (!checklistPending(cfg, state, stage)) return "";
+	const items = applicableItems(cfg, state, stage);
+	return `${items.length} item(s) under ## ${stage} in .dev-flow/project.md: ${items.map((i) => `"${i.text}"`).join(" | ")}`;
 }
 
 /** Items exist for the stage and current confirmation does not match their hash; returns pending count or 0. */
@@ -2251,7 +2263,10 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			if (state.patch || state.docs) return `${state.patch ? "patch" : "docs"}: describe the change in one line, ask Approve? in chat, then flow approve --confirmed — no plan file${state.docs ? ", no tier-1 checks" : ""}`;
 			return `clarify the direction in chat, write .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask Approve? and run flow approve --confirmed on the answer`;
 		case "implement":
-			if (state.docs) return `edit in ${state.worktree} (docs mode: no project commands), tick the tier-2 checklist with the operator, ask Verified?, then flow verify --confirmed`;
+			if (state.docs) {
+				const open = openItemsNote(cfg, state, "implement");
+				return `edit in ${state.worktree} (docs mode: no project commands)${open ? `, go through the checklist with the operator (${open})` : ""}, ask Verified?, then flow verify --confirmed`;
+			}
 			return `build and test in ${state.worktree}, commit as you go, flow check; then flow verify (deploys for review), look yourself, keep the app running, ask Verified? and run flow verify --confirmed on the answer`;
 		case "pre-release": {
 			// gh#198: the release call made with Verified? decides which prep this is
