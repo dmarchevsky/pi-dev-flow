@@ -621,8 +621,20 @@ export async function gateFinish(o: GateCtx): Promise<RunResult> {
 	if (err || !state || state.approvals.release || state.stage !== "release" || !state.approvals["pre-release"]) return gateFinishCore(o);
 	const rec = await gateReleaseDone({ ...o, rest: o.rest.filter((a) => a !== "--confirmed" && a !== "--yolo") });
 	if (rec.isError) return rec;
-	const fin = await gateFinishCore(o);
 	const recorded = rec.text.split("\n").filter((l) => !l.startsWith(AGENT_MARK)).join("\n");
+	// gh#205: release-stage items (a post-merge build, a deploy check from the default branch) are work done after
+	// the merge. A separate release-done names them while the worktree still stands; folded into finish, one
+	// call recorded the release and removed everything, so an unversioned flow never saw them. Stop once here.
+	const cur = readState(o.root, state.slug) ?? state;
+	if (checklistPending(o.cfg, cur, "release")) {
+		markPendingAsk(o.root, cur, "Finish?");
+		const items = applicableItems(o.cfg, cur, "release").map((i) => `"${i.text}"`).join(" | ");
+		return {
+			text: `${recorded}\n\n${needsOperator(`release recorded — nothing was removed yet: the release-stage checklist (## release in .dev-flow/project.md) is still open: ${items}`, "Finish?", `do each release-stage item now (they run after the merge, from ${o.cfg.defaultBranch} — not the worktree), tell the operator what each showed, then ask Finish? and run flow finish --confirmed when they answer`)}`,
+			isError: true,
+		};
+	}
+	const fin = await gateFinishCore(o);
 	return { ...fin, text: `${recorded}\n\n${fin.text}` };
 }
 
@@ -727,7 +739,9 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	if (askPending) {
 		markPendingAsk(root, state!, "Finish?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`cleanup removes the worktree, branch and feature folder.${quietNote}${forgeSkipNote}`, "Finish?", "ask the operator Finish? in chat, then re-run with --confirmed"), isError: true };
+			// the Finish? answer is what closes the release-stage items: name them in the question it asks
+			const openRelease = checklistPending(cfg, state!, "release") ? ` Release-stage checklist to close with this answer: ${applicableItems(cfg, state!, "release").map((i) => `"${i.text}"`).join(" | ")}.` : "";
+			return { text: needsOperator(`cleanup removes the worktree, branch and feature folder.${openRelease}${quietNote}${forgeSkipNote}`, "Finish?", "ask the operator Finish? in chat, then re-run with --confirmed"), isError: true };
 		}
 		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 		if (!ok) {

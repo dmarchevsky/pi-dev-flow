@@ -3823,3 +3823,28 @@ test("an exact version another flow took is one clear refusal, and the agent can
 	assert.ok(self.isError && /asked: the release call changed since Verified\? \(1\.1\.0 → 1\.2\.0\) — the operator makes that call/.test(self.content[0].text), self.content[0].text);
 	assert.match((await f.flow(["release", "--version=1.2.0", "--confirmed"])).content[0].text, /release approved \(confirmed by operator instruction\)/);
 });
+
+test("finish that records the release stops once on open release-stage items before removing anything (gh#205)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n\n- [ ] post-merge: bun run build && bun run deploy-check from main\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "tailx", "--patch", "--confirmed"]);
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "tailx");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]);
+	markReflected(repo, "tailx");
+	// the unversioned shape: no release-done call, finish records the release itself — even with --confirmed
+	const stop = await flow(["finish", "--confirmed"]);
+	assert.equal(stop.isError, true);
+	assert.match(stop.content[0].text, /release recorded as complete/);
+	assert.match(stop.content[0].text, /NEEDS-OPERATOR Finish\? — release recorded — nothing was removed yet: the release-stage checklist .* is still open: "post-merge: bun run build && bun run deploy-check from main"/, stop.content[0].text);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "tailx", "worktree")), "the worktree still stands");
+	const ask = await flow(["finish"]);
+	assert.match(ask.content[0].text, /Release-stage checklist to close with this answer: "post-merge: bun run build/, "the Finish? question names the items it closes");
+	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature tailx done/, "the second call closes out");
+});
