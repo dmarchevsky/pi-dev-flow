@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.90.0] - 2026-11-10
+
+**Operator answers are checked everywhere they are given, docs flows stop being asked for impossible checks, and stage workers get the project's setup.**
+
 ### Added
 - **Playbook setup for stage workers (gh#201).** A `flow-worker` block under `## global` in `project.md` holds the setup lines a stage worker needs before it can run your checks, for example exporting a test password read from a gitignored file. `flow_stage` copies those lines into every worker brief, so the driver no longer has to remember them. A review worker that still couldn't run a check now has to name it under `checks not run:` instead of returning a quiet PASS.
 
