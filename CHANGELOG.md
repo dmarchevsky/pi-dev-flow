@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **Recording a release waits for the publish CI instead of failing on it (gh#179).** The tag push is what starts the CI that publishes the artifact, so the artifact check in `flow release-done` (and in `flow finish`, which runs the same proofs) used to fail right after the tag with "not found". The agent then had to watch the CI run by hand and re-run the gate. On GitHub, a missing artifact now makes the gate look for the CI runs that the tag started. If one is still running, the gate waits for it, up to 15 minutes plus a minute's grace for a registry that lags the run, and then checks again. If a run failed, the refusal names it with its URL. If the run is still going when the wait ends, the refusal points at it. If the tag started no run at all, the gate says so after a minute. Without GitHub, or without `gh`, the check behaves as before.
+
 ## [0.87.0] - 2026-11-09
 
 **Fewer false alarms, more reflections where they matter, and a way to drop a roadmap item.**

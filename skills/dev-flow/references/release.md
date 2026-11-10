@@ -19,7 +19,8 @@ each step with the gate's stage line, **🚀 release · `<slug>`**; no `Done:` /
    `git push origin v<ver>`. Never `--follow-tags`.
    - CI builds from the tag? `release.preflight` proves that build at
      `flow release`; `release.artifact` makes the record step verify the
-     published artifact.
+     published artifact. On GitHub it waits for the publish CI the tag
+     started (up to 15 min) — no hand-run `gh run watch` before it.
    - `--no-version` flow: no bump, no tag — publish the merge only.
 3. **Hand over to finish.** Once merged and tagged, the playbook continues in
    [finish.md](finish.md): `flow finish` records the release itself first
