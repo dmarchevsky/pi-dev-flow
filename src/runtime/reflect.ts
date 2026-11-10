@@ -1,7 +1,7 @@
 /** dev-flow runtime — Reflections and the upstream issue fold. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { appendReflection, doneItemCount, githubSlug, pluginVersion, guessReflectSections, reflectItems, reflectMove, reflectDone, reflectLegacyPluginCount, reflectionNudges, pluginIssueRecipe, reflectionLine, reflectionsTidy, openChecklistItems, type ReflectTarget, type ReflectItem, type ReflectSection } from "../core.ts";
+import { appendReflection, doneItemCount, githubSlug, pluginVersion, guessReflectSections, reflectItems, reflectMove, reflectDone, reflectRow, reflectLegacyPluginCount, reflectionNudges, pluginIssueRecipe, reflectionLine, reflectionsTidy, openChecklistItems, type ReflectTarget, type ReflectItem, type ReflectSection } from "../core.ts";
 import { dedupeReflections, linkedTag, parseGhIssues, similarNote, type FoldResult, type GhIssue } from "../fold.ts";
 import { dfDir, now, originUrl, readReflections, readReflectionsText, sh } from "./base.ts";
 import { type RunResult, type Session } from "./checks.ts";
@@ -70,13 +70,13 @@ export async function foldView(root: string, items: ReflectItem[]): Promise<Fold
 /** The fold block shared by flow doctor and flow reflect list: header, one row per unmatched
  *  issue with its route, then the unmerged near-miss hints. Local rows carry their ⟷ gh#N tag
  *  at the call site — the fold lists upstream items, it never re-numbers the local queue. */
-export function foldRows(fold: FoldView, selfRepo: boolean): string[] {
+export function foldRows(fold: FoldView, selfRepo: boolean, items: readonly ReflectItem[] = []): string[] {
 	if (fold.state === "absent") return [];
 	if (fold.state === "skipped") return [`upstream issues: skipped (${fold.why})`];
 	if (!fold.open) return [];
 	const rows = [`upstream on ${fold.slug} — ${fold.open} open issue(s) on GitHub (canonical there — close on GitHub, never here; this is a fold, not a copy):`];
 	for (const i of fold.result.upstreamOnly) rows.push(`  gh#${i.number} ${i.title} → ${selfRepo ? "fix in a flow here (patch flow if small)" : "fix in a flow here, or close won't-fix on GitHub"}`);
-	for (const s of fold.result.similar) rows.push(`  ${similarNote(s, s.item + 1)}`);
+	for (const s of fold.result.similar) rows.push(`  ${similarNote(s, items[s.item]?.n ?? s.item + 1)}`);
 	return rows;
 }
 
@@ -88,16 +88,16 @@ export async function reflectList(root: string): Promise<RunResult> {
 	const fold = await foldView(root, items);
 	const local = items.length
 		? [
-				`reflections — ${items.length} open:`,
+				`reflections — ${items.length} open (numbers are row numbers: checking one off leaves the others as they are; tidy and move renumber):`,
 				...items.map((it, i) => {
 					const link = fold.state === "ok" ? fold.result.linked.find((l) => l.item === i) : undefined;
-					return `  ${i + 1}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}${link ? linkedTag(link.issue) : ""}`;
+					return `  ${it.n}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}${link ? linkedTag(link.issue) : ""}`;
 				}),
 			]
 		: fold.state === "absent" || fold.state === "skipped"
 			? ["reflections: nothing open"]
 			: ["reflections: nothing open locally"];
-	return { text: [...local, ...legacyPluginRows(readReflectionsText(root), isSelfRepo(root)), ...foldRows(fold, isSelfRepo(root))].join("\n") };
+	return { text: [...local, ...legacyPluginRows(readReflectionsText(root), isSelfRepo(root)), ...foldRows(fold, isSelfRepo(root), items)].join("\n") };
 }
 
 /** Open rows still under the legacy `## plugin` heading: they belong on GitHub, not in a project's queue. */
@@ -121,30 +121,42 @@ export function reflectMoveNote(root: string, args: string[], forced: ReflectTar
 	const n = Number(args[0]);
 	const text = readReflectionsText(root);
 	const items = reflectItems(text);
-	if (!Number.isInteger(n) || n < 1 || n > items.length) return { text: `move: open item 1–${items.length} required — flow reflect list numbers them`, isError: true };
-	if (items[n - 1].section === section) return { text: `reflect: item ${n} is already under ## ${section}` };
+	const it = items.find((x) => x.n === n);
+	if (!it) return { text: `move: ${noOpenRow(text, n, items)}`, isError: true };
+	if (it.section === section) return { text: `reflect: item ${n} is already under ## ${section}` };
 	// the same note open under both headings (an old --both filing): the move merges it, it does not copy it
-	const twin = items.some((it, i) => i !== n - 1 && it.section === section && it.body === items[n - 1].body);
+	const twin = items.some((x) => x !== it && x.section === section && x.body === it.body);
 	const next = reflectMove(text, n, section);
-	if (next === null) return { text: `move: open item 1–${items.length} required — flow reflect list numbers them`, isError: true };
+	if (next === null) return { text: `move: ${noOpenRow(text, n, items)}`, isError: true };
 	writeFileSync(path.join(dfDir(root), "reflections.md"), next);
-	const note = items[n - 1].line.replace(/^- \[ \] /, "");
-	return { text: twin ? `reflect: item ${n} was already recorded under ## ${section} — the duplicate is gone (${note})` : `reflect: item ${n} re-filed under ## ${section} — ${note}` };
+	const note = it.line.replace(/^- \[ \] /, "");
+	return { text: `${twin ? `reflect: item ${n} was already recorded under ## ${section} — the duplicate is gone (${note})` : `reflect: item ${n} re-filed under ## ${section} — ${note}`}\n${RENUMBERED}` };
 }
 
-/** `flow reflect done <n> [what fixed it]` — check a folded/fixed item off, so doctor stops re-reporting it (#165). */
+const RENUMBERED = "the row numbers changed — run flow reflect list before the next done or move";
+
+/** Why `<n>` names no open row (gh#197): a row already checked off says which note it holds, so a batch that
+ *  drifted shows the mismatch instead of closing the wrong line. */
+function noOpenRow(text: string, n: number, items: readonly ReflectItem[]): string {
+	const row = Number.isInteger(n) && n > 0 ? reflectRow(text, n) : null;
+	if (row && !row.open) return `item ${n} is already checked off (${row.line.replace(/^-\s*\[[xX]\]\s*/, "")}) — flow reflect list shows the open ones`;
+	return items.length ? `no open item ${n} — open: ${items.map((i) => i.n).join(", ")} (flow reflect list numbers them)` : "nothing open in reflections.md";
+}
+
+/** `flow reflect done <n> [what fixed it]` — check a folded/fixed item off, so doctor stops re-reporting it (#165).
+ *  `<n>` is the stable row number (gh#197): closing one leaves every other number where `list` printed it. */
 export function reflectDoneNote(root: string, sess: Session, args: string[]): RunResult {
 	const text = readReflectionsText(root);
 	const items = reflectItems(text);
 	const n = Number(args[0]);
-	if (!Number.isInteger(n) || n < 1 || n > items.length)
-		return { text: items.length ? `done: open item 1–${items.length} required — flow reflect list numbers them` : "done: nothing open in reflections.md", isError: true };
+	const it = items.find((x) => x.n === n);
+	if (!it) return { text: `done: ${noOpenRow(text, n, items)}`, isError: true };
 	const stamp = [now().slice(0, 10), sess.slug].filter(Boolean).join(" ");
 	const what = args.slice(1).join(" ").trim();
 	const next = reflectDone(text, n, what ? `${stamp} — ${what}` : stamp)!;
 	writeFileSync(path.join(dfDir(root), "reflections.md"), next);
 	const { tidy } = reflectionNudges(next, now().slice(0, 10));
-	return { text: `reflect: item ${n} checked off — ${items[n - 1].body}` + (tidy ? `\n${tidy}` : "") };
+	return { text: `reflect: item ${n} checked off — ${it.body}${what ? ` — fixed: ${what}` : ""}` + (tidy ? `\n${tidy}` : "") };
 }
 
 /** `flow reflect tidy` — drop the closed (`- [x]`) items; the `— fixed:` note already recorded the outcome. */
@@ -156,5 +168,5 @@ export function reflectTidy(root: string): RunResult {
 	const open = openChecklistItems(text).length;
 	if (!closed) return { text: `reflections: nothing to tidy (${open} open, 0 closed)` };
 	writeFileSync(file, reflectionsTidy(text));
-	return { text: `reflections: dropped ${closed} closed item(s) — ${open} open` };
+	return { text: `reflections: dropped ${closed} closed item(s) — ${open} open; ${RENUMBERED}` };
 }

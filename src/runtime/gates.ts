@@ -611,7 +611,7 @@ export async function gateDoctor(o: GateCtx): Promise<RunResult> {
 			findings.push(`  [${r.sections.join("+")}] ${r.text}${link ? linkedTag(link.issue) : ""}\n      → ${r.route}${link ? ` — already upstream (gh#${link.issue}); check off with — filed: gh#${link.issue} once it lands` : ""}`);
 		});
 	}
-	findings.push(...foldRows(fold, isSelfRepo(root)));
+	findings.push(...foldRows(fold, isSelfRepo(root), refl));
 	const reflText = readReflectionsText(root);
 	const unfiled = reflectUnfiledCount(reflText);
 	if (unfiled) findings.push(`  reflections: ${unfiled} open item(s) sit outside ## playbook / ## code — flow reflect list shows them, flow reflect move <n> --playbook|--code files them`);

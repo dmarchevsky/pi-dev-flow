@@ -108,6 +108,7 @@ import {
 	digestTranscript,
 	conflictMarkerLines,
 	reflectDone,
+	reflectRow,
 	workerSteer,
 	parseReflectReport,
 	renderReflectFindings,
@@ -1167,11 +1168,12 @@ test("--docs --no-version: no changelog proof (#163); (versioned) items stand do
 
 test("reflectDone: checks item n off with a fixed note, in list numbering (#165)", () => {
 	const text = "# r\n\n## playbook\n\n- [ ] a — s 2026-10-01\n- [x] old — fixed: x\n\n## code\n\n- [ ] b — s 2026-10-02\n";
-	const next = reflectDone(text, 2, "2026-11-03 fix-b — PR #9")!;
+	const next = reflectDone(text, 3, "2026-11-03 fix-b — PR #9")!; // row 3: the closed row 2 keeps its number (gh#197)
 	assert.match(next, /- \[x\] b — s 2026-10-02 — fixed: 2026-11-03 fix-b — PR #9/);
 	assert.match(next, /- \[ \] a — s 2026-10-01/, "the other item stays open");
 	assert.equal(reflectItems(next).length, 1);
-	assert.equal(reflectDone(text, 3, "x"), null);
+	assert.equal(reflectDone(text, 2, "x"), null, "a closed row is not closed again");
+	assert.equal(reflectDone(text, 4, "x"), null);
 });
 
 test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, plugin routes upstream", () => {
@@ -1870,4 +1872,15 @@ test("a playbook flow-worker block rides in every stage worker's brief, and a re
 	const misplaced = parseProjectMd("## implement\n\n```flow-worker\nexport X=1\n```\n");
 	assert.deepEqual(misplaced.workerPreamble, []);
 	assert.match(misplaced.warn.join("\n"), /flow-worker lines belong to ## global/);
+});
+
+test("reflection numbers are stable rows: a batch of done <n> read off one list closes the rows it named (gh#197)", () => {
+	let text = "# r\n\n## playbook\n\n- [ ] one — s 1\n- [ ] two — s 1\n\n## code\n\n- [ ] three — s 1\n- [ ] four — s 1\n";
+	assert.deepEqual(reflectItems(text).map((i) => i.n), [1, 2, 3, 4]);
+	for (const [n, note] of [[1, "fix-1"], [2, "fix-2"], [4, "fix-4"]] as const) text = reflectDone(text, n, note)!;
+	assert.match(text, /- \[x\] one — s 1 — fixed: fix-1/);
+	assert.match(text, /- \[x\] two — s 1 — fixed: fix-2/);
+	assert.match(text, /- \[x\] four — s 1 — fixed: fix-4/);
+	assert.deepEqual(reflectItems(text).map((i) => [i.n, i.body]), [[3, "three"]], "the untouched row keeps its number");
+	assert.deepEqual(reflectRow(text, 2), { index: 5, open: false, line: "- [x] two — s 1 — fixed: fix-2" });
 });

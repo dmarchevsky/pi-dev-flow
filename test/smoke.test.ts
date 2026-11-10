@@ -846,12 +846,12 @@ test("reflect --playbook/--code file by decision, --plugin prints the upstream r
 	assert.match(list.content[0].text, /1\. \[playbook\] the seed data note is stale/);
 	assert.match(list.content[0].text, /2\. \[code\] the deploy gate in CI is flaky/);
 	const moved = await flow(["reflect", "move", "2", "--playbook"]);
-	assert.match(moved.content[0].text, /item 2 re-filed under ## playbook/);
+	assert.match(moved.content[0].text, /item 2 re-filed under ## playbook[\s\S]*row numbers changed — run flow reflect list/);
 	const filed = readFileSync(reflFile, "utf8");
 	assert.ok(!/^## code$/m.test(filed), "the emptied section goes with its item");
 	assert.equal(filed.split("- [ ] ").length - 1, 2, "the move moves one item, it does not copy it");
 	assert.match((await flow(["reflect", "move", "1", "--playbook"])).content[0].text, /already under ## playbook/);
-	assert.match((await flow(["reflect", "move", "9", "--code"])).content[0].text, /open item 1–2 required/);
+	assert.match((await flow(["reflect", "move", "9", "--code"])).content[0].text, /no open item 9 — open: 1, 2/);
 	assert.match((await flow(["reflect", "move", "1", "--plugin"])).content[0].text, /plugin notes are not kept in reflections\.md/);
 	assert.match((await flow(["reflect", "move", "1"])).content[0].text, /usage: flow reflect move <n> --playbook \| --code/);
 	const doctor = await flow(["doctor"]);
@@ -873,10 +873,10 @@ test("reflect done <n>: checks a fixed item off with date, slug and what fixed i
 	await flow(["init", "--write", TEST_MD]);
 	const file = path.join(repo, ".dev-flow", "reflections.md");
 	writeFileSync(file, "# dev-flow reflections\n\n## playbook\n\n- [ ] seed cmd drifted — s 2026-10-01\n\n## code\n\n- [ ] seed skips admins — s 2026-10-02\n");
-	assert.match((await flow(["reflect", "done", "3"])).content[0].text, /open item 1–2 required/);
+	assert.match((await flow(["reflect", "done", "3"])).content[0].text, /no open item 3 — open: 1, 2/);
 	const r = await flow(["reflect", "done", "2", "PR", "#93"]);
 	assert.ok(!r.isError, r.content[0].text);
-	assert.match(r.content[0].text, /item 2 checked off — seed skips admins/);
+	assert.match(r.content[0].text, /item 2 checked off — seed skips admins — fixed: PR #93/);
 	assert.match(readFileSync(file, "utf8"), /- \[x\] seed skips admins — s 2026-10-02 — fixed: \d{4}-\d\d-\d\d — PR #93/);
 	assert.match((await flow(["reflect", "list"])).content[0].text, /1 open/);
 });

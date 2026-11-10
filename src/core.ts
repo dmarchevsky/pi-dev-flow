@@ -1797,6 +1797,10 @@ export interface ReflectItem {
 	line: string;
 	/** the note without checkbox and without the ` — attribution` tail */
 	body: string;
+	/** gh#197: the row's stable number — its position among every checklist row of the file, open or closed. Checking
+	 *  an item off leaves every other number where it was, so a batch of `done <n>` read off one list stays paired;
+	 *  only `tidy` (drops closed rows) and `move` (relocates one) renumber. */
+	n: number;
 }
 
 /** Open items of reflections.md, each carrying the heading that owns it. Items above every known
@@ -1805,6 +1809,7 @@ export interface ReflectItem {
 export function reflectItems(text: string): ReflectItem[] {
 	const out: ReflectItem[] = [];
 	let section: KnownSection | "unfiled" = "unfiled";
+	let row = 0;
 	for (const raw of text.split("\n")) {
 		const l = raw.trim();
 		if (ANY_HEADING.test(l)) {
@@ -1812,10 +1817,23 @@ export function reflectItems(text: string): ReflectItem[] {
 			section = h ? (h[1].toLowerCase() as KnownSection) : "unfiled";
 			continue;
 		}
+		if (isDoneItem(l)) row++;
 		if (!isOpenItem(l)) continue;
-		out.push({ section, line: l, body: reflectionBody(l) });
+		out.push({ section, line: l, body: reflectionBody(l), n: ++row });
 	}
 	return out;
+}
+
+/** Row `n` of reflections.md (the stable numbering, gh#197): its line index and whether it is still open; null when no such row. */
+export function reflectRow(text: string, n: number): { index: number; open: boolean; line: string } | null {
+	const lines = text.split("\n");
+	let row = 0;
+	for (let i = 0; i < lines.length; i++) {
+		const open = isOpenItem(lines[i]);
+		if (!open && !isDoneItem(lines[i])) continue;
+		if (++row === n) return { index: i, open, line: lines[i].trim() };
+	}
+	return null;
 }
 
 /** Open items the file does not place in a known section — doctor names the count so a note that
@@ -1914,37 +1932,25 @@ export function reflectionRoutes(items: ReflectItem[], selfRepo: boolean): Refle
 	});
 }
 
-/** Move open item n (1-based over open items — the numbering `flow reflect list` prints) under
- *  `## section`. null = out of range; an item already in that section comes back unchanged, so the
- *  caller can say so instead of pretending to relocate it. */
+/** Move open row n (the stable numbering `flow reflect list` prints, gh#197) under `## section`. null = no open
+ *  row n; an item already in that section comes back unchanged, so the caller can say so instead of pretending
+ *  to relocate it. */
 export function reflectMove(text: string, n: number, section: ReflectSection): string | null {
+	const row = reflectRow(text, n);
+	if (!row?.open) return null;
 	const lines = text.split("\n");
-	let seen = 0;
-	let hit = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (!isOpenItem(lines[i])) continue;
-		if (++seen === n) {
-			hit = i;
-			break;
-		}
-	}
-	if (hit < 0) return null;
-	const [line] = lines.splice(hit, 1);
+	const [line] = lines.splice(row.index, 1);
 	return appendReflection(lines.join("\n"), [section], line.trim());
 }
 
-/** Check open item `n` (the `flow reflect list` numbering) off: `- [x] … — fixed: <note>` — the convention
- *  doctor reads as closed, so a folded item stops re-nagging (#165). null when there is no item `n`. */
+/** Check open row `n` (the stable `flow reflect list` numbering, gh#197) off: `- [x] … — fixed: <note>` — the
+ *  convention doctor reads as closed, so a folded item stops re-nagging (#165). null when there is no open row `n`. */
 export function reflectDone(text: string, n: number, note: string): string | null {
+	const row = reflectRow(text, n);
+	if (!row?.open) return null;
 	const lines = text.split("\n");
-	let seen = 0;
-	for (let i = 0; i < lines.length; i++) {
-		if (!isOpenItem(lines[i])) continue;
-		if (++seen !== n) continue;
-		lines[i] = `${lines[i].replace(/^(\s*)- \[ \] /, "$1- [x] ").trimEnd()} — fixed: ${note.trim()}`;
-		return lines.join("\n");
-	}
-	return null;
+	lines[row.index] = `${lines[row.index].replace(/^(\s*)- \[ \] /, "$1- [x] ").trimEnd()} — fixed: ${note.trim()}`;
+	return lines.join("\n");
 }
 
 /** What `flow doctor <note>` prints: the note is an investigation order, not an answer —
@@ -2669,7 +2675,7 @@ export interface ReflectBriefInput {
  *  the operator decides fold or drop per finding in the driving session. */
 export function buildReflectBrief(o: ReflectBriefInput): string {
 	const up = o.upstream || "(unknown — say so in the REPORT)";
-	const open = o.items.length ? o.items.map((it, i) => `  ${i + 1}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}`).join("\n") : "  (none)";
+	const open = o.items.length ? o.items.map((it) => `  ${it.n}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}`).join("\n") : "  (none)";
 	const kids = o.children.length ? o.children.map((c) => `  - ${c.file}${c.name ? ` (${c.name})` : ""}`).join("\n") : "  (none — no flow_stage worker ran in this session)";
 	const digests = o.digests?.length ? o.digests.map((d) => `  - ${d.digest}  (of ${path.basename(d.transcript)})`).join("\n") : "";
 	const upIssues = o.upstreamIssues ? (o.upstreamIssues.length ? o.upstreamIssues.map((i) => `  gh#${i.number} [${i.state.toLowerCase()}] ${i.title}`).join("\n") : "  (none)") : "";
