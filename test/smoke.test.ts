@@ -3633,6 +3633,33 @@ test("the post-Verified? warning leaves out the release-prep commit, even one th
 	assert.match(r.content[0].text, /re-run flow verify/);
 });
 
+test("the flow tool refuses a --confirmed no operator message stands behind (gh#190)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const branch: unknown[] = [{ type: "message", message: { role: "user" } }];
+	const ctx = { ...makeCtx(repo), sessionManager: { getBranch: () => branch, getSessionId: () => "sess-190", getSessionFile: () => undefined, getSessionDir: () => repo } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	// avatar-sheet's shape: refused as operator-granted, retried at once with --confirmed
+	const refused = await flow(["start", "ava", "--ui"]);
+	assert.match(refused.content[0].text, /operator-granted/);
+	const self = await flow(["start", "ava", "--ui", "--confirmed"]);
+	assert.equal(self.isError, true);
+	assert.match(self.content[0].text, /no operator message since flow start asked/, self.content[0].text);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ava", "state.json")), "nothing started on the agent's own word");
+	branch.push({ type: "message", message: { role: "user" } }); // the operator answers in chat
+	assert.match((await flow(["start", "ava", "--ui", "--confirmed"])).content[0].text, /started at stage plan \(ui=true/);
+	// nav-menu-tweaks' shape: a plain start, then the mode granted with nobody asked
+	await flow(["abort", "ava", "--confirmed"]);
+	branch.push({ type: "message", message: { role: "user" } });
+	await flow(["start", "nav"]);
+	const upgrade = await flow(["start", "nav", "--ui", "--confirmed"]);
+	assert.match(upgrade.content[0].text, /--ui on nav is operator-granted, and the operator has said nothing since it started/, upgrade.content[0].text);
+	branch.push({ type: "message", message: { role: "user" } });
+	assert.match((await flow(["start", "nav", "--ui", "--confirmed"])).content[0].text, /ui flag set on existing feature nav/);
+});
+
 test("the operator-view check above ran over the gates this suite drives", () => {
 	assert.ok(viewsChecked > 50, `only ${viewsChecked} operator views were checked`);
 });
