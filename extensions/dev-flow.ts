@@ -34,6 +34,7 @@ import { type Session, presentRun } from "../src/runtime/checks.ts";
 import { isSelfRepo } from "../src/runtime/setup.ts";
 import { foldView, pluginUpstream } from "../src/runtime/reflect.ts";
 import { type FlowHooks, runFlow } from "../src/runtime/gates.ts";
+import { grantCheck, grantRecord, newGrantLedger, operatorMessageCount } from "../src/runtime/grants.ts";
 import { PIWEB_SUBAGENT, WORKER_TOOLS, piwebLiveClaim, piwebStamp, piwebWorkerMeta, reflectSeams, sessionHeaders, stageWorkerSpawn, workerName, workerSessions, workerTiming, writeTranscriptDigests } from "../src/runtime/workers.ts";
 export { compactionTakeover } from "../src/runtime/base.ts";
 export { reflectSeams, stageWorkerSpawn, workerTiming } from "../src/runtime/workers.ts";
@@ -139,6 +140,9 @@ export default function devFlow(pi: ExtensionAPI) {
 		};
 	};
 
+	/** Which gate asked for the operator's word, and when features started — per session (gh#190). */
+	const grantLedger = newGrantLedger();
+
 	/** A flow_stage worker: registered in this module's set, or — for a worker pi-web hosts, whose extension
 	 *  instance never saw the registration — stamped with pi-web's subagent entry. */
 	const isWorkerSession = (ctx: ExtensionContext): boolean => {
@@ -230,12 +234,16 @@ export default function devFlow(pi: ExtensionAPI) {
 			// the agent's call never opens a dialog (#181): a dialog inside a tool call blocks the turn, so nobody
 			// can talk to the agent while it waits, and the agent cannot see who answered. Gates answer with the
 			// chat word to ask instead; the /flow slash command (a human at the keyboard) keeps its dialogs.
-			const res = await runFlow(params.args, root, NO_DIALOGS, sessFor(ctx, root), finishReflectHook(id, ctx, root, signal, onUpdate));
+			// gh#190: --confirmed stands for the operator's chat answer — refuse it when no operator message came after the question
+			const users = operatorMessageCount((() => { try { return ctx.sessionManager?.getBranch(); } catch { return null; } })());
+			const selfGrant = grantCheck(params.args, sessionKey(ctx), users, grantLedger);
+			const res = selfGrant ? { text: selfGrant, isError: true } : await runFlow(params.args, root, NO_DIALOGS, sessFor(ctx, root), finishReflectHook(id, ctx, root, signal, onUpdate));
+			grantRecord(params.args, sessionKey(ctx), users, res, grantLedger);
 			if (!res.isError) maybeCompactNow(ctx, root);
 			// two readers: the model gets every instruction, the operator's row renders the view (renderResult) —
 			// facts, the stage line and the question waiting on them, never a command to type
 			// a refusal (not a question for the operator) is friction the closing reflection should look at
-			if (res.isError && !res.text.startsWith(NEEDS_OPERATOR) && initiated(root)) noteFriction(root, sessionKey(ctx));
+			if (res.isError && (!res.text.startsWith(NEEDS_OPERATOR) || selfGrant) && initiated(root)) noteFriction(root, sessionKey(ctx));
 			// a start that bound a feature takes over the refusals this session hit before it existed
 			else if (!res.isError && params.args[0] === "start" && initiated(root)) noteFriction(root, sessionKey(ctx), 0);
 			const { agent, view } = await presentRun(params.args, root, sessionKey(ctx), res);

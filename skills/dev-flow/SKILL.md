@@ -23,7 +23,8 @@ criteria hold. Call it with an args array — `["start", "dark-mode"]`,
   chat — **Approve? / Verified? / Release? / Finish?** — mentioning that
   *yolo* is an answer, then stop. Their word (or a clear equivalent) in chat →
   run that gate with `--confirmed`. A structured question tool is not chat;
-  never infer the answer. A gate returning `NEEDS-OPERATOR <Question?>` means:
+  never infer the answer — the flow tool refuses a `--confirmed` with no
+  operator message since the gate asked. A gate returning `NEEDS-OPERATOR <Question?>` means:
   ask exactly that, in chat. `/flow` is the operator's own override; mention it
   only when the session is demonstrably stuck or wrong (and `/reload` when
   `flow version` says this session runs an older build).
