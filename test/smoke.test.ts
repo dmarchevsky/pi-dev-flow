@@ -975,7 +975,7 @@ test("release with a stale session build: warn and ask, never block; the operato
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
-	await flow(["init", "--write", TEST_MD]);
+	await flow(["init", "--write", TEST_MD_ASK]);
 	await flow(["start", "stale"]);
 	mkdirSync(path.join(repo, ".dev-flow", "stale", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "stale", "plan", "plan.md"), "# plan\n");
@@ -1889,6 +1889,8 @@ test("re-init never regenerates a hand-written project.md — it prints the doct
 });
 
 const TEST_MD = "# dev-flow\n\n## implement\n\n```flow\ntest = node --version\n```\n\n## release\n\n```flow\nmerge = merge\n```\n";
+/** TEST_MD with Release? asked every time (gh#198 made on-change the default) — for tests about the question itself */
+const TEST_MD_ASK = TEST_MD.replace("merge = merge\n", "merge = merge\nask = always\n");
 
 test("flow doctor: findings without writing, deleting or asking", async () => {
 	const pi = makePi();
@@ -2018,7 +2020,7 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	const ctx = makeCtx(repo); // no UI: every checkpoint must demand an operator answer or --confirmed
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	const stage = () => (JSON.parse(readFileSync(path.join(repo, ".dev-flow", "rel", "state.json"), "utf8")) as { stage: string }).stage;
-	await flow(["init", "--write", TEST_MD]);
+	await flow(["init", "--write", TEST_MD_ASK]);
 	trackPlaybook(repo);
 	await flow(["start", "rel"]);
 	mkdirSync(path.join(repo, ".dev-flow", "rel", "plan"), { recursive: true });
@@ -3752,8 +3754,8 @@ test("on-change still asks Release? when something beyond the prep changed or no
 	assert.match(nc.content[0].text, /asked: no release call on record[\s\S]*also ask the release call: a patch, minor or major release, or merge unreleased/, nc.content[0].text);
 	assert.match((await b.flow(["release", "--confirmed", "--version=1.1.0"])).content[0].text, /release approved \(confirmed by operator instruction\)/);
 	assert.equal(b.state().versionChoice, "1.1.0");
-	// the default (ask = always) asks even with the call on record
-	const c = await versionedFlow("always");
+	// ask = always asks even with the call on record
+	const c = await versionedFlow("always", "ask = always\n");
 	await c.flow(["verify", "--confirmed", "--version=1.1.0"]);
 	await c.prep("1.1.0");
 	const al = await c.flow(["release"]);

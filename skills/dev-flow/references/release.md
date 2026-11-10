@@ -3,7 +3,8 @@
 ## Stage: release
 
 Main-repo git (merge, tag, push on the default branch) is allowed only here.
-Nothing in this stage asks the operator anything — Release? covered it. Report
+Nothing in this stage asks the operator anything — Release? covered it (answered
+by the operator, or by the gate itself under `ask = on-change`). Report
 each step with the gate's stage line, **🚀 release · `<slug>`**; no `Done:` /
 `Next steps:` block.
 

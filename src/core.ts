@@ -121,7 +121,7 @@ export interface Config {
 	/** Bytes one dev instance needs (playbook `instanceMem` / `instanceDisk`, e.g. 2G) — the side-by-side feasibility check. */
 	instanceMem?: number;
 	instanceDisk?: number;
-	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction"; /** who decides versioned vs unreleased: asked with Verified? (`ask`, default) or fixed by the playbook (gh#198) */ version?: "ask" | "versioned" | "unversioned"; /** `on-change`: Release? answers itself when nothing but release prep changed since Verified? and the version choice is on record (gh#198) */ ask?: "always" | "on-change" };
+	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction"; /** who decides versioned vs unreleased: asked with Verified? (`ask`, default) or fixed by the playbook (gh#198) */ version?: "ask" | "versioned" | "unversioned"; /** `on-change` (default): Release? answers itself when nothing but release prep changed since Verified? and the version choice is on record; `always` asks it every time (gh#198) */ ask?: "always" | "on-change" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
@@ -2237,7 +2237,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "pre-release": {
 			// gh#198: the release call made with Verified? decides which prep this is
 			const vc = state.versionChoice;
-			const auto = cfg.release.ask === "on-change" ? " (release.ask = on-change: it asks Release? only when something beyond the prep changed)" : "";
+			const auto = cfg.release.ask !== "always" ? " (release.ask = on-change: it asks Release? only when something beyond the prep changed)" : "";
 			if (vc === "unreleased")
 				return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}, flow check; show the PR summary, then run flow release${auto || " and ask Release?"}`;
 			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}${isBumpKind(vc) ? ` to ${bumpVersion(state.versionFrom, vc) ?? `the next ${vc}`} (a ${vc} release, the operator's call — the gate counts it from the newest tag, so a flow that released first moves the number)` : vc && vc !== "next" ? ` to ${vc} (the operator's call)` : ""}` : ""].filter(Boolean).join(" and ");

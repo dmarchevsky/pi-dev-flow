@@ -103,6 +103,7 @@ walking five stages with a gate between each:
         │   pre-release   │  review, docs, changelog entry, version bump
         └────────┬────────┘
           Release?  · refuses unless the version passes the last tag and the changelog agrees
+                       (answers itself when only that prep changed since Verified?)
         ┌────────▼────────┐
         │     release     │  PR → merge → annotated tag → release notes
         └────────┬────────┘
@@ -115,12 +116,12 @@ walking five stages with a gate between each:
 | Stage | What the agent does | It asks you |
 |---|---|---|
 | **plan** | reads the code, asks its clarifying questions, writes the spec to `.dev-flow/session-renewal/plan/plan.md` | **Approve?** — the plan is right, build it |
-| **implement** | works in a fresh worktree on `feat/session-renewal`, commits in small steps, runs your `test` command to green, walks the manual checks with you | **Verified?** — after you used it running |
-| **pre-release** | review and fixes, docs, changelog, version bump, checks re-run; shows the PR summary and the version it means to tag | **Release?** — ship it |
+| **implement** | works in a fresh worktree on `feat/session-renewal`, commits in small steps, runs your `test` command to green, walks the manual checks with you | **Verified?** — after you used it running; with it, the release call: a patch, minor or major release, or merge unreleased |
+| **pre-release** | review and fixes, docs, changelog, the bump you chose, checks re-run; shows the PR summary and the version it tags | **Release?** — only when something beyond that prep changed since Verified? (set `ask = always` under `## release` to be asked every time) |
 | **release** | PR → merge → annotated tag → release notes; only here may git touch main | **Finish?** — clean up, we're done |
 | **done** | removes the worktree, branch and `.dev-flow/session-renewal/` | — |
 
-Four answers from you; everything between them was the agent's problem and your playbook's gates. If
+Three or four answers from you; everything between them was the agent's problem and your playbook's gates. If
 the feature grows mid-flight it is folded into this one (the plan gains an `Added mid-stage:` line and
 checks re-run); a *different* problem waits for the next flow — one feature, one plan, one PR.
 
@@ -131,8 +132,10 @@ Your answers at a checkpoint:
   back with every check still enforced. Attach your wishes to the word: *"yolo, patch bump"*,
   *"yolo, no tag"*. Release? is asked anyway when commits landed after Verified?, or always when
   the playbook sets `yolo = until-release` under `## release`.
-- **no version this time** (at Release?) — merge and changelog land, no bump or tag; the next
-  versioned release folds your `Unreleased` entry under its heading.
+- **merge unreleased** (the release call at Verified?, or a change of mind at Release?) — merge and
+  changelog land, no bump or tag; the next versioned release folds your `Unreleased` entry under its
+  heading. A patch/minor/major call is turned into a number when the release runs, so a parallel flow
+  that ships first just moves yours to the next one.
 
 Two things you grant rather than run: a **mode** when the agent proposes one (`normal` is the
 default; `--patch` for a small change you intend to ship now, `--docs` for docs-only work — both skip

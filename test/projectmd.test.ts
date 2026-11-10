@@ -446,6 +446,6 @@ test("release version and ask parse; junk values warn and keep the defaults (gh#
 	assert.deepEqual([c.release.version, c.release.ask], ["unversioned", "on-change"]);
 	const junk = parseProjectMd("# d\n\n## release\n\n```flow\nversion = sometimes\nask = never\n```\n");
 	assert.match(junk.warn.join(" "), /version = "sometimes" — expected ask, versioned or unversioned, keeping ask/);
-	assert.match(junk.warn.join(" "), /ask = "never" — expected always or on-change, keeping always/);
+	assert.match(junk.warn.join(" "), /ask = "never" — expected on-change or always, keeping on-change/);
 	assert.deepEqual([mdToConfig(junk).release.version, mdToConfig(junk).release.ask], [undefined, undefined]);
 });

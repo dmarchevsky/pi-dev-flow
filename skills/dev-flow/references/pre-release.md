@@ -36,11 +36,18 @@ and settle the scheme with the operator; never invent one.
      changelog this branch never touched. `--no-fold-check` only on the
      operator's word.
 4. `flow check` — the prep made the earlier checks stale.
-5. **Ask Release? and stop.** Say in a few lines what the PR delivers (the
-   changelog entry usually is that), plus the version. Report opening: **🔍 pre-release · `<slug>`** (the gate's
-   stage line; the version field reads `pending` until decided — never
-   invent a bump or a no-version decision). Answer → `flow release
-   --confirmed`.
+5. **Run `flow release`.** By default (`ask = on-change`) it answers
+   Release? itself when the release call is on record and only the prep
+   landed since Verified? — say in a few lines what the PR delivers (the
+   changelog entry usually is that) and the version, and carry on with the
+   release stage.
+6. **It returned `NEEDS-OPERATOR Release?`** (it says why: code after
+   Verified?, no call on record, a stale build, `yolo = until-release`, a
+   major bump, or the playbook's `ask = always`) → **ask Release? and
+   stop**, with the same summary and the version. Report opening:
+   **🔍 pre-release · `<slug>`** (the gate's stage line; the version field
+   reads `pending` until decided — never invent a bump or a no-version
+   decision). Answer → `flow release --confirmed`.
    - Standing yolo → run `flow release` without asking. It still returns
      `NEEDS-OPERATOR Release?` when commits landed after Verified? or the
      playbook says `yolo = until-release` — then ask.
@@ -48,10 +55,6 @@ and settle the scheme with the operator; never invent one.
      --confirmed`: no bump or tag, but the branch must add its line under
      `Unreleased`. A changed call is `--version=<v>` / `--no-version` with
      `--confirmed`, on their word.
-   - Playbook `ask = on-change` → run `flow release` without asking: it
-     answers Release? itself when the call is on record and only the prep
-     landed since Verified?, and otherwise returns `NEEDS-OPERATOR Release?`
-     saying why — then ask.
 
 The gate re-checks tier-1, requires the manifest ahead of the last tag and a
 changelog **heading** for that version written on this branch.
