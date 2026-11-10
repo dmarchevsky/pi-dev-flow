@@ -1285,6 +1285,38 @@ test("spin-off: roadmap add --slug --brief seeds the new plan; a hand-made ghost
 	assert.equal(readFileSync(path.join(ghostPlan, "plan.md"), "utf8"), "# hand-made draft\n", "the hand-made draft is kept");
 });
 
+test("a feature dir with no state.json and no plan/ is a ghost too: named, adoptable, a stray worktree named first (gh#178)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	// what a crashed flow leaves: scratch files and rescued mockups, the state gone
+	const dir = path.join(repo, ".dev-flow", "left");
+	mkdirSync(path.join(dir, "tmp"), { recursive: true });
+	writeFileSync(path.join(dir, "tmp", "shot.png"), "png");
+	const use = await flow(["use", "left"]);
+	assert.match(use.content[0].text, /\.dev-flow\/left\/ exists but has no state\.json \(a ghost: tmp\/\)[\s\S]*flow start left --confirmed adopts it as a new feature, keeping its files/, use.content[0].text);
+	const asked = await flow(["start", "left"]);
+	assert.ok(asked.isError);
+	assert.match(asked.content[0].text, /is a ghost — tmp\/ but no state\.json[\s\S]*flow start left --confirmed/, asked.content[0].text);
+	assert.doesNotMatch(asked.content[0].text, /already exists — flow use/);
+	const adopted = await flow(["start", "left", "--confirmed"]);
+	assert.match(adopted.content[0].text, /adopted ghost \.dev-flow\/left\/ — kept tmp\//, adopted.content[0].text);
+	assert.equal(readFileSync(path.join(dir, "tmp", "shot.png"), "utf8"), "png", "the leftover files survive");
+	await flow(["abort", "left", "--confirmed"]);
+	// a leftover worktree/ is not adoptable: a new start would collide with it
+	const wdir = path.join(repo, ".dev-flow", "wt-left");
+	mkdirSync(path.join(wdir, "worktree"), { recursive: true });
+	writeFileSync(path.join(wdir, "notes.md"), "x");
+	const wt = await flow(["start", "wt-left", "--confirmed"]);
+	assert.ok(wt.isError);
+	assert.match(wt.content[0].text, /has a worktree\/ but no state\.json[\s\S]*git worktree remove --force \.dev-flow\/wt-left\/worktree[\s\S]*adopts the rest \(notes\.md\)/, wt.content[0].text);
+	assert.ok(!existsSync(path.join(wdir, "state.json")));
+	assert.match((await flow(["use", "wt-left"])).content[0].text, /Its worktree\/ must go first/);
+});
+
 test("finish closes a released feature only: refuses early, then removes worktree, branch and state", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
