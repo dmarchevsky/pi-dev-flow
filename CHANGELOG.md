@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.88.0] - 2026-11-09
+
+**Recording a release waits for its CI, review fixes can be re-verified, and `--confirmed` needs your actual word.**
+
 ### Fixed
 - **A feature folder that lost its state file is no longer a dead end (gh#178).** If `.dev-flow/<slug>/` survived without `state.json` and had no `plan/`, the two commands sent you in a circle. `flow start` said "already exists, flow use it", and `flow use` said "no unfinished feature". Both now say the folder is a ghost and list what's in it. `flow start <slug> --confirmed` adopts it and keeps its files. A leftover `worktree/` is the one exception: a new start would collide with it, so `flow start` refuses and names the cleanup to run first.
 - **`--confirmed` needs an actual operator message (gh#190).** `--confirmed` means "the operator answered in chat", but nothing checked that, so the agent could grant an operator-only option to itself. Two sessions showed it. In one, a `flow start --ui` refusal came straight back with `--confirmed`. In the other, a plain `flow start` was switched to `--ui --confirmed` without asking. The flow tool now counts your messages in the session and refuses two things. First, a `--confirmed` re-run of a gate that asked for your word, when you haven't sent a message since it asked. Second, turning on `--ui`, `--patch` or `--docs` for a feature this session started, when you haven't sent a message since the start. It doesn't judge what you said: one message after the question is enough. The refusal counts as friction for the closing reflection.
