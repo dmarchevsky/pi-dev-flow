@@ -11,6 +11,10 @@ and settle the scheme with the operator; never invent one.
 
 1. **Review**: `/flow-review` the change; fix every **Must fix** and **Should
    fix**; `flow check` again if code changed.
+   - A fix that changes behaviour → `flow verify` again: it redeploys, then
+     ask **Verified?** over the fixed build and run `flow verify --confirmed`
+     on the answer (stays in pre-release; a standing yolo does not answer it).
+     Otherwise `flow release` warns that the fix shipped after Verified?.
 2. **Docs**: update them to match the change.
 3. **Changelog + bump** — manifest, changelog heading and tag must agree;
    commit the prep on the feature branch.

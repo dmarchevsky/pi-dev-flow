@@ -94,11 +94,14 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 		writeDevPorts(root, { ...readDevPorts(root), [slotKey(devPortOf(state!, cfg))]: { slug: state!.slug, head, at: now() } });
 	}
 	const ran = [branchLine, ...did].join("; ");
-	// yolo is the operator's word at Verified? — answers this question and pre-confirms the later ones
+	// yolo is the operator's word at Verified? — answers this question and pre-confirms the later ones.
+	// A re-verify at pre-release (gh#187) exists to put the new tree in front of the operator: a yolo given
+	// before those commits existed never answers it.
+	const reverify = state!.stage === "pre-release";
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
-	let audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo ? " (yolo: pre-confirmed)" : "";
-	const askPending = !flag("confirmed") && !state!.yolo;
+	let audit = flag("confirmed") ? " (confirmed by operator instruction)" : state!.yolo && !reverify ? " (yolo: pre-confirmed)" : "";
+	const askPending = !flag("confirmed") && (!state!.yolo || reverify);
 	if (askPending) {
 		markPendingAsk(root, state!, "Verified?"); // pending however it is asked — a chat question or a dialog
 		// the agent's call never opens a dialog (#181): this is the review deploy — the app is up for the
@@ -106,13 +109,13 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 		if (!ui.hasUI) {
 			const port = devPortOf(state!, cfg);
 			const what = state!.docs ? "ready for review" : cfg.commands.dev ? `deployed for review${port !== undefined ? ` on port ${port}` : ""}` : "live app re-probed for review";
-			return { text: `${needsOperator(`${what} — the app stays up until you answer`, "Verified?", "look at the change in the running app yourself first (the playbook's self-check), then ask the operator Verified? in chat and run flow verify --confirmed once they answer. Keep it running until they answer.")}\n${ran}` };
+			return { text: `${needsOperator(`${what}${reverify ? ` — a re-verify over the review fixes since ${state!.verifiedHead?.slice(0, 7) ?? "the last Verified?"}` : ""} — the app stays up until you answer`, "Verified?", "look at the change in the running app yourself first (the playbook's self-check), then ask the operator Verified? in chat and run flow verify --confirmed once they answer. Keep it running until they answer.")}\n${ran}` };
 		}
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 		if (!ok) {
 			delete state!.pendingAsk;
 			writeState(root, state!);
-			return { text: "verification declined — stay in implement and fix what failed" };
+			return { text: `verification declined — stay in ${reverify ? "pre-release" : "implement"} and fix what failed` };
 		}
 		audit = " (confirmed in dialog)";
 	}
@@ -126,9 +129,12 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const vHead = await sh("git rev-parse HEAD", gateCwd(root, state!));
 	if (vHead.ok && vHead.out.trim()) state!.verifiedHead = vHead.out.trim();
 	else delete state!.verifiedHead;
+	const before = state!.stage;
 	state!.stage = "pre-release";
 	delete state!.pendingAsk;
 	writeState(root, state!);
+	if (before === "pre-release")
+		return { text: `re-verified${audit} over ${state!.verifiedHead?.slice(0, 7) ?? "the current tree"} — the Verified? word now covers the review fixes; still in pre-release.\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 	return { text: `verified${audit} — entering pre-release stage.\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
@@ -238,22 +244,25 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 		// own commits are news to the operator; the merged-in ones are a count, not a list to wade through
 		const d = cfg.defaultBranch;
 		const upstream = (await sh(`git rev-parse --verify -q ${sq(`refs/remotes/origin/${d}`)}`, wtCwd)).ok ? `origin/${d}` : (await sh(`git rev-parse --verify -q ${sq(`refs/heads/${d}`)}`, wtCwd)).ok ? d : "";
-		const since = await sh(`git log --oneline --no-decorate ${upstream ? "--no-merges " : ""}${sq(state!.verifiedHead)}..HEAD${upstream ? ` --not ${sq(upstream)}` : ""}`, wtCwd);
-		const commits = since.ok ? since.out.split("\n").filter((l) => l.trim()) : [];
+		const range = `${sq(state!.verifiedHead)}..HEAD${upstream ? ` --not ${sq(upstream)}` : ""}`;
+		// one record per commit: "<sha> <subject>" then the files it touched (\x1e starts a record)
+		const since = await sh(`git log --no-decorate --name-only --format=%x1e%h%x20%s ${upstream ? "--no-merges " : ""}${range}`, wtCwd);
+		const commits = since.ok
+			? since.out.split("\x1e").map((rec) => rec.split("\n").map((l) => l.trim()).filter(Boolean)).filter((r) => r.length).map(([line, ...files]) => ({ line, files }))
+			: [];
 		const all = upstream ? await sh(`git rev-list --count ${sq(state!.verifiedHead)}..HEAD`, wtCwd) : null;
 		const mergedIn = all?.ok ? Math.max(0, Number.parseInt(all.out.trim(), 10) - commits.length) : 0;
-		// a release-only flow commits its bump and changelog after verify by design — only other files count
+		// gh#187: the release-prep commit (the bump, the changelog entry, whatever else the bump rewrites — an
+		// image tag in a compose file) lands after Verified? by design and no container verdict could cover
+		// it. It is the commit that touches the version file, or one that touches nothing but prep files.
 		const prepFiles = new Set([cfg.versioning.file, cfg.release.changelog, cfg.versioning.file === "package.json" ? "package-lock.json" : ""].filter(Boolean) as string[]);
-		const touched = state!.releaseOnly && commits.length ? await sh(`git diff --name-only ${sq(state!.verifiedHead)} HEAD`, wtCwd) : null;
-		const prepOnly = !!touched?.ok && touched.out.split("\n").filter((l) => l.trim()).every((f) => prepFiles.has(f.trim()));
-		// the branch's own commits after the verdict that touch more than the release prep (bump + changelog):
+		const isPrep = (c: { files: string[] }) => (!!cfg.versioning.file && c.files.includes(cfg.versioning.file)) || (c.files.length > 0 && c.files.every((f) => prepFiles.has(f)));
+		const prep = commits.filter(isPrep);
+		const changed = commits.filter((c) => !isPrep(c));
 		// changed code shipping under an earlier word is friction the closing reflection should look at
-		if (commits.length && !prepOnly) {
-			const files = await sh(`git log --name-only --format= --no-merges ${sq(state!.verifiedHead)}..HEAD${upstream ? ` --not ${sq(upstream)}` : ""}`, wtCwd);
-			unverifiedChange = files.ok && files.out.split("\n").some((f) => f.trim() && !prepFiles.has(f.trim()));
-		}
-		if (commits.length && !prepOnly)
-			postVerify = `${commits.length} commit(s) landed after the operator's Verified? (given over ${state!.verifiedHead.slice(0, 7)}): ${commits.slice(0, 6).join(" | ")}${commits.length > 6 ? ` …(${commits.length - 6} more)` : ""}${mergedIn ? ` (+${mergedIn} merged in from ${upstream}, not listed)` : ""} — the verify verdict does not cover them: if behaviour changed, have the operator check the current build before Release?, and either way say in the PR body which commit the verdict was given over`;
+		unverifiedChange = changed.length > 0;
+		if (changed.length)
+			postVerify = `${changed.length} commit(s) landed after the operator's Verified? (given over ${state!.verifiedHead.slice(0, 7)}): ${changed.slice(0, 6).map((c) => c.line).join(" | ")}${changed.length > 6 ? ` …(${changed.length - 6} more)` : ""}${prep.length ? ` (release prep ${prep.map((c) => c.line.split(" ")[0]).join(", ")} not counted)` : ""}${mergedIn ? ` (+${mergedIn} merged in from ${upstream}, not listed)` : ""} — the verify verdict does not cover them: if behaviour changed, re-run flow verify (at pre-release it redeploys and re-asks Verified? over the current tree) before Release?, and either way say in the PR body which commit the verdict was given over`;
 	}
 	// a standing yolo (given at an earlier checkpoint) stops short of Release? when the playbook says so, or
 	// when commits landed after Verified? — the word was given before those commits existed (gh#176).
