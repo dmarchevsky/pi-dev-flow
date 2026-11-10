@@ -35,7 +35,13 @@ note). Other sessions' worktrees are theirs.
    — say what changed for the user and how to see it, not which modules
    changed.
    Report opening: **🔨 implement · `<slug>`** (the gate's stage line).
-3. Answer → `flow verify --confirmed` (yolo → `--yolo --confirmed`). If the
+   - Versioned project, playbook `version = ask` (the default): the gate's
+     question also asks the **release call** — a patch, minor or major
+     release (propose one by the playbook's versioning rule) or merge
+     unreleased. Record the kind, not a number, unless the operator names one:
+     the gate counts it from the newest tag, so a parallel release moves it.
+3. Answer → `flow verify --confirmed` (yolo → `--yolo --confirmed`), plus
+   `--version=patch|minor|major` (or `--version=<exact>`) or `--no-version`. If the
    default branch moved since the review deploy it refuses: run `flow verify`
    again first. Fixes → iterate and re-verify; that loop is free.
 

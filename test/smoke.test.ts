@@ -2171,7 +2171,7 @@ test("flow help: usage answers everywhere, even with no .dev-flow/", async () =>
 		assert.match(r.content[0].text, /^usage: flow <sub> — help \[--json\] \| init/);
 		assert.match(r.content[0].text, /approve \[--yolo\]/);
 		assert.match(r.content[0].text, /verify \[--yolo\]/);
-		assert.match(r.content[0].text, /release \[--yolo\|--no-version\|--no-fold-check\|--no-marker-check\]/);
+		assert.match(r.content[0].text, /release \[--yolo\|--version=<v>\|--no-version\|--no-fold-check\|--no-marker-check\]/);
 	}
 });
 
@@ -3694,4 +3694,130 @@ test("the flow tool refuses a --confirmed no operator message stands behind (gh#
 
 test("the operator-view check above ran over the gates this suite drives", () => {
 	assert.ok(viewsChecked > 50, `only ${viewsChecked} operator views were checked`);
+});
+
+/** gh#198 fixture: main carries VERSION 1.0.0 tagged v1.0.0, and a flow is walked to implement under `extra` playbook keys. */
+async function versionedFlow(slug: string, extra = "") {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	commitMain(repo, "VERSION", "1.0.0\n", "1.0.0");
+	execFileSync("git", ["-C", repo, "tag", "v1.0.0"]);
+	await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nmerge = merge\nversionFile = VERSION\n${extra}\`\`\`\n`]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, slug);
+	const wt = path.join(repo, ".dev-flow", slug, "worktree");
+	const state = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", slug, "state.json"), "utf8"));
+	/** the release prep: bump VERSION to `v` with its changelog entry (or, for null, only a line under Unreleased) */
+	const prep = async (v: string | null, bump = v) => {
+		if (bump) writeFileSync(path.join(wt, "VERSION"), `${bump}\n`);
+		writeFileSync(path.join(wt, "CHANGELOG.md"), v ? `# Changelog\n\n## [Unreleased]\n\n## [${v}]\n\n- ${slug} ships\n` : `# Changelog\n\n## [Unreleased]\n\n- ${slug} ships\n`);
+		commitWt(repo, slug, `chore(release): ${v ?? "unreleased"}`);
+		await flow(["check"]);
+	};
+	return { flow, repo, wt, state, prep };
+}
+
+test("Verified? carries the release call, and release.ask = on-change lets Release? answer itself (gh#198)", async () => {
+	const f = await versionedFlow("vc", "ask = on-change\n");
+	const asked = await f.flow(["verify"]);
+	assert.match(asked.content[0].text, /NEEDS-OPERATOR Verified\?[\s\S]*also ask the release call: a patch \(→ 1\.0\.1\), minor \(→ 1\.1\.0\), major \(→ 2\.0\.0\) release — propose one by the playbook's versioning rule \(VERSION is at 1\.0\.0\)/, asked.content[0].text);
+	assert.match(asked.content[0].text, /--version=patch\|minor\|major \(or the exact version they named\) or --no-version/);
+	assert.match((await f.flow(["verify", "--confirmed", "--version=nope"])).content[0].text, /--version=nope is not a release call/);
+	const ok = await f.flow(["verify", "--confirmed", "--version=1.1.0"]);
+	assert.match(ok.content[0].text, /entering pre-release stage\.\nrelease call: release 1\.1\.0/, ok.content[0].text);
+	assert.match(ok.content[0].text, /bump version in VERSION to 1\.1\.0 \(the operator's call\)/);
+	assert.equal(f.state().versionChoice, "1.1.0");
+	await f.prep("1.1.0");
+	const r = await f.flow(["release"]);
+	assert.match(r.content[0].text, /release approved \(auto-answered: release\.ask = on-change — release 1\.1\.0 was the call at Verified\?, and only release prep landed since\)/, r.content[0].text);
+	assert.equal(f.state().stage, "release");
+});
+
+test("on-change still asks Release? when something beyond the prep changed or no call is on record (gh#198)", async () => {
+	// a code commit after Verified?
+	const a = await versionedFlow("late", "ask = on-change\n");
+	await a.flow(["verify", "--confirmed", "--version=1.1.0"]);
+	writeFileSync(path.join(a.wt, "fix.js"), "// review fix\n");
+	commitWt(a.repo, "late", "fix after verify");
+	await a.prep("1.1.0");
+	const held = await a.flow(["release"]);
+	assert.ok(held.isError && /NEEDS-OPERATOR Release\? — ready to publish \(asked: commits beyond release prep landed after Verified\?\)/.test(held.content[0].text), held.content[0].text);
+	// Verified? answered with no call: Release? asks it
+	const b = await versionedFlow("nocall", "ask = on-change\n");
+	await b.flow(["verify", "--confirmed"]);
+	await b.prep("1.1.0");
+	const nc = await b.flow(["release"]);
+	assert.match(nc.content[0].text, /asked: no release call on record[\s\S]*also ask the release call: a patch, minor or major release, or merge unreleased/, nc.content[0].text);
+	assert.match((await b.flow(["release", "--confirmed", "--version=1.1.0"])).content[0].text, /release approved \(confirmed by operator instruction\)/);
+	assert.equal(b.state().versionChoice, "1.1.0");
+	// the default (ask = always) asks even with the call on record
+	const c = await versionedFlow("always");
+	await c.flow(["verify", "--confirmed", "--version=1.1.0"]);
+	await c.prep("1.1.0");
+	const al = await c.flow(["release"]);
+	assert.ok(al.isError && /NEEDS-OPERATOR Release\?/.test(al.content[0].text), al.content[0].text);
+	assert.doesNotMatch(al.content[0].text, /asked:/);
+});
+
+test("the release gate refuses prep that contradicts the operator's release call, until the call is re-made (gh#198)", async () => {
+	const a = await versionedFlow("other", "ask = on-change\n");
+	await a.flow(["verify", "--confirmed", "--version=1.2.0"]);
+	await a.prep("1.1.0");
+	const r = await a.flow(["release"]);
+	assert.match(r.content[0].text, /the operator's release call is 1\.2\.0, but VERSION says 1\.1\.0 — bump it to 1\.2\.0, or, if the call changed, ask the operator/, r.content[0].text);
+	assert.match((await a.flow(["release", "--version=1.1.0", "--confirmed"])).content[0].text, /release approved/);
+	// merge unreleased, but the branch bumps
+	const b = await versionedFlow("unrel", "ask = on-change\n");
+	const v = await b.flow(["verify", "--confirmed", "--no-version"]);
+	assert.match(v.content[0].text, /release call: merge unreleased \(no bump, no tag\)/);
+	assert.match(v.content[0].text, /add this flow's line under Unreleased in CHANGELOG\.md \(the call is merge unreleased: no bump\)/);
+	assert.equal(b.state().noVersion, true);
+	await b.prep(null, "1.1.0");
+	assert.match((await b.flow(["release"])).content[0].text, /the operator's call is to merge unreleased, but the branch bumps VERSION 1\.0\.0 → 1\.1\.0 — revert the bump/);
+	writeFileSync(path.join(b.wt, "VERSION"), "1.0.0\n");
+	commitWt(b.repo, "unrel", "revert the bump");
+	await b.flow(["check"]);
+	assert.match((await b.flow(["release"])).content[0].text, /release approved \(auto-answered[\s\S]*unversioned/);
+});
+
+test("version = versioned makes the call for every flow, and a major bump is still asked (gh#198)", async () => {
+	const f = await versionedFlow("maj", "version = versioned\nask = on-change\n");
+	const asked = await f.flow(["verify"]);
+	assert.doesNotMatch(asked.content[0].text, /also ask the release call/, "the playbook made the call");
+	assert.match((await f.flow(["verify", "--confirmed"])).content[0].text, /release call: a versioned release \(playbook: version = versioned\)/);
+	await f.prep("2.0.0");
+	const r = await f.flow(["release"]);
+	assert.match(r.content[0].text, /asked: 1\.0\.0 → 2\.0\.0 is a major bump/, r.content[0].text);
+});
+
+test("a patch/minor/major call is counted from the newest tag, so a flow that released first moves the number (gh#198)", async () => {
+	const f = await versionedFlow("par", "ask = on-change\n");
+	const v = await f.flow(["verify", "--confirmed", "--version=minor"]);
+	assert.match(v.content[0].text, /release call: a minor release \(1\.0\.0 → 1\.1\.0\)/, v.content[0].text);
+	assert.match(v.content[0].text, /bump version in VERSION to 1\.1\.0 \(a minor release, the operator's call/);
+	// another flow ships 1.1.0 while this one is in pre-release
+	commitMain(f.repo, "VERSION", "1.1.0\n", "1.1.0");
+	execFileSync("git", ["-C", f.repo, "tag", "v1.1.0"]);
+	await f.prep("1.1.0");
+	const r = await f.flow(["release"]);
+	assert.match(r.content[0].text, /the operator's call is a minor release: bump VERSION to 1\.2\.0 \(minor past 1\.1\.0\) — v1\.1\.0 was released since Verified\? \(the call was counted from 1\.0\.0 then\)/, r.content[0].text);
+	await f.prep("1.2.0");
+	assert.match((await f.flow(["release"])).content[0].text, /release approved \(auto-answered: release\.ask = on-change — a minor release/, "no operator question: the call still holds");
+});
+
+test("an exact version another flow took is one clear refusal, and the agent cannot re-make the call on its own (gh#198)", async () => {
+	const f = await versionedFlow("taken", "ask = on-change\n");
+	await f.flow(["verify", "--confirmed", "--version=1.1.0"]);
+	commitMain(f.repo, "VERSION", "1.1.0\n", "1.1.0");
+	execFileSync("git", ["-C", f.repo, "tag", "v1.1.0"]);
+	await f.prep("1.1.0");
+	const r = await f.flow(["release"]);
+	assert.match(r.content[0].text, /1\.1\.0, the operator's call at Verified\?, is taken: v1\.1\.0 was released since \(another flow got there first\) — ask the operator/, r.content[0].text);
+	assert.doesNotMatch(r.content[0].text, /already tagged/, "the generic refusal would send the agent round a loop");
+	await f.prep("1.2.0");
+	const self = await f.flow(["release", "--version=1.2.0"]);
+	assert.ok(self.isError && /asked: the release call changed since Verified\? \(1\.1\.0 → 1\.2\.0\) — the operator makes that call/.test(self.content[0].text), self.content[0].text);
+	assert.match((await f.flow(["release", "--version=1.2.0", "--confirmed"])).content[0].text, /release approved \(confirmed by operator instruction\)/);
 });

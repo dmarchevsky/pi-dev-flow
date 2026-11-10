@@ -1818,3 +1818,14 @@ test("sideBySide offers a second instance only when the playbook and the machine
 	assert.match(sideBySide({ cfg: md("port = 8090\ndev = docker compose up -d\n"), nextPort: 8091, memAvail: null, diskFree: null }).why.join(), /do not read \$DEV_FLOW_PORT/, "a dev command that ignores the port would collide");
 	assert.match(sideBySide({ cfg: md("dev = x\n"), nextPort: null, memAvail: null, diskFree: null }).why.join(), /names no `port`/);
 });
+
+test("bumpVersion steps x.y.z by kind and versionArg reads the release call (gh#198)", async () => {
+	const { bumpVersion, versionArg } = await import("../src/core.ts");
+	assert.deepEqual(["patch", "minor", "major"].map((k) => bumpVersion("1.4.2-beta.1", k as "patch")), ["1.4.3", "1.5.0", "2.0.0"]);
+	assert.equal(bumpVersion("v1", "patch"), null);
+	assert.deepEqual(versionArg("minor", false), { choice: "minor" });
+	assert.deepEqual(versionArg(null, true), { choice: "unreleased" });
+	assert.deepEqual(versionArg(null, false), { choice: null });
+	assert.ok("error" in versionArg("1.2.0", true));
+	assert.ok("error" in versionArg("soon", false));
+});

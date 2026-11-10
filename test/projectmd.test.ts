@@ -440,3 +440,12 @@ test("lineDiff shows only what changed", () => {
 	assert.match(d, /- c\n\+ X/);
 	assert.doesNotMatch(d, /  a/);
 });
+
+test("release version and ask parse; junk values warn and keep the defaults (gh#198)", () => {
+	const c = mdToConfig(parseProjectMd("# d\n\n## release\n\n```flow\nversion = unversioned\nask = on-change\n```\n"));
+	assert.deepEqual([c.release.version, c.release.ask], ["unversioned", "on-change"]);
+	const junk = parseProjectMd("# d\n\n## release\n\n```flow\nversion = sometimes\nask = never\n```\n");
+	assert.match(junk.warn.join(" "), /version = "sometimes" — expected ask, versioned or unversioned, keeping ask/);
+	assert.match(junk.warn.join(" "), /ask = "never" — expected always or on-change, keeping always/);
+	assert.deepEqual([mdToConfig(junk).release.version, mdToConfig(junk).release.ask], [undefined, undefined]);
+});

@@ -17,7 +17,11 @@ and settle the scheme with the operator; never invent one.
      Otherwise `flow release` warns that the fix shipped after Verified?.
 2. **Docs**: update them to match the change.
 3. **Changelog + bump** — manifest, changelog heading and tag must agree;
-   commit the prep on the feature branch.
+   commit the prep on the feature branch. The release call recorded with
+   Verified? decides which: its kind, counted from the newest tag (the gate
+   names the number — another flow that released first moves it), an exact
+   version (taken by another flow → ask again, never pick one), or
+   *merge unreleased* — no bump, the line goes under `Unreleased`.
    - **The changelog writer reviews the branch, not its commit list**: read
      `git log <default>..HEAD` *and* `git diff <default>...HEAD`, then write
      what the branch delivers in the reader's terms (what was broken, what
@@ -42,7 +46,12 @@ and settle the scheme with the operator; never invent one.
      playbook says `yolo = until-release` — then ask.
    - Operator ships **without a version** → `flow release --no-version
      --confirmed`: no bump or tag, but the branch must add its line under
-     `Unreleased`.
+     `Unreleased`. A changed call is `--version=<v>` / `--no-version` with
+     `--confirmed`, on their word.
+   - Playbook `ask = on-change` → run `flow release` without asking: it
+     answers Release? itself when the call is on record and only the prep
+     landed since Verified?, and otherwise returns `NEEDS-OPERATOR Release?`
+     saying why — then ask.
 
 The gate re-checks tier-1, requires the manifest ahead of the last tag and a
 changelog **heading** for that version written on this branch.
