@@ -28,7 +28,9 @@ note). Other sessions' worktrees are theirs.
    deploy and the health probe against what it deployed, and returns
    `NEEDS-OPERATOR Verified?`. It never opens a dialog.
    - Another flow holds the dev port → `NEEDS-OPERATOR Dev port?` with free
-     RAM/disk: ask, then re-run with `--port=<n>` or `--replace`.
+     RAM/disk: ask, stop, then re-run with `--port=<n>` or `--replace` on
+     their answer. "wait" means wait; a later "proceed" about the feature is
+     not a yes to replacing another flow's stack.
    - The health probe retries every 2s up to `healthWait` (default 30s); a
      service that needs a moment is not a broken deploy.
 2. Look at the change yourself, **keep the app running**, ask **Verified?**

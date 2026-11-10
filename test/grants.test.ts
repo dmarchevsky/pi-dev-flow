@@ -41,3 +41,20 @@ test("an unreadable session is never checked, and a word given up front needs no
 	assert.equal(grantCheck(["start", "x", "--ui", "--confirmed"], "s", null, l), null);
 	assert.equal(grantCheck(["approve", "--confirmed"], "s", 2, l), null);
 });
+
+test("Dev port? answers (--replace, --port=<n>) bind like --confirmed (gh#203)", () => {
+	const l = newGrantLedger();
+	grantRecord(["verify"], "s", 4, { text: "NEEDS-OPERATOR Dev port? — port 8090 is serving pa", isError: true }, l);
+	assert.match(grantCheck(["verify", "--replace"], "s", 4, l) ?? "", /^NEEDS-OPERATOR no operator message since flow verify asked for their word — --replace records/);
+	assert.match(grantCheck(["verify", "--port=8091"], "s", 4, l) ?? "", /--port=8091 records the operator's answer/);
+	assert.equal(grantCheck(["verify", "--replace"], "s", 5, l), null, "an operator message after the question lets it through");
+	assert.equal(grantCheck(["verify"], "s", 4, l), null, "a plain re-run carries no answer");
+	const fresh = newGrantLedger();
+	assert.equal(grantCheck(["verify", "--replace"], "s", 4, fresh), null, "a word given up front needs no prior question");
+});
+
+test("a refusal says a word given before it does not count (gh#206)", () => {
+	const l = newGrantLedger();
+	grantRecord(["start", "x", "--docs"], "s", 3, { text: "docs mode is operator-granted — ask", isError: true }, l);
+	assert.match(grantCheck(["start", "x", "--docs", "--confirmed"], "s", 3, l) ?? "", /A word given before the question does not count/);
+});

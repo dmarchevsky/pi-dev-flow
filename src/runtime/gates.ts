@@ -273,6 +273,12 @@ export async function gateInit(o: GateCtx): Promise<RunResult> {
 	return { text: notes.join("\n") };
 }
 
+/** gh#206: an operator-granted refusal states the rule that makes an immediate --confirmed re-run useless
+ *  (gh#190 binds only a message that postdates the ask), so the agent asks once instead of burning a call
+ *  to learn it — and says what to do next time the operator's own request carries the grant. */
+export const GRANT_AFTER =
+	"ask the operator in chat and stop; re-run with --confirmed once they reply. Only an operator message sent after this refusal counts, so a grant given before it (even in the request that started this) must be asked again, and an immediate re-run is refused. When the operator's own request already grants it, pass --confirmed on the first call";
+
 export async function gateStart(o: GateCtx): Promise<RunResult> {
 	const { root, sess, cfg, rest, flag, slugArg } = o;
 	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --ui/--patch/--docs are operator-granted — ask the operator in chat, then add --confirmed", isError: true };
@@ -299,7 +305,7 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 		// proof at approve and every (ui) checklist item (lettuce rail-ui-fixes shipped 20 ungated mockups)
 		const existing = readState(root, slugArg);
 		if (flag("ui") && existing && sess.slug === slugArg) {
-			if (!flag("confirmed")) return { text: "--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate; ask the operator, then re-run with --confirmed", isError: true };
+			if (!flag("confirmed")) return { text: `--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate; ${GRANT_AFTER}`, isError: true };
 			if (existing.ui) return { text: `feature ${slugArg} already has the ui flag` };
 			if (existing.stage !== "plan") return { text: `feature ${slugArg} is at ${existing.stage} — the ui flag can be set only at plan (the mockup gate is approve's); render the screens anyway and say so in the verify report`, isError: true };
 			writeState(root, { ...existing, ui: true });
@@ -313,9 +319,9 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 	// every grant start needs goes into one question: a refusal for one names the others still open, so
 	// the operator answers mode, mockups and merge policy in a single message
 	const alsoMerge = !cfg.release.merge && flagValue(rest, "merge") === null ? `\n${AGENT_MARK}the playbook also has no merge policy — put it in the same question (squash | merge | rebase | any) and pass --merge=<style> on the same re-run` : "";
-	if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — the operator must grant it in chat, then re-run with --confirmed${alsoMerge}`, isError: true };
+	if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — ${GRANT_AFTER}${alsoMerge}`, isError: true };
 	// --ui adds the rendered-mockup gate to plan: worth it only when screens change, and the operator says so
-	if (flag("ui") && !flag("confirmed")) return { text: `--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate, so use it only when the feature changes screens; ask the operator, then re-run with --confirmed${alsoMerge}`, isError: true };
+	if (flag("ui") && !flag("confirmed")) return { text: `--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate, so use it only when the feature changes screens; ${GRANT_AFTER}${alsoMerge}`, isError: true };
 	// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
 	const curBr = await currentBranch(root);
 	if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };

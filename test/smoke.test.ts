@@ -1762,7 +1762,7 @@ test("docs feature: no plan file, no tier-1 checks, full release end to end", as
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
-	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /operator-granted/, "--docs without the operator's chat grant is refused");
+	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /operator-granted.*Only an operator message sent after this refusal counts.*pass --confirmed on the first call/s, "--docs without the operator's chat grant is refused, and the refusal says a grant given before it must be asked again (gh#206)");
 	assert.match((await flow(["start", "readme-typo", "--docs", "--confirmed"])).content[0].text, /docs/, "docs mode announced at start");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/, "docs approves with no plan file written");
 	commitWt(repo, "readme-typo");

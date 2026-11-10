@@ -36,7 +36,9 @@ who holds the port (stage, commit, age), the available RAM and free disk against
 `instanceMem` / `instanceDisk`, and the options — run alongside on the next free port
 (`flow verify --port=<n>`), replace that deploy (`--replace`), or wait. Running alongside is offered
 only when the playbook allows it (`parallelDev` is not `no`, `dev`/`health` read `$DEV_FLOW_PORT`) and
-the resources fit. A finished or aborted flow holds no port. `flow finish` stops a flow's
+the resources fit. `--port=<n>` and `--replace` are the operator's answer, so they bind like
+`--confirmed` (gh#203): a re-run carrying either before the operator has sent a message since
+`Dev port?` was asked is refused. A finished or aborted flow holds no port. `flow finish` stops a flow's
 non-default-port instance with `devDown`.
 
 **The review is of the tree that ships.** Parallel flows release while others are still implementing,

@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **`--replace` and `--port=<n>` need your answer too (gh#203).** When another flow holds the dev port, `flow verify` asks *Dev port?* and takes `--replace` or `--port=<n>` as the answer. Unlike `--confirmed`, those two were accepted without any message from you, and the deploy record then said the replacement was "the operator's answer". They now bind the same way: a re-run carrying either one is refused until you have sent a message since the question.
+- **An operator-granted refusal says when a grant counts (gh#206).** A `flow start --docs` (or `--patch`, `--ui`) without `--confirmed` is refused, and since gh#190 an immediate `--confirmed` re-run is refused too, because only a message sent after the refusal counts. The agent used to learn that by burning a second call, then had to ask you to repeat a permission you had already given. The refusal now says so up front, and the playbook tells the agent to pass `--confirmed` on the first call when your request already grants the mode.
+
 ## [0.89.0] - 2026-11-09
 
 **The release call is made with Verified?, and Release? answers itself when nothing but the release prep changed.**
