@@ -302,6 +302,66 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${foldNote}${staleNote ? ` ${staleNote}.` : ""}${postVerify ? ` Warning: ${postVerify}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
+/** How long release-done waits on the publish CI a tag push started; a seam so tests run in milliseconds. */
+export const artifactWait = {
+	budgetMs: 15 * 60_000,
+	pollMs: 20_000,
+	/** a tag pushed seconds ago may not have a run yet: look this long before deciding there is none */
+	appearMs: 60_000,
+	sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+	clock: () => Date.now(),
+	runs: (tag: string, root: string): Promise<TagRun[] | null> => tagRuns(tag, root),
+};
+
+export interface TagRun { status: string; conclusion: string; url: string; workflowName: string }
+
+/** The workflow runs a tag push started (GitHub names the tag as the run's branch); null when gh cannot say. */
+async function tagRuns(tag: string, root: string): Promise<TagRun[] | null> {
+	const r = await sh(`gh run list --branch ${sq(tag)} --event push --limit 20 --json status,conclusion,url,workflowName`, root, 30_000);
+	if (!r.ok) return null;
+	try {
+		const rows = JSON.parse(r.out) as TagRun[];
+		return Array.isArray(rows) ? rows : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Probe the release artifact; when it is missing and the tag's CI is still running, wait for that CI
+ *  (bounded) and probe again. `waited` says what the wait saw, for the gate's note or its refusal. */
+export async function awaitArtifact(cmd: string, tag: string, root: string): Promise<{ ok: boolean; out: string; waited: string }> {
+	const start = artifactWait.clock();
+	const mins = () => `${Math.max(1, Math.round((artifactWait.clock() - start) / 60_000))} min`;
+	let greenAt: number | null = null; // a registry can answer "not found" for a minute after the run that pushed to it went green
+	for (let round = 0; ; round++) {
+		const art = await sh(cmd, root);
+		if (art.ok) return { ...art, waited: round ? `after waiting ${mins()} for the publish CI ${tag} started` : "" };
+		const runs = await artifactWait.runs(tag, root);
+		if (runs === null) return { ...art, waited: "" }; // gh cannot say: the plain probe result stands
+		const elapsed = artifactWait.clock() - start;
+		const pending = runs.filter((r) => r.status !== "completed");
+		if (!runs.length && elapsed >= artifactWait.appearMs)
+			return { ...art, waited: `no CI run was started by ${tag} — publish by hand, or check that the publish workflow triggers on tags` };
+		if (runs.length && !pending.length) {
+			const failed = runs.filter((r) => r.conclusion !== "success" && r.conclusion !== "skipped" && r.conclusion !== "neutral");
+			if (!failed.length && greenAt === null) greenAt = artifactWait.clock();
+			if (!failed.length && artifactWait.clock() - (greenAt ?? 0) < artifactWait.appearMs) {
+				await artifactWait.sleep(artifactWait.pollMs);
+				continue;
+			}
+			return {
+				...art,
+				waited: failed.length
+					? `the CI ${tag} started did not pass — ${failed.map((r) => `${r.workflowName}: ${r.conclusion || "?"} (${r.url})`).join(", ")}; fix and re-publish, then re-run release-done`
+					: `every CI run ${tag} started finished green, yet the artifact is missing — check where the publish workflow pushes`,
+			};
+		}
+		if (elapsed >= artifactWait.budgetMs)
+			return { ...art, waited: `the publish CI is still running after ${mins()} (${pending.map((r) => `${r.workflowName}: ${r.url}`).join(", ")}) — re-run release-done once it finishes` };
+		await artifactWait.sleep(artifactWait.pollMs);
+	}
+}
+
 export async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 	const { root, sess, cfg, flag, slugArg } = o;
 	const { state, err } = needState(root, sess, slugArg);
@@ -339,9 +399,11 @@ export async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 		if (flag("no-artifact-check")) artNote = "Artifact check skipped (--no-artifact-check).";
 		else {
 			const cmd = cfg.release.artifact.replaceAll("{version}", manifestVer!).replaceAll("{tag}", expectedTag);
-			const art = await sh(cmd, root);
-			if (art.ok) artNote = `Artifact verified for ${manifestVer}.`;
-			else errs.push(`artifact not published — release.artifact check failed (${cmd}):\n${tail(art.out)}`);
+			// the tag push is what starts the publish CI: a miss right after it is usually "not yet" — only a
+			// tag that is really on the forge has a run worth waiting for (gh#179)
+			const art = forgeName === "github" && !errs.length ? await awaitArtifact(cmd, expectedTag, root) : { ...(await sh(cmd, root)), waited: "" };
+			if (art.ok) artNote = `Artifact verified for ${manifestVer}${art.waited ? ` ${art.waited}` : ""}.`;
+			else errs.push(`artifact not published — release.artifact check failed (${cmd}):\n${tail(art.out)}${art.waited ? `\n${art.waited}` : ""}`);
 		}
 	}
 	// merge policy: did what actually landed agree with what the playbook says? A measured contradiction
