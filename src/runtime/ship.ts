@@ -338,7 +338,7 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 				: "";
 	// gh#198: release.ask = on-change — Release? answers itself when it would only re-confirm Verified?: the call
 	// is on record, nothing but release prep landed since, and no other question (stale build, a major bump) is open
-	const onChange = cfg.release.ask === "on-change" && !flag("confirmed") && !state!.yolo;
+	const onChange = cfg.release.ask !== "always" && !flag("confirmed") && !state!.yolo;
 	const askWhy = !onChange
 		? ""
 		: !state!.verifiedHead

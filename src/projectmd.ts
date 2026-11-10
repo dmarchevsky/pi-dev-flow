@@ -65,7 +65,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		yolo: "release.yolo", // how far a standing yolo reaches: all (default) | until-release (gh#176)
 		reflect: "release.reflect", // when finish runs the closing reflection: on-friction (default) | always
 		version: "release.version", // who decides versioned vs unreleased: ask (with Verified?, default) | versioned | unversioned (gh#198)
-		ask: "release.ask", // when Release? is asked: always (default) | on-change (gh#198)
+		ask: "release.ask", // when Release? is asked: on-change (default) | always (gh#198)
 	},
 };
 // pre-release owns release preparation; the release keys are accepted under both sections so
@@ -185,7 +185,7 @@ export function parseProjectMd(text: string): ParsedMd {
 							return;
 						}
 						if (mapped === "release.ask" && !/^(always|on-change)$/.test(m[2].trim())) {
-							p.warn.push(`${where}: ask = "${m[2]}" — expected always or on-change, keeping always`);
+							p.warn.push(`${where}: ask = "${m[2]}" — expected on-change or always, keeping on-change`);
 							return;
 						}
 						p.flow[stage as MdStage][mapped] = m[2];
