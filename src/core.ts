@@ -658,6 +658,25 @@ export function freshenChecks(state: FlowState, fp: string | null, keep: (name: 
 	return stale;
 }
 
+/** gh#204: what a dev command resolved to. The playbook command prints verbatim (`COMPOSE_PROJECT_NAME=app$DEV_FLOW_SUFFIX`),
+ *  and on the default port `DEV_FLOW_SUFFIX` is "" — the difference between a private stack and the machine's shared
+ *  one. Names the DEV_FLOW_* values the command reads and the compose project it lands on; "" when it reads none. */
+export function resolvedDevEnv(cmd: string, env: Record<string, string>): string {
+	const esc = (k: string) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const names = Object.keys(env).filter((k) => k.startsWith("DEV_FLOW_") && new RegExp(`\\$\\{?${esc(k)}(?![A-Za-z0-9_])`).test(cmd));
+	let expanded = cmd;
+	for (const k of names) {
+		const v = env[k];
+		expanded = expanded.replace(new RegExp(`\\$\\{${esc(k)}(?::?-[^}]*)?\\}`, "g"), () => v).replace(new RegExp(`\\$${esc(k)}(?![A-Za-z0-9_])`, "g"), () => v);
+	}
+	const compose = /\bdocker[ -]compose\b/.test(cmd);
+	const proj = expanded.match(/\bCOMPOSE_PROJECT_NAME=("[^"]*"|'[^']*'|[^\s;&|]*)/)?.[1] ?? expanded.match(/\bdocker[ -]compose\b[^;&|]*?\s(?:-p|--project-name)[ =]("[^"]*"|'[^']*'|[^\s;&|]+)/)?.[1];
+	const parts = names.map((k) => `${k}=${env[k] === "" ? '""' : env[k]}`);
+	if (proj !== undefined) parts.push(`compose project ${proj.replace(/^(["'])(.*)\1$/, "$2") || '""'}`);
+	else if (compose) parts.push("compose project not set by the command (compose names it after the directory)");
+	return parts.length ? `resolved: ${parts.join(", ")}` : "";
+}
+
 /** Items that apply to this feature — "(ui)" items only when the UI flag is set. */
 export function applicableItems(cfg: Config, state: FlowState, stage: string): ChecklistItem[] {
 	return (cfg.checklist[stage] ?? []).filter((i) => (!i.uiOnly || state.ui) && (!i.versionedOnly || !state.noVersion));

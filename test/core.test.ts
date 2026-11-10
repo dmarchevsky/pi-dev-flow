@@ -133,6 +133,7 @@ import {
 	parseSize,
 	servedBuildMatches,
 	sideBySide,
+	resolvedDevEnv,
 } from "../src/core.ts";
 
 const cfg = structuredClone(DEFAULTS);
@@ -1828,4 +1829,14 @@ test("bumpVersion steps x.y.z by kind and versionArg reads the release call (gh#
 	assert.deepEqual(versionArg(null, false), { choice: null });
 	assert.ok("error" in versionArg("1.2.0", true));
 	assert.ok("error" in versionArg("soon", false));
+});
+
+test("resolvedDevEnv names the DEV_FLOW_* values a dev command read and the compose project it hit (gh#204)", () => {
+	const cmd = "bun run build:bff && BFF_PORT=${DEV_FLOW_PORT:-8090} COMPOSE_PROJECT_NAME=lettuce$DEV_FLOW_SUFFIX docker compose up -d";
+	assert.equal(resolvedDevEnv(cmd, { DEV_FLOW_PORT: "8090", DEV_FLOW_SUFFIX: "", DEV_FLOW_INSTANCE: "x" }), 'resolved: DEV_FLOW_PORT=8090, DEV_FLOW_SUFFIX="", compose project lettuce');
+	assert.equal(resolvedDevEnv(cmd, { DEV_FLOW_PORT: "8091", DEV_FLOW_SUFFIX: "-nav", DEV_FLOW_INSTANCE: "nav" }), "resolved: DEV_FLOW_PORT=8091, DEV_FLOW_SUFFIX=-nav, compose project lettuce-nav");
+	assert.equal(resolvedDevEnv("docker compose -p app${DEV_FLOW_SUFFIX} up -d", { DEV_FLOW_SUFFIX: "-a" }), "resolved: DEV_FLOW_SUFFIX=-a, compose project app-a");
+	assert.match(resolvedDevEnv("docker compose up -d", { DEV_FLOW_SUFFIX: "" }), /compose project not set by the command/);
+	assert.equal(resolvedDevEnv("touch dev-up", { DEV_FLOW_PORT: "1" }), "", "a command that reads nothing says nothing");
+	assert.equal(resolvedDevEnv("echo $DEV_FLOW_SUFFIXED", { DEV_FLOW_SUFFIX: "" }), "", "a longer variable name is not this one");
 });

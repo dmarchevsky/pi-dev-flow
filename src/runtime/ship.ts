@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind } from "../core.ts";
+import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
@@ -70,11 +70,14 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 		// deploy to dev before asking — the operator reviews the running dev app, not a promise
 		const probe = healthProbe(cfg);
 		if (cfg.commands.dev) {
-			const res = await sh(cfg.commands.dev, gateCwd(root, state!), undefined, devEnv(root, state!, cfg));
+			const env = devEnv(root, state!, cfg);
+			const res = await sh(cfg.commands.dev, gateCwd(root, state!), undefined, env);
 			state!.checks.dev = { ok: res.ok, at: now() };
 			writeState(root, state!);
-			if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev}):\n${tail(res.out)}`, isError: true };
-			did.push(`dev ran (${cfg.commands.dev})${devPortOf(state!, cfg) !== undefined ? ` on port ${devPortOf(state!, cfg)}` : ""}`);
+			// gh#204: the command prints as the playbook wrote it — say what its $DEV_FLOW_* and compose project resolved to
+			const resolved = resolvedDevEnv(cfg.commands.dev, env);
+			if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev})${resolved ? ` — ${resolved}` : ""}:\n${tail(res.out)}`, isError: true };
+			did.push(`dev ran (${cfg.commands.dev})${devPortOf(state!, cfg) !== undefined ? ` on port ${devPortOf(state!, cfg)}` : ""}${resolved ? ` — ${resolved}` : ""}`);
 			// the deploy is what must be proven, not just run: a container that came back unhealthy, or
 			// still serves the previous build, must not pass on a health PASS recorded before it was
 			// recreated. What "the expected version" means is the project's business — the probe runs in

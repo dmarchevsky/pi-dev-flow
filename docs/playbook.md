@@ -89,7 +89,9 @@ servedBuild = curl -fsS http://127.0.0.1:$DEV_FLOW_PORT/version   # must print t
 ```
 
 `$DEV_FLOW_SUFFIX` is empty on the default port and `-<slug>` on any other, so a second instance gets its own
-compose project. `flow verify` records who deployed on which port in `.dev-flow/dev-ports.json`; when the
+compose project. The `dev ran (…)` and `dev deploy FAILED` lines print the command as written, followed by what
+it resolved to (`resolved: DEV_FLOW_PORT=8090, DEV_FLOW_SUFFIX="", compose project app`), so a record says
+which stack a deploy touched. `flow verify` records who deployed on which port in `.dev-flow/dev-ports.json`; when the
 port it would use belongs to another live flow it asks you first (see [concurrency](concurrency.md)).
 `flow finish` runs `devDown` for an instance on a non-default port. `servedBuild` turns "something answers"
 into "this branch answers": verify refuses when its output names no prefix of the worktree's HEAD.
