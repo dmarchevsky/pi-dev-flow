@@ -1,30 +1,112 @@
-# Guardrails (the teeth)
+# Guardrails
 
-Everything dev-flow enforces while a feature is in flight, and what it deliberately does not do. Short version: [README → What is enforced](../README.md#what-is-enforced).
+What dev-flow enforces while a feature is in flight, and what it deliberately doesn't do.
 
-While a feature is active, the extension intercepts every tool call:
+All of this applies only in an initialized repo, one where `.dev-flow/project.md` exists. Without the
+playbook, dev-flow stays silent.
 
-- **Nothing on main, ever** (until release): `git commit` on the default branch is blocked at every stage except `release` — where release chores commit in the main checkout (prefixed `DEV_FLOW_ALLOW_MAIN=1` for the hook) — and except one chore that needs no flow: a commit whose **only** change in the checkout is `.dev-flow/project.md`, because tracking the operator's playbook is setup, not feature work (any other dirty path closes that lane). pushes are judged by the ref they write — only pushing *to* the default branch (or a bare push while on it) requires stage `release`, so tag pushes and feature-branch pushes pass from any stage; `git merge` onto the default branch also requires stage `release`. Plus the standalone pre-commit hook for commits made outside Pi.
-- **No code before an approved plan**: at stage `plan`, edits are confined to `.dev-flow/<slug>/` — the session's **own** feature directory, so one session cannot write another feature's plan and have its gate rubber-stamp what it never wrote.
-- **Work stays in the worktree**: at stages `implement` and `pre-release`, edits are confined to that feature's worktree — judged per-path by the owning feature, so one session can never write into another session's worktree or into the main checkout. A throwaway **outside** the checkout is not feature work and stays free at every stage (the OS temp dir, e.g. a one-off rewrite script): both sides are realpath'd, so a symlink out of the temp dir is still judged as the repo path it writes, and a repository that merely lives under the temp dir (a test repo) keeps the stage rules. For a bound feature that scratch lives in the feature itself: every bash call the guards let through, and every project command a gate runs (test, checks, build, dev, seed, health), gets `TMPDIR=.dev-flow/<slug>/tmp/`, so `mktemp`, `os.tmpdir()` and test-suite fixtures land there and `flow finish` (or `flow abort`) removes them. Unbound sessions keep the OS temp dir.
-- **Shipping waits for `flow release`**: while a bound feature is at `plan`, `implement` or `pre-release`, cutting or pushing a tag (`git tag <name>`, `git push --tags`, `refs/tags/…`), merging its PR (`gh pr merge`, `glab mr merge`) and creating a forge release (`gh|glab release create`) are refused with "run flow release first". Shipping by hand first left `flow release` unable to record the release ("already tagged") and the flow unable to close. Reads (`git tag -l`, `gh pr view`) and opening the PR at pre-release are unaffected.
-- **A feature worktree keeps its branch**: creating a branch inside a feature worktree (`git checkout -b`, `git switch -c`) is refused. An unrelated fix is its own flow (`flow start <slug> --patch --confirmed`), not a side branch in someone's worktree. A session whose cwd is a feature worktree is judged by the **main checkout's** `.dev-flow/` state, which is where the features live.
-- **Flow by default**: in a repo with `.dev-flow/`, an unbound session cannot touch source files at all — every request goes through `flow start`/`flow use`; there is no bypass. A path git ignores (`git check-ignore`, e.g. a per-machine secrets file listed in `.git/info/exclude`) is not source and stays writable unbound. Tracked and untracked-unignored paths are refused, and the refusal names that route (gh#175). `flow start` refuses when the main checkout isn't on the default branch, worktrees are always created from the default branch, and the agent cannot check feature branches out in the main checkout.
-- **Gates can't be skipped**: flow state is untouchable by the agent (edit tool and bash) — writing `state.json` or `claim.json`, moving either away, or deleting a feature directory or the whole `.dev-flow/` folder all block, at a relative **or an absolute** path (an absolute path names the same folder); the `project.md` playbook is operator-owned — the main-checkout copy is blocked for the agent outright, and only a **docs or patch flow's** worktree copy may be edited (normal features route playbook changes to their own flow); every sanctioned playbook overwrite keeps the previous file as `project.md.bak`; every recorded check carries a fingerprint of the worktree it ran against (paths, uncommitted diff, HEAD) — an edit-tool change clears the records at once, and any other write (`sed -i`, a formatter, codegen through bash) is caught at the gate itself, which reruns what went stale and says so; edit/write paths are judged by realpath, so a symlink out of the worktree cannot launder a confined write.
-- **Your project's own rules**: every `deny`/`confirm`/`protect`/`forbid` rule from the `flow-guard` block in project.md `## global` runs on every bash command and every edit/write path — in every stage and binding, ahead of dev-flow's own verdicts. A block always carries the reason you wrote.
-- **The rules reach the agent, they are not left in a file it may never read**: pi advertises a skill and loads it only if the model chooses to, so the ground rules of the dev-flow skill are injected into every session once (and again after a compaction that summarized them away), and each stage's turn names the one playbook file that stage needs. The guards enforce the same discipline either way — this is what makes the agent follow it without being stuck.
-- **A forced push asks the operator**: `git push` carrying `--force`, `--force-with-lease…` or `-f` is confirmed before it runs — a rewritten branch is history CI and other sessions already have. The one spelling that answers for it is the prefix the refusal prints (`DEV_FLOW_ALLOW_REWRITE=1 git push -f …`), the same "the operator said so" contract as `DEV_FLOW_ALLOW_MAIN`. Local history rewrites (`git filter-branch --force`) are not pushes and stay free, so a project never needs a blunt flag-only deny of its own.
-- **Shell calls can't hang forever**: pi kills a shell command only when the model passed a `timeout` — it omits one in ~75% of calls, so a `gh` waiting on a prompt or a dead `curl` froze sessions for hours. In an initiated repo (`.dev-flow/project.md` exists) every shell call without one therefore gets the class default armed silently (30s quick inspection · 120s local git and unknown · 180s network · 300s containers/services · 900s builds/tests/installs · 1,200s watchers like `gh run watch`), and absurd explicit values clamp to 1,800s. A command that carries its own `timeout N` (coreutils, any option form, `s`/`m`/`h` suffixes) gets N + 15s, so its own timer fires first; an unreadable N falls back to the wrapped command's class. The armed value is **invisible in the call's arguments**: the transcript and pi-web's tool card show what the model wrote, and dev-flow sets the timeout after that. So when it is dev-flow's default that kills a command, the result gets a line saying so (`[dev-flow] stopped at 30s: dev-flow's default for quick commands, armed because the call stated no timeout…`), and the session's injected ground rules tell the agent the default exists. `test/e2e-timeout.test.ts` proves the kill end to end through a real pi session, so a host release that stopped honouring the hook would fail the suite. A project that wants the timeout visible on every call line sets `bashTimeout = require` in `## global` — then a call without one is refused, naming the value it would have armed (each refusal costs a turn, which is why it is no longer the default). Uninitiated folders hear nothing at all: without the playbook dev-flow enforces no rules.
-- **Compact-aware**: dev-flow paces compaction the way pi counts it: the self-compaction trigger uses the *effective* `reserveTokens` (settings and per-model overrides, not the built-in default) and is checked at every turn end, not only when a run settles. When pi force-compacts on its threshold anyway — the chat-only states (open tier-2 dialog, plan discussion not yet in `plan/`) refuse to self-compact by design — dev-flow takes the compaction over and redoes it with flow-aware summary instructions (overflow recovery keeps pi's compact-and-retry and is left alone). Auto-compaction turned off in settings is honored.
-- The active stage is injected into the model's context — in full when it changed (or after a compaction), as one line when it did not; the bundled `dev-flow` skill is the agent's playbook, including the recommended sequences: pre-release — review (`/flow-review`) → fixes → docs → changelog/version bump; release — PR → merge → tag → `finish` (which records the release first when `release-done` was not run). The package also bundles the review skills themselves — `/flow-review` (a change, read against its `plan/plan.md`), `/flow-audit` (the whole repo) and `/flow-simplify` (the operative cut: deletes dead and duplicated code, one verified commit at a time) — and injects a built-in senior-discipline guidance at implement stage unless the playbook sets its own `prose.implement`.
-- **Status bar**: an initiated repo (`.dev-flow/project.md` exists) always carries the dev-flow footer; while the session **is bound** to a feature it shows `<stage glyph> <slug>` plus mode markers — stages 📝 plan, 🔨 implement, 🔍 pre-release, 🚀 release; markers ⚡ patch, 📚 docs, 🎱 yolo, `💬` while a checkpoint (Approve?/Verified?/Release?/Finish?) still waits on the operator's word — the legend's "operator, your turn" glyph, the same one stage lines open with — and `⚠️` while a check of the bound feature fails (emoji render in their own color, so the footer carries no theme coloring). An **unbound** session never sees a slug — it shows `💬 N flow(s) open` (unfinished-feature count only, no warning marker) or `💬 no flows` when nothing is in flight: the pre-flow glyph, because an unbound session is parked on the operator by definition; a session binds only via `flow start`/`flow use`, never by opening. In **pi-web** status text is not clickable, so there the footer is a widget chip instead: the chip carries the footer's content packed to fit pi-web's fixed-width chip — bound: every glyph up front with no spaces, then the slug (`🔨⚡⚠️my-feature`, so only the slug's tail can clip); unbound: `💬 2 open` (hover shows a clipped label whole) and expands (click again to collapse) to one lean line per *other* unfinished flow — the bound flow is already the chip's label, so it is not repeated (alone in the repo, the panel says `no other flows open`); the stage word is spelled out, markers and `⚠️` follow the footer vocabulary; with nothing open (`💬 no flows`) it is a plain chip with nothing to expand. The TUI never shows it: a widget there is an always-present block, and in a terminal the footer stays the legend. The footer repaints at session start, at the start of every agent run (the earliest a late-attaching web client is listening) and after every gate; an uninitiated folder gets no footer at all. `flow status` is the spelled-out surface: `stage=implement`, the per-feature mode tags (`[ui]`, `[yolo]`, `[no-version]`), the `💬 <word>` marker of a checkpoint the operator has not answered, and the `flow=<ver>` stamp of the build that started the feature.
+## What is enforced
 
-## Limitations (deliberate, v1)
+**Nothing lands on main until release.**
+- `git commit`, `git merge` and pushes *to* the default branch are blocked at every stage except
+  `release`. Tag pushes and feature-branch pushes are fine from any stage.
+- One exception: a commit whose only change is `.dev-flow/project.md`, since tracking your playbook
+  is setup, not feature work.
+- A `pre-commit` hook covers commits made outside Pi.
 
-- Production deployment stays manual by design (phase 2 automation); `flow finish` only closes the flow.
-- Bash git-guard parses shell segments to find real `git` invocations (honoring `cd … &&`, `git -C`, full paths) and judges them by the branch of the directory the command runs in — the feature worktree when you work there. A `~` / `$HOME` in that directory is expanded the way the shell would (any other `$VAR` stays literal); when the directory cannot be answered for, no branch is invented — the guard stays quiet and git itself fails. A commit refusal names the directory it judged, so a wrong verdict is readable as one. Splitting respects quotes, so text inside `"…"` / `'…'` is an argument's prose, never a command: `gh pr create --body "…git commit…"` is not a commit. A wrapper that execs its argument (`sh`, `bash`, `node`, `python`, `env`, `xargs`, …) is judged on its payload — `sh -c "git push origin main"` is a push. An exotic wrapper (subshell, variable) could still slip past; the `.git` hook covers plain commits outside Pi too, but neither is a security sandbox.
-- `flow-guard` and the git guard are guardrails for what an agent types, **not a parser and not a sandbox**. Doing-verbs an agent types in the clear are caught; quoted prose is deliberately read as data, so a wrapper deciding to run something at runtime is out of reach. Write rules for the common mistakes, keep validation you actually depend on in scripts and CI.
-- `protect`/`forbid` judge edit/write tools against the repo root the session runs in — a copy of a protected file inside a feature worktree is a different path, and a bash redirect (`echo k > docker/secrets/k`) is a `deny` rule's job. A glob in the **last** segment matches the siblings of that directory (`protect docker/.env*` covers `.env` and `.env.bak-20261021`); a glob anywhere else names one literal path, so `flow init` warns that the rule guards nothing.
-- The read-only heads that get skipped (`find`, `awk`, `jq`, …) can write in their own dialects — `find . -delete`, `awk … > file`. A deny rule on `rm` does not cover them; write a rule for the effect you actually need to prevent.
-- Gate commands (`test`, `check`, `verify` build, `health`) run inside the feature worktree once it exists — the code under test lives there; before the worktree exists they run in the main checkout.
-- A bash segment whose first word is `flow` is always refused, with no per-project opt-out: dev-flow assumes the name is free because there is no `flow` CLI. A project that really ships a binary called `flow` calls it by path (`/usr/bin/flow`, `./node_modules/.bin/flow`) or through `npx` — the rule matches the head token only, so those pass.
+**Shipping waits for `flow release`.** Before the release stage, tagging, merging the PR
+(`gh pr merge`, `glab mr merge`) and creating a forge release are refused. Reads like `git tag -l`
+and opening the PR are fine.
+
+**No code before an approved plan.** During plan, the agent can only write in its own
+`.dev-flow/<slug>/` folder.
+
+**Work stays in the worktree.**
+- During implement and pre-release, the agent can only write in its own feature's worktree. Each
+  write is judged by the feature that owns the path, so sessions can't write into each other's
+  worktrees.
+- Paths are checked after resolving symlinks.
+- Scratch files outside the repo (the OS temp dir) are always fine. A bound feature's `TMPDIR`
+  points to `.dev-flow/<slug>/tmp/`, which is cleaned up at finish.
+- Creating a new branch inside a feature worktree is refused. An unrelated fix gets its own flow.
+
+**No work outside a flow.**
+- In a repo with `.dev-flow/`, an unbound session can't edit source files. Everything starts with
+  `flow start` or `flow use`.
+- Files git ignores (like a local secrets file) stay writable.
+- `flow start` requires the main checkout to be on the default branch.
+
+**Gates can't be faked.**
+- The agent can't write, move or delete `state.json`, `claim.json`, a feature folder or `.dev-flow/`
+  itself, through either edit tools or bash.
+- The playbook is yours. The agent can only edit it inside a docs or patch flow's worktree, and every
+  sanctioned overwrite keeps a `project.md.bak`.
+- Every check result is tied to a fingerprint of the worktree. Any change, even through `sed -i` or a
+  formatter, makes it stale, and the next gate re-runs it.
+
+**Your own rules.** The `deny` / `confirm` / `protect` / `forbid` rules in your playbook's
+`flow-guard` block run on every bash command and every edit, at every stage, before dev-flow's own
+checks. A block always shows the reason you wrote. See the [playbook](playbook.md).
+
+**Force pushes ask you.** `git push --force` / `-f` / `--force-with-lease` needs your OK. The
+refusal prints the prefix that marks it as approved: `DEV_FLOW_ALLOW_REWRITE=1`.
+
+**Shell calls can't hang.** The model often omits a timeout, so a `gh` waiting on a prompt could
+freeze a session for hours. A shell call without a timeout gets a default for its kind:
+
+| Kind | Timeout |
+|---|---|
+| quick inspection | 30s |
+| local git, unknown commands | 120s |
+| network | 180s |
+| containers and services | 300s |
+| builds, tests, installs | 900s |
+| watchers (`gh run watch`) | 1,200s |
+
+Explicit timeouts are capped at 1,800s. A command wrapped in its own `timeout N` gets N + 15s. When
+dev-flow's default kills a command, the result says so. Set `bashTimeout = require` in `## global` to
+refuse calls without a timeout instead.
+
+**There is no `flow` CLI.** A bash command named `flow` is refused. Gates live inside the Pi session.
+If your project ships its own `flow` binary, call it by path or through `npx`.
+
+**The rules reach the agent.** Pi loads a skill only when the model decides to read it. So dev-flow
+injects the ground rules (about a thousand tokens) into each session once, and again after a
+compaction removes them. Each stage then names the one reference file it needs.
+
+**Compaction is flow-aware.** dev-flow uses your effective `reserveTokens`. When Pi compacts anyway,
+dev-flow redoes the compaction with flow-aware summary instructions. If auto-compaction is off in
+your settings, dev-flow leaves it off.
+
+## Status bar
+
+In an initialized repo, the footer shows the bound feature:
+
+| Glyph | Means |
+|---|---|
+| 📝 🔨 🔍 🚀 | plan · implement · pre-release · release |
+| ⚡ 📚 🎱 | patch · docs · yolo mode |
+| 💬 | a checkpoint is waiting for your answer |
+| ⚠️ | a check is failing |
+
+An unbound session shows `💬 N flow(s) open` or `💬 no flows`. In pi-web, the footer is a chip you
+can click to see the other open flows. `flow status` spells all of it out.
+
+## Limitations
+
+These guards stop the common mistakes an agent makes. They are **not a security sandbox**.
+
+- **Production deploys stay manual.** `flow finish` only closes the flow.
+- **The git guard reads shell commands.** It splits commands into segments and understands
+  `cd … &&`, `git -C`, quotes, and wrappers like `sh -c`, `env` and `xargs`. An exotic wrapper
+  (a subshell, or a command held in a variable) can still slip past.
+- **Quoted text is data.** `gh pr create --body "…git commit…"` isn't a commit. That means a command
+  built at runtime isn't caught either.
+- **`protect` / `forbid` cover edit tools only, judged from the repo root.** A copy inside a
+  worktree is a different path. Use a `deny` rule to stop a bash redirect.
+- **Read-only commands can still write.** `find -delete` and `awk … > file` can write, so a `deny`
+  on `rm` doesn't cover them. Write the rule for the effect you want to prevent.
+- **Where gate commands run.** Before the worktree exists, gate commands run in the main checkout.
+  After that, they run in the worktree.
+- **Keep real validation in CI.** Write rules for common mistakes, and keep checks you truly depend
+  on in scripts and CI.
