@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind } from "../core.ts";
+import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
@@ -70,11 +70,14 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 		// deploy to dev before asking — the operator reviews the running dev app, not a promise
 		const probe = healthProbe(cfg);
 		if (cfg.commands.dev) {
-			const res = await sh(cfg.commands.dev, gateCwd(root, state!), undefined, devEnv(root, state!, cfg));
+			const env = devEnv(root, state!, cfg);
+			const res = await sh(cfg.commands.dev, gateCwd(root, state!), undefined, env);
 			state!.checks.dev = { ok: res.ok, at: now() };
 			writeState(root, state!);
-			if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev}):\n${tail(res.out)}`, isError: true };
-			did.push(`dev ran (${cfg.commands.dev})${devPortOf(state!, cfg) !== undefined ? ` on port ${devPortOf(state!, cfg)}` : ""}`);
+			// gh#204: the command prints as the playbook wrote it — say what its $DEV_FLOW_* and compose project resolved to
+			const resolved = resolvedDevEnv(cfg.commands.dev, env);
+			if (!res.ok) return { text: `dev deploy FAILED (${cfg.commands.dev})${resolved ? ` — ${resolved}` : ""}:\n${tail(res.out)}`, isError: true };
+			did.push(`dev ran (${cfg.commands.dev})${devPortOf(state!, cfg) !== undefined ? ` on port ${devPortOf(state!, cfg)}` : ""}${resolved ? ` — ${resolved}` : ""}`);
 			// the deploy is what must be proven, not just run: a container that came back unhealthy, or
 			// still serves the previous build, must not pass on a health PASS recorded before it was
 			// recreated. What "the expected version" means is the project's business — the probe runs in
@@ -618,8 +621,20 @@ export async function gateFinish(o: GateCtx): Promise<RunResult> {
 	if (err || !state || state.approvals.release || state.stage !== "release" || !state.approvals["pre-release"]) return gateFinishCore(o);
 	const rec = await gateReleaseDone({ ...o, rest: o.rest.filter((a) => a !== "--confirmed" && a !== "--yolo") });
 	if (rec.isError) return rec;
-	const fin = await gateFinishCore(o);
 	const recorded = rec.text.split("\n").filter((l) => !l.startsWith(AGENT_MARK)).join("\n");
+	// gh#205: release-stage items (a post-merge build, a deploy check from the default branch) are work done after
+	// the merge. A separate release-done names them while the worktree still stands; folded into finish, one
+	// call recorded the release and removed everything, so an unversioned flow never saw them. Stop once here.
+	const cur = readState(o.root, state.slug) ?? state;
+	if (checklistPending(o.cfg, cur, "release")) {
+		markPendingAsk(o.root, cur, "Finish?");
+		const items = applicableItems(o.cfg, cur, "release").map((i) => `"${i.text}"`).join(" | ");
+		return {
+			text: `${recorded}\n\n${needsOperator(`release recorded — nothing was removed yet: the release-stage checklist (## release in .dev-flow/project.md) is still open: ${items}`, "Finish?", `do each release-stage item now (they run after the merge, from ${o.cfg.defaultBranch} — not the worktree), tell the operator what each showed, then ask Finish? and run flow finish --confirmed when they answer`)}`,
+			isError: true,
+		};
+	}
+	const fin = await gateFinishCore(o);
 	return { ...fin, text: `${recorded}\n\n${fin.text}` };
 }
 
@@ -724,7 +739,9 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	if (askPending) {
 		markPendingAsk(root, state!, "Finish?");
 		if (!ui.hasUI) {
-			return { text: needsOperator(`cleanup removes the worktree, branch and feature folder.${quietNote}${forgeSkipNote}`, "Finish?", "ask the operator Finish? in chat, then re-run with --confirmed"), isError: true };
+			// the Finish? answer is what closes the release-stage items: name them in the question it asks
+			const openRelease = checklistPending(cfg, state!, "release") ? ` Release-stage checklist to close with this answer: ${applicableItems(cfg, state!, "release").map((i) => `"${i.text}"`).join(" | ")}.` : "";
+			return { text: needsOperator(`cleanup removes the worktree, branch and feature folder.${openRelease}${quietNote}${forgeSkipNote}`, "Finish?", "ask the operator Finish? in chat, then re-run with --confirmed"), isError: true };
 		}
 		const ok = await ui.confirm("Finish feature", `Finish ${state!.slug}?${unmergedNote}${forgeSkipNote} Removes worktree, branch ${state!.branch || "-"} and .dev-flow/${state!.slug}/.`);
 		if (!ok) {

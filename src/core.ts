@@ -58,11 +58,13 @@ export interface FlowState {
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features;
- *  versionedOnly items ("(versioned)") presuppose a bump/tag and stand down on a --no-version flow (#166). */
+ *  versionedOnly items ("(versioned)") presuppose a bump/tag and stand down on a --no-version flow (#166);
+ *  docs items ("(docs)") keep an implement item on a --docs flow, where implement items otherwise stand down (gh#207). */
 export interface ChecklistItem {
 	text: string;
 	uiOnly: boolean;
 	versionedOnly?: boolean;
+	docs?: boolean;
 }
 
 export interface Commands {
@@ -128,6 +130,9 @@ export interface Config {
 	bashTimeout: "require" | "inject";
 	/** Operator safety rules from the project.md flow-guard block — stage-independent. */
 	guard: GuardRules;
+	/** Lines from the ## global `flow-worker` block: every flow_stage brief carries them, so a worker can run the
+	 *  project's checks (e.g. an export of a test password read from a gitignored file) — gh#201. */
+	workerPreamble?: string[];
 }
 
 export const DEFAULTS: Config = {
@@ -384,8 +389,8 @@ export function verifyGate(state: FlowState, cfg: Config, branch?: BranchState |
 				: "nothing committed on the feature branch yet — commit as you go, verify proves a committed state",
 		);
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
-	const pend = checklistPending(cfg, state, "implement");
-	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow verify after ticking them off`);
+	const pend = openItemsNote(cfg, state, "implement");
+	if (pend) errs.push(`tier-2 checklist not confirmed — ${pend}; confirm them with the operator, then run flow verify`);
 	return errs;
 }
 
@@ -555,8 +560,8 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 	const errs: string[] = [];
 	if (state.stage !== "pre-release") errs.push(`stage is "${state.stage}", the release gate only applies to "pre-release"`);
 	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
-	const pend = checklistPending(cfg, state, "pre-release");
-	if (pend) errs.push(`tier-2 checklist not confirmed (${pend} item(s)) — run flow release after ticking them off`);
+	const pend = openItemsNote(cfg, state, "pre-release");
+	if (pend) errs.push(`tier-2 checklist not confirmed — ${pend}; confirm them with the operator, then run flow release`);
 	if (prep.conflictMarkers?.length && !prep.noMarkerCheck)
 		errs.push(`the branch adds ${prep.conflictMarkers.length} merge-conflict marker line(s) — a hand-resolved merge kept them; fix and commit (or, when the lines are meant, re-run with --no-marker-check on the operator's word):\n  ${prep.conflictMarkers.slice(0, 5).join("\n  ")}${prep.conflictMarkers.length > 5 ? `\n  …(${prep.conflictMarkers.length - 5} more)` : ""}`);
 	if (state.noVersion) {
@@ -623,7 +628,7 @@ export function unreleasedPending(content: string): boolean {
 
 export function checklistHash(items: ChecklistItem[]): string {
 	return createHash("sha1")
-		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.versionedOnly ? "(versioned) " : ""}${i.text}`).join("\n"))
+		.update(items.map((i) => `${i.uiOnly ? "(ui) " : ""}${i.versionedOnly ? "(versioned) " : ""}${i.docs ? "(docs) " : ""}${i.text}`).join("\n"))
 		.digest("hex")
 		.slice(0, 12);
 }
@@ -658,9 +663,38 @@ export function freshenChecks(state: FlowState, fp: string | null, keep: (name: 
 	return stale;
 }
 
-/** Items that apply to this feature — "(ui)" items only when the UI flag is set. */
+/** gh#204: what a dev command resolved to. The playbook command prints verbatim (`COMPOSE_PROJECT_NAME=app$DEV_FLOW_SUFFIX`),
+ *  and on the default port `DEV_FLOW_SUFFIX` is "" — the difference between a private stack and the machine's shared
+ *  one. Names the DEV_FLOW_* values the command reads and the compose project it lands on; "" when it reads none. */
+export function resolvedDevEnv(cmd: string, env: Record<string, string>): string {
+	const esc = (k: string) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const names = Object.keys(env).filter((k) => k.startsWith("DEV_FLOW_") && new RegExp(`\\$\\{?${esc(k)}(?![A-Za-z0-9_])`).test(cmd));
+	let expanded = cmd;
+	for (const k of names) {
+		const v = env[k];
+		expanded = expanded.replace(new RegExp(`\\$\\{${esc(k)}(?::?-[^}]*)?\\}`, "g"), () => v).replace(new RegExp(`\\$${esc(k)}(?![A-Za-z0-9_])`, "g"), () => v);
+	}
+	const compose = /\bdocker[ -]compose\b/.test(cmd);
+	const proj = expanded.match(/\bCOMPOSE_PROJECT_NAME=("[^"]*"|'[^']*'|[^\s;&|]*)/)?.[1] ?? expanded.match(/\bdocker[ -]compose\b[^;&|]*?\s(?:-p|--project-name)[ =]("[^"]*"|'[^']*'|[^\s;&|]+)/)?.[1];
+	const parts = names.map((k) => `${k}=${env[k] === "" ? '""' : env[k]}`);
+	if (proj !== undefined) parts.push(`compose project ${proj.replace(/^(["'])(.*)\1$/, "$2") || '""'}`);
+	else if (compose) parts.push("compose project not set by the command (compose names it after the directory)");
+	return parts.length ? `resolved: ${parts.join(", ")}` : "";
+}
+
+/** Items that apply to this feature — "(ui)" items only when the UI flag is set. A --docs flow skips build,
+ *  deploy and health at implement, so the implement items that check the running app stand down there too:
+ *  only the ones tagged "(docs)" apply (gh#207). */
 export function applicableItems(cfg: Config, state: FlowState, stage: string): ChecklistItem[] {
-	return (cfg.checklist[stage] ?? []).filter((i) => (!i.uiOnly || state.ui) && (!i.versionedOnly || !state.noVersion));
+	return (cfg.checklist[stage] ?? []).filter((i) => (!i.uiOnly || state.ui) && (!i.versionedOnly || !state.noVersion) && (!state.docs || stage !== "implement" || !!i.docs));
+}
+
+/** gh#207: an open tier-2 count names its items and where they live — "tier-2 3 open" alone could not be found
+ *  in project.md (the word "tier-2" is not in it). "" when nothing is open. */
+export function openItemsNote(cfg: Config, state: FlowState, stage: string): string {
+	if (!checklistPending(cfg, state, stage)) return "";
+	const items = applicableItems(cfg, state, stage);
+	return `${items.length} item(s) under ## ${stage} in .dev-flow/project.md: ${items.map((i) => `"${i.text}"`).join(" | ")}`;
 }
 
 /** Items exist for the stage and current confirmation does not match their hash; returns pending count or 0. */
@@ -1763,6 +1797,10 @@ export interface ReflectItem {
 	line: string;
 	/** the note without checkbox and without the ` — attribution` tail */
 	body: string;
+	/** gh#197: the row's stable number — its position among every checklist row of the file, open or closed. Checking
+	 *  an item off leaves every other number where it was, so a batch of `done <n>` read off one list stays paired;
+	 *  only `tidy` (drops closed rows) and `move` (relocates one) renumber. */
+	n: number;
 }
 
 /** Open items of reflections.md, each carrying the heading that owns it. Items above every known
@@ -1771,6 +1809,7 @@ export interface ReflectItem {
 export function reflectItems(text: string): ReflectItem[] {
 	const out: ReflectItem[] = [];
 	let section: KnownSection | "unfiled" = "unfiled";
+	let row = 0;
 	for (const raw of text.split("\n")) {
 		const l = raw.trim();
 		if (ANY_HEADING.test(l)) {
@@ -1778,10 +1817,23 @@ export function reflectItems(text: string): ReflectItem[] {
 			section = h ? (h[1].toLowerCase() as KnownSection) : "unfiled";
 			continue;
 		}
+		if (isDoneItem(l)) row++;
 		if (!isOpenItem(l)) continue;
-		out.push({ section, line: l, body: reflectionBody(l) });
+		out.push({ section, line: l, body: reflectionBody(l), n: ++row });
 	}
 	return out;
+}
+
+/** Row `n` of reflections.md (the stable numbering, gh#197): its line index and whether it is still open; null when no such row. */
+export function reflectRow(text: string, n: number): { index: number; open: boolean; line: string } | null {
+	const lines = text.split("\n");
+	let row = 0;
+	for (let i = 0; i < lines.length; i++) {
+		const open = isOpenItem(lines[i]);
+		if (!open && !isDoneItem(lines[i])) continue;
+		if (++row === n) return { index: i, open, line: lines[i].trim() };
+	}
+	return null;
 }
 
 /** Open items the file does not place in a known section — doctor names the count so a note that
@@ -1880,37 +1932,25 @@ export function reflectionRoutes(items: ReflectItem[], selfRepo: boolean): Refle
 	});
 }
 
-/** Move open item n (1-based over open items — the numbering `flow reflect list` prints) under
- *  `## section`. null = out of range; an item already in that section comes back unchanged, so the
- *  caller can say so instead of pretending to relocate it. */
+/** Move open row n (the stable numbering `flow reflect list` prints, gh#197) under `## section`. null = no open
+ *  row n; an item already in that section comes back unchanged, so the caller can say so instead of pretending
+ *  to relocate it. */
 export function reflectMove(text: string, n: number, section: ReflectSection): string | null {
+	const row = reflectRow(text, n);
+	if (!row?.open) return null;
 	const lines = text.split("\n");
-	let seen = 0;
-	let hit = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (!isOpenItem(lines[i])) continue;
-		if (++seen === n) {
-			hit = i;
-			break;
-		}
-	}
-	if (hit < 0) return null;
-	const [line] = lines.splice(hit, 1);
+	const [line] = lines.splice(row.index, 1);
 	return appendReflection(lines.join("\n"), [section], line.trim());
 }
 
-/** Check open item `n` (the `flow reflect list` numbering) off: `- [x] … — fixed: <note>` — the convention
- *  doctor reads as closed, so a folded item stops re-nagging (#165). null when there is no item `n`. */
+/** Check open row `n` (the stable `flow reflect list` numbering, gh#197) off: `- [x] … — fixed: <note>` — the
+ *  convention doctor reads as closed, so a folded item stops re-nagging (#165). null when there is no open row `n`. */
 export function reflectDone(text: string, n: number, note: string): string | null {
+	const row = reflectRow(text, n);
+	if (!row?.open) return null;
 	const lines = text.split("\n");
-	let seen = 0;
-	for (let i = 0; i < lines.length; i++) {
-		if (!isOpenItem(lines[i])) continue;
-		if (++seen !== n) continue;
-		lines[i] = `${lines[i].replace(/^(\s*)- \[ \] /, "$1- [x] ").trimEnd()} — fixed: ${note.trim()}`;
-		return lines.join("\n");
-	}
-	return null;
+	lines[row.index] = `${lines[row.index].replace(/^(\s*)- \[ \] /, "$1- [x] ").trimEnd()} — fixed: ${note.trim()}`;
+	return lines.join("\n");
 }
 
 /** What `flow doctor <note>` prints: the note is an investigation order, not an answer —
@@ -2232,7 +2272,10 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			if (state.patch || state.docs) return `${state.patch ? "patch" : "docs"}: describe the change in one line, ask Approve? in chat, then flow approve --confirmed — no plan file${state.docs ? ", no tier-1 checks" : ""}`;
 			return `clarify the direction in chat, write .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask Approve? and run flow approve --confirmed on the answer`;
 		case "implement":
-			if (state.docs) return `edit in ${state.worktree} (docs mode: no project commands), tick the tier-2 checklist with the operator, ask Verified?, then flow verify --confirmed`;
+			if (state.docs) {
+				const open = openItemsNote(cfg, state, "implement");
+				return `edit in ${state.worktree} (docs mode: no project commands)${open ? `, go through the checklist with the operator (${open})` : ""}, ask Verified?, then flow verify --confirmed`;
+			}
 			return `build and test in ${state.worktree}, commit as you go, flow check; then flow verify (deploys for review), look yourself, keep the app running, ask Verified? and run flow verify --confirmed on the answer`;
 		case "pre-release": {
 			// gh#198: the release call made with Verified? decides which prep this is
@@ -2372,6 +2415,8 @@ export interface WorkerBriefInput {
 	commits: string; // `git log --oneline <base>..HEAD`
 	status: string; // `git status --short`
 	checks: { name: string; command: string }[];
+	/** the playbook's `flow-worker` lines (gh#201): setup a worker needs before any project check can run */
+	preamble?: string[];
 	note: string;
 }
 
@@ -2390,9 +2435,12 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 		`- Branch base: ${o.defaultBranch}`,
 		`- Commits on the branch so far:\n${o.commits.trim() ? o.commits.trim().split("\n").map((l) => `  ${l}`).join("\n") : "  (none)"}`,
 		`- Uncommitted now: ${o.status.trim() ? `\n${o.status.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "clean"}`,
-		`- Project checks (run them before you report):\n${checks}`,
+		`- Project checks (run them before you report${o.preamble?.length ? ", in a shell that ran the setup below first" : ""}):\n${checks}`,
 		"- You hold no flow tool: gates, checkpoints and the operator stay with the driving session.",
 		"",
+		...(o.preamble?.length
+			? ["## Setup (from the project's playbook)", "Run these lines in every shell that runs a project check: each bash call is a fresh shell, so prefix the check with them or chain them with `&&`.", "```sh", ...o.preamble, "```", ""]
+			: []),
 		"## Your task",
 		o.note.trim() || "(no note — do what the plan's next unfinished step asks)",
 		"",
@@ -2414,6 +2462,7 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 					"## Contract",
 					`- Check, don't fix: read ${o.planFile ? "the plan" : "the task"}, the diff (\`git diff ${o.defaultBranch}...HEAD\`) and the code; run the checks and any probe that proves a claim. Change no files, make no commits.`,
 					"- Look for correctness bugs, claims in docs/changelog the code does not back, missing tests for risky paths, and plan items not delivered.",
+					"- A project check you could not run (a missing variable, file or service) is not a pass: name it and why under `checks not run:` in the REPORT, and say in the verdict line that the review is read-only for it.",
 					"- Finish with a final message whose last section starts with a line `REPORT` followed by: `verdict: PASS` or `verdict: FAIL`, then findings (most severe first, each with file:line and how you proved it).",
 				];
 	return [...head, ...contract].join("\n");
@@ -2626,7 +2675,7 @@ export interface ReflectBriefInput {
  *  the operator decides fold or drop per finding in the driving session. */
 export function buildReflectBrief(o: ReflectBriefInput): string {
 	const up = o.upstream || "(unknown — say so in the REPORT)";
-	const open = o.items.length ? o.items.map((it, i) => `  ${i + 1}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}`).join("\n") : "  (none)";
+	const open = o.items.length ? o.items.map((it) => `  ${it.n}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}`).join("\n") : "  (none)";
 	const kids = o.children.length ? o.children.map((c) => `  - ${c.file}${c.name ? ` (${c.name})` : ""}`).join("\n") : "  (none — no flow_stage worker ran in this session)";
 	const digests = o.digests?.length ? o.digests.map((d) => `  - ${d.digest}  (of ${path.basename(d.transcript)})`).join("\n") : "";
 	const upIssues = o.upstreamIssues ? (o.upstreamIssues.length ? o.upstreamIssues.map((i) => `  gh#${i.number} [${i.state.toLowerCase()}] ${i.title}`).join("\n") : "  (none)") : "";

@@ -21,6 +21,8 @@ export interface ParsedMd {
 	guard: GuardRules;
 	checklist: Record<string, ChecklistItem[]>;
 	prose: Record<string, string>;
+	/** ## global `flow-worker` block lines — the setup every stage worker's brief carries (gh#201) */
+	workerPreamble: string[];
 }
 
 // stage → flow-key → config dot-path (aliases); unknown keys warn
@@ -123,7 +125,7 @@ function parseGuardRules(entries: { line: string; where: string }[], stage: stri
 }
 
 export function parseProjectMd(text: string): ParsedMd {
-	const p: ParsedMd = { hard: [], warn: [], global: {}, flow: Object.fromEntries(MD_STAGES.map((s) => [s, {}])) as Record<MdStage, Record<string, string>>, checks: [], guard: structuredClone(DEFAULTS.guard), checklist: {}, prose: {} };
+	const p: ParsedMd = { hard: [], warn: [], global: {}, flow: Object.fromEntries(MD_STAGES.map((s) => [s, {}])) as Record<MdStage, Record<string, string>>, checks: [], guard: structuredClone(DEFAULTS.guard), checklist: {}, prose: {}, workerPreamble: [] };
 	let stage: string | null = null;
 	const prose: Record<string, string[]> = {};
 	let inFence: string | null = null; // "flow" | "flow-check" | other lang
@@ -192,6 +194,11 @@ export function parseProjectMd(text: string): ParsedMd {
 					}
 				}
 			} else if (inFence === "flow-check") checkBody.push(line);
+			else if (inFence === "flow-worker") {
+				if (stage === "global") {
+					if (line.trim()) p.workerPreamble.push(line.trimEnd());
+				} else if (line.trim()) p.warn.push(`${where}: flow-worker lines belong to ## global — ignored under ## ${stage ?? "(no stage)"}`);
+			}
 			else if (inFence === "flow-guard") guardBody.push({ line, where });
 			return;
 		}
@@ -204,6 +211,7 @@ export function parseProjectMd(text: string): ParsedMd {
 				inFence = "flow-check";
 				checkName = lang.slice("flow-check".length).trim();
 			} else if (lang === "flow-guard") inFence = "flow-guard";
+			else if (lang === "flow-worker") inFence = "flow-worker";
 			else inFence = lang || "code";
 			return;
 		}
@@ -216,16 +224,19 @@ export function parseProjectMd(text: string): ParsedMd {
 		if (!stage || stage === "global" || !MD_STAGES.includes(stage as MdStage)) return; // preamble/unknown → not injected
 		const item = line.match(CHECK_ITEM);
 		if (item) {
-			// qualifiers lead the item in any order: (ui) = --ui features only, (versioned) = not on a --no-version flow
+			// qualifiers lead the item in any order: (ui) = --ui features only, (versioned) = not on a --no-version flow,
+			// (docs) = an implement item that still applies on a --docs flow (gh#207)
 			let text = item[1].trim();
 			let uiOnly = false;
 			let versionedOnly = false;
-			for (let q = /^\((ui|versioned)\)\s+/.exec(text); q; q = /^\((ui|versioned)\)\s+/.exec(text)) {
+			let docs = false;
+			for (let q = /^\((ui|versioned|docs)\)\s+/.exec(text); q; q = /^\((ui|versioned|docs)\)\s+/.exec(text)) {
 				if (q[1] === "ui") uiOnly = true;
+				else if (q[1] === "docs") docs = true;
 				else versionedOnly = true;
 				text = text.slice(q[0].length);
 			}
-			(p.checklist[stage] ??= []).push(versionedOnly ? { text, uiOnly, versionedOnly } : { text, uiOnly });
+			(p.checklist[stage] ??= []).push({ text, uiOnly, ...(versionedOnly ? { versionedOnly } : {}), ...(docs ? { docs } : {}) });
 			return;
 		}
 		if (/^(#|```|<!--|\s*$)/.test(line) && !line.startsWith("### ")) return; // h1/html comments/blank are not prose
@@ -262,6 +273,7 @@ export function mdToConfig(p: ParsedMd): Config {
 	];
 	c.checklist = p.checklist;
 	c.prose = p.prose;
+	if (p.workerPreamble.length) c.workerPreamble = [...p.workerPreamble];
 	return c;
 }
 
@@ -552,6 +564,7 @@ export function mdDigest(text: string): string {
 		if (s === "global") {
 			const rules = (["deny", "confirm", "protect", "forbid"] as const).flatMap((v) => p.guard[v].map((r) => `${v} ${r.pattern}`));
 			if (rules.length) bits.push(`safety rules: ${rules.join(" · ")}`);
+			if (p.workerPreamble.length) bits.push(`stage-worker setup: ${p.workerPreamble.length} line(s) in every flow_stage brief`);
 		}
 		if (relStage && keys.file) {
 			bits.push(`version in ${keys.file} → tag ${keys.pattern ?? "v{version}"}`);
@@ -560,7 +573,7 @@ export function mdDigest(text: string): string {
 		}
 		if (s === "pre-release" && !keys.file && !p.flow.release["versioning.file"]) bits.push("version: no version file set — releases cannot bump or tag");
 		const items = p.checklist[s] ?? [];
-		if (items.length) bits.push(`manual check: ${items.map((i) => `${i.uiOnly ? "(UI only) " : ""}${i.versionedOnly ? "(versioned only) " : ""}\"${i.text}\"`).join(" · ")}`);
+		if (items.length) bits.push(`manual check: ${items.map((i) => `${i.uiOnly ? "(UI only) " : ""}${i.versionedOnly ? "(versioned only) " : ""}${i.docs ? "(docs flows too) " : ""}\"${i.text}\"`).join(" · ")}`);
 		if (p.prose[s]) bits.push(`guidance: "${p.prose[s].replace(/\s+/g, " ").trim()}"`);
 		if (bits.length) rows.push(`${label} — ${bits.join(" · ")}`);
 	}

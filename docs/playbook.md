@@ -52,7 +52,8 @@ executable checks and hard safety rules:
 |---|---|---|
 | 1 — executable | ` ```flow` (`key = value`) config blocks; ` ```flow-check <name>` command blocks | gates run every check, record pass/fail against a worktree fingerprint, a changed tree makes them stale — hard |
 | 1 — guard | ` ```flow-guard ` (`deny`/`confirm`/`protect`/`forbid`) rules in `## global` | enforced on every bash command and every edit/write path, at every stage — hard block or operator confirmation |
-| 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features; `- [ ] (versioned) item` = only when the flow ships a version — it stands down on `--no-version`) | gate confirms cover them as a set (hashed: changing the items asks again); `(ui)` items never appear for non-UI features, `(versioned)` items never for an unversioned flow (a deploy proof of the tagged image, say) |
+| 1 — worker setup | ` ```flow-worker ` lines in `## global` (e.g. `export APP_TEST_PASSWORD="$(cat /path/to/.secrets/test-password)"`) | copied into every `flow_stage` worker's brief as a setup block to run before any project check, so a check that needs a variable or file the worktree lacks still runs there; a reviewer that could not run a check must say so (`checks not run:`) instead of passing |
+| 2 — checklist | `- [ ] item` lines (`- [ ] (ui) item` = only for `--ui` features; `- [ ] (versioned) item` = only when the flow ships a version — it stands down on `--no-version`; on a `--docs` flow the `## implement` items stand down, since nothing is built or deployed, except those tagged `- [ ] (docs) item`; an open count names its items and the section they sit under) | gate confirms cover them as a set (hashed: changing the items asks again); `(ui)` items never appear for non-UI features, `(versioned)` items never for an unversioned flow (a deploy proof of the tagged image, say) |
 | 3 — prose | any other text | injected to the agent when its stage begins — advisory |
 
 Example `## implement` section:
@@ -89,7 +90,9 @@ servedBuild = curl -fsS http://127.0.0.1:$DEV_FLOW_PORT/version   # must print t
 ```
 
 `$DEV_FLOW_SUFFIX` is empty on the default port and `-<slug>` on any other, so a second instance gets its own
-compose project. `flow verify` records who deployed on which port in `.dev-flow/dev-ports.json`; when the
+compose project. The `dev ran (…)` and `dev deploy FAILED` lines print the command as written, followed by what
+it resolved to (`resolved: DEV_FLOW_PORT=8090, DEV_FLOW_SUFFIX="", compose project app`), so a record says
+which stack a deploy touched. `flow verify` records who deployed on which port in `.dev-flow/dev-ports.json`; when the
 port it would use belongs to another live flow it asks you first (see [concurrency](concurrency.md)).
 `flow finish` runs `devDown` for an instance on a non-default port. `servedBuild` turns "something answers"
 into "this branch answers": verify refuses when its output names no prefix of the worktree's HEAD.

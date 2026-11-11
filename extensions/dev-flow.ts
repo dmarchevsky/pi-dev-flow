@@ -24,7 +24,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import { compact, defineTool, isToolCallEventType, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type ExtensionAPI, type ToolCallEvent, type ToolCallEventResult, type TurnEndEvent, type TurnEndEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOW_REWRITE, applicableItems, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
+import { ALLOW_REWRITE, applicableItems, openItemsNote, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
 import { loadProject } from "../src/projectmd.ts";
 import { bashTimeout, requireTimeout, timeoutClass } from "../src/timeouts.ts";
 import { AGENT_MARK, operatorCommandAsks, operatorCommandCorrection, viewHeader, askLine, type GateView } from "../src/present.ts";
@@ -341,6 +341,7 @@ export default function devFlow(pi: ExtensionAPI) {
 						commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
 						status: await git("git status --short"),
 						checks: cfg.checkList.map((c) => ({ name: c.name, command: c.cmd })),
+						preamble: cfg.workerPreamble,
 						note: String(params.note ?? ""),
 					});
 		// pi-web visibility needs both halves of the lineage: the id the Agents menu links the child
@@ -878,7 +879,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (prose) guidance.push(`Stage guidance (${prose.source}): ${prose.text}`);
 		guidance.push("Stage reports: open with the stage line the last gate returned, pasted as is; a checkpoint closes with `Done:` / `Next steps:` (see the ground rules).");
 		const pend = checklistPending(cfg, state, state.stage);
-		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed (${pend} item(s)): ${applicableItems(cfg, state, state.stage).map((i) => i.text).join(" | ")}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
+		if (pend) guidance.push(`Tier-2 checklist NOT yet confirmed — ${openItemsNote(cfg, state, state.stage)}${state.stage === "release" ? " — release-stage items close with the operator's Finish? answer; no earlier gate records them" : ""}`);
 		// mid-feature is the wrong moment to divert into old reflections — they surface at the release
 		// stage (finish runs the reflection), between flows, and in status/doctor
 		if (state.stage === "release") {

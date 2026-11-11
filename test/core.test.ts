@@ -46,6 +46,7 @@ import {
 	needsOperator,
 	nextHint,
 	applicableItems,
+	openItemsNote,
 	checklistPending,
 	parsePushRefs,
 	playbookTamper,
@@ -107,6 +108,7 @@ import {
 	digestTranscript,
 	conflictMarkerLines,
 	reflectDone,
+	reflectRow,
 	workerSteer,
 	parseReflectReport,
 	renderReflectFindings,
@@ -133,6 +135,7 @@ import {
 	parseSize,
 	servedBuildMatches,
 	sideBySide,
+	resolvedDevEnv,
 } from "../src/core.ts";
 
 const cfg = structuredClone(DEFAULTS);
@@ -918,11 +921,11 @@ test("verifyGate: tier-1 checks green + tier-2 checklist confirmed (ui-aware)", 
 	const items = [{ text: "visual pass ok", uiOnly: true }, { text: "docs updated", uiOnly: false }];
 	const c = { ...buildConfig({}), checkList: [{ name: "health", cmd: "curl x" }], checklist: { implement: items } };
 	assert.ok(verifyGate(s, c).some((e) => e.includes('check "health"')));
-	assert.match(verifyGate(s, c).join(" "), /checklist not confirmed \(1 item/, "non-UI feature sees only the non-ui item");
+	assert.match(verifyGate(s, c).join(" "), /checklist not confirmed — 1 item\(s\) under ## implement in \.dev-flow\/project\.md: "docs updated";/, "non-UI feature sees only the non-ui item");
 	s.checks.health = { ok: true, at: "" };
 	s.confirmations = { implement: { hash: checklistHash([{ text: "docs updated", uiOnly: false }]), at: "" } };
 	assert.equal(verifyGate(s, c).length, 0, "non-UI feature satisfied without the ui item");
-	assert.match(verifyGate({ ...s, ui: true }, c).join(" "), /checklist not confirmed \(2 item/, "UI feature must confirm both");
+	assert.match(verifyGate({ ...s, ui: true }, c).join(" "), /checklist not confirmed — 2 item\(s\) under ## implement/, "UI feature must confirm both");
 	s.confirmations = { implement: { hash: checklistHash(items), at: "" } };
 	assert.equal(verifyGate({ ...s, ui: true }, c).length, 0);
 });
@@ -1165,11 +1168,12 @@ test("--docs --no-version: no changelog proof (#163); (versioned) items stand do
 
 test("reflectDone: checks item n off with a fixed note, in list numbering (#165)", () => {
 	const text = "# r\n\n## playbook\n\n- [ ] a — s 2026-10-01\n- [x] old — fixed: x\n\n## code\n\n- [ ] b — s 2026-10-02\n";
-	const next = reflectDone(text, 2, "2026-11-03 fix-b — PR #9")!;
+	const next = reflectDone(text, 3, "2026-11-03 fix-b — PR #9")!; // row 3: the closed row 2 keeps its number (gh#197)
 	assert.match(next, /- \[x\] b — s 2026-10-02 — fixed: 2026-11-03 fix-b — PR #9/);
 	assert.match(next, /- \[ \] a — s 2026-10-01/, "the other item stays open");
 	assert.equal(reflectItems(next).length, 1);
-	assert.equal(reflectDone(text, 3, "x"), null);
+	assert.equal(reflectDone(text, 2, "x"), null, "a closed row is not closed again");
+	assert.equal(reflectDone(text, 4, "x"), null);
 });
 
 test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, plugin routes upstream", () => {
@@ -1828,4 +1832,55 @@ test("bumpVersion steps x.y.z by kind and versionArg reads the release call (gh#
 	assert.deepEqual(versionArg(null, false), { choice: null });
 	assert.ok("error" in versionArg("1.2.0", true));
 	assert.ok("error" in versionArg("soon", false));
+});
+
+test("resolvedDevEnv names the DEV_FLOW_* values a dev command read and the compose project it hit (gh#204)", () => {
+	const cmd = "bun run build:bff && BFF_PORT=${DEV_FLOW_PORT:-8090} COMPOSE_PROJECT_NAME=lettuce$DEV_FLOW_SUFFIX docker compose up -d";
+	assert.equal(resolvedDevEnv(cmd, { DEV_FLOW_PORT: "8090", DEV_FLOW_SUFFIX: "", DEV_FLOW_INSTANCE: "x" }), 'resolved: DEV_FLOW_PORT=8090, DEV_FLOW_SUFFIX="", compose project lettuce');
+	assert.equal(resolvedDevEnv(cmd, { DEV_FLOW_PORT: "8091", DEV_FLOW_SUFFIX: "-nav", DEV_FLOW_INSTANCE: "nav" }), "resolved: DEV_FLOW_PORT=8091, DEV_FLOW_SUFFIX=-nav, compose project lettuce-nav");
+	assert.equal(resolvedDevEnv("docker compose -p app${DEV_FLOW_SUFFIX} up -d", { DEV_FLOW_SUFFIX: "-a" }), "resolved: DEV_FLOW_SUFFIX=-a, compose project app-a");
+	assert.match(resolvedDevEnv("docker compose up -d", { DEV_FLOW_SUFFIX: "" }), /compose project not set by the command/);
+	assert.equal(resolvedDevEnv("touch dev-up", { DEV_FLOW_PORT: "1" }), "", "a command that reads nothing says nothing");
+	assert.equal(resolvedDevEnv("echo $DEV_FLOW_SUFFIXED", { DEV_FLOW_SUFFIX: "" }), "", "a longer variable name is not this one");
+});
+
+test("a --docs flow drops implement checklist items unless tagged (docs), and an open count names its items (gh#207)", () => {
+	const cfg = mdToConfig(parseProjectMd("## implement\n- [ ] container test passes\n- [ ] (docs) docs read back for accuracy\n\n## pre-release\n- [ ] review done\n"));
+	const docs = { ...newState("d", false, false, true), stage: "implement" as const };
+	assert.deepEqual(applicableItems(cfg, docs, "implement").map((i) => i.text), ["docs read back for accuracy"]);
+	assert.deepEqual(applicableItems(cfg, { ...docs, docs: undefined }, "implement").map((i) => i.text), ["container test passes", "docs read back for accuracy"], "a normal flow keeps both");
+	assert.deepEqual(applicableItems(cfg, docs, "pre-release").map((i) => i.text), ["review done"], "later stages are unaffected");
+	assert.equal(openItemsNote(cfg, docs, "implement"), '1 item(s) under ## implement in .dev-flow/project.md: "docs read back for accuracy"');
+	assert.match(verifyGate(docs, cfg).join("\n"), /tier-2 checklist not confirmed — 1 item\(s\) under ## implement in \.dev-flow\/project\.md: "docs read back for accuracy"/);
+	assert.match(nextHint(docs, cfg), /go through the checklist with the operator \(1 item\(s\) under ## implement/);
+	const none = mdToConfig(parseProjectMd("## implement\n- [ ] container test passes\n"));
+	assert.equal(openItemsNote(none, docs, "implement"), "", "nothing applies, nothing is open");
+	assert.doesNotMatch(nextHint(docs, none), /checklist/, "and the hint stops asking for a tick nobody can make");
+});
+
+test("a playbook flow-worker block rides in every stage worker's brief, and a review cannot pass over unrun checks (gh#201)", () => {
+	const cfg = mdToConfig(parseProjectMd('# dev-flow\n\n## global\n\n```flow-worker\nexport APP_TEST_PASSWORD="$(cat /repo/.secrets/test-password)"\n```\n\n## implement\n\n```flow\ntest = npm test\n```\n'));
+	assert.deepEqual(cfg.workerPreamble, ['export APP_TEST_PASSWORD="$(cat /repo/.secrets/test-password)"']);
+	const base = { slug: "s", workDir: "/w", planFile: null, defaultBranch: "main", commits: "", status: "", checks: [{ name: "test", command: "npm test" }], preamble: cfg.workerPreamble, note: "check the fix" };
+	for (const op of ["implement", "review"] as const) {
+		const brief = buildWorkerBrief({ ...base, op });
+		assert.match(brief, /## Setup \(from the project's playbook\)[\s\S]*export APP_TEST_PASSWORD=/, op);
+		assert.match(brief, /run them before you report, in a shell that ran the setup below first/, op);
+	}
+	assert.match(buildWorkerBrief({ ...base, op: "review" }), /could not run .* is not a pass: name it and why under `checks not run:`/);
+	assert.doesNotMatch(buildWorkerBrief({ ...base, op: "implement", preamble: undefined }), /## Setup/, "no block, no section");
+	const misplaced = parseProjectMd("## implement\n\n```flow-worker\nexport X=1\n```\n");
+	assert.deepEqual(misplaced.workerPreamble, []);
+	assert.match(misplaced.warn.join("\n"), /flow-worker lines belong to ## global/);
+});
+
+test("reflection numbers are stable rows: a batch of done <n> read off one list closes the rows it named (gh#197)", () => {
+	let text = "# r\n\n## playbook\n\n- [ ] one — s 1\n- [ ] two — s 1\n\n## code\n\n- [ ] three — s 1\n- [ ] four — s 1\n";
+	assert.deepEqual(reflectItems(text).map((i) => i.n), [1, 2, 3, 4]);
+	for (const [n, note] of [[1, "fix-1"], [2, "fix-2"], [4, "fix-4"]] as const) text = reflectDone(text, n, note)!;
+	assert.match(text, /- \[x\] one — s 1 — fixed: fix-1/);
+	assert.match(text, /- \[x\] two — s 1 — fixed: fix-2/);
+	assert.match(text, /- \[x\] four — s 1 — fixed: fix-4/);
+	assert.deepEqual(reflectItems(text).map((i) => [i.n, i.body]), [[3, "three"]], "the untouched row keeps its number");
+	assert.deepEqual(reflectRow(text, 2), { index: 5, open: false, line: "- [x] two — s 1 — fixed: fix-2" });
 });

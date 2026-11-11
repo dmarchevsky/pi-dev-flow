@@ -34,7 +34,10 @@ knobs · merge-policy state.
   the mode (`normal` default, or `--patch` / `--docs`), `--ui` when screens
   change, and the merge policy if the playbook has none —
   `flow start <slug> [--ui] [--patch|--docs] [--merge=<style>] --confirmed`.
-  Never grant any of them yourself.
+  Never grant any of them yourself. When the operator's own request already
+  grants one ("start a docs flow"), that is their word: pass `--confirmed` on
+  the first call. After a refusal, only a message sent later counts, so a
+  `--confirmed` re-run right away is refused too. Ask once.
 - No merge policy → the gate refuses with `NEEDS-OPERATOR Merge policy?` and a
   suggestion read off the repo's history. Ask: squash, merge, rebase or any.
   The answer is written into `## release` once.

@@ -19,7 +19,10 @@ friction only, never the same issue twice. `.dev-flow/reflections.md` holds
 - No flag → the wording decides and the printed line says why.
 - `flow reflect list` numbers the queue; `flow reflect move <n>
   --playbook|--code` re-files; `flow reflect done <n> ["<what fixed it>"]`
-  checks one off; `flow reflect tidy` drops closed items.
+  checks one off; `flow reflect tidy` drops closed items. The numbers are
+  row numbers: checking items off leaves the others' numbers alone, so a
+  batch of `done` calls read off one `list` is safe; after `move` or `tidy`,
+  list again.
 - `flow doctor "<observation>"` prints an investigation brief without queueing.
 - The end-of-session reflection runs at finish (see [finish.md](finish.md)).
 

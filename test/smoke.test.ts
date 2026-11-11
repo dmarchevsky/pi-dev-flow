@@ -846,12 +846,12 @@ test("reflect --playbook/--code file by decision, --plugin prints the upstream r
 	assert.match(list.content[0].text, /1\. \[playbook\] the seed data note is stale/);
 	assert.match(list.content[0].text, /2\. \[code\] the deploy gate in CI is flaky/);
 	const moved = await flow(["reflect", "move", "2", "--playbook"]);
-	assert.match(moved.content[0].text, /item 2 re-filed under ## playbook/);
+	assert.match(moved.content[0].text, /item 2 re-filed under ## playbook[\s\S]*row numbers changed — run flow reflect list/);
 	const filed = readFileSync(reflFile, "utf8");
 	assert.ok(!/^## code$/m.test(filed), "the emptied section goes with its item");
 	assert.equal(filed.split("- [ ] ").length - 1, 2, "the move moves one item, it does not copy it");
 	assert.match((await flow(["reflect", "move", "1", "--playbook"])).content[0].text, /already under ## playbook/);
-	assert.match((await flow(["reflect", "move", "9", "--code"])).content[0].text, /open item 1–2 required/);
+	assert.match((await flow(["reflect", "move", "9", "--code"])).content[0].text, /no open item 9 — open: 1, 2/);
 	assert.match((await flow(["reflect", "move", "1", "--plugin"])).content[0].text, /plugin notes are not kept in reflections\.md/);
 	assert.match((await flow(["reflect", "move", "1"])).content[0].text, /usage: flow reflect move <n> --playbook \| --code/);
 	const doctor = await flow(["doctor"]);
@@ -873,10 +873,10 @@ test("reflect done <n>: checks a fixed item off with date, slug and what fixed i
 	await flow(["init", "--write", TEST_MD]);
 	const file = path.join(repo, ".dev-flow", "reflections.md");
 	writeFileSync(file, "# dev-flow reflections\n\n## playbook\n\n- [ ] seed cmd drifted — s 2026-10-01\n\n## code\n\n- [ ] seed skips admins — s 2026-10-02\n");
-	assert.match((await flow(["reflect", "done", "3"])).content[0].text, /open item 1–2 required/);
+	assert.match((await flow(["reflect", "done", "3"])).content[0].text, /no open item 3 — open: 1, 2/);
 	const r = await flow(["reflect", "done", "2", "PR", "#93"]);
 	assert.ok(!r.isError, r.content[0].text);
-	assert.match(r.content[0].text, /item 2 checked off — seed skips admins/);
+	assert.match(r.content[0].text, /item 2 checked off — seed skips admins — fixed: PR #93/);
 	assert.match(readFileSync(file, "utf8"), /- \[x\] seed skips admins — s 2026-10-02 — fixed: \d{4}-\d\d-\d\d — PR #93/);
 	assert.match((await flow(["reflect", "list"])).content[0].text, /1 open/);
 });
@@ -1762,7 +1762,7 @@ test("docs feature: no plan file, no tier-1 checks, full release end to end", as
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
-	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /operator-granted/, "--docs without the operator's chat grant is refused");
+	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /operator-granted.*Only an operator message sent after this refusal counts.*pass --confirmed on the first call/s, "--docs without the operator's chat grant is refused, and the refusal says a grant given before it must be asked again (gh#206)");
 	assert.match((await flow(["start", "readme-typo", "--docs", "--confirmed"])).content[0].text, /docs/, "docs mode announced at start");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/, "docs approves with no plan file written");
 	commitWt(repo, "readme-typo");
@@ -3822,4 +3822,29 @@ test("an exact version another flow took is one clear refusal, and the agent can
 	const self = await f.flow(["release", "--version=1.2.0"]);
 	assert.ok(self.isError && /asked: the release call changed since Verified\? \(1\.1\.0 → 1\.2\.0\) — the operator makes that call/.test(self.content[0].text), self.content[0].text);
 	assert.match((await f.flow(["release", "--version=1.2.0", "--confirmed"])).content[0].text, /release approved \(confirmed by operator instruction\)/);
+});
+
+test("finish that records the release stops once on open release-stage items before removing anything (gh#205)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n\n- [ ] post-merge: bun run build && bun run deploy-check from main\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "tailx", "--patch", "--confirmed"]);
+	await flow(["approve", "--confirmed"]);
+	await flow(["check"]);
+	commitWt(repo, "tailx");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]);
+	markReflected(repo, "tailx");
+	// the unversioned shape: no release-done call, finish records the release itself — even with --confirmed
+	const stop = await flow(["finish", "--confirmed"]);
+	assert.equal(stop.isError, true);
+	assert.match(stop.content[0].text, /release recorded as complete/);
+	assert.match(stop.content[0].text, /NEEDS-OPERATOR Finish\? — release recorded — nothing was removed yet: the release-stage checklist .* is still open: "post-merge: bun run build && bun run deploy-check from main"/, stop.content[0].text);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "tailx", "worktree")), "the worktree still stands");
+	const ask = await flow(["finish"]);
+	assert.match(ask.content[0].text, /Release-stage checklist to close with this answer: "post-merge: bun run build/, "the Finish? question names the items it closes");
+	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature tailx done/, "the second call closes out");
 });
