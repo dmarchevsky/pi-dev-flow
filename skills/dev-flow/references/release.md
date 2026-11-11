@@ -11,6 +11,16 @@ each step with the gate's stage line, **🚀 release · `<slug>`**; no `Done:` /
 1. **PR and merge.** Commit everything, push the feature branch, open the PR.
    - **Merge only once CI is green**: `gh pr checks <n> --watch` (or your
      forge's equivalent) first — CI runs jobs the host may not.
+   - **Waiting on CI is your job, inside the turn.** Nothing wakes you once
+     the turn ends, so never end it with "I'll keep watching" or a
+     *wait / hold* choice: keep re-running the watch until CI settles.
+   - **Runs stuck in `queued`** (no job started after ~15 min, while other
+     runs on the repo do start) are a stuck schedule, not a slow runner:
+     re-trigger them — `gh run cancel <id>` then `gh run rerun <id>`, or
+     push a merge of the default branch when it moved — and keep watching.
+   - Only a red CI you can't fix, or CI still stuck after a re-trigger, ends
+     the turn: report it plainly ("stopped: … — say *go* to resume") and
+     stop.
    - Merge in the **playbook's style**, PR number before the flag:
      `gh pr merge <n> --squash` under `merge = squash`, `--merge` under
      `merge = merge`. (`gh pr merge --merge main` reads `main` as the PR.)

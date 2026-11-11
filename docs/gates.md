@@ -33,9 +33,10 @@ Tools that never gate: `test`, `check`, `health`, `status`, `abort`, `doctor`, `
 
 Creates the feature, binds this session to it, and renames the session after the slug.
 
-- `--ui` means the plan gate requires rendered mockups. `--patch` (a small fix, no written plan) and
-  `--docs` (docs only, no build checks) are lighter modes. All three need your OK in chat, and the
-  agent then adds `--confirmed`.
+- `--ui` means the plan gate requires rendered mockups. The agent turns it on by itself when screens
+  change (it only adds a check); turning it off (`--no-ui` at plan, or aborting a ui feature) needs
+  your OK. `--patch` (a small fix, no written plan) and `--docs` (docs only, no build checks) are
+  lighter modes and need your OK in chat, after which the agent adds `--confirmed`.
 - **The playbook needs a `merge` policy.** If it has none, start asks which style to use (squash,
   merge, rebase or any), suggests one from your git history, and writes your answer into
   `## release`.
@@ -78,7 +79,8 @@ Run without `--confirmed`, it deploys for your review:
 
 1. Fetches, and rebases the branch if main moved ahead. Conflicts or uncommitted tracked edits
    refuse, and the branch is left untouched.
-2. Checks the dev port. If another live flow holds it, it asks **Dev port?**: run alongside on
+2. Checks the dev port. If another flow that is past its Verified? holds it, verify takes it over
+   and says so. If one still under review holds it, it asks **Dev port?**: run alongside on
    another port, replace that deploy, or wait. See [concurrency](concurrency.md).
 3. Runs the checks (re-running any that are stale or missing), the build, the `dev` deploy, and then
    the health probe against what it just deployed.

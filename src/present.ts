@@ -207,7 +207,7 @@ export function agentText(text: string, v: GateView): string {
 
 /** Flags only dev-flow's gates take. A generic CLI flag (`docker compose up -d --no-deps`, `gh pr merge --merge`)
  *  in a report of what the agent ran is not a dev-flow command handed to the operator. */
-const GATE_FLAGS = "version=|confirmed|ui|patch|docs|yolo|replace|port|no-version|no-fold-check|no-marker-check|no-artifact-check|no-release-create|no-reflect|check-upstream|answers|answers-file|write-file|brief|brief-file|playbook|note";
+const GATE_FLAGS = "version=|confirmed|ui|no-ui|patch|docs|yolo|replace|port|no-version|no-fold-check|no-marker-check|no-artifact-check|no-release-create|no-reflect|check-upstream|answers|answers-file|write-file|brief|brief-file|playbook|note";
 const ASK_COMMAND_RE = new RegExp(`(?:^|[\\s\`'"(*_])/?flow (?:${FLOW_VERBS})\\b|(?:^|[\\s\`])--(?:${GATE_FLAGS})\\b|\\bflow_stage\\b|(?:^|[\\s\`])/flow\\b`);
 /** An imperative addressed to the operator: the verb opens a clause (or follows please/then/just), or a "you can" form. */
 const ASK_VERB_RE = /(?:^|[:;,.!?(—–]\s*|\b(?:please|then|just|now|simply|and)\s+)(?:run|type|enter|use|try|send|invoke)\b|\byou (?:can|could|may|should|need to|might)\b|\bplease\b/i;

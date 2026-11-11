@@ -281,7 +281,7 @@ export const GRANT_AFTER =
 
 export async function gateStart(o: GateCtx): Promise<RunResult> {
 	const { root, sess, cfg, rest, flag, slugArg } = o;
-	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --ui/--patch/--docs are operator-granted — ask the operator in chat, then add --confirmed", isError: true };
+	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --patch/--docs (and --no-ui on an existing plan-stage feature) are operator-granted — ask the operator in chat, then add --confirmed; --ui is yours to pass whenever screens change", isError: true };
 	// a ghost (plan/ but no state.json — typically a spin-off someone wrote by hand) is adopted, never a dead end:
 	// "already exists, flow use it" sent the agent to use, which found no state, and doctor offered to delete it
 	// gh#178: any feature dir without state.json is a ghost, not only one with a plan/ — a tmp/ or mockups
@@ -300,18 +300,25 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 		};
 	}
 	if (existsSync(featDir(root, slugArg)) && !ghost) {
-		// --ui on the plan-stage feature this session drives: the operator asked for mockups after the start,
-		// so turn the mockup gate on instead of refusing — a UI feature left at ui=false skips the mockup
-		// proof at approve and every (ui) checklist item (lettuce rail-ui-fixes shipped 20 ungated mockups)
+		// --ui on the plan-stage feature this session drives: turn the mockup gate on — a UI feature left at
+		// ui=false skips the mockup proof at approve and every (ui) checklist item (lettuce rail-ui-fixes
+		// shipped 20 ungated mockups). Turning it ON only adds proof, so it is the agent's call; turning it
+		// OFF (--no-ui) removes a gate and stays operator-granted.
 		const existing = readState(root, slugArg);
-		if (flag("ui") && existing && sess.slug === slugArg) {
-			if (!flag("confirmed")) return { text: `--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate; ${GRANT_AFTER}`, isError: true };
-			if (existing.ui) return { text: `feature ${slugArg} already has the ui flag` };
-			if (existing.stage !== "plan") return { text: `feature ${slugArg} is at ${existing.stage} — the ui flag can be set only at plan (the mockup gate is approve's); render the screens anyway and say so in the verify report`, isError: true };
-			writeState(root, { ...existing, ui: true });
-			return { text: `ui flag set on existing feature ${slugArg} (plan stage): the approve gate now requires rendered mockups under plan/mockups/ (${cfg.mockupGlobs.join(", ")}), each embedded in plan.md, and the (ui) checklist items apply` };
+		if ((flag("ui") || flag("no-ui")) && existing && sess.slug === slugArg) {
+			if (flag("ui") && flag("no-ui")) return { text: "--ui and --no-ui are exclusive", isError: true };
+			const on = flag("ui");
+			if (!on && !flag("confirmed")) return { text: `--no-ui is operator-granted — it removes the plan gate's mockup requirement; ${GRANT_AFTER}`, isError: true };
+			if (existing.ui === on) return { text: `feature ${slugArg} already has the ui flag ${on ? "on" : "off"}` };
+			if (existing.stage !== "plan") return { text: `feature ${slugArg} is at ${existing.stage} — the ui flag can be changed only at plan (the mockup gate is approve's)${on ? "; render the screens anyway and say so in the verify report" : ""}`, isError: true };
+			writeState(root, { ...existing, ui: on });
+			return {
+				text: on
+					? `ui flag set on existing feature ${slugArg} (plan stage): the approve gate now requires rendered mockups under plan/mockups/ (${cfg.mockupGlobs.join(", ")}), each embedded in plan.md, and the (ui) checklist items apply`
+					: `ui flag cleared on ${slugArg} (operator's word): approve no longer requires mockups`,
+			};
 		}
-		return { text: `feature ${slugArg} already exists — flow use ${slugArg} to resume it${existing?.stage === "plan" ? `; to add the mockup gate at plan, run flow start ${slugArg} --ui --confirmed from the session bound to it` : ""}`, isError: true };
+		return { text: `feature ${slugArg} already exists — flow use ${slugArg} to resume it${existing?.stage === "plan" ? `; to add the mockup gate at plan, run flow start ${slugArg} --ui from the session bound to it` : ""}`, isError: true };
 	}
 	// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
 	if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
@@ -320,8 +327,9 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 	// the operator answers mode, mockups and merge policy in a single message
 	const alsoMerge = !cfg.release.merge && flagValue(rest, "merge") === null ? `\n${AGENT_MARK}the playbook also has no merge policy — put it in the same question (squash | merge | rebase | any) and pass --merge=<style> on the same re-run` : "";
 	if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — ${GRANT_AFTER}${alsoMerge}`, isError: true };
-	// --ui adds the rendered-mockup gate to plan: worth it only when screens change, and the operator says so
-	if (flag("ui") && !flag("confirmed")) return { text: `--ui is operator-granted — it adds a rendered-mockup requirement to the plan gate, so use it only when the feature changes screens; ${GRANT_AFTER}${alsoMerge}`, isError: true };
+	// --ui adds the rendered-mockup gate to plan: stricter, never looser, so the agent turns it on itself
+	// whenever screens change — no operator grant (only turning it off is theirs)
+	if (flag("no-ui")) return { text: "--no-ui applies to an existing plan-stage feature — a new start is ui-off unless you pass --ui", isError: true };
 	// branch discipline: features branch off the default branch — starting from a stale checkout poisons the base
 	const curBr = await currentBranch(root);
 	if (curBr !== cfg.defaultBranch && !flag("force")) return { text: `main checkout is on ${curBr}, not ${cfg.defaultBranch} — check out ${cfg.defaultBranch} first (git checkout ${cfg.defaultBranch} && git pull) or flow use an unfinished feature; --force to override`, isError: true };
@@ -350,7 +358,7 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 				text: needsOperator(
 					`how should a merged PR land on ${cfg.defaultBranch}: squash, merge (a merge commit), rebase, or any (no policy)?${ev ? ` ${ev.note}${ev.recent ? ` Detected suggestion: ${ev.recent}.` : ""}` : ""} The answer is written into the playbook once.`,
 					"Merge policy?",
-					`ask the operator — in the same message as any mode or --ui grant you propose — then re-run once with everything: flow start ${slugArg} --merge=<style> [--ui] [--patch|--docs] --confirmed`,
+					`ask the operator — in the same message as any mode grant you propose — then re-run once with everything: flow start ${slugArg} --merge=<style> [--ui] [--patch|--docs] --confirmed`,
 				),
 				isError: true,
 			};
@@ -733,6 +741,12 @@ export async function gateAbort(o: GateCtx): Promise<RunResult> {
 		// as a ghost the doctor flags (a plan/ whose state.json is gone). A written plan is the
 		// operator's work too — it is not dropped without their word.
 		const written = listFiles(path.join(featDir(root, target), "plan"));
+		// a ui feature aborted at plan and restarted plain sheds its mockup gate — turning ui off is the
+		// operator's call, so the abort is too
+		if (st.ui && !written.length && !flag("confirmed")) {
+			const ok = ui.hasUI && (await ui.confirm("Drop ui feature?", `Abort ${target}? It has the ui flag (mockup gate); a restart without --ui drops it.`));
+			if (!ok) return { text: needsOperator(`aborting ${target} drops its ui flag (the mockup gate) — turning ui off is the operator's call`, "Drop ui feature?", "ask the operator, then re-run with --confirmed"), isError: true };
+		}
 		if (written.length && !flag("confirmed")) {
 			const ok = ui.hasUI && (await ui.confirm("Drop plan?", `Abort ${target}? Its plan/ (${written.join(", ")}) is deleted for good.`));
 			if (!ok) return { text: needsOperator(`aborting ${target} deletes its written plan (${written.join(", ")})`, "Drop plan?", "ask the operator, then re-run with --confirmed"), isError: true };
