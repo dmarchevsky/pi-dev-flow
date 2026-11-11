@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Changed
+- **Shorter, friendlier docs.** The README is half its old length and covers the essentials. `docs/gates.md` is now an overview plus one short section per gate instead of one giant table. The other docs are tightened, issue numbers have moved out of them, and reflections have their own page (`docs/reflections.md`). The README's doc links now point to GitHub, so they render on npm and pi.dev instead of opening raw markdown.
+
 ## [0.90.0] - 2026-11-10
 
 **Operator answers are checked everywhere they are given, docs flows stop being asked for impossible checks, and stage workers get the project's setup.**

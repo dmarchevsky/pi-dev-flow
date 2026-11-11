@@ -1,31 +1,193 @@
 # Gate reference
 
-Every gate, what it advances, and what makes it refuse.
+Every gate: what it advances and what makes it refuse.
 
-You normally type none of this: the agent runs the gates and you answer words in chat. `/flow <sub>` is
-your **manual surface** — read state when the agent is confused, or advance a gate yourself when it is
-stuck or claims a result it never ran. Same gates either way; a `/flow` command you type asks you in a dialog,
-so it needs no `--confirmed`. The agent's own `flow` call never opens a dialog (#181): it returns
-`NEEDS-OPERATOR <Question?>` and the agent asks you in chat. A dialog answer is labelled
-`(confirmed in dialog)`, a chat answer `(confirmed by operator instruction)`.
+You normally type none of this. The agent runs the gates, and you answer in chat. `/flow <sub>` is
+your **manual override**: use it to read state when the agent is confused, or to advance a gate
+yourself when the agent is stuck.
+
+**How checkpoints work.** The agent's `flow` call never opens a dialog. A checkpoint gate refuses
+with `NEEDS-OPERATOR <Question?>`, the agent asks you in chat, and it re-runs the gate with
+`--confirmed` once you answer. A `/flow` command you type yourself asks you in a dialog instead.
+`--confirmed` means "the operator literally answered this question". The agent must never add it on
+its own.
+
+## Overview
 
 | Gate | Advances | Refuses unless |
 |---|---|---|
-| `start <slug> [--ui|--patch|--docs --confirmed] [--merge=squash\|merge\|rebase\|any] [--check-upstream]` | → plan | slug is new (binds the session); a `.dev-flow/<slug>/` left without `state.json` is a **ghost** it names with its contents and adopts on `--confirmed`, keeping the files (a `plan/` becomes the draft) — except a leftover `worktree/`, which it refuses with the cleanup to run first (gh#178); `use <slug>` on a ghost says the same instead of "no unfinished feature"; `--ui` and the relaxed modes are operator-granted in chat, anchored by `--confirmed` (`--ui` = the plan gate demands rendered mockups; on an existing feature still at plan, `start <slug> --ui --confirmed` from its bound session switches the flag on instead of refusing); `--patch` = chore release, no plan document, every gate unchanged; `--docs` = docs-only, no plan document and no tier-1 checks (worktree and release intact). Start prints the dev-flow build and stamps it into the feature state (`flow status` shows `flow=<ver>`), warns when **this session runs an older build than the checkout** (`--check-upstream` also asks npm for the published one), prints the playbook gaps `flow doctor` would report — and **refuses while the playbook has no `merge` policy**: it names the question (squash / merge / rebase / any), the style its own history suggests, and the re-run `--merge=<style> --confirmed`, which writes the answer into `## release` (single-line insert, validated, `.bak` kept, committed as a playbook chore only when the playbook is the only dirty path) and never asks again |
-| `use <slug>` | — (binds this session to a feature) | slug unfinished — the binding is persisted to disk as a claim (`flow version` lists every dev-flow copy registered in the process, and a copy whose in-memory bindings never saw the bind attributes commands from the claim, so a two-sources setup does not misjudge your git) |
-| `approve [--yolo]` | plan → implement (creates worktree + branch) | `plan/plan.md` exists **by name** (a separate pre-plan/direction file does not open the gate — a preliminary direction belongs inside plan.md); if `--ui`, rendered mockup screenshots (per `mockupGlobs`, default `*.png`) exist under `plan/` — headless chromium renders embedded in plan.md, and the gate opens plan.md to prove it: every image file under `plan/` must appear in an embed (`![...](…)`, case-insensitive) and every `mockups/<screen>.html` must carry an embedded `<screen>-<width>.` shot, and no mockup may link (href/src/@import) into another feature's `.dev-flow/<other>/worktree/`; **one question** — or `--confirmed` after you answered in chat; **yolo** (your chat answer at **any** checkpoint question) → run that gate with `--yolo --confirmed` (`approve`/`verify`/`release`/`finish`): that question is answered and every later one (Verified?/Release?/Finish?) is pre-confirmed — the agent then runs the remaining gates back to back, honoring guidance attached to the yolo word (e.g. "yolo, create a patch version release") — checks and guardrails stay fully enforced. `commands.setup` runs in the worktree and is retried until it succeeds once (a worktree left behind by a failed setup is set up on the next `approve`, never silently reused); a `--docs` feature runs no project command at all and says `setup skipped (docs mode)` |
-| `test` | records a check | — (runs the `test` command/check, records pass/fail) |
-| `check` | records all tier-1 checks | — (runs every `flow-check`/test/health from project.md `## implement`); a `--docs` feature runs none of them and says `docs mode: project commands skipped` — a docs flow builds nothing, so a fresh checkout must not read as a failed deploy (#96) |
-| `health` | records a check | — (runs `seedData` + the health command, retrying up to `healthWait` seconds; app must be up locally with real data) |
-| `verify [--yolo] [--port=<n>\|--replace] [--version=<v>\|--no-version]` | implement → pre-release | **the release call rides on Verified?** (gh#198): on a versioned project (`versionFile`) whose playbook leaves `version = ask`, the NEEDS-OPERATOR Verified? also asks *a patch, minor or major release (each with the number it makes from the manifest's current version), or merge unreleased?*, and `--confirmed --version=patch|minor|major` (or an exact `--version=<v>`) / `--confirmed --no-version` records the answer (`release call: …` in the output, the version on the stage line) so pre-release prepares the right thing; a playbook `version = versioned \| unversioned` makes the call for every flow, and a re-verify keeps the recorded call unless it is given again; **at pre-release it is the re-verify** (gh#187): after review fixes it runs the same build, deploy and probes over the current tree (no rebase), re-asks Verified? — a standing yolo never answers it — and on the answer moves the verdict (`verifiedHead`) to that tree, staying in pre-release; **without `--confirmed` it is the review deploy**: it fetches and, when the branch is behind `origin/<default>` (or local `<default>` with no remote), **rebases** it — untracked files never block, uncommitted tracked edits and conflicts refuse (the rebase is aborted, the branch untouched); when the dev port (playbook `port`, or the whole stack when none is set) was last deployed by **another live flow** it refuses with `NEEDS-OPERATOR Dev port?`, the measured RAM/disk against `instanceMem`/`instanceDisk`, and the options: run alongside on the next free port (offered only when `parallelDev` is not `no`, `dev`/`health` read `$DEV_FLOW_PORT`, and the resources fit), `--replace`, or wait — nothing is built first; then it deploys and returns `deployed for review` with the chat question. **With `--confirmed`** it never rewrites history: a default branch that moved since refuses (re-run `flow verify`). With `servedBuild` set the served commit must be the worktree's HEAD. Otherwise: all tier-1 checks green — a check with no passing record is **run by the gate itself** (`checks ran at the gate (test)`) rather than refused and pointed at `flow check`, since entering the stage or editing the worktree is what cleared it — and so is a record whose worktree fingerprint differs from the tree now (`stale record(s) rerun after a worktree change: …`): a change made through bash fires no edit-tool hook, the fingerprint is what notices the tree moved — and a failure there prints the run output, **the feature branch holds at least one commit** (verify refuses a branch with nothing committed — the checks describe the working tree, so an uncommitted state has never been recorded — except a **release-only flow** (#161): on a versioned project an empty branch over unreleased commits on the default branch (since the newest local version tag, or all of them before the first release) passes, the line says `release-only flow: N unreleased commit(s)`, and the version bump is the pre-release commit; with nothing unreleased the refusal says there is nothing to release; and prints `commits: N ahead of <default>, M uncommitted path(s)` with what it ran; uncommitted paths are reported, never gated), build (if configured) green, `dev` deploy (if configured) runs first so you can review the running app **and the health probe (if configured) re-runs against what it just deployed, retrying every 2s up to `healthWait` seconds** (a failing probe refuses the gate and reports how many attempts it took: the `flow check` PASS predates the deploy, and a service that needs seconds after its container starts is not a broken deploy; with no probe the output says `health: none configured`); with **no `dev` command but a `health` probe configured the gate live-re-probes the app before asking** (`health: live re-probe PASS` — a killed server refuses with `live probe FAILED`, because process death dirties no worktree fingerprint and a green record alone cannot prove liveness: start the app and rerun), tier-2 checklist (ui-only items excluded for non-UI features) confirmed as a set; a `--docs` feature runs none of it (`docs mode: project commands skipped`) and only asks you; **one question** — or `--confirmed`; `--yolo --confirmed` = you answered 'yolo' at Verified? — answers it and pre-confirms the rest |
-| `release [--yolo|--version=<v>|--no-version|--no-fold-check|--no-marker-check]` | pre-release → release | **the branch carries the release call** (gh#198), checked before the generic version proofs: a patch/minor/major call is **counted from the newest tag at release time**, so when a parallel flow released the number first the refusal names the new one (`bump VERSION to 1.2.0 (minor past 1.1.0) — v1.1.0 was released since Verified?`) and the call still stands; an exact version another flow already tagged is refused as **taken**, for the operator to re-make; a manifest that does not say the version the operator chose, or a bump on a flow whose call is *merge unreleased* (the manifest differs from the merge base's), is refused — re-make the call with `--version=<v>` / `--no-version` and `--confirmed` on the operator's word; **`release.ask = on-change`** (the default; `ask = always` asks every time) answers Release? itself (`auto-answered: release.ask = on-change — …` in the approved line) when the call is on record, a Verified? tree is on record, nothing but release prep landed after it, the session build is current, the playbook does not set `yolo = until-release`, and a playbook-made versioned call is not a major bump — otherwise Release? is asked as before, naming why (`asked: …`) — a call re-made on the release command without `--confirmed` is one of those reasons, since the call is the operator's, and with no call on record it asks that too; checks re-greened after the prep edits; `release.preflight` (when set) passes in the worktree — the build the tag will trigger, proven before anything ships; **the branch adds no merge-conflict marker lines** vs its merge base (#164: a hand-resolved merge that kept a `<<<<<<<`/`>>>>>>>` line is refused with `file:line`; `--no-marker-check` on the operator's word when the lines are meant); **commits after Verified?** are named in the Release? question and the approved line (#162: the operator's word covers the HEAD verify stamped — a warning, never a refusal); a **standing yolo** (given at an earlier checkpoint) does not answer Release? when such commits exist, nor ever under `yolo = until-release` in `## release` — the gate returns NEEDS-OPERATOR Release? (gh#176), while `--confirmed` (the operator's answer, a yolo said at Release? included) still passes; **the worktree holds no uncommitted paths** (gh#131: a merge ships the branch, not the working tree — an uncommitted fix at this gate is a fix that never ships; the refusal lists the paths, and the approved line prints `commits: N ahead of <default>, M uncommitted path(s)` like verify's); with `versioning.file`: the manifest version parses and is **not tagged yet** (the bump must be ahead of the last release); with `release.changelog` the gate **proves the entry mechanically** (#97): a **heading names the version** (prose that mentions it, or a `1.2.0-beta` section when releasing `1.2.0`, is not an entry), **this branch touched the file** (an inherited changelog is not release prep), **every entry that was pending before the release survives inside the new section** — compared on normalized lines, so re-indenting a fold is free while rewording or deleting one is refused by naming the line — and **nothing is left under `Unreleased`**. The proofs guard the **baseline's** pending lines — they do not freeze the wording of the entry this flow writes, so a branch that landed as several iteration commits is free to state its result as one entry (see the changelog-writer rule in the pre-release reference). The pending baseline is the newest tag's changelog (what actually shipped), else the branch's merge base; when neither resolves, the two git-dependent proofs are skipped **with a printed advisory** rather than refusing a legal release for a topology reason, and the content proofs (the heading, its body) always run; tier-2 `## pre-release` checklist confirmed; the manifest version it validates is **stamped as the release's version of record** (`release-done` publishes that, whatever the checkouts say later); **one question** (Release?) — or `--confirmed`; `--no-version` (your call at Release?) ships this flow as **merge + changelog** — the bump/tag requirements and the tag checks at `release-done` are skipped for it, but the branch must still add its **own line under `Unreleased`** (a `--docs` flow is exempt — #163: a playbook/docs change owes no user-facing entry; one it writes is welcome, not proven) (editing an older section releases nothing) and it rides there until the next versioned release folds it (default: versioned); `--no-fold-check` is the operator-granted escape from the line-level fold proofs — one flow, stamped in the gate output, the heading and touched proofs stay; **stale session build** (loaded build behind the checkout): the gate prints both builds, lists what shipped between them (those proofs will not run this release) and folds *update (/reload, then re-run) or proceed with the old release?* into the Release? question — the operator's word, recorded in the release output, **never a block**: publishing under an older gate is a legitimate choice (hotfix, offline reload) |
-| `release-done` | records the release (the stage stays `release`) | **no question — the Release? answer covered the publication**; verify approval; the version published is the one `release` **stamped** from the manifest it validated (a main checkout still behind cannot republish the previous version), and it must not be older than the newest matching tag **on origin** (tag lists come from `git ls-remote`, so an unfetched clone does not decide what exists; when an origin exists but cannot be asked (offline, no ssh agent) **both release gates refuse** rather than answering with local tags); with `versioning.file`: that tag exists, is reachable from the default branch **and is on origin** (a local-only tag is not a release); with `release.artifact`: the published-artifact check runs (`{version}`/`{tag}` placeholders — the line it prints names the version it verified; skip once with `--no-artifact-check`, operator-instructed only; on GitHub a miss right after the tag push **waits for the CI runs that tag started** — up to 15 min, plus a minute's grace for a registry that lags the green run — then probes again, and a refusal names a failed or still-running run with its URL, gh#179) · creates the forge release from the tag, its body **the `release.changelog` entry for that version** — the changelog is the source of truth, and the tag's annotation stands in only when the changelog has no entry for the version, else nothing (and it says why — a body that is really a shell error is dropped, never shipped) — `gh` for GitHub, `glab` for GitLab) and then **proves the release exists**: it asks the forge (`gh release view <tag>` / `glab release view <tag>`) and refuses when nothing is there, because #51, #60 and #63 were three ways of ending `release recorded as complete` with nothing published — and when the changelog was the body it **reads the stored body back** and refuses a mismatch, so the release page and the changelog cannot drift (#97; normalized before comparing, skipped with a printed note on another forge). Skipping is deliberate and loud — `--no-release-create`, `release.releases = false` or `forge = self` each print that no forge release was created, and the view check is skipped for them; **with a `merge` policy** it also proves the merge that shipped matches it — branch ancestry plus what the forge says (`gh pr view` / `glab api`), so a squash under `merge = merge` (or a merge commit under `merge = squash`) refuses the release record, while a shape it cannot see prints an advisory instead (#97's split: an invisible topology never blocks a legal release); when the release went out on a stale build the operator acknowledged at the release gate, it prints that acknowledgement in place of the after-the-fact version-skew warning, and that warning prints the session vs disk version pair plus the duplicate-copy note when a second copy is registered (#117) |
-| `finish [--yolo] [--no-reflect] [--note=<text>] [slug]` | release → done — **records an unrecorded release first** (published but `release-done` never ran: finish runs its proofs itself — that gate asks nothing, so it is not a separate step; its refusal is finish's; when the playbook's `## release` checklist has open items, that call stops after recording, before anything is removed, and asks Finish? with the items listed — gh#205) — **then the closing reflection**: while no reflection is recorded for the flow, finish starts the reflect worker before it touches anything and stops for the operator's fold/drop (or Finish? when nothing was found); a flow with **no friction** (no gate refusal, no guard block, no `--note`) skips the worker unless the playbook sets `reflect = always`; the re-run with `--confirmed` does the cleanup. `--no-reflect --confirmed` skips it on the operator's explicit word (yolo never does); `--note=` hands the worker the operator's friction notes. Cleanup (removes worktree + branch, deletes `.dev-flow/<slug>/`, and deletes `origin/<branch>` **only** when its merged state is verified — ancestor of the default branch or a merged PR/MR via `gh`/`glab`; unverifiable branches stay with a note) | a release is recorded (`release-done` ran), the main checkout is clean **and** pushed to `origin/<default>`, and the worktree has no uncommitted changes (the refusal lists the paths, not just the count — gh#131); when the clean checkout trails `origin/<default>` the gate **fast-forwards local main** as it closes out (never a merge — anything that cannot fast-forward prints the operator's exact `git pull --ff-only` command); **one question** (Finish? — mentions unmerged-looking commits with the playbook's `merge` policy in mind, and warns when the forge release create failed at `release-done` and no retry succeeded) — or `--confirmed`; under `merge = merge`, commits that never reached the default branch are a **policy violation**: `yolo` does not answer it, only your explicit answer does; to abandon an unreleased feature use `abort` |
-| `reflect ["<note>"|list|tidy|move <n> --playbook|--code|done <n> ["<what>"]]` | — | `reflect "<note>"` queues a suggestion in **this project's** `reflections.md` (never gates; gate flags such as `--confirmed` are ignored, they never become part of the note). `--playbook` (alias `--docs`) files it under `## playbook` — the fix lives only in `project.md`, a docs flow implements it; `--code` files it under `## code` — the fix touches project code, a patch flow implements it. `--plugin` **never writes**: dev-flow feedback is filed upstream, so it prints the recipe — `gh issue list --repo <dev-flow repo> --state all --search …` first, then `gh issue create` with a body ending `— reflection from <slug> <date>` (in the dev-flow repo itself plugin is code → `## code`). With no flag the wording guesses (plugin-shaped → the recipe; otherwise `## playbook`) and the echo prints why. `reflect list` numbers the open items with their section; `reflect move <n> --playbook|--code` re-files one; `reflect done <n> ["<what>"]` checks a fixed one off (`— fixed: <date> <slug> — <what>`) so doctor stops re-reporting it; a legacy `## plugin` row is flagged by list and doctor (file it upstream, check it off `— filed: gh#NNN`). `reflect tidy` drops the closed (`- [x]`) items — the preamble and open items stay verbatim and a `## section` heading left empty goes with its items. **Nudges are timed, not constant**: `⚑ fix the open reflections now?` prints when an item recurred this session, is ≥ 14 days old, ≥ 3 playbook items wait, or a code item waits while between flows — at finish, in an unbound session and in doctor, never mid-feature; `↻ N closed reflection(s)` prints at ≥ 5 closed, closed ≥ open (≥ 3), or a closed item ≥ 30 days old. Bare `reflect` prints the **session-reflection protocol** (from the `/flow reflect` bar it additionally wakes the model): bound to a flow, delegate the review to `flow_stage` op `reflect`; unbound, review inline; re-check every open item against the playbook and **newer dev-flow versions** (`npm view pi-dev-flow version`; the operator performs updates); show the operator a numbered list with a fold/drop recommendation per finding and stop; fold docs/code → `reflect --playbook|--code`, fold plugin → the upstream issue, drop → nothing recorded |
-| `roadmap [add "<feature>" [--slug=<slug>] [--brief=<notes>\|--brief-file=<path>] \| pick <n> <slug> \| done <n> \| drop <n> \| tidy]` | — | manages `.dev-flow/roadmap.md`, the gitignored backlog of future features (`- [ ]` checklist): bare prints the numbered open items, `add` appends one (`--slug=` stamps it like pick, `--brief=`/`--brief-file=` keeps notes under it as `  > ` lines, and a bound session records `— split from <slug>` — the spin-off route for a new feature surfaced mid-flow), `pick <n> <slug>` stamps open item n with `(slug)` so `flow start <slug>` can take it (start seeds `plan/plan.md` with the item and its brief) — **`finish` checks the stamped item off when that feature ships**; `done <n>` checks off by hand (items shipped outside a flow), `drop <n>` (alias `remove`) deletes an open item and its brief that nobody wants any more — `done` would record it as shipped — `tidy` drops the checked lines. Never gates; the open count is surfaced in `status` and session context |
-| `doctor ["<issue note>"]` | — | read-only findings: playbook drift, dead commands/scripts, untracked playbook, ghost feature dirs, orphan worktrees/branches — the state of an **aborted** feature is never a finding (its worktree cleanup is by design — gh#138) — **plus a review of every open reflection, each routed to the flow that should fix it** (playbook item → docs flow; plugin item → upstream issue, or a patch/normal flow inside the dev-flow repo) — every item is labelled from the `## section` it is filed under (the file is the record, so the table cannot disagree with it) and items sitting outside both sections are named rather than silently bucketed. It writes nothing and asks nothing, safe for agents and CI at any stage; the agent investigates, you confirm, the routed flow implements. `doctor "<note>"` prints an investigation brief and a fix route for a fresh observation, including the section it would be filed under and why |
-| `status [slug]` / `abort [slug]` | — | — |
-| `help` (`--help`, `-h`) | — | — (prints the gate help — answerable in any repo, at any stage, with no `.dev-flow/`) |
-| `version [--check-upstream]` | — | — (prints dev-flow's **own** version and the directory it was loaded from — which copy this session runs, this checkout vs an installed `pi-dev-flow`; when the checkout has moved past the build this session loaded it says so and names both, because the gates execute the loaded code — `/reload` to run the newer one; `--check-upstream` adds the published npm version; answerable in any repo, at any stage, with no `.dev-flow/`) |
+| `start <slug>` | → plan | the slug is new and the playbook has a `merge` policy |
+| `use <slug>` | binds this session | the feature is unfinished |
+| `approve` | plan → implement | `plan/plan.md` exists (plus embedded mockups for `--ui`) and you said yes |
+| `verify` | implement → pre-release | the branch has commits, checks are green, the deploy is healthy, and you said yes |
+| `release` | pre-release → release | the version and changelog are right, nothing is uncommitted, and you said yes (or it answered itself) |
+| `release-done` | records the release | the tag is on origin, the artifact is published, and the forge release exists |
+| `finish` | release → done | the release is recorded, main is clean and pushed, and you said yes |
 
-`--confirmed` is the operator-presence flag: pass it only after the operator literally answered the stage question in chat — one checkpoint per stage, no second dialog.
+Tools that never gate: `test`, `check`, `health`, `status`, `abort`, `doctor`, `reflect`, `roadmap`,
+`help`, `version`.
+
+## start
+
+`flow start <slug> [--ui | --patch | --docs] [--merge=<style>] [--check-upstream]`
+
+Creates the feature, binds this session to it, and renames the session after the slug.
+
+- `--ui` means the plan gate requires rendered mockups. `--patch` (a small fix, no written plan) and
+  `--docs` (docs only, no build checks) are lighter modes. All three need your OK in chat, and the
+  agent then adds `--confirmed`.
+- **The playbook needs a `merge` policy.** If it has none, start asks which style to use (squash,
+  merge, rebase or any), suggests one from your git history, and writes your answer into
+  `## release`.
+- It prints the dev-flow version, warns if this session runs an older build than the checkout
+  (`--check-upstream` also asks npm), and lists playbook gaps.
+- A leftover `.dev-flow/<slug>/` without `state.json` (a "ghost") is shown to you and adopted on
+  `--confirmed`, unless it still holds a `worktree/`.
+- If the roadmap has an item picked for this slug, the plan starts from it.
+
+## use
+
+`flow use <slug>` binds this session to an unfinished feature, records a claim on disk, and renames
+the session. It also takes over a feature another session holds. Nothing binds automatically.
+
+## approve: Approve?
+
+`flow approve [--yolo]`
+
+- `plan/plan.md` must exist with exactly that name.
+- For a `--ui` feature, every screenshot under `plan/` must be embedded in plan.md, every
+  `mockups/<screen>.html` needs a `<screen>-<width>.png` render, and no mockup may link into another
+  feature's worktree.
+- On yes, it creates the worktree and the `feat/<slug>` branch, then runs `setup` there. If setup
+  fails, the next `approve` retries it.
+
+## test, check, health
+
+- `flow test` runs the `test` command and records the result.
+- `flow check` runs every tier-1 check from `## implement`.
+- `flow health` runs `seedData` and then the health probe, retrying for up to `healthWait` seconds.
+
+Each record carries a fingerprint of the worktree. When the tree changes, the record goes stale and
+the next gate re-runs it. A `--docs` flow runs none of these.
+
+## verify: Verified?
+
+`flow verify [--yolo] [--version=patch|minor|major|<v> | --no-version] [--port=<n> | --replace]`
+
+Run without `--confirmed`, it deploys for your review:
+
+1. Fetches, and rebases the branch if main moved ahead. Conflicts or uncommitted tracked edits
+   refuse, and the branch is left untouched.
+2. Checks the dev port. If another live flow holds it, it asks **Dev port?**: run alongside on
+   another port, replace that deploy, or wait. See [concurrency](concurrency.md).
+3. Runs the checks (re-running any that are stale or missing), the build, the `dev` deploy, and then
+   the health probe against what it just deployed.
+4. Asks **Verified?**
+
+It refuses if:
+- the branch has no commits (except a release-only flow on a versioned project with unreleased
+  commits on main);
+- a check, the build or the post-deploy health probe fails;
+- `servedBuild` is set and the running app isn't serving this commit.
+
+**The release call rides on Verified?** On a versioned project with `version = ask` (the default),
+the question also asks: *patch, minor or major release, or merge unreleased?* Your answer is recorded
+with `--version=…` or `--no-version`.
+
+With `--confirmed`, it never rewrites history. If main moved since the review deploy, re-run
+`flow verify`.
+
+**At pre-release, `verify` is the re-verify:** after review fixes, it re-runs the build, deploy and
+probes on the current tree and asks Verified? again. A standing yolo never answers this.
+
+## release: Release?
+
+`flow release [--yolo] [--version=<v> | --no-version] [--no-fold-check] [--no-marker-check]`
+
+Proves the branch is ready to ship:
+
+- **The version** matches your release call. Patch, minor or major is counted from the newest tag
+  at release time, so if a parallel flow shipped first, yours moves to the next number.
+- **The version is new**: the manifest's version isn't tagged yet.
+- **The changelog** has a heading for this version, this branch edited it, every entry that was
+  pending under `Unreleased` is kept in the new section, and `Unreleased` is now empty.
+- **Merge unreleased** (`--no-version`): no bump, but the branch adds its own line under
+  `Unreleased`. Docs flows are exempt.
+- The checks are green again after the prep edits, and `release.preflight` passes if set.
+- There are no leftover conflict markers (`<<<<<<<`) and no uncommitted files in the worktree.
+
+**Release? often answers itself** (`ask = on-change`, the default). That happens when your call is
+on record and only release prep (bump, changelog) changed since Verified?. It still asks when:
+- code changed after Verified?;
+- the session runs an old build (proceeding is allowed, and it says what you'd miss);
+- the playbook sets `yolo = until-release`;
+- it's a major bump the playbook made rather than you.
+
+Set `ask = always` in `## release` to be asked every time.
+
+Escape hatches, used only on your word: `--no-fold-check` skips the line-level changelog check, and
+`--no-marker-check` allows intentional conflict-marker lines.
+
+## release-done
+
+Records the release. It asks no question, because your Release? answer covered it. `finish` runs it
+for you if the agent didn't.
+
+- The tag exists, is reachable from main, and is **on origin**. If origin can't be reached, it
+  refuses rather than trust local tags.
+- `release.artifact` (for example `npm view <pkg>@{version} version`) passes. On GitHub, it waits
+  for the CI runs the tag started.
+- It creates the forge release (`gh` / `glab`), using the changelog entry as the body, then reads it
+  back to confirm it exists and matches.
+- It checks that the merge matched the `merge` policy. If that can't be seen (self-hosted forge, no
+  CLI), it prints a note instead of refusing.
+
+Skip flags (on your word): `--no-artifact-check`, `--no-release-create`. You can also set
+`release.releases = false` or `forge = self` to skip creating the forge release.
+
+## finish: Finish?
+
+`flow finish [--yolo] [--no-reflect] [--note=<text>] [slug]`
+
+1. Records the release if `release-done` never ran. If the `## release` checklist still has open
+   items, it stops and lists them.
+2. Runs the **closing reflection** (see [reflections](reflections.md)) and waits for your fold/drop.
+3. On `--confirmed`, cleans up: removes the worktree, the branch and `.dev-flow/<slug>/`. It deletes
+   the remote branch only once it's proven merged. If local main is just behind origin, it
+   fast-forwards it.
+
+It refuses until the release is recorded, the main checkout is clean and pushed, and the worktree has
+no uncommitted changes. Under `merge = merge`, commits missing from main are a policy violation that
+yolo can't answer.
+
+To drop an unreleased feature, use `flow abort` instead.
+
+## reflect, roadmap, doctor
+
+- `flow reflect …` manages the notes queue. See [reflections](reflections.md).
+- `flow roadmap [add "<feature>" [--slug=] [--brief=] | pick <n> <slug> | done <n> | drop <n> | tidy]`
+  manages `.dev-flow/roadmap.md`. `pick` stamps an item for `flow start <slug>`, and `finish` checks
+  it off when the feature ships.
+- `flow doctor ["<note>"]` is a read-only health report: playbook drift, dead commands, ghost
+  folders, orphan worktrees and branches, and a review of every open reflection. It writes nothing,
+  so it's safe at any stage and in CI.
+
+## status, abort, help, version
+
+- `flow status [slug]` shows where every feature stands. `--json` gives machine output.
+- `flow abort [slug]` drops a feature.
+- `flow help` (`--json`) prints the gate contract.
+- `flow version [--check-upstream]` prints which dev-flow copy this session runs and whether the
+  checkout is newer.
+
+These work in any repo, even without `.dev-flow/`.
+
+## yolo
+
+Answering **yolo** at any checkpoint runs that gate with `--yolo --confirmed`. That answers the
+question and pre-confirms the rest, so the agent runs the remaining gates back to back, following
+any wishes you added ("yolo, patch bump"). Every check and guard still applies. Yolo never answers:
+- the re-verify at pre-release;
+- Release? when code changed after Verified?, or when the playbook sets `yolo = until-release`;
+- a `merge = merge` policy violation at finish;
+- skipping the closing reflection.
