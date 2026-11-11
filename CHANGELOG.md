@@ -4,6 +4,15 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.91.0] - 2026-11-11
+
+**Fewer needless questions: the agent turns `--ui` on itself, takes a dev port from a flow already past review, and waits for CI instead of ending its turn.**
+
+### Changed
+- **`--ui` no longer needs your OK; turning it off does.** `--ui` only adds a check (rendered mockups at the plan gate), so the agent now passes it by itself whenever screens change, at start or later at plan. Before, a UI feature started without it had to stop and ask, and a "proceed" you had already given didn't count because it came before the question. Removing the mockup gate is now the step that needs you: `flow start <slug> --no-ui --confirmed` at plan, and aborting a ui feature at plan (which a restart without `--ui` would otherwise use to drop the gate) asks too.
+- **A dev port held by a flow past its review is taken without asking.** `flow verify` asked *Dev port?* (replace or wait) even when the flow holding the port was at pre-release or release, so its deploy had already been verified and nobody was looking at it. It now replaces that deploy and says so in the result. It still asks when the holder is in implement or is re-asking Verified?.
+- **The release stage waits for CI instead of ending the turn.** The release reference now says to keep watching CI inside the turn, never to end it with "I'll keep watching" (nothing wakes the agent after the turn ends), and to re-trigger runs stuck in `queued` for about 15 minutes instead of waiting on them.
+
 ## [0.90.1] - 2026-11-11
 
 **Docs only: a shorter README and readable docs pages.**

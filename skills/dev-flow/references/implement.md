@@ -27,7 +27,9 @@ note). Other sessions' worktrees are theirs.
    behind (a conflict aborts and hands it to you), runs build, the `dev`
    deploy and the health probe against what it deployed, and returns
    `NEEDS-OPERATOR Verified?`. It never opens a dialog.
-   - Another flow holds the dev port → `NEEDS-OPERATOR Dev port?` with free
+   - A flow past its Verified? holding the dev port is replaced without a
+     question (the result says so). One still under review →
+     `NEEDS-OPERATOR Dev port?` with free
      RAM/disk: ask, stop, then re-run with `--port=<n>` or `--replace` on
      their answer. "wait" means wait; a later "proceed" about the feature is
      not a yes to replacing another flow's stack.

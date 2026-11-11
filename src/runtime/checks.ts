@@ -108,6 +108,11 @@ export async function devSlotCheck(o: GateCtx, state: FlowState): Promise<RunRes
 	if (!slot || slot.slug === state.slug) return { note: "" };
 	if (flag("replace")) return { note: `dev: replaced ${slot.slug}'s deploy on ${portLabel(port)} (operator's answer)` };
 	const other = readState(root, slot.slug);
+	// the holder's review is over — it is past Verified? (pre-release or release) and not re-asking it, or it is
+	// gone: nobody is looking at that deploy, so taking the port asks nobody (lettuce rail-avatar-size-28 asked
+	// replace-or-wait over a flow that had already merged)
+	if (!other || ((other.stage === "pre-release" || other.stage === "release") && other.pendingAsk !== "Verified?"))
+		return { note: `dev: replaced ${slot.slug}'s deploy on ${portLabel(port)} — ${other ? `it is at ${other.stage}, past its Verified?` : "that flow is gone"}, so nobody was reviewing it` };
 	const taken = new Set(Object.keys(reg).map(Number).filter(Number.isFinite));
 	const nextPort = port !== undefined ? await nextFreePort(port, taken) : null;
 	const mem = memAvailable();

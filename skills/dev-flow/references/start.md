@@ -30,9 +30,14 @@ knobs · merge-policy state.
 
 - Check `flow status` for an active feature first. Slug: lowercase words,
   dashes.
+- **`--ui` is your call, not a grant**: pass it whenever the feature changes
+  screens (or the project's skills require mockups for the change). It only
+  adds the mockup gate, so don't ask. Turning it **off** is the operator's:
+  `flow start <slug> --no-ui --confirmed` at plan, after they say so, and
+  aborting a ui feature at plan asks the same.
 - **Ask every grant in one message**, then make one call with all of them:
-  the mode (`normal` default, or `--patch` / `--docs`), `--ui` when screens
-  change, and the merge policy if the playbook has none —
+  the mode (`normal` default, or `--patch` / `--docs`) and the merge policy if
+  the playbook has none —
   `flow start <slug> [--ui] [--patch|--docs] [--merge=<style>] --confirmed`.
   Never grant any of them yourself. When the operator's own request already
   grants one ("start a docs flow"), that is their word: pass `--confirmed` on
@@ -41,8 +46,8 @@ knobs · merge-policy state.
 - No merge policy → the gate refuses with `NEEDS-OPERATOR Merge policy?` and a
   suggestion read off the repo's history. Ask: squash, merge, rebase or any.
   The answer is written into `## release` once.
-- `--ui` after a plain start, still at plan: `flow start <slug> --ui
-  --confirmed` from the feature's own session.
+- `--ui` after a plain start, still at plan: `flow start <slug> --ui` from
+  the feature's own session — no abort, no question.
 - Start warns when this session runs an older dev-flow build than the
   checkout (`/reload` before trusting gate output) and lists playbook gaps.
 

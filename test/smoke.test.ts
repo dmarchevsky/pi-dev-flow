@@ -1488,9 +1488,9 @@ test("a refusal before start counts on the feature that start creates", async ()
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", TEST_MD]);
 	trackPlaybook(repo);
-	const refused = await flow(["start", "early", "--ui"]); // operator-granted flag without --confirmed: a refusal
+	const refused = await flow(["start", "early", "--patch"]); // operator-granted flag without --confirmed: a refusal
 	assert.equal(refused.isError, true, refused.content[0].text);
-	await flow(["start", "early", "--ui", "--confirmed"]);
+	await flow(["start", "early", "--patch", "--confirmed"]);
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "early", "state.json"), "utf8"));
 	assert.equal(st.friction ?? 0, 1, "the pre-start refusal is the started feature's friction");
 });
@@ -2869,18 +2869,16 @@ test("a feature worktree stays on its own branch, and a bound feature ships only
 	assert.match((await bash(`cd ${wt} && git tag v9.9.9`))?.reason ?? "", /tagging is release work/, "nor tag");
 });
 
-test("--ui is operator-granted: start refuses it without --confirmed", async () => {
+test("--ui is the agent's call: start takes it without --confirmed (it only adds the mockup gate)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", TEST_MD]);
 	const bare = await flow(["start", "uifeat", "--ui"]);
-	assert.ok(bare.isError, "a self-granted --ui is refused");
-	assert.match(bare.content[0].text, /--ui is operator-granted/);
-	const granted = await flow(["start", "uifeat", "--ui", "--confirmed"]);
-	assert.ok(!granted.isError, granted.content[0].text);
+	assert.ok(!bare.isError, bare.content[0].text);
 	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "uifeat", "state.json"), "utf8")).ui, true);
+	assert.match((await flow(["start", "fresh", "--no-ui"])).content[0].text, /--no-ui applies to an existing plan-stage feature/);
 });
 
 test("--ui can be switched on for the plan-stage feature this session drives, and only there", async () => {
@@ -2894,19 +2892,28 @@ test("--ui can be switched on for the plan-stage feature this session drives, an
 	assert.equal(st().ui, false);
 	const plain = await flow(["start", "late"]);
 	assert.ok(plain.isError);
-	assert.match(plain.content[0].text, /already exists — flow use late.*--ui --confirmed/, "a plain re-start names the way to add the mockup gate");
-	const bare = await flow(["start", "late", "--ui"]);
-	assert.ok(bare.isError && /operator-granted/.test(bare.content[0].text), "still operator-granted");
-	const on = await flow(["start", "late", "--ui", "--confirmed"]);
+	assert.match(plain.content[0].text, /already exists — flow use late.*--ui from the session/, "a plain re-start names the way to add the mockup gate");
+	const on = await flow(["start", "late", "--ui"]);
 	assert.ok(!on.isError, on.content[0].text);
 	assert.match(on.content[0].text, /ui flag set on existing feature late/);
 	assert.equal(st().ui, true);
-	assert.match((await flow(["start", "late", "--ui", "--confirmed"])).content[0].text, /already has the ui flag/);
+	assert.match((await flow(["start", "late", "--ui"])).content[0].text, /already has the ui flag on/);
+	// turning it off is the operator's call
+	const off = await flow(["start", "late", "--no-ui"]);
+	assert.ok(off.isError && /--no-ui is operator-granted/.test(off.content[0].text), off.content[0].text);
+	assert.equal(st().ui, true);
+	// nor can an abort-and-restart shed it without the operator
+	const ab = await flow(["abort", "late"]);
+	assert.ok(ab.isError && /drops its ui flag/.test(ab.content[0].text), ab.content[0].text);
+	assert.ok(existsSync(path.join(repo, ".dev-flow", "late", "state.json")));
+	assert.match((await flow(["start", "late", "--no-ui", "--confirmed"])).content[0].text, /ui flag cleared on late/);
+	assert.equal(st().ui, false);
+	assert.ok(!(await flow(["start", "late", "--ui"])).isError);
 	// past plan the flag stays as it is
 	writeFileSync(path.join(repo, ".dev-flow", "late", "state.json"), JSON.stringify({ ...st(), ui: false, stage: "implement" }));
-	const late = await flow(["start", "late", "--ui", "--confirmed"]);
+	const late = await flow(["start", "late", "--ui"]);
 	assert.ok(late.isError);
-	assert.match(late.content[0].text, /at implement — the ui flag can be set only at plan/);
+	assert.match(late.content[0].text, /at implement — the ui flag can be changed only at plan/);
 	assert.equal(st().ui, false);
 });
 
@@ -3564,6 +3571,11 @@ test("a dev port held by another flow is asked about, with the resources; --port
 	const no = await flow(["verify"]);
 	assert.ok(no.isError && !/run alongside/.test(no.content[0].text) && /parallelDev = no/.test(no.content[0].text), no.content[0].text);
 	assert.match(no.content[0].text, /replace pa's deploy: flow verify --replace/);
+	// a holder past its Verified? is not asked about: nobody reviews that deploy any more
+	writeFileSync(path.join(repo, ".dev-flow", "pa", "state.json"), JSON.stringify({ ...JSON.parse(readFileSync(path.join(repo, ".dev-flow", "pa", "state.json"), "utf8")), stage: "release", pendingAsk: undefined }));
+	const took = await flow(["verify"]);
+	assert.match(took.content[0].text, new RegExp(`replaced pa's deploy on port ${port} — it is at release, past its Verified\\?`), took.content[0].text);
+	assert.match(took.content[0].text, new RegExp(`deployed for review on port ${port}`), took.content[0].text);
 	// finish of the side-by-side flow stops its instance and frees its slot
 	await flow(["use", "pb"]);
 	assert.match((await flow(["verify"])).content[0].text, /rebased onto main/, "the playbook commit moved main: the review deploy catches up first");
@@ -3676,22 +3688,22 @@ test("the flow tool refuses a --confirmed no operator message stands behind (gh#
 	await flow(["init", "--write", TEST_MD]);
 	trackPlaybook(repo);
 	// avatar-sheet's shape: refused as operator-granted, retried at once with --confirmed
-	const refused = await flow(["start", "ava", "--ui"]);
+	const refused = await flow(["start", "ava", "--docs"]);
 	assert.match(refused.content[0].text, /operator-granted/);
-	const self = await flow(["start", "ava", "--ui", "--confirmed"]);
+	const self = await flow(["start", "ava", "--docs", "--confirmed"]);
 	assert.equal(self.isError, true);
 	assert.match(self.content[0].text, /no operator message since flow start asked/, self.content[0].text);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ava", "state.json")), "nothing started on the agent's own word");
 	branch.push({ type: "message", message: { role: "user" } }); // the operator answers in chat
-	assert.match((await flow(["start", "ava", "--ui", "--confirmed"])).content[0].text, /started at stage plan \(ui=true/);
-	// nav-menu-tweaks' shape: a plain start, then the mode granted with nobody asked
+	assert.match((await flow(["start", "ava", "--docs", "--confirmed"])).content[0].text, /started at stage plan/);
+	// nav-menu-tweaks' shape: a ui start, then the gate dropped with nobody asked
 	await flow(["abort", "ava", "--confirmed"]);
 	branch.push({ type: "message", message: { role: "user" } });
-	await flow(["start", "nav"]);
-	const upgrade = await flow(["start", "nav", "--ui", "--confirmed"]);
-	assert.match(upgrade.content[0].text, /--ui on nav is operator-granted, and the operator has said nothing since it started/, upgrade.content[0].text);
+	await flow(["start", "nav", "--ui"]);
+	const drop = await flow(["start", "nav", "--no-ui", "--confirmed"]);
+	assert.match(drop.content[0].text, /--no-ui on nav is operator-granted, and the operator has said nothing since it started/, drop.content[0].text);
 	branch.push({ type: "message", message: { role: "user" } });
-	assert.match((await flow(["start", "nav", "--ui", "--confirmed"])).content[0].text, /ui flag set on existing feature nav/);
+	assert.match((await flow(["start", "nav", "--no-ui", "--confirmed"])).content[0].text, /ui flag cleared on nav/);
 });
 
 test("the operator-view check above ran over the gates this suite drives", () => {

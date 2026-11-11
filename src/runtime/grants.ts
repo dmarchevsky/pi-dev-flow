@@ -5,7 +5,7 @@
  *
  *  A. a gate asked for the operator's word (NEEDS-OPERATOR, or an "operator-granted" refusal) and the same
  *     gate is re-run with --confirmed before any operator message arrived;
- *  B. a feature started in this session gets a mode flag (--ui/--patch/--docs) granted with --confirmed
+ *  B. a feature started in this session gets a loosening mode flag (--patch/--docs/--no-ui) granted with --confirmed
  *     before any operator message arrived after the start.
  *
  *  --confirmed is not the only answer a gate takes: `Dev port?` is answered with --replace or --port=<n>
@@ -38,7 +38,8 @@ export interface GrantLedger {
 export const newGrantLedger = (): GrantLedger => ({ asked: new Map(), started: new Map() });
 
 const ASKS_FOR_WORD = /operator-granted|operator's (?:explicit )?word|the operator must grant/;
-const MODE_FLAGS = ["--ui", "--patch", "--docs"];
+/** Mode flags that loosen a gate — --ui only tightens one, so it is not here; --no-ui (dropping it) is. */
+const MODE_FLAGS = ["--no-ui", "--patch", "--docs"];
 /** Flags that carry the operator's answer to the question a gate asked — `--confirmed`, and the
  *  `Dev port?` answers (gh#203). */
 export function answerFlags(args: readonly string[]): string[] {
