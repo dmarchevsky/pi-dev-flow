@@ -209,6 +209,7 @@ test("approveGate requires plan.md, rendered mockups when ui", () => {
 	const doc = "# plan\n![screen — phone](mockups/screen-390.png)\n";
 	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"], doc).length, 0);
 	assert.ok(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"], "# plan\nno images here").some((e) => /screen-390\.png/.test(e)), "a render nobody embedded was never shown to the operator");
+	assert.ok(approveGate(su, cfg, ["plan.md", "mockups/screen-390.png"], "# plan\nno images here").some((e) => /delete the file if that screen\/variant was dropped/.test(e)), "a leftover render from a dropped option is deleted, not embedded back into the plan");
 	assert.equal(approveGate(su, cfg, ["plan.md", "mockups/screen-390.PNG"], '![s](mockups/screen-390.PNG "t")').length, 0, "case-insensitive glob and embed; an optional title is tolerated");
 	assert.ok(approveGate(su, cfg, ["plan.md", "mockups/screen.html", "mockups/other-390.png"], "![o](mockups/other-390.png)").some((e) => /screen\.html/.test(e)), "screen.html without a screen-* shot is an unrendered mockup");
 	const doc2 = doc + "![screen — desktop](mockups/screen-1280.png)\n";
