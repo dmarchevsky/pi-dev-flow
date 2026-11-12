@@ -15,6 +15,12 @@ No code edits before approval. Reads are always allowed.
      is lost at compaction, the gate reads the file.
    - The name is the proof: `plan.md`. A preliminary direction goes inside it
      (marked draft) — never a separate file.
+   - **Every revision rewrites, never appends.** On feedback, edit plan.md
+     into the current plan: replace what changed, delete dropped options,
+     requirements and mockups outright, no round markers ("v2", "updated:",
+     "previously…", strikethrough). A settled choice reads as a plain
+     decision, no rejected alternatives beside it. Chat holds the history;
+     plan.md holds only the result.
    - Part of the scope deferred? `flow roadmap add "<title>" --slug=<slug>
      --brief=<notes>` — never a second `.dev-flow/<slug>/` by hand.
    - Run `git log origin/<default>..<default> --oneline` first: local-only
@@ -31,6 +37,10 @@ No code edits before approval. Reads are always allowed.
    - Embed every render in plan.md as an image:
      `![<screen> — phone](mockups/<screen>-390.png)`. The gate refuses any
      render not embedded and any `.html` without a shot.
+   - Revisions: a dropped screen or variant → delete its `.html`, its
+     `<screen>-<w>.png` shots and its embed; a changed screen → edit the same
+     `<screen>.html` and re-render over the same filenames (no `-v2` copies).
+     At Approve?, `plan/mockups/` holds only what plan.md shows.
    - No chromium anywhere → tell the operator and ask; HTML-only only with
      their OK. Never fake or skip silently.
    - Tips: prefer a static strip (just the component, real stylesheet) over a

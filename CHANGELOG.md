@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.91.1] - 2026-11-11
+
+**A revised plan reads as one clean plan, without the dropped options from earlier rounds.**
+
+### Changed
+- **A revised plan reads as one clean plan.** When you ask for changes at the plan stage, the agent now rewrites plan.md into the current plan instead of appending each round. Dropped options, requirements and mockups are removed, and nothing is marked "v2" or "previously". A changed screen is re-rendered over its old files, and a dropped one's html and screenshots are deleted. The mockup gate's errors now say a dropped render can be deleted. Before, they only said to embed it, which pushed old screenshots back into the plan.
+
 ## [0.91.0] - 2026-11-11
 
 **Fewer needless questions: the agent turns `--ui` on itself, takes a dev port from a flow already past review, and waits for CI instead of ending its turn.**

@@ -341,7 +341,7 @@ export function approveGate(state: FlowState, cfg: Config, planFiles: string[], 
 		// ![alt](mockups/screen-390.png) with an optional "title" tolerated; matching is case-insensitive
 		const embeds = [...planDoc.matchAll(/!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)].map((m) => m[1].toLowerCase());
 		const unembedded = planFiles.filter((f) => IMG_EXT.test(f) && !embeds.some((e) => e === f.toLowerCase() || e.endsWith("/" + f.toLowerCase())));
-		if (unembedded.length) errs.push(`plan.md must embed every render — missing embed: ${unembedded.join(", ")} (write ![<screen> — width](mockups/<file>) under the screen's section)`);
+		if (unembedded.length) errs.push(`plan.md must embed every render — missing embed: ${unembedded.join(", ")} (write ![<screen> — width](mockups/<file>) under the screen's section, or delete the file if that screen/variant was dropped)`);
 		// the naming plan.md prescribes (screen.html → screen-<width>.png): a mockups/*.html with no
 		// embedded shot of its own was never rendered
 		const unrendered = planFiles
@@ -350,7 +350,7 @@ export function approveGate(state: FlowState, cfg: Config, planFiles: string[], 
 				const stem = f.toLowerCase().replace(/\.html$/, "").split("/").pop()!;
 				return !embeds.some((e) => (e.split("/").pop() ?? "").startsWith(stem) && IMG_EXT.test(e));
 			});
-		if (unrendered.length) errs.push(`mockups without an embedded render — ${unrendered.join(", ")} (render each screen and name the shot after it: <screen>-<width>.png)`);
+		if (unrendered.length) errs.push(`mockups without an embedded render — ${unrendered.join(", ")} (render each screen and name the shot after it: <screen>-<width>.png, or delete the html if that screen was dropped)`);
 	}
 	if (foreignLinks.length)
 		errs.push(`mockups link another feature's worktree — ${foreignLinks.join(", ")}: that branch drifts and is removed at its finish; at plan link the main checkout's stylesheet (this feature's worktree does not exist until approve) and re-render`);
