@@ -74,7 +74,12 @@ test("parseProjectMd: warnings and hard errors", () => {
 });
 
 test("flow-check outside implement warns; empty body is hard", () => {
-	assert.ok(parseProjectMd("## release\n```flow-check x\ncmd\n```\n").warn.some((w) => w.includes("## implement")));
+	assert.ok(parseProjectMd("## plan\n```flow-check x\ncmd\n```\n").warn.some((w) => w.includes("## implement")));
+	// under ## release a flow-check is an after-merge check: kept apart from the tier-1 list, run by flow finish
+	const rel = parseProjectMd("## implement\n```flow-check unit\nnpm test\n```\n## release\n```flow-check deployed\nmake deploy-check\n```\n");
+	assert.deepEqual(rel.warn, []);
+	assert.deepEqual(rel.releaseChecks, [{ name: "deployed", cmd: "make deploy-check" }]);
+	assert.deepEqual(rel.checks.map((c) => c.name), ["unit"]);
 	assert.ok(parseProjectMd("## implement\n```flow-check x\n\n```\n").hard.some((h) => h.includes("empty")));
 });
 

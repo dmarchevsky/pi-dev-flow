@@ -44,4 +44,6 @@ each step with the gate's stage line, **🚀 release · `<slug>`**; no `Done:` /
    - Session on an older build than the checkout: the release gate prints
      both builds and what shipped between them and asks **update (`/reload`
      and re-run) or proceed?** — a recorded choice, not a block.
-   - Release-stage checklist items close with the Finish? answer.
+   - After-merge work: `flow-check` blocks under `## release` are run by
+     `flow finish` itself from the main checkout; `- [ ]` items there close
+     with the Finish? answer.

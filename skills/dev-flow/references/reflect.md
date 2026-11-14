@@ -8,8 +8,8 @@ friction only, never the same issue twice. `.dev-flow/reflections.md` holds
 
 | Command | Files under | Fixed by |
 | --- | --- | --- |
-| `flow reflect --playbook "<note>"` | `## playbook` (fix lives in `project.md`) | a docs flow: `flow start fold-<topic> --docs --confirmed` |
-| `flow reflect --code "<note>"` | `## code` (this project's code, maybe the playbook) | a patch flow: `flow start fix-<topic> --patch --confirmed` (normal when bigger) |
+| `flow reflect --playbook "<note>"` | `## playbook` (fix lives in `project.md`) | a docs flow: `flow start fold-<topic> --docs` |
+| `flow reflect --code "<note>"` | `## code` (this project's code, maybe the playbook) | a patch flow: `flow start fix-<topic> --patch` (normal when bigger) |
 | `flow reflect --plugin "<note>"` | nothing — prints the upstream recipe | a GitHub issue, filed only on the operator's word |
 
 - `--plugin`: search first (`gh issue list --repo <dev-flow repo> --state all

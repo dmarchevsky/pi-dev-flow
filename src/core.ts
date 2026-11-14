@@ -20,6 +20,11 @@ export interface Check {
 	 *  longer exists — green is not enough when the tree moved under it. Absent = recorded by an
 	 *  older build, or git could not be asked: never proven stale, never dropped. */
 	wt?: string;
+	/** HEAD when the check passed, recorded only when the tree was clean then: lets the release gate tell
+	 *  "nothing but release prep was committed since" from a real change (see prepOnlyChange). */
+	head?: string;
+	/** Carried over a release-prep-only commit instead of being re-run (keepThroughPrep) — the release gate says so. */
+	prep?: boolean;
 }
 
 export interface StageCheck {
@@ -53,7 +58,9 @@ export interface FlowState {
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
-	friction?: number; // gate refusals, guard blocks and post-Verified? code changes this feature hit — finish skips the closing reflection at 0 (playbook reflect = on-friction)
+	friction?: number; // process refusals, a gate refusing twice in a row, guard blocks and post-Verified? code changes this feature hit (isFriction; a red check alone is not one) — finish skips the closing reflection at 0 (playbook reflect = on-friction)
+	reflectQuiet?: boolean; // finish skipped the closing reflection because the flow had no friction — with nothing else open, Finish? answers itself (release.finish = on-change)
+	reviewDeploy?: { wt: string; slot: string; at: string }; // the tree (checkFingerprint) and dev slot `flow verify` deployed for the operator's review — a --confirmed over the same tree does not build and deploy it a second time
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
@@ -111,6 +118,9 @@ export interface Config {
 	forge: string;
 	commands: Commands;
 	checkList: StageCheck[]; // tier-1 executable checks (project.md flow blocks)
+	/** `flow-check` blocks under ## release: after-merge checks `flow finish` runs from the main checkout once the
+	 *  release is recorded, before anything is removed (a post-merge build, a deploy check). */
+	releaseChecks: StageCheck[];
 	checklist: Record<string, ChecklistItem[]>; // tier-2 operator items per stage
 	prose: Record<string, string>; // tier-3 guidance per stage
 	versioning: Versioning;
@@ -123,7 +133,7 @@ export interface Config {
 	/** Bytes one dev instance needs (playbook `instanceMem` / `instanceDisk`, e.g. 2G) — the side-by-side feasibility check. */
 	instanceMem?: number;
 	instanceDisk?: number;
-	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction"; /** who decides versioned vs unreleased: asked with Verified? (`ask`, default) or fixed by the playbook (gh#198) */ version?: "ask" | "versioned" | "unversioned"; /** `on-change` (default): Release? answers itself when nothing but release prep changed since Verified? and the version choice is on record; `always` asks it every time (gh#198) */ ask?: "always" | "on-change" };
+	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction"; /** who decides versioned vs unreleased: asked with Verified? (`ask`, default) or fixed by the playbook (gh#198) */ version?: "ask" | "versioned" | "unversioned"; /** `on-change` (default): Release? answers itself when nothing but release prep changed since Verified? and the version choice is on record; `always` asks it every time (gh#198) */ ask?: "always" | "on-change"; /** `prep-skip` (default): green checks survive a commit that touches only release-prep files; `always` re-runs them */ recheck?: "always" | "prep-skip"; /** `on-change` (default): Finish? answers itself on a clean flow (quiet reflection, no open release items, nothing skipped); `always` asks it every time */ finish?: "always" | "on-change" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
@@ -143,6 +153,7 @@ export const DEFAULTS: Config = {
 	forge: "",
 	commands: {},
 	checkList: [],
+	releaseChecks: [],
 	checklist: {},
 	prose: {},
 	versioning: { pattern: "v{version}" },
@@ -633,6 +644,18 @@ export function checklistHash(items: ChecklistItem[]): string {
 		.slice(0, 12);
 }
 
+/** The files a release-prep commit is made of: the version manifest, the changelog, and npm's lock beside a package.json. */
+export function prepFiles(cfg: Config): Set<string> {
+	return new Set([cfg.versioning.file, cfg.release.changelog, cfg.versioning.file === "package.json" ? "package-lock.json" : ""].filter(Boolean) as string[]);
+}
+
+/** True when every changed path is a release-prep file (and something changed): the bump and the changelog
+ *  entry land after the checks by design, and re-running the whole suite over them proves nothing new. */
+export function prepOnlyChange(cfg: Config, changed: string[]): boolean {
+	const prep = prepFiles(cfg);
+	return changed.length > 0 && changed.every((f) => prep.has(f));
+}
+
 /** Fingerprint of the worktree state a tier-1 check ran against: the caller composes the working
  *  tree's `git status --porcelain`, the hash of its uncommitted `git diff HEAD` (path presence and
  *  tracked content move it), and `git rev-parse HEAD`. Deterministic and cheap; the sha is only
@@ -646,7 +669,7 @@ export function checkFingerprint(treeState: string, head: string): string {
 /**
  * Drop every check record that carries a fingerprint differing from the tree as it is now — those
  * greens describe code that no longer exists, and a gate must not advance on them. The caller
- * re-runs what is missing (verify re-runs at the gate; the release gate asks for `flow check`).
+ * re-runs what is missing (verify and release both re-run at the gate).
  * `fp === null` means git could not be asked: a gate must not refuse on its own measurement
  * failure — same rule as BranchState.commitsAhead. Records without a fingerprint (older builds)
  * are never proven stale.
@@ -1230,7 +1253,7 @@ export function bashFlowGuard(o: GuardCtx): string | null {
 	// Shipping belongs to the release stage: a tag cut (or pushed) while the feature is still before release
 	// leaves the gates unable to record it — flow release then refuses "already tagged" and the flow cannot close.
 	if (o.stage && BEFORE_RELEASE.has(o.stage)) {
-		if (git("tag") && tagCreates(c)) return `tagging is release work — the feature is at ${o.stage}; run flow release first (it gates the version, then tags)${judgedIn}`;
+		if (git("tag") && tagCreates(c)) return `tagging is release work — the feature is at ${o.stage}; run flow release first (it gates the version, then tags). This call creates a tag (a tag name, or -a/-s/-m/-f); reading tags (git tag -l, --sort, --contains) is allowed at any stage${judgedIn}`;
 		if (git("push")) {
 			const refs = o.pushRefs ?? parsePushRefs(gitInvocation(c).pushes);
 			if (/\s--(?:tags|follow-tags)\b/.test(c) || /refs\/tags\//.test(c) || refs.some((r) => r.kind === "tag")) return `pushing tags is release work — the feature is at ${o.stage}; run flow release first${judgedIn}`;
@@ -1247,8 +1270,12 @@ export function tagCreates(command: string): boolean {
 	if (!m) return false;
 	const tok = m[1].trim().split(/\s+/).filter(Boolean);
 	if (!tok.length) return false;
+	// gh#221: a write is named by what writes — an annotate/sign/message/force flag, or a tag name. The
+	// old test allow-listed read flags, so `git tag --sort=-creatordate` read as a tag cut and the agent
+	// ran the query in a clone the guard could not see.
 	if (tok.some((t) => /^(-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged|--no-merged|-v|--verify|-d|--delete)$/.test(t))) return false;
-	return true;
+	if (tok.some((t) => /^(-a|--annotate|-s|--sign|-u|--local-user(=.*)?|-m|--message(=.*)?|-F|--file(=.*)?|-f|--force)$/.test(t) || /^-[asf]*m./.test(t))) return true;
+	return tok.some((t) => !t.startsWith("-"));
 }
 
 /** Forge-side shipping (`gh pr merge`, `glab mr merge`, `gh|glab release create`) before the release stage, or null.
@@ -1590,7 +1617,7 @@ export function writeGuard(o: { abs: string; dfDir: string; features: FeatureRef
 		if (owner.state.stage === "plan") return `feature ${owner.state.slug} is in plan — code is read-only until its plan is approved`;
 		// the playbook copy inside a worktree: only operator-granted lightweight modes may change it
 		if (path.basename(abs) === "project.md" && abs.includes(path.join(".dev-flow", "project.md")) && !owner.state.docs && !owner.state.patch)
-			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs --confirmed)`;
+			return `project.md changes belong to a docs or patch flow — ${owner.state.slug} is a normal feature (flow start <slug> --docs)`;
 		return null; // implement/pre-release/release: own worktree is the working area
 	}
 	// Scratch outside the checkout is not a repo write: every stage (and an unbound session) may use it. It
@@ -1916,8 +1943,8 @@ export interface ReflectionRoute {
 	route: string;
 }
 
-const DOCS_ROUTE = "docs flow (flow start fold-<topic> --docs --confirmed) — project.md edits only pass its worktree";
-const CODE_ROUTE = "patch flow (flow start fix-<topic> --patch --confirmed), normal flow when bigger";
+const DOCS_ROUTE = "docs flow (flow start fold-<topic> --docs) — project.md edits only pass its worktree";
+const CODE_ROUTE = "patch flow (flow start fix-<topic> --patch), normal flow when bigger";
 
 export function reflectionRoutes(items: ReflectItem[], selfRepo: boolean): ReflectionRoute[] {
 	return items.map((it) => {
@@ -2088,7 +2115,7 @@ export function reflectionNudges(text: string, today: string, opts: { recurred?:
 	if (code && opts.between) why.push("between flows");
 	let fix: string | null = null;
 	if (open.length && why.length) {
-		const split = [docs ? `${docs} playbook item(s) → one docs flow (flow start fold-<topic> --docs --confirmed)` : "", code ? `${code} code item(s) → patch flow (flow start fix-<topic> --patch --confirmed)` : ""].filter(Boolean).join("; ");
+		const split = [docs ? `${docs} playbook item(s) → one docs flow (flow start fold-<topic> --docs)` : "", code ? `${code} code item(s) → patch flow (flow start fix-<topic> --patch)` : ""].filter(Boolean).join("; ");
 		fix = `⚑ fix the open reflections now? (${why.join(", ")}) — ${split}`;
 	}
 	const closedLines = text.split("\n").filter(isDoneItem);
@@ -2269,7 +2296,7 @@ export function compactionStateBlock(state: FlowState, cfg: Config): string {
 export function nextHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
-			if (state.patch || state.docs) return `${state.patch ? "patch" : "docs"}: describe the change in one line, ask Approve? in chat, then flow approve --confirmed — no plan file${state.docs ? ", no tier-1 checks" : ""}`;
+			if (state.patch || state.docs) return `${state.patch ? "patch" : "docs"} (proposed — the Approve? answer grants the mode): describe the change in one line, ask Approve? in chat naming the mode, then flow approve --confirmed — no plan file${state.docs ? ", no tier-1 checks" : ""}`;
 			return `clarify the direction in chat, write .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask Approve? and run flow approve --confirmed on the answer`;
 		case "implement":
 			if (state.docs) {
@@ -2282,11 +2309,11 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			const vc = state.versionChoice;
 			const auto = cfg.release.ask !== "always" ? " (release.ask = on-change: it asks Release? only when something beyond the prep changed)" : "";
 			if (vc === "unreleased")
-				return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}, flow check; show the PR summary, then run flow release${auto || " and ask Release?"}`;
+				return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}; show the PR summary, then run flow release${auto || " and ask Release?"}`;
 			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}${isBumpKind(vc) ? ` to ${bumpVersion(state.versionFrom, vc) ?? `the next ${vc}`} (a ${vc} release, the operator's call — the gate counts it from the newest tag, so a flow that released first moves the number)` : vc && vc !== "next" ? ` to ${vc} (the operator's call)` : ""}` : ""].filter(Boolean).join(" and ");
-			if (vc && prep) return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}, flow check; show the PR summary, version and changelog, then run flow release${auto || " and ask Release?"}`;
+			if (vc && prep) return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}; show the PR summary, version and changelog, then run flow release${auto || " and ask Release?"}`;
 			if (state.docs && prep) return `${cfg.release.review}, fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
-			return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}, flow check; show the PR summary, version and changelog, ask Release? and run flow release`;
+			return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, ask Release? and run flow release`;
 		}
 		case "release":
 			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then flow finish (closing reflection first; its fold/drop answer is Finish?)`;

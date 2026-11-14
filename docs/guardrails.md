@@ -15,8 +15,8 @@ playbook, dev-flow stays silent.
 - A `pre-commit` hook covers commits made outside Pi.
 
 **Shipping waits for `flow release`.** Before the release stage, tagging, merging the PR
-(`gh pr merge`, `glab mr merge`) and creating a forge release are refused. Reads like `git tag -l`
-and opening the PR are fine.
+(`gh pr merge`, `glab mr merge`) and creating a forge release are refused. Reads like `git tag -l` or
+`git tag --sort=-creatordate` and opening the PR are fine.
 
 **No code before an approved plan.** During plan, the agent can only write in its own
 `.dev-flow/<slug>/` folder.

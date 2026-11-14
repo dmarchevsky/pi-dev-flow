@@ -29,6 +29,11 @@ interface Stub {
 /** How many operator views the wrapped flow tool checked — the closing test proves the check ran at all. */
 let viewsChecked = 0;
 
+// Suite-wide safety net: the real spawn starts a live pi session against the developer's model account. A
+// test that reaches it by accident (a flow that picked up friction, say) must fail here instead — tests that
+// exercise a worker install their own fake over this.
+stageWorkerSpawn.run = async () => { throw new Error("test reached the real stage-worker spawn — stub stageWorkerSpawn.run"); };
+
 function makePi(): Stub & ((...a: never[]) => void) {
 	const stub = { cmds: {}, tools: {}, handlers: {}, entries: [] } as Stub;
 	let cmdCtx: { notices?: string[]; sent?: { triggerTurn?: boolean }[] } | undefined; // last command's ctx — sendMessage output lands in its notices
@@ -331,7 +336,9 @@ test("verify names the commands it ran, and says when dev is not configured (#38
 	assert.match(early.content[0].text, /^NEEDS-OPERATOR Verified\? — deployed for review — [\s\S]*flow verify --confirmed/, "it hands the chat question back to the agent");
 	assert.match(early.content[0].text, /dev ran \(touch dev-up\)/);
 	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ran", "state.json"), "utf8")).stage, "implement", "nothing was recorded on the operator's behalf");
-	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); .*dev ran \(touch dev-up\)/, "a commit after the check made the record stale — the gate reruns it and says so");
+	const confirmedRun = (await flow(["verify", "--confirmed"])).content[0].text;
+	assert.match(confirmedRun, /entering pre-release stage\.\ncommits: 1 ahead of main, 1 uncommitted path\(s\); .*review deploy stands \(deployed .*tree unchanged\) — not built or deployed again/, "the answer covers the deploy the operator just reviewed — it is not deployed a second time");
+	assert.doesNotMatch(confirmedRun, /dev ran/, "no second deploy");
 	await toImplement("nodev", "test = node --version\n");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /dev: none configured/);
 });
@@ -1000,7 +1007,7 @@ test("release with a stale session build: warn and ask, never block; the operato
 		assert.match(refused.content[0].text, /Update \(\/reload.*proceed with the old release/, "asks update-or-proceed, and never refuses the choice itself");
 		const ok = await flow(["release", "--confirmed"]);
 		assert.match(ok.content[0].text, /release approved/, "the operator's proceed walks the gate");
-		assert.match(ok.content[0].text, /released under dev-flow 0\.0\.1.*operator choice/, "the decision is recorded in the gate output");
+		assert.match(ok.content[0].text, /released under dev-flow 0\.0\.1.*chose to proceed/, "the decision is recorded in the gate output");
 		const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "stale", "state.json"), "utf8"));
 		assert.match(st.staleBuild, /^0\.0\.1 \(the dev-flow install /, "stamped for release-done's backstop");
 		const rd = await flow(["release-done"]);
@@ -1406,6 +1413,39 @@ test("finish reflection: a failed worker removes nothing, yolo never skips it, o
 	}
 });
 
+test("finish: a reflection worker that throws or returns nothing is a readable refusal, and finish stays re-runnable (gh#216)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\nreflect = always\n```\n"]);
+	trackPlaybook(repo);
+	await flow(["start", "dead"]);
+	mkdirSync(path.join(repo, ".dev-flow", "dead", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "dead", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "dead");
+	await flow(["verify", "--yolo", "--confirmed"]);
+	await flow(["release"]);
+	const orig = stageWorkerSpawn.run;
+	try {
+		stageWorkerSpawn.run = async () => { throw new Error("provider closed the stream"); };
+		const thrown = await flow(["finish", "--confirmed"]);
+		assert.ok(thrown.isError, "a dead worker is an error, not an empty result");
+		assert.match(thrown.content[0].text, /closing reflection did not report — nothing was removed/);
+		assert.match(thrown.content[0].text, /provider closed the stream/);
+		assert.ok(existsSync(path.join(repo, ".dev-flow", "dead", "worktree")), "nothing was removed");
+		// the session is not left marked as running a worker: the retry spawns again
+		let spawns = 0;
+		stageWorkerSpawn.run = async () => { spawns++; return fakeWorker([() => "REPORT\nF0 | nothing new"]) as never; };
+		const again = await flow(["finish", "--confirmed"]);
+		assert.equal(spawns, 1, again.content[0].text);
+		assert.doesNotMatch(again.content[0].text, /already running/);
+	} finally {
+		stageWorkerSpawn.run = orig;
+	}
+});
+
 test("finish skips the closing reflection on a flow with no friction, unless the playbook says reflect = always", async () => {
 	for (const always of [false, true]) {
 		const pi = makePi();
@@ -1488,9 +1528,9 @@ test("a refusal before start counts on the feature that start creates", async ()
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", TEST_MD]);
 	trackPlaybook(repo);
-	const refused = await flow(["start", "early", "--patch"]); // operator-granted flag without --confirmed: a refusal
+	const refused = await flow(["verify"]); // a gate with no feature bound: a refusal before anything exists to count it against
 	assert.equal(refused.isError, true, refused.content[0].text);
-	await flow(["start", "early", "--patch", "--confirmed"]);
+	await flow(["start", "early", "--patch"]);
 	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "early", "state.json"), "utf8"));
 	assert.equal(st.friction ?? 0, 1, "the pre-start refusal is the started feature's friction");
 });
@@ -1740,11 +1780,13 @@ test("patch feature: no plan file, same gates end to end", async () => {
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
-	assert.match((await flow(["start", "ungranted", "--patch"])).content[0].text, /operator-granted/, "--patch without the operator's chat grant is refused");
-	assert.match((await flow(["start", "ungranted", "--patch", "--docs", "--confirmed"])).content[0].text, /exclusive/, "modes are mutually exclusive");
-	await flow(["start", "chore", "--patch", "--confirmed"]);
+	assert.match((await flow(["start", "both", "--patch", "--docs"])).content[0].text, /exclusive/, "modes are mutually exclusive");
+	const started = await flow(["start", "chore", "--patch"]);
+	assert.ok(!started.isError, started.content[0].text);
+	assert.match(started.content[0].text, /started at stage plan \(ui=false, patch[\s\S]*patch mode is proposed, not granted yet — the operator's Approve\? answer grants it/, "start takes the mode as a proposal: no second question before Approve?");
 	const noPlan = await flow(["approve"]);
 	assert.ok(!noPlan.content[0].text.includes("plan gate FAILED"), "patch does not require plan/*.md");
+	assert.match(noPlan.content[0].text, /^NEEDS-OPERATOR Approve\? — this is proposed as a patch flow — no written plan/, "the Approve? question names the mode it grants");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/);
 	await flow(["check"]);
 	commitWt(repo, "chore");
@@ -1762,8 +1804,8 @@ test("docs feature: no plan file, no tier-1 checks, full release end to end", as
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n"]);
 	trackPlaybook(repo);
-	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /operator-granted.*Only an operator message sent after this refusal counts.*pass --confirmed on the first call/s, "--docs without the operator's chat grant is refused, and the refusal says a grant given before it must be asked again (gh#206)");
-	assert.match((await flow(["start", "readme-typo", "--docs", "--confirmed"])).content[0].text, /docs/, "docs mode announced at start");
+	assert.match((await flow(["start", "readme-typo", "--docs"])).content[0].text, /started at stage plan \(ui=false, docs[\s\S]*docs mode is proposed, not granted yet/, "docs mode is a proposal at start");
+	assert.match((await flow(["approve"])).content[0].text, /^NEEDS-OPERATOR Approve\? — this is proposed as a docs flow — no written plan and no build checks/, "Approve? names what the docs mode drops");
 	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/, "docs approves with no plan file written");
 	commitWt(repo, "readme-typo");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "docs verify passes with no flow check run");
@@ -1956,7 +1998,7 @@ test("flow doctor reviews open reflections with routing and briefs a fresh note"
 	);
 	const d = await flow(["doctor"]);
 	assert.match(d.content[0].text, /reflection review — 3 open item\(s\)/);
-	assert.match(d.content[0].text, /docs flow \(flow start fold-<topic> --docs --confirmed\)/, "playbook items route to a docs flow");
+	assert.match(d.content[0].text, /docs flow \(flow start fold-<topic> --docs\)/, "playbook items route to a docs flow");
 	assert.match(d.content[0].text, /\[code\] seed skips admins[^\n]*\n\s*→ patch flow/, "code items route to a patch flow");
 	assert.match(d.content[0].text, /legacy ## plugin row — belongs on GitHub/, "a legacy plugin row is sent upstream in a foreign repo");
 	assert.match(d.content[0].text, /doctor never implements/);
@@ -2040,14 +2082,13 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	assert.ok(early.isError && early.content[0].text.includes("CHANGELOG.md") && /uncommitted path/.test(early.content[0].text), "release refuses while the prep edit sits uncommitted: " + early.content[0].text);
 	execFileSync("git", ["-C", path.join(repo, ".dev-flow", "rel", "worktree"), "add", "-A"]);
 	execFileSync("git", ["-C", path.join(repo, ".dev-flow", "rel", "worktree"), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "changelog"]);
-	// the commit moved the tree the green was taken against — the release gate re-demands the checks
-	const stale = await flow(["release", "--confirmed"]);
-	assert.ok(stale.isError && /has not passed|stale/.test(stale.content[0].text), "release gate demands re-greened checks after the prep commit: " + stale.content[0].text);
-	await flow(["check"]);
+	// the commit holds nothing but release prep (the changelog): the greens are carried onto the new tree,
+	// so no flow check is owed before the gate asks its question
 	const noOp = await flow(["release"]);
-	assert.ok(noOp.isError && /NEEDS-OPERATOR Release\?/.test(noOp.content[0].text), "Release? needs an operator answer");
+	assert.ok(noOp.isError && /NEEDS-OPERATOR Release\?/.test(noOp.content[0].text), "Release? needs an operator answer: " + noOp.content[0].text);
 	assert.equal(stage(), "pre-release");
-	await flow(["release", "--confirmed"]);
+	const rel = await flow(["release", "--confirmed"]);
+	assert.match(rel.content[0].text, /Checks kept \(test\): only release prep was committed since they passed/, rel.content[0].text);
 	assert.equal(stage(), "release");
 	markReflected(repo, "rel"); // the closing reflection already ran — this test is about the cleanup
 	// published but unrecorded: finish records the release itself, then asks its one question
@@ -2057,6 +2098,41 @@ test("pre-release stage: verify lands there, release gate has teeth, finish asks
 	const fin = await flow(["finish", "--confirmed"]);
 	assert.match(fin.content[0].text, /done/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "rel")), "feature directory removed on finish");
+});
+
+test("release gate: runs the checks it is owed after a code commit, refuses on a red one, and recheck = always re-runs after prep", async () => {
+	const run = async (slug: string, mdText: string, commit: (wt: string) => void) => {
+		const pi = makePi();
+		const repo = makeRepo();
+		const ctx = makeCtx(repo);
+		const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+		await flow(["init", "--write", mdText]);
+		trackPlaybook(repo);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		commitWt(repo, slug);
+		await flow(["verify", "--confirmed"]);
+		const wt = path.join(repo, ".dev-flow", slug, "worktree");
+		commit(wt);
+		commitWt(repo, slug, "after verify");
+		return (await flow(["release", "--confirmed"])) as { content: [{ text: string }]; isError?: boolean };
+	};
+	const prep = (wt: string) => writeFileSync(path.join(wt, "CHANGELOG.md"), "## 0.0.1\n");
+	// a code change after the checks: the gate runs them itself instead of sending the agent to flow check
+	const code = await run("owed", TEST_MD, (wt) => { prep(wt); writeFileSync(path.join(wt, "src.txt"), "code\n"); });
+	assert.ok(!code.isError, code.content[0].text);
+	assert.match(code.content[0].text, /Checks ran at the gate \(test\)/);
+	assert.doesNotMatch(code.content[0].text, /Checks kept/);
+	// a red check at the gate is the refusal, with its output
+	const red = await run("red", TEST_MD.replace("test = node --version", "test = test ! -f broken"), (wt) => { prep(wt); writeFileSync(path.join(wt, "broken"), "x\n"); });
+	assert.ok(red.isError && /release gate FAILED — a check run at the gate failed:\ntest: FAIL/.test(red.content[0].text), red.content[0].text);
+	// recheck = always: a prep-only commit still re-runs the suite
+	const always = await run("always", TEST_MD.replace("merge = merge\n", "merge = merge\nrecheck = always\n"), prep);
+	assert.ok(!always.isError, always.content[0].text);
+	assert.match(always.content[0].text, /Checks ran at the gate \(test\)/);
+	assert.doesNotMatch(always.content[0].text, /Checks kept/);
 });
 
 test("a live foreign claim cannot be taken silently; flow use takes over explicitly", async () => {
@@ -2252,6 +2328,103 @@ test("yolo stops short of Release? when commits landed after Verified?, or when 
 	const asked = await b.flow(["release"]);
 	assert.ok(asked.isError && /yolo = until-release/.test(asked.content[0].text), asked.content[0].text);
 	assert.match((await b.flow(["release", "--yolo", "--confirmed"])).content[0].text, /release approved/);
+	// (c) gh#219: the same flags replayed before the gate ever asked answer nothing — the question is put first
+	const c = await run(`${base}yolo = until-release\n\`\`\`\n`, "replay");
+	const replayed = await c.flow(["release", "--yolo", "--confirmed"]);
+	assert.ok(replayed.isError && /NEEDS-OPERATOR Release\?[\s\S]*yolo = until-release/.test(replayed.content[0].text), replayed.content[0].text);
+	assert.equal(JSON.parse(readFileSync(path.join(c.repo, ".dev-flow", "replay", "state.json"), "utf8")).stage, "pre-release", "nothing shipped on a replayed flag");
+	assert.match((await c.flow(["release", "--confirmed"])).content[0].text, /release approved \(confirmed by operator instruction\)/, "the answer to the gate's own question stands");
+});
+
+test("Finish? answers itself on a clean flow; finish = always, an open release item or a red after-merge check still stop it", async (t) => {
+	// no path in this test may reach a real reflection worker
+	const origSpawn = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = async () => { throw new Error("this test must not spawn a worker"); };
+	t.after(() => { stageWorkerSpawn.run = origSpawn; });
+	const run = async (slug: string, release: string, tail = "") => {
+		const pi = makePi();
+		const repo = makeRepo();
+		const ctx = makeCtx(repo);
+		const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+		await flow(["init", "--write", `# dev-flow\n\n## release\n\n\`\`\`flow\nmerge = merge\n${release}\`\`\`\n${tail}`]);
+		trackPlaybook(repo);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		await flow(["approve", "--confirmed"]);
+		commitWt(repo, slug);
+		await flow(["verify", "--confirmed"]);
+		await flow(["release", "--confirmed"]);
+		// whatever the fixture tripped on the way, this flow's record says it went smoothly
+		const f = path.join(repo, ".dev-flow", slug, "state.json");
+		writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, "utf8")), friction: 0 }, null, 2));
+		return { flow, repo, gone: () => !existsSync(path.join(repo, ".dev-flow", slug)) };
+	};
+	// clean: one call records the release and closes the feature — no question left to ask
+	const clean = await run("clean", "");
+	const done = await clean.flow(["finish"]);
+	assert.ok(!done.isError, done.content[0].text);
+	assert.match(done.content[0].text, /release recorded as complete[\s\S]*feature clean done[\s\S]*Finish\? answered itself \(finish = on-change\)/);
+	assert.ok(clean.gone(), "the feature folder is removed");
+	// finish = always: asked as before
+	const always = await run("always", "finish = always\n");
+	const asked = await always.flow(["finish"]);
+	assert.ok(asked.isError && /NEEDS-OPERATOR Finish\?/.test(asked.content[0].text), asked.content[0].text);
+	assert.ok(!always.gone());
+	assert.match((await always.flow(["finish", "--confirmed"])).content[0].text, /feature always done/);
+	// an open release-stage item is the operator's to close
+	const item = await run("item", "", "\n- [ ] smoke the deployed build\n");
+	const open = await item.flow(["finish"]);
+	assert.ok(open.isError && /NEEDS-OPERATOR Finish\?[\s\S]*smoke the deployed build/.test(open.content[0].text), open.content[0].text);
+	assert.ok(!item.gone());
+	// a scripted after-merge check: run from the main checkout before anything is removed
+	const chk = await run("chk", "", "\n\`\`\`flow-check deployed\ntest -f .dev-flow/deployed-ok\n\`\`\`\n");
+	const red = await chk.flow(["finish"]);
+	assert.ok(red.isError && /finish blocked — after-merge check "deployed" failed in the main checkout[\s\S]*nothing was removed/.test(red.content[0].text), red.content[0].text);
+	assert.ok(!chk.gone(), "a red after-merge check removes nothing");
+	assert.equal(JSON.parse(readFileSync(path.join(chk.repo, ".dev-flow", "chk", "state.json"), "utf8")).friction ?? 0, 0, "a red check is the check doing its job, not friction");
+	writeFileSync(path.join(chk.repo, ".dev-flow", "deployed-ok"), "");
+	const green = await chk.flow(["finish"]);
+	assert.match(green.content[0].text, /feature chk done[\s\S]*after-merge checks green \(deployed\)/, green.content[0].text);
+	assert.ok(chk.gone());
+});
+
+test("flow check says when the branch fell behind the default branch, and where a rebase would conflict (gh#209)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "lag", "shared.txt", "the branch's version\n");
+	assert.doesNotMatch((await flow(["check"])).content[0].text, /behind/, "an up-to-date branch gets no note");
+	commitMain(repo, "other.txt", "x\n", "unrelated work on main");
+	const clear = await flow(["check"]);
+	assert.match(clear.content[0].text, /branch is 1 commit\(s\) behind main — flow verify rebases it before the review deploy$/m, clear.content[0].text);
+	commitMain(repo, "shared.txt", "main's version\n", "main edits the same file");
+	const clash = await flow(["check"]);
+	assert.match(clash.content[0].text, /branch is 2 commit\(s\) behind main[\s\S]*would conflict in: shared\.txt/, clash.content[0].text);
+	assert.ok(!clash.isError, "the note never fails the check");
+});
+
+test("a session on an older build hears it on every gate, not only start and status (gh#218)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "skew");
+	assert.doesNotMatch((await flow(["check"])).content[0].text, /this session runs dev-flow/);
+	try {
+		process.env.DEV_FLOW_LOADED_VERSION = "0.0.1";
+		const res = await flow(["check"]);
+		assert.match(res.content[0].text, /warning: this session runs dev-flow 0\.0\.1, .* ships \d[\s\S]*tell the operator at the next safe point/, res.content[0].text);
+		const st = (await flow(["status"])).content[0].text;
+		assert.equal(st.split("this session runs dev-flow 0.0.1").length, 2, "status says it once, in its own words");
+	} finally {
+		delete process.env.DEV_FLOW_LOADED_VERSION;
+	}
 });
 
 test("yolo at any gate: verify --yolo answers that question and pre-confirms the rest to finish", async () => {
@@ -3687,15 +3860,17 @@ test("the flow tool refuses a --confirmed no operator message stands behind (gh#
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
 	await flow(["init", "--write", TEST_MD]);
 	trackPlaybook(repo);
-	// avatar-sheet's shape: refused as operator-granted, retried at once with --confirmed
-	const refused = await flow(["start", "ava", "--docs"]);
-	assert.match(refused.content[0].text, /operator-granted/);
-	const self = await flow(["start", "ava", "--docs", "--confirmed"]);
+	// avatar-sheet's shape, where the grant now lives: a docs mode is proposed at start and granted by the
+	// Approve? answer — so the self-grant to refuse is an Approve? answered with nobody asked
+	assert.match((await flow(["start", "ava", "--docs"])).content[0].text, /started at stage plan/);
+	const asked = await flow(["approve"]);
+	assert.match(asked.content[0].text, /^NEEDS-OPERATOR Approve\? — this is proposed as a docs flow/);
+	const self = await flow(["approve", "--confirmed"]);
 	assert.equal(self.isError, true);
-	assert.match(self.content[0].text, /no operator message since flow start asked/, self.content[0].text);
-	assert.ok(!existsSync(path.join(repo, ".dev-flow", "ava", "state.json")), "nothing started on the agent's own word");
+	assert.match(self.content[0].text, /no operator message since flow approve asked/, self.content[0].text);
+	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "ava", "state.json"), "utf8")).stage, "plan", "nothing was granted on the agent's own word");
 	branch.push({ type: "message", message: { role: "user" } }); // the operator answers in chat
-	assert.match((await flow(["start", "ava", "--docs", "--confirmed"])).content[0].text, /started at stage plan/);
+	assert.match((await flow(["approve", "--confirmed"])).content[0].text, /plan approved/);
 	// nav-menu-tweaks' shape: a ui start, then the gate dropped with nobody asked
 	await flow(["abort", "ava", "--confirmed"]);
 	branch.push({ type: "message", message: { role: "user" } });

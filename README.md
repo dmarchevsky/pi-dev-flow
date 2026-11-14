@@ -55,7 +55,7 @@ a test"*. It becomes the feature `session-renewal`:
         ┌────────▼────────┐
         │     release     │  PR → merge → tag → release notes
         └────────┬────────┘
-           Finish?
+           Finish?  · answers itself when nothing is left open
         ┌────────▼────────┐
         │      done       │  worktree, branch and feature folder removed
         └─────────────────┘
@@ -66,7 +66,7 @@ a test"*. It becomes the feature `session-renewal`:
 | **plan** | reads the code, asks questions, writes `plan/plan.md` | **Approve?** — build it |
 | **implement** | works on `feat/<slug>`, commits in small steps, gets the checks green | **Verified?** — you tried it; also pick patch / minor / major, or merge unreleased |
 | **pre-release** | reviews, fixes, updates docs and changelog, bumps the version | **Release?** — only asked if something beyond release prep changed |
-| **release** | opens the PR, merges, tags, publishes release notes | **Finish?** — clean up |
+| **release** | opens the PR, merges, tags, publishes release notes | **Finish?** — only asked if something is still open |
 
 ### Your answers
 
@@ -76,8 +76,8 @@ a test"*. It becomes the feature `session-renewal`:
 - **merge unreleased**: merge with a changelog entry, but no version bump or tag. The next release
   picks it up.
 
-For small work the agent may suggest a lighter **mode**: `--patch` for a quick fix with no written
-plan, or `--docs` for docs-only changes with no build checks.
+For small work the agent may propose a lighter **mode**: `--patch` for a quick fix with no written
+plan, or `--docs` for docs-only changes with no build checks. Your Approve? answer grants it.
 
 You never need to type `flow` commands. `/flow …` is there as a manual override when a session gets
 stuck. See the [gate reference](https://github.com/dmarchevsky/pi-dev-flow/blob/main/docs/gates.md).

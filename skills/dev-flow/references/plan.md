@@ -5,10 +5,13 @@
 No code edits before approval. Reads are always allowed.
 
 1. **Research** the code the plan needs.
-2. **Clarify before drafting**: give your direction in chat — the problem in
-   one sentence, the fix in a few plain lines, open unknowns, the mode you
-   propose and why — and ask your questions. File-by-file detail belongs in
-   plan.md, not chat. Draft only after the direction is confirmed.
+2. **Clarify before drafting — when there is something to clarify**: open
+   questions, or more than one sound approach → give your direction in chat
+   (the problem in one sentence, the fix in a few plain lines, the unknowns)
+   and ask. Draft after the direction is confirmed. Nothing open and one
+   obvious approach → skip this round: write plan.md and go to Approve?,
+   which is the operator's chance to redirect. File-by-file detail belongs
+   in plan.md, not chat.
 3. **Write `.dev-flow/<slug>/plan/plan.md`** — problem, approach, files to
    touch, test strategy, risks. Reviewable, not exhaustive.
    - Create it as soon as the direction is confirmed and keep it current: chat
@@ -48,7 +51,8 @@ No code edits before approval. Reads are always allowed.
      state; caption planned behavior as planned; if a shot fights you twice,
      verify the state in the DOM and move on.
 5. **Ask Approve? and stop.** Report opening: **📝 plan · `<slug>`** (the
-   gate's stage line). Answer → `flow approve --confirmed` (yolo → `flow
+   gate's stage line). A `--patch` / `--docs` flow: name the mode and the
+   one-line change in the question — the answer grants the mode. Answer → `flow approve --confirmed` (yolo → `flow
    approve --yolo --confirmed`).
 
 Approval creates the worktree and branch and runs `commands.setup` there; a

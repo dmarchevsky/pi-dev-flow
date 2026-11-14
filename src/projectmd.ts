@@ -18,6 +18,8 @@ export interface ParsedMd {
 	global: Record<string, string>;
 	flow: Record<MdStage, Record<string, string>>;
 	checks: StageCheck[];
+	/** flow-check blocks under ## release — run by flow finish from the main checkout */
+	releaseChecks: StageCheck[];
 	guard: GuardRules;
 	checklist: Record<string, ChecklistItem[]>;
 	prose: Record<string, string>;
@@ -68,6 +70,8 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		reflect: "release.reflect", // when finish runs the closing reflection: on-friction (default) | always
 		version: "release.version", // who decides versioned vs unreleased: ask (with Verified?, default) | versioned | unversioned (gh#198)
 		ask: "release.ask", // when Release? is asked: on-change (default) | always (gh#198)
+		finish: "release.finish", // when Finish? is asked: on-change (default, a clean flow closes itself) | always
+		recheck: "release.recheck", // checks after a release-prep-only commit: prep-skip (default, keep the green records) | always
 	},
 };
 // pre-release owns release preparation; the release keys are accepted under both sections so
@@ -125,7 +129,7 @@ function parseGuardRules(entries: { line: string; where: string }[], stage: stri
 }
 
 export function parseProjectMd(text: string): ParsedMd {
-	const p: ParsedMd = { hard: [], warn: [], global: {}, flow: Object.fromEntries(MD_STAGES.map((s) => [s, {}])) as Record<MdStage, Record<string, string>>, checks: [], guard: structuredClone(DEFAULTS.guard), checklist: {}, prose: {}, workerPreamble: [] };
+	const p: ParsedMd = { hard: [], warn: [], global: {}, flow: Object.fromEntries(MD_STAGES.map((s) => [s, {}])) as Record<MdStage, Record<string, string>>, checks: [], releaseChecks: [], guard: structuredClone(DEFAULTS.guard), checklist: {}, prose: {}, workerPreamble: [] };
 	let stage: string | null = null;
 	const prose: Record<string, string[]> = {};
 	let inFence: string | null = null; // "flow" | "flow-check" | other lang
@@ -141,7 +145,8 @@ export function parseProjectMd(text: string): ParsedMd {
 					const cmd = checkBody.join("\n").trim();
 					if (!checkName) p.hard.push(`${where}: flow-check block missing a name`);
 					else if (!cmd) p.hard.push(`${lastLine}: flow-check "${checkName}" is empty`);
-					else if (stage !== "implement") p.warn.push(`${where}: flow-check "${checkName}" ignored (tier-1 checks belong to ## implement)`);
+					else if (stage === "release") p.releaseChecks.push({ name: checkName, cmd });
+					else if (stage !== "implement") p.warn.push(`${where}: flow-check "${checkName}" ignored (checks belong to ## implement, or to ## release for after-merge checks)`);
 					else p.checks.push({ name: checkName, cmd });
 				}
 				if (inFence === "flow-guard") {
@@ -188,6 +193,14 @@ export function parseProjectMd(text: string): ParsedMd {
 						}
 						if (mapped === "release.ask" && !/^(always|on-change)$/.test(m[2].trim())) {
 							p.warn.push(`${where}: ask = "${m[2]}" — expected on-change or always, keeping on-change`);
+							return;
+						}
+						if (mapped === "release.finish" && !/^(always|on-change)$/.test(m[2].trim())) {
+							p.warn.push(`${where}: finish = "${m[2]}" — expected on-change or always, keeping on-change`);
+							return;
+						}
+						if (mapped === "release.recheck" && !/^(always|prep-skip)$/.test(m[2].trim())) {
+							p.warn.push(`${where}: recheck = "${m[2]}" — expected prep-skip or always, keeping prep-skip`);
 							return;
 						}
 						p.flow[stage as MdStage][mapped] = m[2];
@@ -271,6 +284,7 @@ export function mdToConfig(p: ParsedMd): Config {
 		...(c.commands.health && !named.has("health") ? [{ name: "health", cmd: c.commands.health }] : []),
 		...p.checks.map((x) => ({ name: x.name, cmd: x.cmd })),
 	];
+	c.releaseChecks = p.releaseChecks.map((x) => ({ name: x.name, cmd: x.cmd }));
 	c.checklist = p.checklist;
 	c.prose = p.prose;
 	if (p.workerPreamble.length) c.workerPreamble = [...p.workerPreamble];

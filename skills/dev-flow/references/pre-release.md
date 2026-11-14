@@ -35,7 +35,8 @@ and settle the scheme with the operator; never invent one.
      dropped or rewritten pending line, leftovers under `Unreleased`, and a
      changelog this branch never touched. `--no-fold-check` only on the
      operator's word.
-4. `flow check` — the prep made the earlier checks stale.
+4. No `flow check` is owed after the prep commit: the gate keeps green checks across a commit that
+   holds only the bump and changelog, and runs any stale check itself.
 5. **Run `flow release`.** By default (`ask = on-change`) it answers
    Release? itself when the release call is on record and only the prep
    landed since Verified? — say in a few lines what the PR delivers (the
@@ -48,13 +49,15 @@ and settle the scheme with the operator; never invent one.
    **🔍 pre-release · `<slug>`** (the gate's stage line; the version field
    reads `pending` until decided — never invent a bump or a no-version
    decision). Answer → `flow release --confirmed`.
-   - Standing yolo → run `flow release` without asking. It still returns
-     `NEEDS-OPERATOR Release?` when commits landed after Verified? or the
-     playbook says `yolo = until-release` — then ask.
+   - Standing yolo → run `flow release` bare, without asking. It still returns
+     `NEEDS-OPERATOR Release?` when commits landed after Verified?, the
+     playbook says `yolo = until-release`, or the session build is stale —
+     then ask. A `--confirmed` passed before the gate asked is not an answer
+     there: the gate asks first.
    - Operator ships **without a version** → `flow release --no-version
      --confirmed`: no bump or tag, but the branch must add its line under
      `Unreleased`. A changed call is `--version=<v>` / `--no-version` with
      `--confirmed`, on their word.
 
-The gate re-checks tier-1, requires the manifest ahead of the last tag and a
+The gate runs any tier-1 check that is stale, requires the manifest ahead of the last tag and a
 changelog **heading** for that version written on this branch.
