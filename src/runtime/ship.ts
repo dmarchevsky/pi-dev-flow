@@ -5,8 +5,9 @@ import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendin
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
-import { type RunResult, ago, keepThroughPrep, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
+import { type RunResult, ago, releaseDevSlot, keepThroughPrep, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
 import { type GateCtx, markPendingAsk } from "./gates.ts";
+import { gatePublishes, publishRelease } from "./publish.ts";
 
 /** gh#198: the version question asked with Verified? — null when it is not the operator's to answer here
  *  (no manifest to version, the playbook decides, or an earlier Verified? already recorded the call). */
@@ -199,10 +200,29 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	return { text: `verified${audit} — entering pre-release stage.${choiceNote}\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
+/** The release stage, run by the gate: publish (push, PR, CI, merge, tag), then the release record's proofs.
+ *  `head` is what the gate already has to say (the approval); a refusal keeps it so nothing reads as undone. */
+async function publishAndRecord(o: GateCtx, state: FlowState, head: string): Promise<RunResult> {
+	const lead = head ? `${head}\n` : "";
+	const pub = await publishRelease(o.root, state, o.cfg);
+	if (!pub.ok) return { text: `${lead}${pub.text}`, isError: true };
+	const rec = await gateReleaseDone({ ...o, rest: o.rest.filter((a) => a !== "--confirmed" && a !== "--yolo") });
+	return { ...rec, text: `${lead}${pub.log}\n${rec.text}` };
+}
+
 export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	const { root, ui, sess, cfg, flag, slugArg, takeYoloWord } = o;
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
+	// Release? was answered on an earlier call: this one resumes publishing where it stopped (CI still running,
+	// a red check fixed, a PR merged by hand) — nothing is asked again
+	if (state!.stage === "release" && state!.approvals["pre-release"]) {
+		if (state!.approvals.release) return { text: `release already recorded.\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
+		if (await gatePublishes(cfg, forgeOf(cfg, await originUrl(root)), root)) {
+			if (!state!.publish) state!.publish = {};
+			return publishAndRecord(o, state!, "");
+		}
+	}
 	// operator's word at Release?: this flow ships without a version bump or tag — recorded only once Release? is answered.
 	// gh#198: --version=<v> / --no-version here re-make the call recorded with Verified? (the operator changed their mind)
 	const relArg = versionArg(flagValue(o.rest, "version"), flag("no-version"));
@@ -451,8 +471,15 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (!state!.noVersion && manifestVer) state!.releaseVersion = manifestVer;
 	if (stale) state!.staleBuild = `${behind} (${selfBuild.label} ${selfBuild.version ?? "?"})`;
 	delete state!.pendingAsk;
+	// on GitHub the gate runs the release stage itself: the Release? answer (or its self-answer) is what authorizes
+	// the merge and the tag, exactly as it authorized the agent to run them by hand
+	const selfPublish = await gatePublishes(cfg, forgeOf(cfg, await originUrl(root)), root);
+	if (selfPublish) state!.publish = {};
+	else delete state!.publish;
 	writeState(root, state!);
-	return { text: `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${checksNote}${foldNote}${staleNote ? ` ${staleNote}.` : ""}${postVerify ? ` Warning: ${postVerify}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
+	const approved = `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${checksNote}${foldNote}${staleNote ? ` ${staleNote}.` : ""}${postVerify ? ` Warning: ${postVerify}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}`;
+	if (selfPublish) return publishAndRecord(o, state!, approved);
+	return { text: `${approved}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
 
 /** How long release-done waits on the publish CI a tag push started; a seam so tests run in milliseconds. */
@@ -505,12 +532,12 @@ export async function awaitArtifact(cmd: string, tag: string, root: string): Pro
 			return {
 				...art,
 				waited: failed.length
-					? `the CI ${tag} started did not pass — ${failed.map((r) => `${r.workflowName}: ${r.conclusion || "?"} (${r.url})`).join(", ")}; fix and re-publish, then re-run release-done`
+					? `the CI ${tag} started did not pass — ${failed.map((r) => `${r.workflowName}: ${r.conclusion || "?"} (${r.url})`).join(", ")}; fix and re-publish, then re-run flow finish`
 					: `every CI run ${tag} started finished green, yet the artifact is missing — check where the publish workflow pushes`,
 			};
 		}
 		if (elapsed >= artifactWait.budgetMs)
-			return { ...art, waited: `the publish CI is still running after ${mins()} (${pending.map((r) => `${r.workflowName}: ${r.url}`).join(", ")}) — re-run release-done once it finishes` };
+			return { ...art, waited: `the publish CI is still running after ${mins()} (${pending.map((r) => `${r.workflowName}: ${r.url}`).join(", ")}) — re-run flow finish once it finishes` };
 		await artifactWait.sleep(artifactWait.pollMs);
 	}
 }
@@ -698,7 +725,7 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	const { state, err } = needState(root, sess, slugArg);
 	if (err) return err;
 	if (!state!.approvals.release)
-		return { text: `finish closes a released feature — stage is "${state!.stage}" and no release is recorded; run flow release-done first (to abandon an unfinished feature, run flow abort)`, isError: true };
+		return { text: `finish closes a released feature — stage is "${state!.stage}" and no release is recorded; publish it first — flow release (to abandon an unfinished feature, run flow abort)`, isError: true };
 	// after this the flow state is gone: nothing may sit uncommitted or unpushed
 	const dirty = await sh("git status --porcelain", root);
 	if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
@@ -768,7 +795,7 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 		}
 	}
 	// a forge release that failed at release-done is still the operator's call — but they must see it before the state vanishes (#63)
-	const forgeSkipNote = state!.forgeReleaseSkipped ? ` WARNING: the forge release was not created (${state!.forgeReleaseSkipped}) — recreate it manually or re-run release-done before finishing.` : "";
+	const forgeSkipNote = state!.forgeReleaseSkipped ? ` WARNING: the forge release was not created (${state!.forgeReleaseSkipped}) — recreate it manually or have the operator run /flow release-done before finishing.` : "";
 	// the one finish question — asked after the safety checks so it can never be a wasted question
 	// yolo works uniformly at every gate: at Finish? nothing later remains to pre-confirm, the flag just answers this one
 	const yoloWord = takeYoloWord(state!);
@@ -835,21 +862,7 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 			return { text: "finish declined" };
 		}
 	}
-	// a side-by-side dev instance (a port the operator picked at verify) is this flow's to stop; the default
-	// port's stack stays up — it is the machine's shared app, and the next flow redeploys over it
-	let devDownNote = "";
-	if (state!.devPort !== undefined && state!.devPort !== cfg.devPort) {
-		if (cfg.commands.devDown) {
-			const down = await sh(cfg.commands.devDown, gateCwd(root, state!), 5 * 60_000, devEnv(root, state!, cfg));
-			devDownNote = down.ok ? ` dev instance on port ${state!.devPort} stopped (${cfg.commands.devDown}).` : ` dev instance on port ${state!.devPort} did NOT stop (${cfg.commands.devDown}) — stop it by hand:\n${tail(down.out)}\n`;
-		} else devDownNote = ` dev instance on port ${state!.devPort} is still running — the playbook has no devDown to stop it; stop it by hand.`;
-	}
-	const reg = readDevPorts(root);
-	const mine = Object.keys(reg).filter((k) => reg[k].slug === state!.slug);
-	if (mine.length) {
-		for (const k of mine) delete reg[k];
-		writeDevPorts(root, reg);
-	}
+	const devDownNote = await releaseDevSlot(root, state!, cfg);
 	if (wt && existsSync(wt)) {
 		const rm = await sh(`git worktree remove ${sq(wt)} && git branch -D ${sq(state!.branch)}`, root);
 		if (!rm.ok) return { text: `worktree removal failed:\n${rm.out}\nif files are owned by another user (e.g. root-owned docker build output), remove ${state!.worktree} manually and rerun flow finish`, isError: true };
