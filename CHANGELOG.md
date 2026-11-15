@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Changed
+- **`flow reflect done` closes several notes at once (gh#220).** A fold that fixed nine notes checked them off by patching `reflections.md` with a script, because nothing pointed the session at the command. `flow reflect done 3,4,7 "<what fixed them>"` now closes a batch, and one bad number closes none. `flow reflect list` tells the agent to use it instead of editing the file.
+
+### Fixed
+- **Worker briefs carry your guard rules (gh#214).** A `flow_stage` worker has no operator, so a command your `confirm` rule matches can never be granted. A review worker chained a read-only check with a `docker compose down`; the guard refused the whole call and the check was silently dropped. Every worker brief now lists the playbook's `deny`, `confirm`, `protect` and `forbid` rules, says not to try or work around them, says to run each probe as its own call, and has the worker report a blocked check under `checks not run:`.
+- **A docs flow's worker is no longer told to run project checks (gh#211).** On a `--docs` flow the gates skip the project's commands and no setup runs in the worktree, but the review brief still listed the test and health commands. The worker installed every dependency to run checks its own gate had skipped. The brief now says there are none to run.
+
 ## [0.92.0] - 2026-11-14
 
 **The gates stop repeating work and asking empty questions, and on GitHub `flow release` publishes the release itself.**

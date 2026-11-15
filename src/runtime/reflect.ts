@@ -6,6 +6,7 @@ import { dedupeReflections, linkedTag, parseGhIssues, similarNote, type FoldResu
 import { dfDir, now, originUrl, readReflections, readReflectionsText, sh } from "./base.ts";
 import { type RunResult, type Session } from "./checks.ts";
 import { isSelfRepo } from "./setup.ts";
+import { AGENT_MARK } from "../present.ts";
 
 /** The dev-flow repo plugin notes are filed against: the manifest's repository field; the dev-flow
  *  checkout itself falls back to its origin. */
@@ -93,6 +94,8 @@ export async function reflectList(root: string): Promise<RunResult> {
 					const link = fold.state === "ok" ? fold.result.linked.find((l) => l.item === i) : undefined;
 					return `  ${it.n}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}${link ? linkedTag(link.issue) : ""}`;
 				}),
+				// gh#220: the command that closes a row has to be in front of the session that is about to hand-edit the file
+				`${AGENT_MARK}close fixed rows with flow reflect done <n>[,<n>…] "<what fixed it>" — never by editing reflections.md`,
 			]
 		: fold.state === "absent" || fold.state === "skipped"
 			? ["reflections: nothing open"]
@@ -148,15 +151,23 @@ function noOpenRow(text: string, n: number, items: readonly ReflectItem[]): stri
 export function reflectDoneNote(root: string, sess: Session, args: string[]): RunResult {
 	const text = readReflectionsText(root);
 	const items = reflectItems(text);
-	const n = Number(args[0]);
-	const it = items.find((x) => x.n === n);
-	if (!it) return { text: `done: ${noOpenRow(text, n, items)}`, isError: true };
+	// gh#220: a fold closes several rows with one fix — `done 3,4,7 "<what>"` checks them off together. Checking a
+	// row off leaves the other numbers as they are, so the batch is all or nothing: one bad number closes none.
+	const nums = [...new Set(String(args[0] ?? "").split(",").map((p) => p.trim()).filter(Boolean).map(Number))];
+	if (!nums.length) return { text: 'usage: flow reflect done <n>[,<n>…] "<what fixed it>"', isError: true };
+	const picked = nums.map((n) => ({ n, it: items.find((x) => x.n === n) }));
+	const bad = picked.filter((p) => !p.it);
+	if (bad.length) return { text: `done: ${bad.map((p) => noOpenRow(text, p.n, items)).join("; ")}${nums.length > 1 ? " — nothing was checked off" : ""}`, isError: true };
 	const stamp = [now().slice(0, 10), sess.slug].filter(Boolean).join(" ");
 	const what = args.slice(1).join(" ").trim();
-	const next = reflectDone(text, n, what ? `${stamp} — ${what}` : stamp)!;
+	let next = text;
+	for (const n of nums) next = reflectDone(next, n, what ? `${stamp} — ${what}` : stamp)!;
 	writeFileSync(path.join(dfDir(root), "reflections.md"), next);
 	const { tidy } = reflectionNudges(next, now().slice(0, 10));
-	return { text: `reflect: item ${n} checked off — ${it.body}${what ? ` — fixed: ${what}` : ""}` + (tidy ? `\n${tidy}` : "") };
+	const head = nums.length === 1
+		? `reflect: item ${nums[0]} checked off — ${picked[0].it!.body}${what ? ` — fixed: ${what}` : ""}`
+		: `reflect: ${nums.length} items checked off${what ? ` — fixed: ${what}` : ""}\n${picked.map((p) => `  ${p.n}. ${p.it!.body}`).join("\n")}`;
+	return { text: head + (tidy ? `\n${tidy}` : "") };
 }
 
 /** `flow reflect tidy` — drop the closed (`- [x]`) items; the `— fixed:` note already recorded the outcome. */

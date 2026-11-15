@@ -18,7 +18,7 @@ friction only, never the same issue twice. `.dev-flow/reflections.md` holds
   itself, plugin feedback is code.
 - No flag → the wording decides and the printed line says why.
 - `flow reflect list` numbers the queue; `flow reflect move <n>
-  --playbook|--code` re-files; `flow reflect done <n> ["<what fixed it>"]`
+  --playbook|--code` re-files; `flow reflect done <n>[,<n>…] ["<what fixed it>"]`
   checks one off; `flow reflect tidy` drops closed items. The numbers are
   row numbers: checking items off leaves the others' numbers alone, so a
   batch of `done` calls read off one `list` is safe; after `move` or `tidy`,
@@ -33,7 +33,8 @@ doctor` — never mid-feature. One line; the operator decides.
 
 **Folding items in** on the operator's word: investigate, propose, confirm,
 open the routed flow and apply it there (`project.md` is editable only in a
-docs/patch worktree), then `flow reflect done <n> "<what>"` once merged.
+docs/patch worktree), then `flow reflect done <n> "<what>"` once merged (`done 3,4,7 "<what>"`
+closes a batch) — never by editing `reflections.md`.
 
 **GitHub issues** fold into `flow doctor` / `reflect list` when the repo has a
 GitHub remote: a local row an open issue covers shows `⟷ gh#NNN` (check it off

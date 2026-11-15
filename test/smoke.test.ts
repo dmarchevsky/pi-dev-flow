@@ -887,6 +887,15 @@ test("reflect done <n>: checks a fixed item off with date, slug and what fixed i
 	assert.match(r.content[0].text, /item 2 checked off — seed skips admins — fixed: PR #93/);
 	assert.match(readFileSync(file, "utf8"), /- \[x\] seed skips admins — s 2026-10-02 — fixed: \d{4}-\d\d-\d\d — PR #93/);
 	assert.match((await flow(["reflect", "list"])).content[0].text, /1 open/);
+	// gh#220: a fold closes several rows at once, and the list names the command that does it
+	writeFileSync(file, "# dev-flow reflections\n\n## playbook\n\n- [ ] a drifted — s 2026-10-01\n- [ ] b drifted — s 2026-10-01\n- [ ] c drifted — s 2026-10-01\n");
+	assert.match((await flow(["reflect", "list"])).content[0].text, /close fixed rows with flow reflect done <n>\[,<n>…\] "<what fixed it>" — never by editing reflections\.md/);
+	const bad = await flow(["reflect", "done", "1,9", "nope"]);
+	assert.ok(bad.isError && /no open item 9[\s\S]*nothing was checked off/.test(bad.content[0].text), bad.content[0].text);
+	assert.ok(!readFileSync(file, "utf8").includes("[x]"), "one bad number closes none");
+	const batch = await flow(["reflect", "done", "1,3", "playbook", "fold"]);
+	assert.match(batch.content[0].text, /2 items checked off — fixed: playbook fold\n  1\. a drifted[^\n]*\n  3\. c drifted/, batch.content[0].text);
+	assert.match(readFileSync(file, "utf8"), /- \[x\] a drifted[^\n]*fixed: \d{4}-\d\d-\d\d — playbook fold\n- \[ \] b drifted[^\n]*\n- \[x\] c drifted[^\n]*playbook fold/);
 });
 
 test("reflect tidy: drops closed items; the nudge fires once the pile is worth a tidy", async () => {

@@ -2446,7 +2446,30 @@ export interface WorkerBriefInput {
 	checks: { name: string; command: string }[];
 	/** the playbook's `flow-worker` lines (gh#201): setup a worker needs before any project check can run */
 	preamble?: string[];
+	/** a --docs flow: the gates skip every project command, and no setup ran in the worktree — the brief hands out none (gh#211) */
+	docs?: boolean;
+	/** the playbook's guard rules (gh#214): a worker has no operator, so a `confirm` refusal has no answer — it must know not to try */
+	guard?: GuardRules;
 	note: string;
+}
+
+/** The playbook's guard rules as a brief section (gh#214). A worker has no operator: a command a `confirm` rule
+ *  matches can never be granted, and the refusal takes the whole bash call down — chained read-only parts too. */
+function workerGuardLines(guard: GuardRules | undefined): string[] {
+	if (!guard) return [];
+	const rows = (rules: GuardRule[]) => rules.map((r) => `  - \`${r.pattern}\`${r.why ? ` — ${r.why}` : ""}`);
+	const blocked = [...guard.deny, ...guard.confirm];
+	const paths = [...guard.protect, ...guard.forbid];
+	if (!blocked.length && !paths.length) return [];
+	return [
+		"## Guard rules (from the project's playbook)",
+		"A guard checks every command and path. You have no operator to ask, so a rule that needs their OK is a refusal for you: do not try the command, and do not work around it (a copy of a file, another directory, a different spelling).",
+		...(blocked.length ? ["- Commands matching these patterns (regular expressions) are refused:", ...rows(blocked)] : []),
+		...(paths.length ? ["- Paths matching these are not yours to write:", ...rows(paths)] : []),
+		"- A refusal stops the whole bash call, so the read-only parts chained with the refused command do not run either: run each probe as its own call.",
+		"- A check you could not run because of a rule: name it and the rule under `checks not run:` in the REPORT — never report it as passed.",
+		"",
+	];
 }
 
 /** The facts every worker needs, so the driver's note can be just the slice. The plan path is absolute:
@@ -2464,10 +2487,13 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 		`- Branch base: ${o.defaultBranch}`,
 		`- Commits on the branch so far:\n${o.commits.trim() ? o.commits.trim().split("\n").map((l) => `  ${l}`).join("\n") : "  (none)"}`,
 		`- Uncommitted now: ${o.status.trim() ? `\n${o.status.trim().split("\n").map((l) => `  ${l}`).join("\n")}` : "clean"}`,
-		`- Project checks (run them before you report${o.preamble?.length ? ", in a shell that ran the setup below first" : ""}):\n${checks}`,
+		o.docs
+			? "- Project checks: none — this is a docs flow. The gates skip the project's commands and no setup ran in this worktree (no installed dependencies): do not install, build or run the test suite; check the docs against the code by reading."
+			: `- Project checks (run them before you report${o.preamble?.length ? ", in a shell that ran the setup below first" : ""}):\n${checks}`,
 		"- You hold no flow tool: gates, checkpoints and the operator stay with the driving session.",
 		"",
-		...(o.preamble?.length
+		...workerGuardLines(o.guard),
+		...(o.preamble?.length && !o.docs
 			? ["## Setup (from the project's playbook)", "Run these lines in every shell that runs a project check: each bash call is a fresh shell, so prefix the check with them or chain them with `&&`.", "```sh", ...o.preamble, "```", ""]
 			: []),
 		"## Your task",
