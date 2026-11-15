@@ -7,7 +7,7 @@ import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
 import { AGENT_MARK } from "../present.ts";
 import { GATE_HELP, SELF_BUILD, type Ui, buildSkew, copyWarning, currentBranch, dfDir, featDir, featureEnv, flagValue, gateCwd, gitConsistency, initiated, loadedVersion, mergeHistoryEvidence, needState, now, originUrl, publishedVersion, readClaim, readReflections, readReflectionsText, readRoadmap, readState, roadmapFile, sh, stateFile, tail, unfinishedStates, writePlaybookMergePolicy, writeState } from "./base.ts";
-import { type RunResult, type Session, ago, behindNote, pendingChecks, probeHealth, readDevPorts, runChecks, stampChecks, triedNote } from "./checks.ts";
+import { type RunResult, type Session, ago, behindNote, releaseDevSlot, pendingChecks, probeHealth, readDevPorts, runChecks, stampChecks, triedNote } from "./checks.ts";
 import { GIT_TRACK_NOTE, isSelfRepo, renderQuestions, setupQuestions, tagPatternEvidence } from "./setup.ts";
 import { foldRows, foldView, legacyPluginRows, pluginUpstream, reflectDoneNote, reflectList, reflectMoveNote, reflectNote, reflectTidy } from "./reflect.ts";
 import { gateFinish, gateRelease, gateReleaseDone, gateVerify } from "./ship.ts";
@@ -733,8 +733,8 @@ export async function gateUse(o: GateCtx): Promise<RunResult> {
 }
 
 export async function gateAbort(o: GateCtx): Promise<RunResult> {
-	const { root, ui, sess, flag, slugArg } = o;
-	// Unbinds the session only; state and worktree stay for manual recovery.
+	const { root, ui, sess, cfg, flag, slugArg } = o;
+	// Unbinds the session only; state and worktree stay for manual recovery — unless the operator purges it.
 	const target = slugArg ?? sess.slug;
 	if (!target) return { text: "nothing bound — pass a slug", isError: true };
 	const st = readState(root, target);
@@ -761,9 +761,42 @@ export async function gateAbort(o: GateCtx): Promise<RunResult> {
 		rmSync(featDir(root, target), { recursive: true, force: true });
 		return { text: `aborted ${target} — feature removed (nothing approved, nothing to recover)` };
 	}
+	// --purge: an abandoned feature leaves nothing to clean by hand. The agent may not delete a feature folder or
+	// force-remove a worktree itself, so the gate does it — on the operator's word, after saying what is lost.
+	if (flag("purge") && st?.worktree) {
+		if (st.approvals.release) return { text: `${target} is released — flow finish closes it; abort --purge is for a feature that is being dropped`, isError: true };
+		const wt = path.resolve(root, st.worktree);
+		const ahead = st.branch ? (await sh(`git rev-list --count ${sq(cfg.defaultBranch)}..${sq(st.branch)}`, root)).out.trim() : "";
+		const dirtyOut = existsSync(wt) ? (await sh("git status --porcelain", wt)).out : "";
+		const dirty = dirtyOut.split("\n").filter((l) => l.trim()).length;
+		const onOrigin = !!st.branch && !!(await originUrl(root)) && (await sh(`git ls-remote --heads origin ${sq(st.branch)}`, root, 30_000)).out.includes(`refs/heads/${st.branch}`);
+		const lost = [
+			/^\d+$/.test(ahead) ? `${ahead} commit(s) on ${st.branch} that are not on ${cfg.defaultBranch}` : `branch ${st.branch || "-"}`,
+			dirty ? `${dirty} uncommitted path(s) in the worktree` : "",
+			`the plan and state in .dev-flow/${target}/`,
+		].filter(Boolean).join(", ");
+		const publishedNote = st.stage === "release" ? " Its release was approved: a PR, a merge or a tag may already be on the forge — purge removes none of that." : "";
+		const remoteNote = onOrigin ? ` origin/${st.branch} is left alone (remove it with: git push origin --delete ${st.branch}).` : "";
+		if (!flag("confirmed")) {
+			const ok = ui.hasUI && (await ui.confirm("Purge feature?", `Purge ${target}? This removes for good: ${lost}.${publishedNote}${remoteNote}`));
+			if (!ok) return { text: needsOperator(`purging ${target} removes for good: ${lost}.${publishedNote}${remoteNote}`, "Purge?", "ask the operator, then re-run flow abort --purge --confirmed"), isError: true };
+		}
+		const devNote = await releaseDevSlot(root, st, cfg);
+		if (existsSync(wt)) {
+			const rm = await sh(`git worktree remove --force ${sq(wt)}`, root);
+			if (!rm.ok) return { text: `purge stopped — worktree removal failed, nothing else was removed:\n${tail(rm.out)}\nif files are owned by another user (e.g. root-owned docker build output), remove ${st.worktree} by hand and re-run`, isError: true };
+		} else await sh("git worktree prune", root);
+		const brNote = st.branch && (await sh(`git rev-parse --verify --quiet ${sq(`refs/heads/${st.branch}`)}`, root)).ok
+			? (await sh(`git branch -D ${sq(st.branch)}`, root)).ok ? `, branch ${st.branch} deleted` : `, branch ${st.branch} could not be deleted (git branch -D ${st.branch})`
+			: "";
+		if (sess.slug === target) sess.bind(null);
+		rmSync(featureTmpDir(dfDir(root), target), { recursive: true, force: true });
+		rmSync(featDir(root, target), { recursive: true, force: true });
+		return { text: `purged ${target} — worktree removed${brNote}; .dev-flow/${target}/ removed.${devNote}${remoteNote}${publishedNote}` };
+	}
 	if (sess.slug === target) sess.bind(null);
 	// the scratch dir is the bound session's working junk — it does not outlive the binding
 	rmSync(featureTmpDir(dfDir(root), target), { recursive: true, force: true });
 	if (st?.worktree) { st.aborted = now(); writeState(root, st); } // the doctor skips the removed worktree for stamped states (gh#138)
-	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.aborted ? " (marked aborted — the doctor leaves it alone once you clean the worktree up)" : "") + (st?.worktree ? `\nto remove the worktree and branch:\n  git worktree remove ${st.worktree}\n  git branch -D ${st.branch}` : "") };
+	return { text: `session unbound from ${target}; state stays at .dev-flow/${target}/` + (st?.aborted ? " (marked aborted — the doctor leaves it alone once you clean the worktree up)" : "") + (st?.worktree ? `\nto remove the worktree, branch and feature folder: ask the operator, then flow abort ${target} --purge --confirmed on their word` : "") };
 }

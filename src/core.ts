@@ -48,6 +48,7 @@ export interface FlowState {
 	noVersion?: boolean; // operator chose: this flow ships merge + changelog only — no bump, no tag, no forge release; the entry rides under Unreleased until the next versioned release folds it
 	yolo?: boolean; // operator said "yolo" at any gate question: that one answered, every later one pre-confirmed; checks and guardrails stay
 	setupAt?: string; // commands.setup exited 0 in this worktree — a reused worktree reruns it only when unset (#49)
+	publish?: { pr?: number; merged?: string; tag?: string }; // set when the release gate publishes itself (GitHub): what it has done so far — every step re-probes the forge, this only feeds the hint and the result
 	releaseVersion?: string; // the manifest version the release gate approved — release-done publishes this, not whatever a checkout says later (#52)
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
 	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
@@ -133,7 +134,7 @@ export interface Config {
 	/** Bytes one dev instance needs (playbook `instanceMem` / `instanceDisk`, e.g. 2G) — the side-by-side feasibility check. */
 	instanceMem?: number;
 	instanceDisk?: number;
-	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction"; /** who decides versioned vs unreleased: asked with Verified? (`ask`, default) or fixed by the playbook (gh#198) */ version?: "ask" | "versioned" | "unversioned"; /** `on-change` (default): Release? answers itself when nothing but release prep changed since Verified? and the version choice is on record; `always` asks it every time (gh#198) */ ask?: "always" | "on-change"; /** `prep-skip` (default): green checks survive a commit that touches only release-prep files; `always` re-runs them */ recheck?: "always" | "prep-skip"; /** `on-change` (default): Finish? answers itself on a clean flow (quiet reflection, no open release items, nothing skipped); `always` asks it every time */ finish?: "always" | "on-change" };
+	release: { review: string; changelog?: string; releases?: boolean; artifact?: string; preflight?: string; merge?: MergeStyle | "any"; /** `until-release`: a standing yolo never answers Release? (gh#176) */ yolo?: "all" | "until-release"; /** `always`: finish runs the closing reflection even on a flow with no friction */ reflect?: "always" | "on-friction"; /** who decides versioned vs unreleased: asked with Verified? (`ask`, default) or fixed by the playbook (gh#198) */ version?: "ask" | "versioned" | "unversioned"; /** `on-change` (default): Release? answers itself when nothing but release prep changed since Verified? and the version choice is on record; `always` asks it every time (gh#198) */ ask?: "always" | "on-change"; /** `prep-skip` (default): green checks survive a commit that touches only release-prep files; `always` re-runs them */ recheck?: "always" | "prep-skip"; /** `on-change` (default): Finish? answers itself on a clean flow (quiet reflection, no open release items, nothing skipped); `always` asks it every time */ finish?: "always" | "on-change"; /** `gate` (default): on GitHub `flow release` pushes, opens the PR, waits for CI, merges and tags itself; `manual`: the agent runs those steps */ publish?: "gate" | "manual" };
 	mainHook: boolean; // flow init installs a pre-commit hook blocking main commits
 	/** `inject` (default): the class default timeout is armed silently on every shell call.
 	 *  `require`: a shell call without its own visible timeout is refused (costs a turn per miss). */
@@ -1288,7 +1289,7 @@ export function releaseOrderInvocation(command: string, stage: Stage | null): st
 		if (/\bgh\s+pr\s+merge\b/.test(hay) || /\bglab\s+mr\s+merge\b/.test(hay))
 			return `merging the PR is release work — the feature is at ${stage}; ask the operator Release? and run flow release first (yolo pre-answers the question, it does not skip the gate)`;
 		if (/\b(?:gh|glab)\s+release\s+create\b/.test(hay))
-			return `publishing a forge release is release work — the feature is at ${stage}; run flow release, then flow release-done creates it`;
+			return `publishing a forge release is release work — the feature is at ${stage}; run flow release — the release record creates it`;
 	}
 	return null;
 }
@@ -2317,6 +2318,7 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		}
 		case "release":
 			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then flow finish (closing reflection first; its fold/drop answer is Finish?)`;
+			if (state.publish) return `flow release publishes (push, PR, CI wait, merge${state.noVersion ? "" : ", tag"}) and records the release — re-run it after a "publish stopped" or "publish waiting" result; then flow finish`;
 			return `publish: push the branch, open the PR, merge once CI is green (gh pr checks <n> --watch)${mergeHintFor(cfg)}${state.noVersion ? " — unversioned: no bump, no tag" : ", push the annotated tag"}; then flow finish records the release and closes out`;
 	}
 }

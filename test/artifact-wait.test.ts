@@ -57,7 +57,7 @@ test("awaitArtifact gives up on a run still going after the budget, pointing at 
 	await withFakeCi(() => [run("in_progress")], async (cmd) => {
 		const r = await awaitArtifact(cmd, "v1.0.0", tmpdir());
 		assert.equal(r.ok, false);
-		assert.match(r.waited, /still running after 15 min \(Publish images: https:\/\/ci\/run\/1\) — re-run release-done once it finishes/);
+		assert.match(r.waited, /still running after 15 min \(Publish images: https:\/\/ci\/run\/1\) — re-run flow finish once it finishes/);
 	});
 });
 

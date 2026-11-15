@@ -78,3 +78,14 @@ test("isFriction: a red check is the tool doing its job; a process refusal, a se
 	assert.equal(isFriction(["verify"], "other", err("build FAILED (x)"), false, st2), false, "per session");
 	assert.equal(isFriction(["finish"], "f", err('finish blocked — after-merge check "deployed" failed in the main checkout (make x); nothing was removed:'), false, new Map()), false, "a red after-merge check is work too");
 });
+
+test("isFriction: the release gate waiting on CI is never friction; a red PR check is a work failure", () => {
+	const streak: RefusalStreak = new Map();
+	const waiting = { text: "release approved — entering release stage.\npublish waiting — PR #7 checks still running after 30 min (build)", isError: true };
+	assert.equal(isFriction(["release"], "s", waiting, false, streak), false);
+	assert.equal(isFriction(["release"], "s", waiting, false, streak), false, "however often it is re-run");
+	const red = { text: "publish stopped — PR #7 checks failed — build: fail", isError: true };
+	assert.equal(isFriction(["release"], "s", red, false, streak), false, "one red run is the work failing");
+	assert.equal(isFriction(["release"], "s", red, false, streak), true, "twice in a row is the agent stuck");
+	assert.equal(isFriction(["release"], "t", { text: "publish stopped — merging PR #7 failed", isError: true }, false, new Map()), true, "a process stop counts");
+});

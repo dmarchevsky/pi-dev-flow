@@ -28,6 +28,26 @@ export const devPortsFile = (root: string) => path.join(dfDir(root), "dev-ports.
 export const slotKey = (port: number | undefined) => (port === undefined ? "default" : String(port));
 
 /** Live slots only: a slot whose flow finished (state.json gone) or was aborted holds nothing. */
+/** Close a flow's hold on the dev stack: stop a side-by-side instance (a port the operator picked at verify)
+ *  and give its dev-port entries back. The default port's stack stays up — it is the machine's shared app,
+ *  and the next flow redeploys over it. Returns the note for the gate's result ("" when nothing ran). */
+export async function releaseDevSlot(root: string, state: FlowState, cfg: Config): Promise<string> {
+	let note = "";
+	if (state.devPort !== undefined && state.devPort !== cfg.devPort) {
+		if (cfg.commands.devDown) {
+			const down = await sh(cfg.commands.devDown, gateCwd(root, state), 5 * 60_000, devEnv(root, state, cfg));
+			note = down.ok ? ` dev instance on port ${state.devPort} stopped (${cfg.commands.devDown}).` : ` dev instance on port ${state.devPort} did NOT stop (${cfg.commands.devDown}) — stop it by hand:\n${tail(down.out)}\n`;
+		} else note = ` dev instance on port ${state.devPort} is still running — the playbook has no devDown to stop it; stop it by hand.`;
+	}
+	const reg = readDevPorts(root);
+	const mine = Object.keys(reg).filter((k) => reg[k].slug === state.slug);
+	if (mine.length) {
+		for (const k of mine) delete reg[k];
+		writeDevPorts(root, reg);
+	}
+	return note;
+}
+
 export function readDevPorts(root: string): Record<string, DevSlot> {
 	let raw: Record<string, DevSlot>;
 	try {

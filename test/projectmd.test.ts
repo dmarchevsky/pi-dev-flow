@@ -459,3 +459,11 @@ test("parseProjectMd: (docs) keeps an implement item on a --docs flow, alongside
 	const p = parseProjectMd("## implement\n- [ ] (docs) (ui) screenshots in the docs match\n- [ ] plain\n");
 	assert.deepEqual(p.checklist.implement, [{ text: "screenshots in the docs match", uiOnly: true, docs: true }, { text: "plain", uiOnly: false }]);
 });
+
+test("release.publish: gate or manual; anything else warns and keeps the default", () => {
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\npublish = manual\n```\n")).release.publish, "manual");
+	assert.equal(mdToConfig(parseProjectMd("## release\n```flow\npublish = gate\n```\n")).release.publish, "gate");
+	const bad = parseProjectMd("## release\n```flow\npublish = agent\n```\n");
+	assert.match(bad.warn.join("\n"), /publish = "agent" — expected gate or manual, keeping gate/);
+	assert.equal(mdToConfig(bad).release.publish, undefined);
+});

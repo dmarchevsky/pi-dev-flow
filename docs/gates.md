@@ -20,9 +20,8 @@ its own.
 | `use <slug>` | binds this session | the feature is unfinished |
 | `approve` | plan → implement | `plan/plan.md` exists (plus embedded mockups for `--ui`) and you said yes |
 | `verify` | implement → pre-release | the branch has commits, checks are green, the deploy is healthy, and you said yes |
-| `release` | pre-release → release | the version and changelog are right, nothing is uncommitted, and you said yes (or it answered itself) |
-| `release-done` | records the release | the tag is on origin, the artifact is published, and the forge release exists |
-| `finish` | release → done | the release is recorded, main is clean and pushed, and you said yes (or it answered itself) |
+| `release` | pre-release → release, then publishes | the version and changelog are right, nothing is uncommitted, and you said yes (or it answered itself) |
+| `finish` | release → done | the release is published and recorded, main is clean and pushed, and you said yes (or it answered itself) |
 
 Tools that never gate: `test`, `check`, `health`, `status`, `abort`, `doctor`, `reflect`, `roadmap`,
 `help`, `version`.
@@ -139,10 +138,27 @@ Set `ask = always` in `## release` to be asked every time.
 Escape hatches, used only on your word: `--no-fold-check` skips the line-level changelog check, and
 `--no-marker-check` allows intentional conflict-marker lines.
 
-## release-done
+### Publishing
 
-Records the release. It asks no question, because your Release? answer covered it. `finish` runs it
-for you if the agent didn't.
+On GitHub, the same `flow release` call then publishes. Your Release? answer is what authorizes it:
+
+1. Pushes the branch and opens the PR, with the changelog entry as the body.
+2. Waits for the PR's CI, up to 30 minutes. A repo with no CI is given a minute for checks to show up.
+3. Merges in the playbook's `merge` style.
+4. Creates an annotated tag on the PR's merge commit and pushes it (versioned flows).
+5. Records the release (below).
+
+Each step first asks GitHub whether it's already done, so a re-run picks up where it stopped, and a
+step you did by hand (merging a PR that needed your review, for example) is accepted. The gate stops
+with `publish waiting` when CI is still running, and with `publish stopped` when a check is red, the
+forge refuses the merge, or `gh` can't answer. In both cases, `flow release` again resumes.
+
+Set `publish = manual` in `## release` to have the agent run these steps instead. That is also what
+happens on GitLab, on a self-hosted forge, and without `gh`.
+
+### The release record
+
+Asks no question, because your Release? answer covered it. On the manual path, `finish` runs it.
 
 - The tag exists, is reachable from main, and is **on origin**. If origin can't be reached, it
   refuses rather than trust local tags.
@@ -156,11 +172,14 @@ for you if the agent didn't.
 Skip flags (on your word): `--no-artifact-check`, `--no-release-create`. You can also set
 `release.releases = false` or `forge = self` to skip creating the forge release.
 
+`/flow release-done` runs the record by itself. It's a manual override; the agent has no reason to
+call it.
+
 ## finish: Finish?
 
 `flow finish [--yolo] [--no-reflect] [--note=<text>] [slug]`
 
-1. Records the release if `release-done` never ran. If the `## release` checklist still has open
+1. Records the release if `flow release` didn't already (manual publishing). If the `## release` checklist still has open
    items, it stops and lists them.
 2. Runs the after-merge checks (`flow-check` blocks under `## release`) from the main checkout. A red
    one stops finish and removes nothing.
@@ -193,7 +212,11 @@ To drop an unreleased feature, use `flow abort` instead.
 ## status, abort, help, version
 
 - `flow status [slug]` shows where every feature stands. `--json` gives machine output.
-- `flow abort [slug]` drops a feature.
+- `flow abort [slug]` drops a feature. Before approval, that removes it. After approval, it unbinds
+  the session and keeps the worktree, branch and state so nothing is lost.
+- `flow abort [slug] --purge` removes what an aborted feature left: the worktree (uncommitted files
+  included), the local branch and `.dev-flow/<slug>/`. It asks **Purge?** first and lists what would
+  be lost. It never touches origin; a remote branch or open PR is named for you to remove.
 - `flow help` (`--json`) prints the gate contract.
 - `flow version [--check-upstream]` prints which dev-flow copy this session runs and whether the
   checkout is newer.

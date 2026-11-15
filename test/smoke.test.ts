@@ -12,6 +12,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import devFlow, { compactionTakeover, reflectSeams, stageWorkerSpawn, testSeams, workerTiming } from "../extensions/dev-flow.ts";
 import { CHIP_KEY_HISTORY, nextChipKeys } from "../src/runtime/base.ts";
 import { tagNotesCommand } from "../src/core.ts";
+import { publishWait } from "../src/runtime/publish.ts";
 import { commandish, viewHeader, type GateView } from "../src/present.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -1341,7 +1342,7 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	commitWt(repo, "fin");
 	await flow(["verify", "--confirmed"]);
 	const early = await flow(["finish"]);
-	assert.ok(early.isError && early.content[0].text.includes("release-done"), "finish refuses until the release is recorded");
+	assert.ok(early.isError && early.content[0].text.includes("no release is recorded; publish it first — flow release"), "finish refuses until the release is recorded");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "state.json")), "a refused finish removes nothing");
 	await flow(["release", "--confirmed"]);
 	await flow(["release-done", "--confirmed"]);
@@ -1722,7 +1723,7 @@ test("abort at plan stage drops the feature; approved features keep recoverable 
 	await flow(["approve", "--confirmed"]);
 	const ab = await flow(["abort", "keeper"]);
 	assert.match(ab.content[0].text, /state stays at .dev-flow\/keeper/);
-	assert.match(ab.content[0].text, /git worktree remove/);
+	assert.match(ab.content[0].text, /flow abort keeper --purge --confirmed on their word/, "the gate, not a hand-run git command, removes what is left");
 	assert.match(ab.content[0].text, /marked aborted/, "the echo names the marker that keeps the doctor quiet");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "keeper", "state.json")), "real work stays recoverable");
 	const keeperSt = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "keeper", "state.json"), "utf8"));
@@ -2618,7 +2619,7 @@ test("release-done proves the forge release exists instead of trusting the attem
 		git(["-c", "user.email=t@t", "-c", "user.name=t", "tag", "-a", `v${ver}`, "-m", `v${ver}`]);
 		git(["push", "-q", "origin", `refs/tags/v${ver}`]);
 	};
-	await flow(["init", "--write", "# dev-flow\n\n## global\n\n```flow\nforge = github\n```\n\n## release\n\n```flow\nmerge = merge\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
+	await flow(["init", "--write", "# dev-flow\n\n## global\n\n```flow\nforge = github\n```\n\n## release\n\n```flow\nmerge = merge\npublish = manual\nversionFile = package.json\nversionTag = v{version}\n```\n"]);
 	await ship("shown", "9.9.7");
 	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /Release v9\.9\.7 verified on github/, "the proof asks the forge, not the create exit code");
 	assert.match((await flow(["release-done", "--confirmed"])).content[0].text, /Release v9\.9\.7 body matches CHANGELOG\.md/, "the release page carries the changelog entry, not the tag annotation (#97)");
@@ -4034,4 +4035,248 @@ test("finish that records the release stops once on open release-stage items bef
 	const ask = await flow(["finish"]);
 	assert.match(ask.content[0].text, /Release-stage checklist to close with this answer: "post-merge: bun run build/, "the Finish? question names the items it closes");
 	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature tailx done/, "the second call closes out");
+});
+
+/** A gh stand-in for the publish path, backed by files under GH_STATE: PRs it "opened", a script of check
+ *  results (one row set per poll, the last repeats), and a real merge into the bare origin. Anything it was
+ *  not written for exits 97 — no test reaches the real gh. */
+const FAKE_GH = `#!/usr/bin/env node
+const fs = require("fs"), path = require("path"), { execFileSync } = require("child_process");
+const S = process.env.GH_STATE, a = process.argv.slice(2);
+const f = (n) => path.join(S, n);
+const rd = (n, d) => (fs.existsSync(f(n)) ? JSON.parse(fs.readFileSync(f(n), "utf8")) : d);
+const wr = (n, v) => fs.writeFileSync(f(n), JSON.stringify(v));
+const git = (args, cwd) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+const arg = (n) => (a.includes(n) ? a[a.indexOf(n) + 1] : undefined);
+fs.appendFileSync(f("calls.log"), a.join(" ") + "\\n");
+const k = a.slice(0, 2).join(" ");
+if (a[0] === "--version") { console.log("gh fake"); process.exit(0); }
+if (k === "pr list") {
+	const prs = rd("prs.json", []).filter((p) => p.head === arg("--head"));
+	if (a.includes("--jq")) { const m = prs.find((p) => p.state === "MERGED"); console.log(m ? JSON.stringify({ number: m.number, squashCommit: m.style === "squash" ? m.mergeCommit.oid : null, rebaseCommit: null, mergeCommit: m.style === "merge" ? m.mergeCommit.oid : null }) : "null"); }
+	else console.log(JSON.stringify(prs));
+	process.exit(0);
+}
+if (k === "pr create") {
+	const prs = rd("prs.json", []);
+	const n = prs.length + 7;
+	prs.push({ number: n, state: "OPEN", url: "https://gh/pr/" + n, head: arg("--head"), headRefOid: git(["rev-parse", "HEAD"], process.cwd()), mergeCommit: null, title: arg("--title"), body: arg("--body") });
+	wr("prs.json", prs);
+	console.log("https://gh/pr/" + n);
+	process.exit(0);
+}
+if (k === "pr view") {
+	const script = rd("checks.json", null);
+	if (!script) { console.log(JSON.stringify({ statusCheckRollup: [] })); process.exit(0); }
+	const i = rd("checks.i", 0);
+	wr("checks.i", i + 1);
+	const conc = { pass: "SUCCESS", fail: "FAILURE", skipping: "SKIPPED", cancel: "CANCELLED" };
+	const rows = script[Math.min(i, script.length - 1)].map((r) => ({ __typename: "CheckRun", name: r.name, status: r.bucket === "pending" ? "IN_PROGRESS" : "COMPLETED", conclusion: conc[r.bucket] || "", detailsUrl: r.link }));
+	console.log(JSON.stringify({ statusCheckRollup: rows }));
+	process.exit(0);
+}
+if (k === "pr merge") {
+	if (fs.existsSync(f("mergefail"))) { console.error("GraphQL: At least 1 approving review is required"); process.exit(1); }
+	const prs = rd("prs.json", []);
+	const pr = prs.find((p) => p.number === Number(a[2]));
+	const style = a[3].slice(2);
+	const clone = fs.mkdtempSync(path.join(S, "clone-"));
+	git(["clone", "-q", "-b", "main", process.env.GH_ORIGIN, clone]);
+	const id = ["-c", "user.email=gh@gh", "-c", "user.name=gh"];
+	if (style === "squash") { git(["merge", "--squash", "-q", "origin/" + pr.head], clone); git([...id, "commit", "-qm", "squash " + pr.head], clone); }
+	else git([...id, "merge", "--no-ff", "-q", "-m", "Merge " + pr.head, "origin/" + pr.head], clone);
+	git(["push", "-q", "origin", "main"], clone);
+	Object.assign(pr, { state: "MERGED", style, mergeCommit: { oid: git(["rev-parse", "HEAD"], clone) } });
+	wr("prs.json", prs);
+	process.exit(0);
+}
+if (k === "release create") { const r = rd("releases.json", {}); r[a[2]] = arg("--notes") || ""; wr("releases.json", r); process.exit(0); }
+if (k === "release view") { const r = rd("releases.json", {}); if (!(a[2] in r)) process.exit(1); if (a.includes("--json")) console.log(r[a[2]]); process.exit(0); }
+if (k === "run list") { console.log("[]"); process.exit(0); }
+console.error("unscripted gh call: " + a.join(" "));
+process.exit(97);
+`;
+
+/** A versioned flow at implement whose origin is a bare repo the forge detection reads as GitHub, with the fake
+ *  gh first on PATH and the CI wait on a fake clock. `done()` restores the process. */
+async function publishFlow(slug: string, extra = "") {
+	const f = await versionedFlow(slug, extra);
+	const origin = mkdtempSync(path.join(tmpdir(), "devflow-github-origin-"));
+	execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
+	const git = (args: string[], dir = f.repo) => execFileSync("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...args], { encoding: "utf8" }).trim();
+	git(["remote", "add", "origin", origin]);
+	git(["push", "-q", "origin", "main", "--tags"]);
+	const bin = mkdtempSync(path.join(tmpdir(), "devflow-bin-"));
+	const ghState = mkdtempSync(path.join(tmpdir(), "devflow-gh-"));
+	writeFileSync(path.join(bin, "gh"), FAKE_GH);
+	chmodSync(path.join(bin, "gh"), 0o755);
+	const saved = { path: process.env.PATH, wait: { ...publishWait } };
+	process.env.PATH = `${bin}:${process.env.PATH}`;
+	process.env.GH_STATE = ghState;
+	process.env.GH_ORIGIN = origin;
+	let t = 0;
+	publishWait.clock = () => t;
+	publishWait.sleep = async (ms) => { t += ms; };
+	const gh = (args: string[]) => execFileSync(path.join(bin, "gh"), args, { cwd: f.wt, encoding: "utf8" });
+	const calls = () => (existsSync(path.join(ghState, "calls.log")) ? readFileSync(path.join(ghState, "calls.log"), "utf8") : "");
+	const checks = (script: { name: string; bucket: string; link: string }[][] | null) => {
+		rmSync(path.join(ghState, "checks.i"), { force: true });
+		if (script) writeFileSync(path.join(ghState, "checks.json"), JSON.stringify(script));
+		else rmSync(path.join(ghState, "checks.json"), { force: true });
+	};
+	const done = () => {
+		process.env.PATH = saved.path;
+		delete process.env.GH_STATE;
+		delete process.env.GH_ORIGIN;
+		Object.assign(publishWait, saved.wait);
+	};
+	/** walk to pre-release with the release call made, and the prep committed */
+	const toRelease = async (call: string, ver: string | null) => {
+		await f.flow(["verify"]);
+		assert.match((await f.flow(["verify", "--confirmed", call])).content[0].text, /verified/i);
+		await f.prep(ver);
+	};
+	return { ...f, origin, ghState, git, gh, calls, checks, done, toRelease };
+}
+const ck = (name: string, bucket: string) => ({ name, bucket, link: `https://ci/${name}` });
+
+test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release record in one call", async () => {
+	const p = await publishFlow("pubone");
+	try {
+		await p.toRelease("--version=patch", "1.0.1");
+		p.checks([[ck("build", "pending")], [ck("build", "pass"), ck("lint", "skipping")]]);
+		const r = await p.flow(["release"]);
+		const text = r.content[0].text;
+		assert.ok(!r.isError, text);
+		assert.match(text, /release approved/);
+		assert.match(text, /published: branch pushed · PR #7 opened · CI green \(2 checks\) · merged \(merge\) · tag v1\.0\.1 pushed/, text);
+		assert.match(text, /release recorded as complete/);
+		assert.match(text, /Release v1\.0\.1 body matches CHANGELOG\.md/, "the forge release carries the changelog entry");
+		const pr = JSON.parse(readFileSync(path.join(p.ghState, "prs.json"), "utf8"))[0];
+		assert.equal(pr.title, "work", "the PR is titled after the newest commit that is more than release prep");
+		assert.match(pr.body, /pubone ships/, "and carries the changelog entry");
+		assert.equal(p.git(["rev-parse", "v1.0.1^{commit}"], p.origin), pr.mergeCommit.oid, "the tag is on the PR's merge commit");
+		assert.equal(p.git(["cat-file", "-t", "v1.0.1"], p.origin), "tag", "an annotated tag");
+		assert.ok(p.state().approvals.release, "the release is recorded");
+		assert.match(p.calls(), /pr merge 7 --merge\n/, "merged in the playbook's style, number before the flag");
+		assert.match((await p.flow(["release"])).content[0].text, /release already recorded/);
+		markReflected(p.repo, "pubone"); // the fixture's bare flow check counted as friction; the reflection is not under test
+		const fin = await p.flow(["finish", "--confirmed"]);
+		assert.match(fin.content[0].text, /feature pubone done[\s\S]*local main fast-forwarded to origin\/main/, fin.content[0].text);
+	} finally {
+		p.done();
+	}
+});
+
+test("flow release resumes: CI still running, then a re-run finishes without repeating a step", async () => {
+	const p = await publishFlow("pubwait");
+	try {
+		await p.toRelease("--version=patch", "1.0.1");
+		p.checks([[ck("build", "pending")]]);
+		const w = await p.flow(["release"]);
+		assert.equal(w.isError, true);
+		assert.match(w.content[0].text, /release approved[\s\S]*publish waiting — PR #7 checks still running after 30 min \(build\)/, w.content[0].text);
+		assert.match(w.content[0].text, /re-run flow release to keep waiting/);
+		assert.equal(p.state().stage, "release", "Release? is not asked again");
+		assert.match((await p.flow(["status"])).content[0].text, /flow release publishes/, "the hint names the gate, not hand-run steps");
+		p.checks([[ck("build", "fail")]]);
+		const red = await p.flow(["release"]);
+		assert.match(red.content[0].text, /publish stopped — PR #7 checks failed — build: fail \(https:\/\/ci\/build\)/, red.content[0].text);
+		assert.match(red.content[0].text, /done so far: branch already on origin · PR #7 already open/);
+		p.checks([[ck("build", "pass")]]);
+		const ok = await p.flow(["release"]);
+		assert.ok(!ok.isError, ok.content[0].text);
+		assert.match(ok.content[0].text, /published: branch already on origin · PR #7 already open · CI green \(1 check\) · merged \(merge\) · tag v1\.0\.1 pushed/, ok.content[0].text);
+		assert.equal((p.calls().match(/^pr create /gm) ?? []).length, 1, "one PR, however many runs");
+	} finally {
+		p.done();
+	}
+});
+
+test("flow release: a merge the forge refuses stops it; a PR merged by hand is accepted and tagged at its merge commit", async () => {
+	const p = await publishFlow("pubhand");
+	try {
+		await p.toRelease("--version=patch", "1.0.1");
+		p.checks(null); // a repo with no CI: the gate looks for a minute, then merges
+		writeFileSync(path.join(p.ghState, "mergefail"), "");
+		const refused = await p.flow(["release"]);
+		assert.equal(refused.isError, true);
+		assert.match(refused.content[0].text, /publish stopped — merging PR #7 failed \(--merge\):[\s\S]*approving review is required/, refused.content[0].text);
+		assert.match(refused.content[0].text, /no CI checks on the PR/);
+		rmSync(path.join(p.ghState, "mergefail"));
+		p.gh(["pr", "merge", "7", "--merge"]); // the operator merges it on the forge
+		// and another flow lands on main before the tag is cut
+		const other = mkdtempSync(path.join(tmpdir(), "devflow-other-"));
+		execFileSync("git", ["clone", "-q", "-b", "main", p.origin, other]);
+		writeFileSync(path.join(other, "later.txt"), "later\n");
+		p.git(["add", "-A"], other);
+		p.git(["commit", "-qm", "a parallel flow"], other);
+		p.git(["push", "-q", "origin", "main"], other);
+		const ok = await p.flow(["release"]);
+		assert.ok(!ok.isError, ok.content[0].text);
+		assert.match(ok.content[0].text, /published: PR #7 already merged · tag v1\.0\.1 pushed/, ok.content[0].text);
+		const pr = JSON.parse(readFileSync(path.join(p.ghState, "prs.json"), "utf8"))[0];
+		assert.equal(p.git(["rev-parse", "v1.0.1^{commit}"], p.origin), pr.mergeCommit.oid, "the tag is the PR's merge commit");
+		assert.notEqual(p.git(["rev-parse", "main"], p.origin), pr.mergeCommit.oid, "not the tip a parallel flow moved");
+	} finally {
+		p.done();
+	}
+});
+
+test("flow release: merge unreleased publishes without a tag, and publish = manual leaves the steps to the agent", async () => {
+	const p = await publishFlow("pubnov");
+	try {
+		await p.toRelease("--no-version", null);
+		p.checks([[ck("build", "pass")]]);
+		const r = await p.flow(["release"]);
+		assert.ok(!r.isError, r.content[0].text);
+		assert.match(r.content[0].text, /published: branch pushed · PR #7 opened · CI green \(1 check\) · merged \(merge\)\n/, r.content[0].text);
+		assert.equal(p.git(["tag", "-l"], p.origin), "v1.0.0", "no tag was cut");
+		assert.doesNotMatch(p.calls(), /release create/, "and no forge release");
+	} finally {
+		p.done();
+	}
+	const m = await publishFlow("pubman", "publish = manual\n");
+	try {
+		await m.toRelease("--version=patch", "1.0.1");
+		const r = await m.flow(["release"]);
+		assert.match(r.content[0].text, /release approved[\s\S]*next: publish: push the branch, open the PR/, r.content[0].text);
+		assert.equal(m.calls(), "", "the gate never called gh");
+		assert.equal(m.state().publish, undefined);
+	} finally {
+		m.done();
+	}
+});
+
+test("flow abort --purge removes a dropped feature on the operator's word and leaves origin alone", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const branch: unknown[] = [{ type: "message", message: { role: "user" } }];
+	const ctx = { ...makeCtx(repo), sessionManager: { getBranch: () => branch, getSessionId: () => "sess-purge", getSessionFile: () => undefined, getSessionDir: () => repo } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	const origin = mkdtempSync(path.join(tmpdir(), "devflow-origin-"));
+	execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
+	execFileSync("git", ["-C", repo, "remote", "add", "origin", origin]);
+	execFileSync("git", ["-C", repo, "push", "-q", "origin", "main"]);
+	await walkToImplement(flow, repo, "drop");
+	const wt = path.join(repo, ".dev-flow", "drop", "worktree");
+	execFileSync("git", ["-C", wt, "push", "-q", "origin", "feat/drop"]);
+	writeFileSync(path.join(wt, "scratch.txt"), "not committed\n");
+	const plain = await flow(["abort", "drop"]);
+	assert.match(plain.content[0].text, /flow abort drop --purge --confirmed on their word/, "a plain abort keeps everything and names the purge");
+	assert.ok(existsSync(wt));
+	const ask = await flow(["abort", "drop", "--purge"]);
+	assert.match(ask.content[0].text, /^NEEDS-OPERATOR Purge\? — purging drop removes for good: 1 commit\(s\) on feat\/drop that are not on main, 1 uncommitted path\(s\) in the worktree, the plan and state in \.dev-flow\/drop\//, ask.content[0].text);
+	assert.match(ask.content[0].text, /origin\/feat\/drop is left alone/);
+	const self = await flow(["abort", "drop", "--purge", "--confirmed"]);
+	assert.match(self.content[0].text, /no operator message since flow abort asked/, "the agent cannot answer Purge? itself");
+	assert.ok(existsSync(wt), "nothing was removed");
+	branch.push({ type: "message", message: { role: "user" } });
+	const gone = await flow(["abort", "drop", "--purge", "--confirmed"]);
+	assert.match(gone.content[0].text, /purged drop — worktree removed, branch feat\/drop deleted; \.dev-flow\/drop\/ removed/, gone.content[0].text);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "drop")), "the feature folder is gone");
+	assert.equal(execFileSync("git", ["-C", repo, "branch", "--list", "feat/drop"], { encoding: "utf8" }).trim(), "", "the local branch is gone");
+	assert.match(execFileSync("git", ["-C", origin, "branch", "--list", "feat/drop"], { encoding: "utf8" }), /feat\/drop/, "origin keeps its branch");
 });

@@ -172,6 +172,7 @@ These go under `## pre-release` or `## release`. Either section works.
 | `version` | `ask` | who makes the release call: `ask` (you, at Verified?), or `versioned` / `unversioned` for every flow |
 | `ask` | `on-change` | `on-change`: Release? answers itself when only release prep changed. `always`: ask every time. |
 | `finish` | `on-change` | `on-change`: Finish? answers itself when nothing is open (see [gates](gates.md#finish-finish)). `always`: ask every time. |
+| `publish` | `gate` | `gate`: on GitHub, `flow release` pushes, opens the PR, waits for CI, merges and tags itself. `manual`: the agent runs those steps. Other forges are always manual. |
 | `recheck` | `prep-skip` | `prep-skip`: checks stay green across a commit that holds only the version bump and changelog. `always`: re-run them. |
 | `yolo` | `all` | `until-release`: a yolo given earlier never answers Release?. The gate asks, and only your answer to that question releases. |
 | `reflect` | `on-friction` | `always`: run the closing reflection on every finish |
@@ -202,8 +203,9 @@ So dev-flow asks.
 - **`flow init` and `flow start` ask** if it isn't set, with evidence from your history.
 - **The guard enforces it.** `gh pr merge <n> --squash` under `merge = merge` is blocked, and a merge
   with no style flag asks you. Put the PR number *before* the flag.
-- **Merge only once CI is green** (`gh pr checks <n> --watch`). Local checks can't run CI-only jobs.
-- **`release-done` proves** that what landed matches the policy. When it can't tell, it prints a note
+- **Merge only once CI is green.** On GitHub the release gate waits for the PR's checks and merges
+  in this style itself. Local checks can't run CI-only jobs.
+- **The release record proves** that what landed matches the policy. When it can't tell, it prints a note
   instead of refusing.
 
 dev-flow can't stop someone clicking the merge button in the web UI. Use your forge's
