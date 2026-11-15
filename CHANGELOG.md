@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.92.1] - 2026-11-14
+
+**Stage workers are told your guard rules, a docs flow's worker runs no project checks, and `flow reflect done` closes a batch.**
+
 ### Changed
 - **`flow reflect done` closes several notes at once (gh#220).** A fold that fixed nine notes checked them off by patching `reflections.md` with a script, because nothing pointed the session at the command. `flow reflect done 3,4,7 "<what fixed them>"` now closes a batch, and one bad number closes none. `flow reflect list` tells the agent to use it instead of editing the file.
 
