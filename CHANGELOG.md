@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.92.0] - 2026-11-14
+
+**The gates stop repeating work and asking empty questions, and on GitHub `flow release` publishes the release itself.**
+
 ### Changed
 - **Verified? no longer builds and deploys twice.** `flow verify` deploys the app for your review, and the `--confirmed` run after your answer used to build and deploy it all over again. That doubled the wait and could fail after you had already said yes. Now, when the tree is the one that was deployed for review, the confirmed run only checks that the app still answers. If the tree changed or the app stopped answering, it deploys again as before.
 - **`flow release` runs the checks it needs.** After a commit at pre-release the release gate used to refuse with "run flow check" and wait for a second call. It now runs stale or missing checks itself, the way `flow verify` does, after the quick proofs (version, changelog, clean tree) so a wrong version is refused before a slow suite starts.
@@ -11,10 +15,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 - **The closing reflection runs only on flows that had real friction.** Any gate error counted as friction, including a `flow check` that found a failing test, so nearly every flow ran the reflection worker at finish. A red test, build or deploy now counts only when the same gate refuses twice in a row. Guard blocks, self-granted answers and process refusals (wrong stage, missing plan, a proof that doesn't hold) count as before.
 - **A patch or docs flow asks one question before work starts, not two.** `--patch` and `--docs` needed your OK at start, and then Approve? came right after. Nothing those modes relax can happen before you approve, so the agent now proposes the mode on the start call and the Approve? question names it ("this is proposed as a patch flow — no written plan"). Your Approve? answer grants it. Dropping the mockup gate (`--no-ui`) and writing the merge policy still need their own answer.
 - **Finish? answers itself on a clean flow.** When the release is recorded, the flow had no friction, no `## release` checklist item is open and nothing was skipped, `flow finish` closes the feature in one call and says so. It still asks when a reflection ran, an item is open or a forge release failed. Set `finish = always` under `## release` to be asked every time.
+- **`flow release` publishes the release itself on GitHub.** After Release? the agent used to push the branch, open the PR, watch CI, merge and tag by hand, and most of the release reference was a list of mistakes made in those steps. The gate now does it in the same call: it pushes, opens the PR with the changelog entry as its body, waits for the PR's CI (up to 30 minutes), merges in the playbook's style, tags the PR's merge commit and records the release. Each step first asks GitHub whether it is already done, so re-running `flow release` resumes after a red check, a long CI run, or a PR you merged yourself. Set `publish = manual` under `## release` to keep the agent running these steps; GitLab and self-hosted forges work as before.
+- **`release-done` is no longer part of what the agent is told.** `flow release` (GitHub) or `flow finish` (manual publishing) records the release. `/flow release-done` stays as your manual override.
 - **Fewer plan rounds for obvious work.** The plan stage confirmed a direction in chat before writing the plan, even with nothing to clarify. The agent now does that only when there are open questions or more than one sound approach.
 
 ### Added
 - **After-merge checks (gh#210).** A `flow-check` block under `## release` runs from the main checkout when `flow finish` closes the feature, before anything is removed. A post-merge build or deploy check is now proven by the gate instead of listed as an open item you wave through. A red check stops finish and removes nothing.
+- **`flow abort --purge` cleans up a dropped feature.** After approval, `flow abort` keeps the worktree, branch and state, and removing them was left to you with hand-typed git commands. `flow abort <slug> --purge` asks **Purge?**, lists what would be lost (commits not on main, uncommitted files, the plan), and on your answer removes the worktree, the local branch and the feature folder. It never deletes anything on origin.
 - **`flow check` says when the branch fell behind (gh#209).** It reports how many commits behind the default branch the feature is and which files a rebase would conflict in, so a conflict is found during implement and not inside `flow verify`'s rebase.
 - **Every gate names a stale session build (gh#218).** A session running an older dev-flow than the installed one heard about it only from `start` and `status`. Every gate result now carries the warning for the agent.
 

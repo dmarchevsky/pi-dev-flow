@@ -78,7 +78,9 @@ export function grantRecord(args: readonly string[], key: string, users: number 
 }
 
 /** A refusal that is the work failing, not the process: a red test, a broken build, a deploy that did not come up. */
-const WORK_FAILURE = /check run at the gate failed|\bbuild FAILED\b|dev deploy FAILED|probe FAILED|served-build check FAILED|after-merge check "[^"]*" failed|has not passed/;
+const WORK_FAILURE = /check run at the gate failed|\bbuild FAILED\b|dev deploy FAILED|probe FAILED|served-build check FAILED|after-merge check "[^"]*" failed|has not passed|publish stopped — PR #\d+ checks failed/;
+/** The release gate still waiting on CI: re-running it is the instruction, never a sign the agent is stuck. */
+const WAITING = /(?:^|\n)publish waiting —/;
 /** `flow check|test|health` reporting a red run — the answer those tools exist to give. A refusal from them that
  *  is not a run (nothing configured, no feature bound) stays friction. */
 const RED_RUN = /^(?:tier-1 checks:|test: FAIL|health: FAIL)/;
@@ -99,7 +101,7 @@ export function isFriction(args: readonly string[], key: string, res: { text: st
 		if (streak.get(key)?.sub === sub) streak.delete(key);
 		return false;
 	}
-	if (res.text.startsWith(NEEDS_OPERATOR)) return false;
+	if (res.text.startsWith(NEEDS_OPERATOR) || WAITING.test(res.text)) return false;
 	if (CHECK_SUBS.has(sub) && RED_RUN.test(res.text)) return false;
 	const prev = streak.get(key);
 	const n = prev?.sub === sub ? prev.n + 1 : 1;

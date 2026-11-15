@@ -39,6 +39,8 @@ playbook, dev-flow stays silent.
 **Gates can't be faked.**
 - The agent can't write, move or delete `state.json`, `claim.json`, a feature folder or `.dev-flow/`
   itself, through either edit tools or bash.
+- A dropped feature is removed by the gate, on your word: `flow abort <slug> --purge` asks Purge?
+  and lists what would be lost.
 - The playbook is yours. The agent can only edit it inside a docs or patch flow's worktree, and every
   sanctioned overwrite keeps a `project.md.bak`.
 - Every check result is tied to a fingerprint of the worktree. Any change, even through `sed -i` or a

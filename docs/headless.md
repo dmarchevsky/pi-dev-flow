@@ -28,7 +28,9 @@ except the `pre-commit` hook.
   reconnects either rejoins its session or rebinds with `flow use <slug>`. Nothing binds
   automatically. Parallel features need parallel sessions.
 - **Long gates need long timeouts.** `approve` runs `setup`. `verify` runs the build and the `dev`
-  deploy (killed after 15 minutes), then retries the health probe. Give the driver minutes, not
+  deploy (killed after 15 minutes), then retries the health probe. On GitHub, `release` waits for
+  the PR's CI (up to 30 minutes) and then for the publish CI the tag started (up to 15). It returns
+  `publish waiting` when the budget runs out; call it again. Give the driver minutes, not
   seconds. Gates print progress while they run.
 - **Edits make checks stale.** Each check result is tied to a worktree fingerprint, and
   `verify` / `release` re-run stale ones themselves. A commit that holds only release prep (version

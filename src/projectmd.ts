@@ -71,6 +71,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		version: "release.version", // who decides versioned vs unreleased: ask (with Verified?, default) | versioned | unversioned (gh#198)
 		ask: "release.ask", // when Release? is asked: on-change (default) | always (gh#198)
 		finish: "release.finish", // when Finish? is asked: on-change (default, a clean flow closes itself) | always
+		publish: "release.publish", // who runs push, PR, merge and tag after Release?: gate (default on GitHub) | manual
 		recheck: "release.recheck", // checks after a release-prep-only commit: prep-skip (default, keep the green records) | always
 	},
 };
@@ -197,6 +198,10 @@ export function parseProjectMd(text: string): ParsedMd {
 						}
 						if (mapped === "release.finish" && !/^(always|on-change)$/.test(m[2].trim())) {
 							p.warn.push(`${where}: finish = "${m[2]}" — expected on-change or always, keeping on-change`);
+							return;
+						}
+						if (mapped === "release.publish" && !/^(gate|manual)$/.test(m[2].trim())) {
+							p.warn.push(`${where}: publish = "${m[2]}" — expected gate or manual, keeping gate`);
 							return;
 						}
 						if (mapped === "release.recheck" && !/^(always|prep-skip)$/.test(m[2].trim())) {

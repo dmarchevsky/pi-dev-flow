@@ -882,7 +882,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			return { message: { customType: "dev-flow-context", display: false, content: `${core}${sameAsLast(key, content, `[dev-flow] no flow bound — unchanged since the last [dev-flow] note (playbook map is ${path.join(SKILL_DIR, "SKILL.md")}).`)}` } };
 		}
 		const guidance: string[] = [];
-		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every gate question from here on (Verified?/Release?/Finish?) — run the remaining gates (verify → release → release-done → finish) back to back without stopping to ask; guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
+		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every gate question from here on (Verified?/Release?/Finish?) — run the remaining gates (verify → release → finish) back to back without stopping to ask; guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
 		// The one playbook file this stage needs, named outright: the model reads it instead of
 		// guessing what a stage asks of it, and it pays for itself the first time a gate is refused.
 		const ref = stageReference(state.stage);

@@ -53,7 +53,7 @@ a test"*. It becomes the feature `session-renewal`:
         └────────┬────────┘
           Release?  · usually answers itself when only release prep changed
         ┌────────▼────────┐
-        │     release     │  PR → merge → tag → release notes
+        │     release     │  PR → CI → merge → tag → release notes, run by the gate
         └────────┬────────┘
            Finish?  · answers itself when nothing is left open
         ┌────────▼────────┐
@@ -66,7 +66,7 @@ a test"*. It becomes the feature `session-renewal`:
 | **plan** | reads the code, asks questions, writes `plan/plan.md` | **Approve?** — build it |
 | **implement** | works on `feat/<slug>`, commits in small steps, gets the checks green | **Verified?** — you tried it; also pick patch / minor / major, or merge unreleased |
 | **pre-release** | reviews, fixes, updates docs and changelog, bumps the version | **Release?** — only asked if something beyond release prep changed |
-| **release** | opens the PR, merges, tags, publishes release notes | **Finish?** — only asked if something is still open |
+| **release** | nothing on GitHub: the gate opens the PR, waits for CI, merges, tags and publishes release notes | **Finish?** — only asked if something is still open |
 
 ### Your answers
 

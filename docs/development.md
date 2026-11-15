@@ -31,6 +31,7 @@ pi -e . run /flow status   # try the working tree against any repo
   - `checks`: dev deploy, health, tier-1 checks.
   - `gates`: the runner and the non-shipping gates.
   - `ship`: verify, release, release-done, finish.
+  - `publish`: the release stage run by the gate (push, PR, CI wait, merge, tag).
   - `setup`, `reflect`, `workers`.
 - `src/core.ts`, `src/projectmd.ts`, `src/present.ts`, …: pure logic, unit-tested without Pi.
   `present.ts` splits each gate result into your view and the agent's text.
@@ -59,7 +60,7 @@ runs `npm ci && npm test`, and runs `npm publish --provenance`. Nothing publishe
   and the workflow file name, so re-register after renaming either one.
 - **`--provenance` needs a public repo.** If the repo ever goes private, drop the flag.
 - **If the job fails,** fix the cause and re-run the same job. The tag already points at the right
-  commit. `flow release-done` refuses to close the flow until `npm view pi-dev-flow@<version>`
+  commit. The release record refuses to close the flow until `npm view pi-dev-flow@<version>`
   succeeds.
 
 The README is also the package page on npm and [pi.dev](https://pi.dev/packages/pi-dev-flow). Its doc
