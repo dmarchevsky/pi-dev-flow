@@ -37,12 +37,34 @@ function jsonArray<T>(out: string): T[] | null {
 	return null;
 }
 
-/** The PR's checks; [] when the forge reports none, null when gh cannot say. */
+/** One entry of GitHub's status rollup: a check run (Actions, apps) or a commit status (older CI). */
+interface RollupItem { __typename?: string; name?: string; context?: string; status?: string; conclusion?: string; state?: string; detailsUrl?: string; targetUrl?: string }
+
+/** A rollup entry as pass | fail | cancel | skipping | pending. */
+export function checkBucket(c: RollupItem): string {
+	if (c.__typename === "StatusContext" || (c.state && !c.status)) {
+		const st = (c.state ?? "").toUpperCase();
+		return st === "SUCCESS" ? "pass" : st === "FAILURE" || st === "ERROR" ? "fail" : "pending";
+	}
+	if ((c.status ?? "").toUpperCase() !== "COMPLETED") return "pending";
+	const k = (c.conclusion ?? "").toUpperCase();
+	if (k === "SUCCESS") return "pass";
+	if (k === "SKIPPED" || k === "NEUTRAL") return "skipping";
+	if (k === "CANCELLED") return "cancel";
+	return "fail"; // FAILURE, TIMED_OUT, ACTION_REQUIRED, STARTUP_FAILURE, STALE
+}
+
+/** The PR's checks; [] when the forge reports none, null when gh cannot say. `gh pr view --json
+ *  statusCheckRollup` and not `gh pr checks --json`: older gh builds have no --json on pr checks. */
 async function prChecks(pr: number, cwd: string): Promise<PrCheck[] | null> {
-	const r = await sh(`gh pr checks ${pr} --json name,bucket,link`, cwd, 60_000);
-	const rows = jsonArray<PrCheck>(r.out);
-	if (rows) return rows;
-	return /no checks reported/i.test(r.out) ? [] : null;
+	const r = await sh(`gh pr view ${pr} --json statusCheckRollup`, cwd, 60_000);
+	if (!r.ok) return null;
+	try {
+		const rows = (JSON.parse(r.out.slice(r.out.indexOf("{"), r.out.lastIndexOf("}") + 1)) as { statusCheckRollup?: RollupItem[] | null }).statusCheckRollup;
+		return (rows ?? []).map((c) => ({ name: c.name ?? c.context ?? "check", bucket: checkBucket(c), link: c.detailsUrl ?? c.targetUrl ?? "" }));
+	} catch {
+		return null;
+	}
 }
 
 export type CiVerdict = { state: "green" | "none"; note: string } | { state: "red" | "running" | "unknown"; why: string };
@@ -54,7 +76,7 @@ export async function awaitPrChecks(pr: number, cwd: string): Promise<CiVerdict>
 	for (;;) {
 		const rows = await publishWait.checks(pr, cwd);
 		const elapsed = publishWait.clock() - start;
-		if (rows === null) return { state: "unknown", why: `cannot read the checks of PR #${pr} (gh pr checks ${pr})` };
+		if (rows === null) return { state: "unknown", why: `cannot read the checks of PR #${pr} (gh pr view ${pr} --json statusCheckRollup)` };
 		if (!rows.length) {
 			if (elapsed >= publishWait.appearMs) return { state: "none", note: "no CI checks on the PR" };
 		} else {

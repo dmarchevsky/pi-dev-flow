@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { awaitPrChecks, publishWait, type PrCheck } from "../src/runtime/publish.ts";
+import { awaitPrChecks, checkBucket, publishWait, type PrCheck } from "../src/runtime/publish.ts";
 
 /** Fake clock + CI: each sleep advances time; `script(t)` says what the PR's checks look like at time t. */
 async function withFakeChecks(script: (t: number) => PrCheck[] | null, fn: () => Promise<void>) {
@@ -55,4 +55,18 @@ test("awaitPrChecks: the budget ends the wait with what is still running; gh tha
 	await withFakeChecks(() => null, async () => {
 		assert.equal((await awaitPrChecks(7, tmpdir())).state, "unknown");
 	});
+});
+
+test("checkBucket reads GitHub's status rollup: check runs and commit statuses", () => {
+	const run = (status: string, conclusion = "") => checkBucket({ __typename: "CheckRun", status, conclusion });
+	assert.equal(run("COMPLETED", "SUCCESS"), "pass");
+	assert.equal(run("COMPLETED", "SKIPPED"), "skipping");
+	assert.equal(run("COMPLETED", "NEUTRAL"), "skipping");
+	assert.equal(run("COMPLETED", "CANCELLED"), "cancel");
+	assert.equal(run("COMPLETED", "TIMED_OUT"), "fail");
+	assert.equal(run("QUEUED"), "pending");
+	assert.equal(run("IN_PROGRESS"), "pending");
+	assert.equal(checkBucket({ __typename: "StatusContext", state: "SUCCESS" }), "pass");
+	assert.equal(checkBucket({ __typename: "StatusContext", state: "PENDING" }), "pending");
+	assert.equal(checkBucket({ __typename: "StatusContext", state: "ERROR" }), "fail");
 });

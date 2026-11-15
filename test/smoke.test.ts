@@ -4065,14 +4065,15 @@ if (k === "pr create") {
 	console.log("https://gh/pr/" + n);
 	process.exit(0);
 }
-if (k === "pr checks") {
+if (k === "pr view") {
 	const script = rd("checks.json", null);
-	if (!script) { console.error("no checks reported on the branch"); process.exit(1); }
+	if (!script) { console.log(JSON.stringify({ statusCheckRollup: [] })); process.exit(0); }
 	const i = rd("checks.i", 0);
 	wr("checks.i", i + 1);
-	const rows = script[Math.min(i, script.length - 1)];
-	console.log(JSON.stringify(rows));
-	process.exit(rows.some((r) => r.bucket === "pending") ? 8 : rows.some((r) => r.bucket === "fail") ? 1 : 0);
+	const conc = { pass: "SUCCESS", fail: "FAILURE", skipping: "SKIPPED", cancel: "CANCELLED" };
+	const rows = script[Math.min(i, script.length - 1)].map((r) => ({ __typename: "CheckRun", name: r.name, status: r.bucket === "pending" ? "IN_PROGRESS" : "COMPLETED", conclusion: conc[r.bucket] || "", detailsUrl: r.link }));
+	console.log(JSON.stringify({ statusCheckRollup: rows }));
+	process.exit(0);
 }
 if (k === "pr merge") {
 	if (fs.existsSync(f("mergefail"))) { console.error("GraphQL: At least 1 approving review is required"); process.exit(1); }
