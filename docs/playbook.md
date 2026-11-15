@@ -59,6 +59,12 @@ Inside each one, content has three tiers:
 - `- [ ] (docs) …` is kept on a `--docs` flow. Other `## implement` items are skipped there, since a
   docs flow builds nothing.
 
+**After-merge checks.** A ` ```flow-check <name> ` block under `## release` runs from the main
+checkout when `flow finish` closes the feature, after the release is recorded and before anything is
+removed. Use it for steps that only make sense after the merge, like a build from main or a deploy
+check. If one fails, finish stops and removes nothing. A `- [ ]` item under `## release` stays a
+question for you instead: it closes with your Finish? answer.
+
 If you change the items, you're asked again.
 
 **Prose:** your `## implement` prose replaces dev-flow's built-in "senior discipline" guidance.
@@ -165,7 +171,9 @@ These go under `## pre-release` or `## release`. Either section works.
 | `merge` | *(asked)* | how a PR lands: `squash`, `merge`, `rebase` or `any`. See below. |
 | `version` | `ask` | who makes the release call: `ask` (you, at Verified?), or `versioned` / `unversioned` for every flow |
 | `ask` | `on-change` | `on-change`: Release? answers itself when only release prep changed. `always`: ask every time. |
-| `yolo` | `all` | `until-release`: a yolo given earlier never answers Release? |
+| `finish` | `on-change` | `on-change`: Finish? answers itself when nothing is open (see [gates](gates.md#finish-finish)). `always`: ask every time. |
+| `recheck` | `prep-skip` | `prep-skip`: checks stay green across a commit that holds only the version bump and changelog. `always`: re-run them. |
+| `yolo` | `all` | `until-release`: a yolo given earlier never answers Release?. The gate asks, and only your answer to that question releases. |
 | `reflect` | `on-friction` | `always`: run the closing reflection on every finish |
 | `review` | `/flow-review` | the review step at pre-release |
 | `preflight` | — | runs in the worktree at `flow release` before anything ships, for example `docker build .` |

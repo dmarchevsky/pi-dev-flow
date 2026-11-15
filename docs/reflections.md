@@ -41,8 +41,10 @@ suggestion to **fold** (keep) or **drop** it.
 You answer per item, for example `fold 1,3 drop 2`. Folding records a note, or files the issue for a
 plugin finding. Dropping records nothing.
 
-The review is skipped when the flow ran into no friction: no gate refusal, no guard block, no code change
-after Verified?, and no `--note`. Set `reflect = always` in the playbook's `## release` section to run it every time. Only
+The review is skipped when the flow ran into no friction: no guard block, no gate refusing for a
+process reason (wrong stage, a missing plan, a proof that doesn't hold), no gate refusing twice in a
+row, no code change after Verified?, and no `--note`. A failing test or build is not friction by
+itself: finding it is what the checks are for. Set `reflect = always` in the playbook's `## release` section to run it every time. Only
 your explicit `--no-reflect` skips it; *yolo* doesn't.
 
 ## Nudges

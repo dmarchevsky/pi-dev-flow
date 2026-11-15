@@ -16,7 +16,9 @@ note). Other sessions' worktrees are theirs.
    `.dev-flow/<slug>/tmp/`, removed at finish) — never a hard-coded `/tmp/...`.
 4. `flow check` runs every tier-1 check (test, health with seeded data, named
    `flow-check` blocks) and records them against the worktree; any later edit
-   makes them stale, and verify reruns stale ones itself.
+   makes them stale, and verify reruns stale ones itself. It also says when
+   the branch fell behind the default branch and which files a rebase would
+   conflict in — resolve those now (`git rebase`), not inside verify.
 5. UI feature → a real browser visual pass, not just a typecheck.
 6. Walk the **tier-2 checklist** (`- [ ]` items) with the operator honestly —
    it cannot be scripted.
@@ -45,7 +47,9 @@ note). Other sessions' worktrees are theirs.
      unreleased. Record the kind, not a number, unless the operator names one:
      the gate counts it from the newest tag, so a parallel release moves it.
 3. Answer → `flow verify --confirmed` (yolo → `--yolo --confirmed`), plus
-   `--version=patch|minor|major` (or `--version=<exact>`) or `--no-version`. If the
+   `--version=patch|minor|major` (or `--version=<exact>`) or `--no-version`. It does not
+   deploy again when the tree is the one it deployed for review — it only
+   probes that the app still answers. If the
    default branch moved since the review deploy it refuses: run `flow verify`
    again first. Fixes → iterate and re-verify; that loop is free.
 

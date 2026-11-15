@@ -34,7 +34,7 @@ import { type Session, presentRun } from "../src/runtime/checks.ts";
 import { isSelfRepo } from "../src/runtime/setup.ts";
 import { foldView, pluginUpstream } from "../src/runtime/reflect.ts";
 import { type FlowHooks, runFlow } from "../src/runtime/gates.ts";
-import { grantCheck, grantRecord, newGrantLedger, operatorMessageCount } from "../src/runtime/grants.ts";
+import { grantCheck, grantRecord, isFriction, newGrantLedger, operatorMessageCount, type RefusalStreak } from "../src/runtime/grants.ts";
 import { PIWEB_SUBAGENT, WORKER_TOOLS, piwebLiveClaim, piwebStamp, piwebWorkerMeta, reflectSeams, sessionHeaders, stageWorkerSpawn, workerName, workerSessions, workerTiming, writeTranscriptDigests } from "../src/runtime/workers.ts";
 export { compactionTakeover } from "../src/runtime/base.ts";
 export { reflectSeams, stageWorkerSpawn, workerTiming } from "../src/runtime/workers.ts";
@@ -142,6 +142,8 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	/** Which gate asked for the operator's word, and when features started — per session (gh#190). */
 	const grantLedger = newGrantLedger();
+	/** Gates that refused in a row, per session — what turns a failing check into friction (see isFriction). */
+	const refusalStreak: RefusalStreak = new Map();
 
 	/** A flow_stage worker: registered in this module's set, or — for a worker pi-web hosts, whose extension
 	 *  instance never saw the registration — stamped with pi-web's subagent entry. */
@@ -242,8 +244,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (!res.isError) maybeCompactNow(ctx, root);
 			// two readers: the model gets every instruction, the operator's row renders the view (renderResult) —
 			// facts, the stage line and the question waiting on them, never a command to type
-			// a refusal (not a question for the operator) is friction the closing reflection should look at
-			if (res.isError && (!res.text.startsWith(NEEDS_OPERATOR) || selfGrant) && initiated(root)) noteFriction(root, sessionKey(ctx));
+			// a refusal (not a question for the operator, not a red check doing its job) is friction the closing reflection should look at
+			if (isFriction(params.args, sessionKey(ctx), res, !!selfGrant, refusalStreak) && initiated(root)) noteFriction(root, sessionKey(ctx));
 			// a start that bound a feature takes over the refusals this session hit before it existed
 			else if (!res.isError && params.args[0] === "start" && initiated(root)) noteFriction(root, sessionKey(ctx), 0);
 			const { agent, view } = await presentRun(params.args, root, sessionKey(ctx), res);
@@ -310,7 +312,9 @@ export default function devFlow(pi: ExtensionAPI) {
 		let lineage: { id?: string; file?: string; dir?: string } = {};
 		try { lineage = { id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? undefined, dir: ctx.sessionManager.getSessionDir() ?? undefined }; } catch { /* unbacked driver: the worker is unlinked */ }
 		const selfRepo = isSelfRepo(root);
-		const brief =
+		// gh#216: the brief is built before the worker's try/finally — a throw here used to leave this session
+		// marked as running a worker forever and hand the caller nothing
+		const briefOf = async (): Promise<string> =>
 			wop === "reflect"
 				? await (async () => {
 						const items = readReflections(root);
@@ -344,6 +348,13 @@ export default function devFlow(pi: ExtensionAPI) {
 						preamble: cfg.workerPreamble,
 						note: String(params.note ?? ""),
 					});
+		let brief: string;
+		try {
+			brief = await briefOf();
+		} catch (e) {
+			runningWorkers.delete(key);
+			return err(`the ${wop} worker could not be briefed: ${e instanceof Error ? e.message : String(e)} — nothing ran; re-run, or do it inline`);
+		}
 		// pi-web visibility needs both halves of the lineage: the id the Agents menu links the child
 		// to, the file the parentSession header points at — without either the worker stays unlinked.
 		const subagent = !lineage.id || !lineage.file ? undefined : { parentId: lineage.id, parentFile: lineage.file, toolCallId: id, profile: `flow-${wop}`, description: name, task: brief };
@@ -541,6 +552,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		WEB_CHIP_KEYS.delete(sessionKey(ctx)); // the session's UI is gone; a long-lived server must not keep its slot
 		hollowStreak.delete(sessionKey(ctx));
+		refusalStreak.delete(sessionKey(ctx));
 		if (!guardsAreMine()) return;
 		const root = await flowRoot(ctx.cwd);
 		if (!existsSync(dfDir(root))) return;
@@ -772,7 +784,7 @@ export default function devFlow(pi: ExtensionAPI) {
 				const co = checkoutInvocation(g.seg);
 				if (!co) continue;
 				const homeWt = worktrees.find((w) => gitDir === w || gitDir.startsWith(w + path.sep));
-				if (co.creates && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${co.target} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch --confirmed)` };
+				if (co.creates && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${co.target} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch)` };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout
 				if (!homeWt && co.target.startsWith(featureBranchPrefix(cfg)))
 					return { block: true, reason: `branch ${co.target} belongs to a feature worktree, not the main checkout — flow use <slug> and run git inside ${featureBranchPrefix(cfg)}…'s worktree` };

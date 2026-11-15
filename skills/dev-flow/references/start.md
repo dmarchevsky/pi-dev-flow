@@ -35,14 +35,16 @@ knobs · merge-policy state.
   adds the mockup gate, so don't ask. Turning it **off** is the operator's:
   `flow start <slug> --no-ui --confirmed` at plan, after they say so, and
   aborting a ui feature at plan asks the same.
-- **Ask every grant in one message**, then make one call with all of them:
-  the mode (`normal` default, or `--patch` / `--docs`) and the merge policy if
-  the playbook has none —
-  `flow start <slug> [--ui] [--patch|--docs] [--merge=<style>] --confirmed`.
-  Never grant any of them yourself. When the operator's own request already
-  grants one ("start a docs flow"), that is their word: pass `--confirmed` on
-  the first call. After a refusal, only a message sent later counts, so a
-  `--confirmed` re-run right away is refused too. Ask once.
+- **A mode is a proposal, not a grant**: pass `--patch` or `--docs` on the
+  start call when the work fits (no `--confirmed`, no question). The
+  operator grants it with their **Approve?** answer — say the mode and why
+  when you ask it. They say no → `flow abort`, start again as a normal
+  feature.
+- **The merge policy is the one grant start asks for**, and only when the
+  playbook has none: `flow start <slug> [--ui] [--patch|--docs]
+  --merge=<style> --confirmed` on their answer. After a refusal, only a
+  message sent later counts, so a `--confirmed` re-run right away is refused
+  too. Ask once.
 - No merge policy → the gate refuses with `NEEDS-OPERATOR Merge policy?` and a
   suggestion read off the repo's history. Ask: squash, merge, rebase or any.
   The answer is written into `## release` once.
@@ -56,6 +58,7 @@ knobs · merge-policy state.
 - `normal` — a written plan (`plan/plan.md`) is required before Approve?.
 - `--patch` — a small change to release now (one-file fix, version chore):
   no plan file, one chat line is the plan, every other gate identical.
+  Approve? reads "approve this as a patch: <one line>".
 - `--docs` — docs only: no plan file and no tier-1 checks; worktree and the
   full release stay.
 - A change that grows past one line or touches behavior is a normal feature.

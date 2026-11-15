@@ -3,10 +3,10 @@ import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { createServer } from "node:net";
 import { freemem } from "node:os";
 import path from "node:path";
-import { checkFingerprint, DEFAULTS, freshenChecks, healthProbe, listFiles, needsOperator, newestTaggedVersion, parseVersion, sq, validSlug, formatSize, sideBySide, type BranchState, type Config, type DevSlot, type FlowState, type StageCheck } from "../core.ts";
+import { AGENT_MARK, checkFingerprint, DEFAULTS, freshenChecks, healthProbe, prepOnlyChange, listFiles, needsOperator, newestTaggedVersion, parseVersion, sq, validSlug, formatSize, sideBySide, type BranchState, type Config, type DevSlot, type FlowState, type StageCheck } from "../core.ts";
 import { loadProject } from "../projectmd.ts";
 import { agentText, presentGate, type GateView, type StageFacts } from "../present.ts";
-import { atomicWrite, boundFeature, dfDir, featDir, featureEnv, flagValue, gateCwd, initiated, mergeBase, now, originUrl, readState, runHealthProbe, sh, tail, worktreeAbs, writeState } from "./base.ts";
+import { atomicWrite, boundFeature, buildSkew, dfDir, featDir, featureEnv, flagValue, gateCwd, initiated, mergeBase, now, originUrl, readState, runHealthProbe, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type GateCtx } from "./gates.ts";
 
 /** The port this flow's dev deploy uses: the operator's pick for it, else the playbook default. */
@@ -249,9 +249,45 @@ export async function worktreeFingerprint(cwd: string): Promise<string | null> {
 /** Stamp freshly recorded checks with the tree they ran against — taken AFTER the run, so a check
  *  that rewrites tracked files (a formatter, codegen) does not mark itself stale the moment it passes. */
 export async function stampChecks(root: string, state: FlowState, names: string[]): Promise<void> {
-	const fp = await worktreeFingerprint(gateCwd(root, state));
+	const cwd = gateCwd(root, state);
+	const fp = await worktreeFingerprint(cwd);
 	if (!fp) return;
-	for (const n of names) if (state.checks[n]) state.checks[n].wt = fp;
+	// a clean tree is exactly its HEAD: only then can a later gate reason about what was committed since
+	const st = await sh("git status --porcelain", cwd);
+	const head = st.ok && !st.out.trim() ? (await sh("git rev-parse HEAD", cwd)).out.trim() : "";
+	for (const n of names)
+		if (state.checks[n]) {
+			state.checks[n].wt = fp;
+			if (head) state.checks[n].head = head;
+			else delete state.checks[n].head;
+		}
+}
+
+/** Green records survive a commit that holds nothing but release prep (the bump, the changelog entry): they
+ *  are restamped onto the current tree instead of going stale, so the suite does not run twice to prove a
+ *  version string. Only on a clean tree, only for records taken on a clean tree, and never under
+ *  `recheck = always`. Returns the names it kept. */
+export async function keepThroughPrep(root: string, state: FlowState, cfg: Config, fp: string | null): Promise<string[]> {
+	if (!fp || cfg.release.recheck === "always") return [];
+	const cwd = gateCwd(root, state);
+	const st = await sh("git status --porcelain", cwd);
+	if (!st.ok || st.out.trim()) return [];
+	const head = (await sh("git rev-parse HEAD", cwd)).out.trim();
+	const kept: string[] = [];
+	const verdict = new Map<string, boolean>();
+	for (const [name, rec] of Object.entries(state.checks)) {
+		if (!rec.ok || !rec.wt || rec.wt === fp || !rec.head || !head) continue;
+		if (!verdict.has(rec.head)) {
+			const d = await sh(`git diff --name-only ${sq(rec.head)} HEAD`, cwd);
+			verdict.set(rec.head, d.ok && prepOnlyChange(cfg, d.out.split("\n").map((l) => l.trim()).filter(Boolean)));
+		}
+		if (!verdict.get(rec.head)) continue;
+		rec.wt = fp;
+		rec.head = head;
+		rec.prep = true;
+		kept.push(name);
+	}
+	return kept;
 }
 
 /** Commits the feature branch holds over its merge base with the default branch, plus how many
@@ -336,7 +372,41 @@ export async function presentRun(args: string[], root: string, key: string, res:
 		facts = undefined;
 	}
 	const view = presentGate(sub, res.text, !!res.isError, state, cfg, facts);
-	return { agent: agentText(res.text, view), view };
+	// gh#218: a session running an older build than the disk ships must hear it on every gate, not only at
+	// start and status — a fix already released never reached the session that needed it
+	let agent = agentText(res.text, view);
+	if (initiated(root) && !SKEW_SAYS_ITSELF.has(sub)) {
+		const skew = buildSkew(root);
+		if (skew.line && !agent.includes(skew.line)) agent += `\n${AGENT_MARK}warning: ${skew.line}. Gates in this session run the older build — tell the operator at the next safe point.`;
+	}
+	return { agent, view };
+}
+
+/** Gates that print the build skew in their own words. */
+const SKEW_SAYS_ITSELF = new Set(["start", "status", "version", "release", "help"]);
+
+/** gh#209: say at check time that the branch fell behind the default branch, and which files both sides
+ *  touched — verify's rebase is the right convenience, but it must not be where a conflict is first seen.
+ *  "" when up to date or when git cannot say. Read-only: nothing is rebased or merged here. */
+export async function behindNote(root: string, state: FlowState, cfg: Config): Promise<string> {
+	const cwd = gateCwd(root, state);
+	if (cwd === root) return "";
+	const d = cfg.defaultBranch;
+	const hasOrigin = !!(await originUrl(root));
+	if (hasOrigin) await sh(`git fetch -q origin ${sq(d)}`, cwd, 20_000);
+	const base = hasOrigin && (await sh(`git rev-parse --verify -q ${sq(`refs/remotes/origin/${d}`)}`, cwd)).ok ? `origin/${d}` : d;
+	const r = await sh(`git rev-list --count HEAD..${sq(base)}`, cwd);
+	const behind = Number.parseInt(r.out.trim(), 10);
+	if (!r.ok || !Number.isFinite(behind) || behind === 0) return "";
+	const mb = (await sh(`git merge-base HEAD ${sq(base)}`, cwd)).out.trim();
+	const names = async (range: string) => new Set(mb ? (await sh(`git diff --name-only ${range}`, cwd)).out.split("\n").map((l) => l.trim()).filter(Boolean) : []);
+	const mine = await names(`${sq(mb)} HEAD`);
+	const both = [...(await names(`${sq(mb)} ${sq(base)}`))].filter((f) => mine.has(f));
+	// merge-tree predicts the conflicts without touching the tree (git ≥ 2.38); an older git just lists the overlap
+	const mt = await sh(`git merge-tree --write-tree --name-only --no-messages HEAD ${sq(base)}`, cwd);
+	const conflicts = !mt.ok ? mt.out.split("\n").slice(1).map((l) => l.trim()).filter((l) => l && !/^(fatal|error|usage)/i.test(l)) : [];
+	const list = (xs: string[]) => `${xs.slice(0, 8).join(", ")}${xs.length > 8 ? ` …(${xs.length - 8} more)` : ""}`;
+	return `branch is ${behind} commit(s) behind ${base} — flow verify rebases it before the review deploy${conflicts.length ? `; that rebase would conflict in: ${list(conflicts)} — rebase by hand now (git rebase ${base}) and read what ${d} changed there` : both.length ? `; both sides changed: ${list(both)} (no conflict predicted)` : ""}`;
 }
 
 export function describeBranchState(b: BranchState, defaultBranch: string): string {

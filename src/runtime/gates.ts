@@ -7,7 +7,7 @@ import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
 import { AGENT_MARK } from "../present.ts";
 import { GATE_HELP, SELF_BUILD, type Ui, buildSkew, copyWarning, currentBranch, dfDir, featDir, featureEnv, flagValue, gateCwd, gitConsistency, initiated, loadedVersion, mergeHistoryEvidence, needState, now, originUrl, publishedVersion, readClaim, readReflections, readReflectionsText, readRoadmap, readState, roadmapFile, sh, stateFile, tail, unfinishedStates, writePlaybookMergePolicy, writeState } from "./base.ts";
-import { type RunResult, type Session, ago, pendingChecks, probeHealth, readDevPorts, runChecks, stampChecks, triedNote } from "./checks.ts";
+import { type RunResult, type Session, ago, behindNote, pendingChecks, probeHealth, readDevPorts, runChecks, stampChecks, triedNote } from "./checks.ts";
 import { GIT_TRACK_NOTE, isSelfRepo, renderQuestions, setupQuestions, tagPatternEvidence } from "./setup.ts";
 import { foldRows, foldView, legacyPluginRows, pluginUpstream, reflectDoneNote, reflectList, reflectMoveNote, reflectNote, reflectTidy } from "./reflect.ts";
 import { gateFinish, gateRelease, gateReleaseDone, gateVerify } from "./ship.ts";
@@ -281,7 +281,7 @@ export const GRANT_AFTER =
 
 export async function gateStart(o: GateCtx): Promise<RunResult> {
 	const { root, sess, cfg, rest, flag, slugArg } = o;
-	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --patch/--docs (and --no-ui on an existing plan-stage feature) are operator-granted — ask the operator in chat, then add --confirmed; --ui is yours to pass whenever screens change", isError: true };
+	if (!slugArg || !validSlug(slugArg)) return { text: "usage: flow start <slug> [--ui] [--patch|--docs] [--merge=squash|merge|rebase|any] (slug: lowercase, dashes); --patch/--docs are a proposal the operator grants with their Approve? answer — name the mode when you ask it; --no-ui on an existing plan-stage feature is operator-granted (ask in chat, then add --confirmed); --ui is yours to pass whenever screens change", isError: true };
 	// a ghost (plan/ but no state.json — typically a spin-off someone wrote by hand) is adopted, never a dead end:
 	// "already exists, flow use it" sent the agent to use, which found no state, and doctor offered to delete it
 	// gh#178: any feature dir without state.json is a ghost, not only one with a plan/ — a tmp/ or mockups
@@ -320,13 +320,11 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 		}
 		return { text: `feature ${slugArg} already exists — flow use ${slugArg} to resume it${existing?.stage === "plan" ? `; to add the mockup gate at plan, run flow start ${slugArg} --ui from the session bound to it` : ""}`, isError: true };
 	}
-	// relaxed modes are operator-granted: --confirmed anchors a literal chat grant, same convention as the gate verbs
-	if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — ask the operator which mode they grant", isError: true };
+	// A relaxed mode is a proposal, granted by the Approve? answer: nothing it loosens (no written plan, no
+	// tier-1 checks) can happen before approve — the plan stage cannot edit code — so a grant asked at start was
+	// a second question with the same decision in it. The approve gate names the mode in what it asks.
+	if (flag("patch") && flag("docs")) return { text: "--patch and --docs are exclusive — propose one", isError: true };
 	const mode = flag("patch") ? "patch" : flag("docs") ? "docs" : null;
-	// every grant start needs goes into one question: a refusal for one names the others still open, so
-	// the operator answers mode, mockups and merge policy in a single message
-	const alsoMerge = !cfg.release.merge && flagValue(rest, "merge") === null ? `\n${AGENT_MARK}the playbook also has no merge policy — put it in the same question (squash | merge | rebase | any) and pass --merge=<style> on the same re-run` : "";
-	if (mode && !flag("confirmed")) return { text: `${mode} mode is operator-granted — ${GRANT_AFTER}${alsoMerge}`, isError: true };
 	// --ui adds the rendered-mockup gate to plan: stricter, never looser, so the agent turns it on itself
 	// whenever screens change — no operator grant (only turning it off is theirs)
 	if (flag("no-ui")) return { text: "--no-ui applies to an existing plan-stage feature — a new start is ui-off unless you pass --ui", isError: true };
@@ -389,6 +387,7 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 	writeState(root, state);
 	sess.bind(slugArg);
 	sess.rename(slugArg);
+	if (mode) notes.push(`${mode} mode is proposed, not granted yet — the operator's Approve? answer grants it`);
 	return { text: `feature ${slugArg} started at stage plan (ui=${state.ui}${state.patch ? ", patch" : state.docs ? ", docs" : ""}${state.flowVersion ? `, dev-flow ${state.flowVersion}` : ""}); session renamed to ${slugArg}.${notes.length ? `\n${notes.join("\n")}` : ""}\n${AGENT_MARK}next: ${nextHint(state, cfg)}` };
 }
 
@@ -410,7 +409,13 @@ export async function gateApprove(o: GateCtx): Promise<RunResult> {
 	if (askPending) {
 		markPendingAsk(root, state!, "Approve?");
 		if (!ui.hasUI) {
-			return { text: needsOperator("the plan is waiting for your approval", "Approve?", "re-run with --confirmed once the operator answered in chat"), isError: true };
+			// a relaxed mode is granted here: the question says what the operator is agreeing to do without
+		const what = state!.patch
+			? "this is proposed as a patch flow — no written plan, the one-line description is the plan; your answer grants that"
+			: state!.docs
+				? "this is proposed as a docs flow — no written plan and no build checks; your answer grants that"
+				: "the plan is waiting for your approval";
+		return { text: needsOperator(what, "Approve?", `${state!.patch || state!.docs ? "say the mode and the one-line change when you ask; " : ""}re-run with --confirmed once the operator answered in chat`), isError: true };
 		}
 		const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
 		if (!ok) {
@@ -478,7 +483,7 @@ export async function gateStatus(o: GateCtx): Promise<RunResult> {
 		const sts = slugs.map((s) => readState(root, s)).filter((s): s is FlowState => s !== null);
 		return { text: statusJson(sts, cur, cfg) }; // before the prose "no features" answer — an orchestrator must be able to parse the empty case too
 	}
-	if (!slugs.length) return { text: ["no features in flight — describe what you want built to start one", `${AGENT_MARK}start one: flow start <slug> [--ui] [--patch|--docs --confirmed]`, ...warn, ...rmapLine].join("\n") };
+	if (!slugs.length) return { text: ["no features in flight — describe what you want built to start one", `${AGENT_MARK}start one: flow start <slug> [--ui] [--patch|--docs]`, ...warn, ...rmapLine].join("\n") };
 	// one readable row per feature for the operator; the identifiers an agent needs stay on agent-only lines
 	const lines = slugs.flatMap((s) => {
 		const st = readState(root, s);
@@ -685,7 +690,8 @@ export async function gateCheck(o: GateCtx): Promise<RunResult> {
 	if (state!.docs) return { text: "docs mode: project commands skipped — a docs flow runs no tier-1 checks (CI on the tag and the artifact proof still do)" };
 	if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
 	const ran = await runChecks(root, state!, cfg, cfg.checkList);
-	return { text: `tier-1 checks:\n${ran.lines.join("\n")}`, isError: ran.failed };
+	const behind = await behindNote(root, state!, cfg);
+	return { text: `tier-1 checks:\n${ran.lines.join("\n")}${behind ? `\n${behind}` : ""}`, isError: ran.failed };
 }
 
 export async function gateHealth(o: GateCtx): Promise<RunResult> {

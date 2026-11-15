@@ -804,7 +804,7 @@ test("reflectionNudges: fix fires on recurrence, age, a docs batch or code betwe
 	assert.match(reflectionNudges(q(["- [ ] a — s 2026-10-10"]), today).fix ?? "", /1 open ≥ 14 days/);
 	const batch = reflectionNudges(q(["- [ ] a — s 2026-11-01", "- [ ] b — s 2026-11-01", "- [ ] c — s 2026-11-01"]), today).fix ?? "";
 	assert.match(batch, /3 playbook items batch into one docs flow/);
-	assert.match(batch, /3 playbook item\(s\) → one docs flow \(flow start fold-<topic> --docs --confirmed\)/);
+	assert.match(batch, /3 playbook item\(s\) → one docs flow \(flow start fold-<topic> --docs\)/);
 	const code = "## code\n\n- [ ] seed — s 2026-11-01\n";
 	assert.equal(reflectionNudges(code, today).fix, null, "a code item mid-flow is not a reason to divert");
 	assert.match(reflectionNudges(code, today, { between: true }).fix ?? "", /\(between flows\) — 1 code item\(s\) → patch flow/);
@@ -1696,6 +1696,13 @@ test("release order: tags and forge shipping wait for the release stage", () => 
 	assert.equal(g("git tag v1.2.0", null), null, "an unbound session is not judged by a stage it does not have");
 	assert.ok(tagCreates("git tag v1"), "a lightweight tag creates");
 	assert.ok(!tagCreates("git tag --contains HEAD"));
+	assert.ok(!tagCreates("git tag --sort=-creatordate"), "gh#221: sorting tags only reads");
+	assert.ok(!tagCreates("git -C ../up tag --sort=-creatordate | head -3"));
+	assert.ok(!tagCreates("git tag -l 'v1.*' --format='%(refname)'"), "a pattern after -l is not a tag name");
+	assert.ok(!tagCreates("git tag --column"));
+	assert.ok(tagCreates("git tag -a v1 -m x") && tagCreates("git tag -f v1") && tagCreates("git tag -s v1 -m x") && tagCreates("git tag -am x v1"));
+	assert.equal(g("git tag --sort=-creatordate", "pre-release"), null, "a read-only tag query is allowed before release");
+	assert.match(g("git tag v9", "pre-release") ?? "", /This call creates a tag .* reading tags .* is allowed at any stage/);
 	assert.match(releaseOrderInvocation("gh pr merge 46 --squash", "pre-release") ?? "", /merging the PR is release work/);
 	assert.match(releaseOrderInvocation("cd wt && gh release create v1 --notes x", "implement") ?? "", /forge release is release work/);
 	assert.equal(releaseOrderInvocation("gh pr merge 46 --squash", "release"), null, "at release the merge is the job");

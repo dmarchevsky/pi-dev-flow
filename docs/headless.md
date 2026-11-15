@@ -16,8 +16,10 @@ except the `pre-commit` hook.
   on that marker, show the question to a human word for word, and when they answer, re-run the same
   gate with `--confirmed`. A `flow-guard` `confirm` rule with no UI refuses with the same marker.
 - **`--confirmed` runs on trust.** dev-flow can't verify that a human answered. If your
-  orchestrator adds `--confirmed` on its own guess, dev-flow can't catch it. `--patch` and `--docs`
-  grants work the same way.
+  orchestrator adds `--confirmed` on its own guess, dev-flow can't catch it. A `--patch` or
+  `--docs` mode is granted by the Approve? answer, so it runs on the same trust.
+- **Not every question is asked.** Release? and Finish? often answer themselves (`ask` and `finish`
+  default to `on-change`), so a driver must not wait for all four checkpoints.
 - **Machine-readable output.** `flow status --json` gives the bound slug and, per feature: stage,
   modes, branch, worktree, checks and next hint. `flow help --json` gives the gate contract:
   questions and flag names. `status`, `help`, `version`, `doctor` and `roadmap` (list) are safe at any
@@ -29,8 +31,8 @@ except the `pre-commit` hook.
   deploy (killed after 15 minutes), then retries the health probe. Give the driver minutes, not
   seconds. Gates print progress while they run.
 - **Edits make checks stale.** Each check result is tied to a worktree fingerprint, and
-  `verify` / `release` re-run stale ones. Running `flow check` after the last edit is still the tidy
-  order.
+  `verify` / `release` re-run stale ones themselves. A commit that holds only release prep (version
+  file, changelog) doesn't make them stale.
 - **Version skew.** Gates run the dev-flow build the session loaded at start. `flow version` says
   when the checkout is newer. `flow release` asks whether to `/reload` or proceed with the old build,
   and never blocks on it.

@@ -13,9 +13,10 @@ unbinds the session — so anything that needs them runs first.
      against `.dev-flow/reflections.md` and upstream issues, and returns
      numbered findings, each **docs** / **code** / **plugin** with a **fold**
      or **drop** recommendation. Finish then stops.
-   - A flow with **no friction** (no refusal, no guard block, no `--note`)
-     skips the worker, unless the playbook says `reflect = always`.
-   - Worker failed → nothing is removed: re-run, or review inline (bare `flow
+   - A flow with **no friction** (no guard block, no process refusal, no gate
+     stuck twice in a row, no `--note`) skips the worker, unless the playbook
+     says `reflect = always`. A red test or build is not friction.
+   - Worker failed or died → the gate says so and nothing is removed: re-run, or review inline (bare `flow
      reflect` prints the protocol). Only the operator's explicit word skips
      it: `flow finish --no-reflect --confirmed` — yolo never does.
 2. **Findings → ask fold or drop** per item — one plain line each — with
@@ -28,6 +29,12 @@ unbinds the session — so anything that needs them runs first.
    items the reviewer found fixed → propose checking them off.
 4. **`flow finish --confirmed`** without asking again. Nothing found → ask
    **Finish?** first.
+   - **A clean flow needs no question**: no friction, no open release-stage
+     item, nothing skipped → the first `flow finish` closes the feature and
+     says Finish? answered itself (`finish = always` in the playbook asks
+     every time). Report it; do not ask afterwards.
+   - A red after-merge check (`flow-check` under `## release`, run from the
+     main checkout) stops finish with its output: fix, re-run.
 5. Offer the printed suggestions (`⚑ fix the open reflections now?`, `↻ N
    closed reflection(s)`) in one line each; never start a fix flow without
    the operator's word.

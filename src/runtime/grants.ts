@@ -5,8 +5,9 @@
  *
  *  A. a gate asked for the operator's word (NEEDS-OPERATOR, or an "operator-granted" refusal) and the same
  *     gate is re-run with --confirmed before any operator message arrived;
- *  B. a feature started in this session gets a loosening mode flag (--patch/--docs/--no-ui) granted with --confirmed
- *     before any operator message arrived after the start.
+ *  B. a feature started in this session has its mockup gate dropped (--no-ui) with --confirmed before any
+ *     operator message arrived after the start. (--patch/--docs need no grant at start: the Approve? answer
+ *     grants them, and rule A binds that.)
  *
  *  --confirmed is not the only answer a gate takes: `Dev port?` is answered with --replace or --port=<n>
  *  (gh#203), and those bind the same way — a re-run of the gate that asked, carrying any of them, needs
@@ -38,8 +39,9 @@ export interface GrantLedger {
 export const newGrantLedger = (): GrantLedger => ({ asked: new Map(), started: new Map() });
 
 const ASKS_FOR_WORD = /operator-granted|operator's (?:explicit )?word|the operator must grant/;
-/** Mode flags that loosen a gate — --ui only tightens one, so it is not here; --no-ui (dropping it) is. */
-const MODE_FLAGS = ["--no-ui", "--patch", "--docs"];
+/** Mode flags that loosen a gate and need a grant of their own. --ui only tightens one; --patch and --docs
+ *  are granted by the Approve? answer, which rule A already binds; --no-ui (dropping the mockup gate) is the one left. */
+const MODE_FLAGS = ["--no-ui"];
 /** Flags that carry the operator's answer to the question a gate asked — `--confirmed`, and the
  *  `Dev port?` answers (gh#203). */
 export function answerFlags(args: readonly string[]): string[] {
@@ -73,4 +75,34 @@ export function grantRecord(args: readonly string[], key: string, users: number 
 	}
 	if (!res.isError && ledger.asked.get(key)?.sub === sub) ledger.asked.delete(key);
 	if (!res.isError && sub === "start" && /\bstarted at stage\b/.test(res.text)) ledger.started.set(`${key}\u0000${slugOf(args)}`, users);
+}
+
+/** A refusal that is the work failing, not the process: a red test, a broken build, a deploy that did not come up. */
+const WORK_FAILURE = /check run at the gate failed|\bbuild FAILED\b|dev deploy FAILED|probe FAILED|served-build check FAILED|after-merge check "[^"]*" failed|has not passed/;
+/** `flow check|test|health` reporting a red run — the answer those tools exist to give. A refusal from them that
+ *  is not a run (nothing configured, no feature bound) stays friction. */
+const RED_RUN = /^(?:tier-1 checks:|test: FAIL|health: FAIL)/;
+const CHECK_SUBS = new Set(["check", "test", "health"]);
+
+/** Refusals in a row per session and gate — the second one in a row is what makes a work failure friction. */
+export type RefusalStreak = Map<string, { sub: string; n: number }>;
+
+/** Is this flow result friction the closing reflection should look at? A question for the operator is not, and
+ *  neither is a failing check: finding red tests is what `flow check` is for, and counting it made nearly every
+ *  flow "have friction", so the reflection worker ran on flows that had none. Friction is a self-granted
+ *  answer, a process refusal (wrong stage, missing plan, a proof that does not hold), or the same gate
+ *  refusing twice in a row whatever the cause — the agent is stuck on it. */
+export function isFriction(args: readonly string[], key: string, res: { text: string; isError?: boolean }, selfGrant: boolean, streak: RefusalStreak): boolean {
+	const sub = args[0] ?? "";
+	if (selfGrant) return true;
+	if (!res.isError) {
+		if (streak.get(key)?.sub === sub) streak.delete(key);
+		return false;
+	}
+	if (res.text.startsWith(NEEDS_OPERATOR)) return false;
+	if (CHECK_SUBS.has(sub) && RED_RUN.test(res.text)) return false;
+	const prev = streak.get(key);
+	const n = prev?.sub === sub ? prev.n + 1 : 1;
+	streak.set(key, { sub, n });
+	return n >= 2 || !WORK_FAILURE.test(res.text);
 }

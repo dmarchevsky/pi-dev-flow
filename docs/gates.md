@@ -22,7 +22,7 @@ its own.
 | `verify` | implement → pre-release | the branch has commits, checks are green, the deploy is healthy, and you said yes |
 | `release` | pre-release → release | the version and changelog are right, nothing is uncommitted, and you said yes (or it answered itself) |
 | `release-done` | records the release | the tag is on origin, the artifact is published, and the forge release exists |
-| `finish` | release → done | the release is recorded, main is clean and pushed, and you said yes |
+| `finish` | release → done | the release is recorded, main is clean and pushed, and you said yes (or it answered itself) |
 
 Tools that never gate: `test`, `check`, `health`, `status`, `abort`, `doctor`, `reflect`, `roadmap`,
 `help`, `version`.
@@ -36,7 +36,8 @@ Creates the feature, binds this session to it, and renames the session after the
 - `--ui` means the plan gate requires rendered mockups. The agent turns it on by itself when screens
   change (it only adds a check); turning it off (`--no-ui` at plan, or aborting a ui feature) needs
   your OK. `--patch` (a small fix, no written plan) and `--docs` (docs only, no build checks) are
-  lighter modes and need your OK in chat, after which the agent adds `--confirmed`.
+  lighter modes the agent proposes at start. Your Approve? answer grants the mode: the question
+  names it, and nothing the mode relaxes can happen before you approve.
 - **The playbook needs a `merge` policy.** If it has none, start asks which style to use (squash,
   merge, rebase or any), suggests one from your git history, and writes your answer into
   `## release`.
@@ -65,7 +66,8 @@ the session. It also takes over a feature another session holds. Nothing binds a
 ## test, check, health
 
 - `flow test` runs the `test` command and records the result.
-- `flow check` runs every tier-1 check from `## implement`.
+- `flow check` runs every tier-1 check from `## implement`. If the branch fell behind main, it says
+  by how many commits and which files a rebase would conflict in.
 - `flow health` runs `seedData` and then the health probe, retrying for up to `healthWait` seconds.
 
 Each record carries a fingerprint of the worktree. When the tree changes, the record goes stale and
@@ -97,7 +99,9 @@ the question also asks: *patch, minor or major release, or merge unreleased?* Yo
 with `--version=…` or `--no-version`.
 
 With `--confirmed`, it never rewrites history. If main moved since the review deploy, re-run
-`flow verify`.
+`flow verify`. It also doesn't build or deploy a second time: when the tree is the one it deployed for
+your review, it only checks that the app still answers. If the tree changed, or the app stopped
+answering, it deploys again.
 
 **At pre-release, `verify` is the re-verify:** after review fixes, it re-runs the build, deploy and
 probes on the current tree and asks Verified? again. A standing yolo never answers this.
@@ -115,11 +119,16 @@ Proves the branch is ready to ship:
   pending under `Unreleased` is kept in the new section, and `Unreleased` is now empty.
 - **Merge unreleased** (`--no-version`): no bump, but the branch adds its own line under
   `Unreleased`. Docs flows are exempt.
-- The checks are green again after the prep edits, and `release.preflight` passes if set.
+- The checks are green. The gate runs any that are stale or missing itself. Checks that passed
+  before a commit holding only release prep (version file, changelog) stay green without a re-run;
+  set `recheck = always` in `## release` to re-run them anyway. `release.preflight` passes if set.
 - There are no leftover conflict markers (`<<<<<<<`) and no uncommitted files in the worktree.
 
 **Release? often answers itself** (`ask = on-change`, the default). That happens when your call is
-on record and only release prep (bump, changelog) changed since Verified?. It still asks when:
+on record and only release prep (bump, changelog) changed since Verified?. A `--confirmed` given before the gate asked doesn't count where a question must be put (a held yolo,
+or a stale build): the gate asks first.
+
+It still asks when:
 - code changed after Verified?;
 - the session runs an old build (proceeding is allowed, and it says what you'd miss);
 - the playbook sets `yolo = until-release`;
@@ -153,14 +162,21 @@ Skip flags (on your word): `--no-artifact-check`, `--no-release-create`. You can
 
 1. Records the release if `release-done` never ran. If the `## release` checklist still has open
    items, it stops and lists them.
-2. Runs the **closing reflection** (see [reflections](reflections.md)) and waits for your fold/drop.
-3. On `--confirmed`, cleans up: removes the worktree, the branch and `.dev-flow/<slug>/`. It deletes
+2. Runs the after-merge checks (`flow-check` blocks under `## release`) from the main checkout. A red
+   one stops finish and removes nothing.
+3. Runs the **closing reflection** (see [reflections](reflections.md)) and waits for your fold/drop.
+4. Cleans up, on `--confirmed` or when Finish? answers itself: removes the worktree, the branch and `.dev-flow/<slug>/`. It deletes
    the remote branch only once it's proven merged. If local main is just behind origin, it
    fast-forwards it.
 
 It refuses until the release is recorded, the main checkout is clean and pushed, and the worktree has
 no uncommitted changes. Under `merge = merge`, commits missing from main are a policy violation that
 yolo can't answer.
+
+**Finish? answers itself on a clean flow** (`finish = on-change`, the default): the release is
+recorded, the flow had no friction so no reflection ran, no `## release` checklist item is open, and
+no forge release was skipped. It still asks when any of those is open, and always with
+`finish = always` in `## release`.
 
 To drop an unreleased feature, use `flow abort` instead.
 
@@ -190,6 +206,7 @@ Answering **yolo** at any checkpoint runs that gate with `--yolo --confirmed`. T
 question and pre-confirms the rest, so the agent runs the remaining gates back to back, following
 any wishes you added ("yolo, patch bump"). Every check and guard still applies. Yolo never answers:
 - the re-verify at pre-release;
-- Release? when code changed after Verified?, or when the playbook sets `yolo = until-release`;
+- Release? when code changed after Verified?, when the playbook sets `yolo = until-release`, or
+  when the session runs an older build than the install;
 - a `merge = merge` policy violation at finish;
 - skipping the closing reflection.
