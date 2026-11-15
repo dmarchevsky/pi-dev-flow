@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.92.0] - 2026-11-14
+
+**The gates stop repeating work and asking empty questions, and on GitHub `flow release` publishes the release itself.**
+
 ### Changed
 - **Verified? no longer builds and deploys twice.** `flow verify` deploys the app for your review, and the `--confirmed` run after your answer used to build and deploy it all over again. That doubled the wait and could fail after you had already said yes. Now, when the tree is the one that was deployed for review, the confirmed run only checks that the app still answers. If the tree changed or the app stopped answering, it deploys again as before.
 - **`flow release` runs the checks it needs.** After a commit at pre-release the release gate used to refuse with "run flow check" and wait for a second call. It now runs stale or missing checks itself, the way `flow verify` does, after the quick proofs (version, changelog, clean tree) so a wrong version is refused before a slow suite starts.
