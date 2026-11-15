@@ -344,8 +344,10 @@ export default function devFlow(pi: ExtensionAPI) {
 						defaultBranch: cfg.defaultBranch,
 						commits: await git(`git log --oneline ${sq(cfg.defaultBranch)}..HEAD`),
 						status: await git("git status --short"),
-						checks: cfg.checkList.map((c) => ({ name: c.name, command: c.cmd })),
+						checks: st.docs ? [] : cfg.checkList.map((c) => ({ name: c.name, command: c.cmd })),
 						preamble: cfg.workerPreamble,
+						docs: !!st.docs,
+						guard: cfg.guard,
 						note: String(params.note ?? ""),
 					});
 		let brief: string;

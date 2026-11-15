@@ -1109,6 +1109,31 @@ test("buildWorkerBrief: no plan file (a --docs / --patch flow) is said, not sent
 	assert.match(withPlan, /read the plan, the diff/);
 });
 
+test("buildWorkerBrief: a docs flow is handed no project checks and no setup (gh#211)", () => {
+	const base = { op: "review" as const, slug: "d", workDir: "/w", planFile: null, defaultBranch: "main", commits: "", status: "", checks: [{ name: "test", command: "bun run verify" }], preamble: ["export PW=x"], note: "review" };
+	const docs = buildWorkerBrief({ ...base, checks: [], docs: true });
+	assert.match(docs, /Project checks: none — this is a docs flow\. The gates skip the project's commands and no setup ran in this worktree/);
+	assert.ok(!docs.includes("bun run verify") && !docs.includes("## Setup"), "no check and no setup block to run it in");
+	const normal = buildWorkerBrief(base);
+	assert.match(normal, /- test: `bun run verify`/);
+	assert.match(normal, /## Setup \(from the project's playbook\)/);
+});
+
+test("buildWorkerBrief: the playbook's guard rules ride in the brief — a worker has no operator to grant a confirm (gh#214)", () => {
+	const base = { op: "review" as const, slug: "d", workDir: "/w", planFile: null, defaultBranch: "main", commits: "", status: "", checks: [], note: "review" };
+	const guard = { deny: [{ pattern: "--force", why: "history" }], confirm: [{ pattern: "docker compose[^]*down", why: "one stack per machine" }], protect: [{ pattern: "\\.env$", why: "secrets" }], forbid: [] };
+	const b = buildWorkerBrief({ ...base, guard });
+	assert.match(b, /## Guard rules \(from the project's playbook\)/);
+	assert.match(b, /You have no operator to ask, so a rule that needs their OK is a refusal for you/);
+	assert.match(b, /`docker compose\[\^\]\*down` — one stack per machine/);
+	assert.match(b, /`--force` — history/);
+	assert.match(b, /Paths matching these are not yours to write:\n  - `\\\.env\$` — secrets/);
+	assert.match(b, /A refusal stops the whole bash call[^\n]*run each probe as its own call/);
+	assert.match(b, /name it and the rule under `checks not run:`/);
+	assert.ok(b.indexOf("## Guard rules") < b.indexOf("## Your task"), "the rules come before the task");
+	assert.ok(!buildWorkerBrief({ ...base, guard: { deny: [], confirm: [], protect: [], forbid: [] } }).includes("## Guard rules"), "no rules, no section");
+});
+
 test("buildWorkerBrief: an implement worker sharing a dirty worktree commits only its own paths", () => {
 	const base = { op: "implement" as const, slug: "r", workDir: "/w", defaultBranch: "main", commits: "", checks: [], note: "slice", planFile: null };
 	const dirty = buildWorkerBrief({ ...base, status: " M web/src/App.tsx\nD  web/src/Old.tsx" });

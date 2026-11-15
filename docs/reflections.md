@@ -26,7 +26,7 @@ dev-flow repo, filed only when you say so.
 | `flow reflect "<note>"` | guesses the section from the wording and says why |
 | `flow reflect list` | numbers the open notes |
 | `flow reflect move <n> --code` | moves a note to the other section |
-| `flow reflect done <n> "<what>"` | checks a note off as fixed |
+| `flow reflect done <n> "<what>"` | checks a note off as fixed. `done 3,4,7 "<what>"` closes several at once; one bad number closes none. |
 | `flow reflect tidy` | removes the checked-off notes |
 
 `flow status` and `flow doctor` show how many notes are open.

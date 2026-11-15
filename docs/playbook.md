@@ -147,6 +147,8 @@ forbid  docker/secrets               :: secret storage
 
 Tips:
 - Text after ` :: ` is the reason, shown when the rule fires.
+- `flow_stage` workers get these rules in their brief. A worker has no one to ask, so `confirm` and
+  `protect` are refusals for it, and the reason you write is what it reads.
 - An invalid regex makes the playbook invalid, and `flow init` refuses it.
 - Match the **verb** you mean, not a flag. `\bgit\b[^\n]*--force` also blocks
   `git filter-branch --force`.
