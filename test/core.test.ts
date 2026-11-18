@@ -80,6 +80,7 @@ import {
 	reviewOwed,
 	failTail,
 	flowArgsShapeError,
+	staleScratch,
 	releaseOrderInvocation,
 	guessReflectSections,
 	reflectItems,
@@ -1986,4 +1987,19 @@ test("flowArgsShapeError: a marshalled array is named, not dispatched (gh#238)",
 	assert.match(flowArgsShapeError(['["roadmap", "add", "Durable"]']) ?? "", /arrived as one string holding an array \(\["roadmap","add","Durable"\]\)/);
 	assert.match(flowArgsShapeError("status") ?? "", /arrived as string/);
 	assert.match(flowArgsShapeError(["a", 3]) ?? "", /element\(s\) 1 are not strings/);
+});
+
+test("staleScratch: only mktemp-shaped names untouched for an hour are swept (gh#243)", () => {
+	const now = 10_000_000;
+	const old = now - 2 * 3_600_000;
+	const names = staleScratch([
+		{ name: "tmp.Xk3pQ9aZ2b", mtimeMs: old },
+		{ name: "lettuce-provider-routes.a1B2c3", mtimeMs: old },
+		{ name: "faces-9f8e7d", mtimeMs: old },
+		{ name: "tmp.Abc123", mtimeMs: now - 60_000 }, // recent: may be in use
+		{ name: "vite-cache", mtimeMs: old }, // a name the project chose
+		{ name: "node-compile-cache", mtimeMs: old },
+		{ name: "build.output", mtimeMs: old },
+	], now);
+	assert.deepEqual(names, ["tmp.Xk3pQ9aZ2b", "lettuce-provider-routes.a1B2c3", "faces-9f8e7d"]);
 });

@@ -1640,6 +1640,17 @@ export function featureTmpDir(dfDir: string, slug: string): string {
 	return path.join(dfDir, slug, "tmp");
 }
 
+/** gh#243: the per-flow scratch dir is a TMPDIR every tool writes into, and tooling that never removes its
+ *  `mktemp` dirs left ~1,000 of them after one flow. Which entries a gate may sweep: names shaped like mktemp
+ *  output (`tmp.XXXXXX`, `<prefix>.XXXXXX`, `<prefix>-XXXXXX` — a 6+ char random tail with a digit or mixed
+ *  case) untouched for `maxAgeMs`. A name the project chose (a dev server's cache dir) never matches, and
+ *  anything recent may still be in use. */
+export function staleScratch(entries: { name: string; mtimeMs: number }[], now: number, maxAgeMs = 3_600_000): string[] {
+	const tail = /^(?:tmp|[\w-]+?)[.-]([A-Za-z0-9]{6,})$/;
+	const randomish = (t: string) => /\d/.test(t) || (/[a-z]/.test(t) && /[A-Z]/.test(t));
+	return entries.filter((e) => { const m = tail.exec(e.name); return !!m && randomish(m[1]) && now - e.mtimeMs > maxAgeMs; }).map((e) => e.name);
+}
+
 /** The env every process of a bound feature gets: TMPDIR in the feature's scratch dir, and that dir as a
  *  git ceiling. The scratch dir sits inside the repo, so without the ceiling git walks up out of a
  *  test's mkdtemp fixture and answers with the enclosing checkout — a suite asserting "no repo here"
@@ -2601,6 +2612,7 @@ export function buildWorkerBrief(o: WorkerBriefInput): string {
 			? "- Project checks: none — this is a docs flow. The gates skip the project's commands and no setup ran in this worktree (no installed dependencies): do not install, build or run the test suite; check the docs against the code by reading."
 			: `- Project checks (run them before you report${o.preamble?.length ? ", in a shell that ran the setup below first" : ""}):\n${checks}`,
 		"- You hold no flow tool: gates, checkpoints and the operator stay with the driving session.",
+		"- Scratch goes in $TMPDIR (the feature's tmp dir); remove what you create there — `d=$(mktemp -d) && …; rm -rf \"$d\"`.",
 		"",
 		...workerGuardLines(o.guard),
 		...(o.preamble?.length && !o.docs

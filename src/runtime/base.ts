@@ -1,10 +1,10 @@
 /** dev-flow runtime — Shared runtime: shell, paths, flow state, sessions and claims, skill core, compaction pacing. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { exec } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { compact, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { checklistPending, claimBlocks, classifyMergeHistory, cmpVersions, detectForge, extractSkillCore, featureBranchPrefix, healthRetry, parseMergeStyle, parseLsRemoteTags, pluginVersion, reflectItems, sessionRunsOlderBuild, listFiles, shouldSelfCompact, sq, featureTmpDir, featureTmpEnv, mainCheckoutRoot, type ReflectItem, type Config, type FeatureRef, type FlowState, type SessionClaim } from "../core.ts";
+import { checklistPending, claimBlocks, classifyMergeHistory, cmpVersions, detectForge, extractSkillCore, featureBranchPrefix, healthRetry, parseMergeStyle, parseLsRemoteTags, pluginVersion, reflectItems, sessionRunsOlderBuild, listFiles, shouldSelfCompact, sq, featureTmpDir, featureTmpEnv, staleScratch, mainCheckoutRoot, type ReflectItem, type Config, type FeatureRef, type FlowState, type SessionClaim } from "../core.ts";
 import { loadProject, parseProjectMd, setPlaybookKey } from "../projectmd.ts";
 import { bashTimeout } from "../timeouts.ts";
 import { type RunResult, type Session } from "./checks.ts";
@@ -505,6 +505,21 @@ export function featureEnv(root: string, state: FlowState): Record<string, strin
 	const dir = featureTmpDir(dfDir(root), state.slug);
 	mkdirSync(dir, { recursive: true });
 	return featureTmpEnv(dir);
+}
+
+/** gh#243: drop stale mktemp leftovers from the feature's scratch dir (staleScratch decides which). Run where a
+ *  gate runs the project's commands; best effort — a sweep that cannot read or remove something skips it. */
+export function sweepScratch(root: string, state: FlowState, now = Date.now()): number {
+	const dir = featureTmpDir(dfDir(root), state.slug);
+	let entries: { name: string; mtimeMs: number }[] = [];
+	try {
+		entries = readdirSync(dir).map((name) => { try { return { name, mtimeMs: statSync(path.join(dir, name)).mtimeMs }; } catch { return { name, mtimeMs: now }; } });
+	} catch { return 0; }
+	let n = 0;
+	for (const name of staleScratch(entries, now)) {
+		try { rmSync(path.join(dir, name), { recursive: true, force: true }); n++; } catch { /* in use or not ours: leave it */ }
+	}
+	return n;
 }
 
 /** Per-cwd cache of the main checkout a linked worktree belongs to (null = not a linked worktree) —

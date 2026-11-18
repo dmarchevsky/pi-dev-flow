@@ -6,7 +6,7 @@ import path from "node:path";
 import { AGENT_MARK, checkFingerprint, DEFAULTS, failTail, freshenChecks, healthProbe, prepOnlyChange, listFiles, needsOperator, newestTaggedVersion, parseVersion, sq, validSlug, formatSize, sideBySide, type BranchState, type Config, type DevSlot, type FlowState, type StageCheck } from "../core.ts";
 import { loadProject } from "../projectmd.ts";
 import { agentText, presentGate, type GateView, type StageFacts } from "../present.ts";
-import { atomicWrite, boundFeature, buildSkew, dfDir, featDir, featureEnv, flagValue, gateCwd, initiated, mergeBase, now, originUrl, readState, runHealthProbe, sh, tail, worktreeAbs, writeState } from "./base.ts";
+import { atomicWrite, boundFeature, buildSkew, dfDir, featDir, featureEnv, sweepScratch, flagValue, gateCwd, initiated, mergeBase, now, originUrl, readState, runHealthProbe, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type GateCtx } from "./gates.ts";
 
 /** The port this flow's dev deploy uses: the operator's pick for it, else the playbook default. */
@@ -200,6 +200,7 @@ export async function runChecks(root: string, state: FlowState, cfg: Config, che
 	const lines: string[] = [];
 	let failed = false;
 	const ran: string[] = [];
+	sweepScratch(root, state);
 	for (const c of checks) {
 		// health is the same probe `flow health` runs: seeded first, retried within healthWait
 		const res = c.name === "health" ? await seededProbe(root, state, cfg, c.cmd) : await sh(c.cmd, gateCwd(root, state), undefined, featureEnv(root, state));
