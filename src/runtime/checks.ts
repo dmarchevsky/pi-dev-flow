@@ -259,12 +259,32 @@ export const triedNote = (attempts: number) => (attempts > 1 ? `, ${attempts} at
  *  tracked content (a hash of the uncommitted diff) and HEAD. Null when git cannot answer — a
  *  measurement failure must never mark a green record stale (see freshenChecks). */
 export async function worktreeFingerprint(cwd: string): Promise<string | null> {
-	const st = await sh("git status --porcelain", cwd);
-	if (!st.ok) return null;
-	const diff = await sh("git diff HEAD --no-color | git hash-object --stdin", cwd);
-	const head = await sh("git rev-parse HEAD", cwd);
-	if (!diff.ok || !head.ok) return null;
-	return checkFingerprint(`${st.out}\n${diff.out}`, head.out);
+	// gh#231: the fingerprint is the tree's CONTENT — path → blob for every tracked and untracked file as it is on
+	// disk. It used to hash HEAD + status + diff, so a check run over an uncommitted fix went stale the moment
+	// that same fix was committed, and the next gate re-ran a minute-long suite over an identical tree.
+	// Nothing is written: index blob ids for clean paths, `git hash-object` (no -w) for changed and untracked ones.
+	const ls = await sh("git ls-files -s -z", cwd);
+	const changed = await sh("git ls-files -m -o --exclude-standard -z", cwd);
+	const deleted = await sh("git ls-files -d -z", cwd);
+	if (!ls.ok || !changed.ok || !deleted.ok) return null;
+	const map = new Map<string, string>();
+	for (const rec of ls.out.split("\0")) {
+		const tab = rec.indexOf("\t");
+		if (tab > 0) map.set(rec.slice(tab + 1), rec.slice(0, tab).split(" ")[1] ?? "");
+	}
+	const gone = new Set(deleted.out.split("\0").filter(Boolean));
+	for (const p of gone) map.delete(p);
+	const live = [...new Set(changed.out.split("\0").filter((p) => p && !gone.has(p)))].filter((p) => !p.includes("\n"));
+	for (let i = 0; i < live.length; i += 200) {
+		const batch = live.slice(i, i + 200);
+		const h = await sh(`printf '%s\\n' ${batch.map(sq).join(" ")} | git hash-object --stdin-paths`, cwd);
+		if (!h.ok) return null;
+		const ids = h.out.trim().split("\n");
+		if (ids.length !== batch.length) return null;
+		batch.forEach((p, j) => map.set(p, ids[j]));
+	}
+	const listing = [...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([p, id]) => `${id} ${p}`).join("\n");
+	return checkFingerprint(listing, "content");
 }
 
 /** Stamp freshly recorded checks with the tree they ran against — taken AFTER the run, so a check

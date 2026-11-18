@@ -2192,16 +2192,35 @@ test("release gate: runs the checks it is owed after a code commit, refuses on a
 	// a code change after the checks: the gate runs them itself instead of sending the agent to flow check
 	const code = await run("owed", TEST_MD, (wt) => { prep(wt); writeFileSync(path.join(wt, "src.txt"), "code\n"); });
 	assert.ok(!code.isError, code.content[0].text);
-	assert.match(code.content[0].text, /Checks ran at the gate \(test\)/);
+	assert.match(code.content[0].text, /Checks ran at the gate \(test: the tree changed since it passed\)/, "the gate says why it re-ran (gh#231)");
 	assert.doesNotMatch(code.content[0].text, /Checks kept/);
 	// a red check at the gate is the refusal, with its output
 	const red = await run("red", TEST_MD.replace("test = node --version", "test = test ! -f broken"), (wt) => { prep(wt); writeFileSync(path.join(wt, "broken"), "x\n"); });
-	assert.ok(red.isError && /release gate FAILED — a check run at the gate failed:\ntest: FAIL/.test(red.content[0].text), red.content[0].text);
+	assert.ok(red.isError && /release gate FAILED — a check run at the gate failed \(run because test: the tree changed since it passed\):\ntest: FAIL/.test(red.content[0].text), red.content[0].text);
 	// recheck = always: a prep-only commit still re-runs the suite
 	const always = await run("always", TEST_MD.replace("merge = merge\n", "merge = merge\nrecheck = always\n"), prep);
 	assert.ok(!always.isError, always.content[0].text);
-	assert.match(always.content[0].text, /Checks ran at the gate \(test\)/);
+	assert.match(always.content[0].text, /Checks ran at the gate \(test: the tree changed since it passed\)/);
 	assert.doesNotMatch(always.content[0].text, /Checks kept/);
+});
+
+test("a check run over an uncommitted fix stands once that same fix is committed: the record is the tree's content (gh#231)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD.replace("merge = merge\n", "merge = merge\nrecheck = always\n")]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "same");
+	await flow(["verify", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "same", "worktree");
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- same ships\n");
+	writeFileSync(path.join(wt, "fix.txt"), "the fix\n");
+	assert.match((await flow(["check"])).content[0].text, /test: PASS/, "checked over the uncommitted fix");
+	commitWt(repo, "same", "the fix"); // identical content, new HEAD
+	const r = await flow(["release", "--no-version", "--confirmed"]);
+	assert.ok(!r.isError, r.content[0].text);
+	assert.doesNotMatch(r.content[0].text, /Checks ran at the gate/, "the passing record covered this exact tree — no re-run, even under recheck = always");
 });
 
 test("a live foreign claim cannot be taken silently; flow use takes over explicitly", async () => {

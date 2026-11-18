@@ -299,7 +299,11 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// — except across a commit that is nothing but release prep: those greens are carried onto the current tree
 	const fpRelease = await worktreeFingerprint(wtCwd);
 	const keptThroughPrep = await keepThroughPrep(root, state!, cfg, fpRelease);
-	if (freshenChecks(state!, fpRelease).length || keptThroughPrep.length) writeState(root, state!);
+	// gh#231: remember why each owed check is owed — the result names it instead of reading like skipped work
+	const failedBefore = new Set(Object.entries(state!.checks).filter(([, r]) => !r.ok).map(([n]) => n));
+	const staleNow = new Set(freshenChecks(state!, fpRelease));
+	if (staleNow.size || keptThroughPrep.length) writeState(root, state!);
+	const owedWhy = (n: string) => (staleNow.has(n) ? "the tree changed since it passed" : failedBefore.has(n) ? "its last run failed" : "no run on record");
 	// gh#198: the branch must carry the call the operator made — a bump they did not choose, or a bump on a flow
 	// they said merges unreleased, is prep that contradicts the word Release? would stand on. It runs before the
 	// generic proofs: when a parallel flow released first, "already tagged" alone would send the agent round a loop.
@@ -340,8 +344,9 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	let checksNote = carried.length ? ` Checks kept (${carried.join(", ")}): only release prep was committed since they passed.` : "";
 	if (owed.length) {
 		const ran = await runChecks(root, state!, cfg, owed);
-		if (ran.failed) return { text: `release gate FAILED — a check run at the gate failed:\n${ran.lines.join("\n")}`, isError: true };
-		checksNote += ` Checks ran at the gate (${owed.map((c) => c.name).join(", ")}).`;
+		const why = owed.map((c) => `${c.name}: ${owedWhy(c.name)}`).join("; ");
+		if (ran.failed) return { text: `release gate FAILED — a check run at the gate failed (run because ${why}):\n${ran.lines.join("\n")}`, isError: true };
+		checksNote += ` Checks ran at the gate (${why}).`;
 	}
 	const preGate = preReleaseGate(gateState(state!.checks), cfg, prep);
 	if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };
