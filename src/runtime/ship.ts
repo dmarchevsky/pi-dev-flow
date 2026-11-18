@@ -156,7 +156,8 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 		// operator, and the answer comes back in chat as flow verify --confirmed
 		if (!ui.hasUI) {
 			const port = devPortOf(state!, cfg);
-			const what = state!.docs ? "ready for review" : cfg.commands.dev ? `deployed for review${port !== undefined ? ` on port ${port}` : ""}` : "live app re-probed for review";
+			// gh#229: say what actually ran — with no dev deploy and no health probe nothing was deployed or probed
+			const what = state!.docs ? "ready for review" : cfg.commands.dev ? `deployed for review${port !== undefined ? ` on port ${port}` : ""}` : healthProbe(cfg) ? "live app re-probed for review" : "ready for review — no dev deploy or health probe is configured, so nothing was deployed or probed: the operator checks the change as it runs for them";
 			const vq = versionQuestion(root, state!, cfg);
 			return { text: `${needsOperator(`${what}${reverify ? ` — a re-verify over the review fixes since ${state!.verifiedHead?.slice(0, 7) ?? "the last Verified?"}` : ""} — the app stays up until you answer${vq ? ` — ${vq.ask}` : ""}`, "Verified?", `look at the change in the running app yourself first (the playbook's self-check), then ask the operator Verified? in chat and run flow verify --confirmed${vq ? ` ${vq.flags}` : ""} once they answer. Keep it running until they answer.`)}\n${ran}` };
 		}

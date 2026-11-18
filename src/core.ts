@@ -600,7 +600,7 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 		// A --docs flow does not (#163): it changes the playbook/docs, which many projects keep out of a
 		// user-facing changelog — an entry it writes is still welcome, just not proven.
 		if (cfg.release.changelog && !state.docs) {
-			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — an unversioned release must record its entry there (under Unreleased)`);
+			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — an unversioned release must record its entry there (under Unreleased), or set changelog = "" under ## release if this project keeps none`);
 			else {
 				if (prep.changelogChanged === false) errs.push(`${prep.changelog.file} is unchanged on this branch — an unversioned release must add its entry (under Unreleased)`);
 				// an unversioned release must leave a trail someone can find later: the section is where it lives,
@@ -625,7 +625,7 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 				errs.push(`version ${prep.manifestVersion} is already tagged — bump the manifest to the next version`);
 		}
 		if (cfg.release.changelog) {
-			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog`);
+			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog (a project that keeps none: set changelog = "" under ## release)`);
 			else {
 				const entry = prep.manifestVersion ? changelogEntry(prep.changelog.content, prep.manifestVersion) : "";
 				if (prep.manifestVersion && !entry)

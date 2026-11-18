@@ -160,7 +160,10 @@ export function parseProjectMd(text: string): ParsedMd {
 				return;
 			}
 			if (inFence === "flow") {
-				const m = line.match(/^\s*([A-Za-z][\w.]*)\s*=\s*(.+?)\s*$/);
+				// gh#226: an empty value is the opt-out (`changelog =`, `changelog = ""`) — `(.+?)` read `key = ` as " " and
+				// `""` as a literal, so a project could not say "no changelog" at all
+				const m0 = line.match(/^\s*([A-Za-z][\w.]*)\s*=\s*(.*?)\s*$/);
+				const m = m0 ? ([m0[0], m0[1], m0[2].replace(/^(["'])\1$/, "")] as const) : null;
 				if (!m || !stage) {
 					if (line.trim() && !line.trim().startsWith("#")) p.hard.push(`${where}: expected \`key = value\` inside flow block`);
 				} else if (!MD_STAGES.includes(stage as MdStage)) {
@@ -280,6 +283,17 @@ export function mdToConfig(p: ParsedMd): Config {
 	const rel = (nested as { release?: { releases?: unknown } }).release;
 	if (rel && typeof rel.releases === "string") rel.releases = !/^(no|false)$/i.test(rel.releases);
 	mergeInto(c, nested);
+	// gh#226: an empty value in the playbook is an explicit opt-out (`changelog =`), not "keep the default" —
+	// applyAnswer drops "" (that is the answers' meaning of unset), so the empties are set here, string keys only
+	for (const stage of MD_STAGES)
+		for (const [key, val] of Object.entries(p.flow[stage])) {
+			if (val !== "" || !key.includes(".")) continue; // a top-level key (defaultBranch, worktreeDir…) has no "none"
+			const segs = key.split(".");
+			const leaf = segs.pop()!;
+			let at: Record<string, unknown> | undefined = c as unknown as Record<string, unknown>;
+			for (const sg of segs) at = at && typeof at[sg] === "object" && at[sg] !== null ? (at[sg] as Record<string, unknown>) : undefined;
+			if (at && (at[leaf] === undefined || typeof at[leaf] === "string")) at[leaf] = "";
+		}
 	// a flow-guard block is the whole rule set; with none in project.md the DEFAULTS (empty) stand
 	if (GUARD_VERBS.some((v) => p.guard[v].length)) c.guard = structuredClone(p.guard);
 	// one check per name: an explicit flow-check block wins over the `test =` / `health =` shorthand
