@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.93.0] - 2026-11-18
+
+**`flow release` needs a review on record and opens the PR with the body your template asks for; checks stay passed across a commit of the same tree; feature worktrees take only their own feature's work; and `flow finish` names what is really wrong.**
+
 ### Fixed
 - **The flow tool names a wrongly shaped `args` (gh#238).** An `args` array that arrived marshalled as one JSON string was dispatched with the whole blob as the subcommand, and the reply was the full usage with the diagnosis buried in it. The tool now refuses with "args must be an array of strings; this arrived as one string holding an array" and shows the elements to pass. An unknown subcommand gets a one-line reply that leads with the word and lists the known ones.
 - **The reflection digest marks only real guard blocks as `GUARD` (gh#239).** A successful command whose output happened to contain `NEEDS-OPERATOR` (a grep of the source, a quoted refusal) was tagged as a guard event, and a review worker went looking for a block that never happened. Guard blocks reach the transcript as error results, so `GUARD` is now only an error result that begins with the guard's marker.
