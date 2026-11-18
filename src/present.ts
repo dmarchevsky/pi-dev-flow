@@ -111,10 +111,13 @@ export function stageLine(state: FlowState, cfg: Config, f: StageFacts = {}): st
 	if (stage === "implement" || stage === "pre-release") {
 		if (f.ahead !== undefined) fields.push(`commits \`${f.ahead} ahead, ${f.uncommitted ?? 0} uncommitted\``);
 		if (!state.docs) fields.push(`checks ${checksSummary(state)}`);
-		const items = applicableItems(cfg, state, stage).length;
+		const list = applicableItems(cfg, state, stage);
 		const pend = checklistPending(cfg, state, stage);
-		if (pend) fields.push(`tier-2 \`${pend} open\` ?`);
-		else if (items) fields.push("tier-2 `confirmed` ✓");
+		// gh#241: name them — a bare count made the agent re-read project.md, and implement's and pre-release's
+		// lists are different checklists, so the count "moved" with no explanation
+		const clip = (t: string) => (t.length > 40 ? `${t.slice(0, 39)}…` : t);
+		if (pend) fields.push(`tier-2 \`${pend} open\` ? (## ${stage}: ${list.slice(0, 4).map((i) => `"${clip(i.text)}"`).join(" · ")}${list.length > 4 ? ` +${list.length - 4}` : ""})`);
+		else if (list.length) fields.push("tier-2 `confirmed` ✓");
 	}
 	if (stage === "pre-release" || stage === "release") {
 		const version = state.noVersion ? "version `no-version` ✓" : state.releaseVersion ? `version \`${state.releaseVersion}\` ✓` : state.versionChoice && state.versionChoice !== "next" && state.versionChoice !== "unreleased" ? `version \`${state.versionChoice}\` ✓` : f.manifest ? `version \`${f.manifest}\` ~` : "version `pending` ?";
