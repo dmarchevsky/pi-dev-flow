@@ -1220,6 +1220,45 @@ test("the newest dev-flow copy judges the guards alone — a stale duplicate goe
 	assert.ok(!/this call served by/.test(s.content[0].text), "no duplicate — no speaker stamp");
 });
 
+test("flow finish judges the local default branch: playbook tracking is a note, other local-only work is named with the checkout's branch (gh#228, gh#234)", async () => {
+	const pi = makePi();
+	const parent = mkdtempSync(path.join(tmpdir(), "df-ahead-"));
+	const origin = path.join(parent, "origin.git");
+	execFileSync("git", ["-c", "init.defaultBranch=main", "init", "-q", "--bare", origin]);
+	const repo = path.join(parent, "work");
+	execFileSync("git", ["clone", "-q", origin, repo]);
+	execFileSync("git", ["-C", repo, "config", "user.email", "t@t"]);
+	execFileSync("git", ["-C", repo, "config", "user.name", "t"]);
+	writeFileSync(path.join(repo, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n");
+	execFileSync("git", ["-C", repo, "add", "-A"]);
+	execFileSync("git", ["-C", repo, "commit", "-qm", "seed"]);
+	execFileSync("git", ["-C", repo, "push", "-q", "origin", "main"]);
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo); // what flow init --track does: a playbook commit on local main, never pushed
+	await walkToImplement(flow, repo, "ah");
+	await flow(["verify", "--confirmed"]);
+	assert.match((await flow(["release", "--confirmed"])).content[0].text, /release approved/);
+	await flow(["release-done"]);
+	markReflected(repo, "ah");
+	// release chores that never reached origin, seen from a main checkout parked on another branch
+	const allow = { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } };
+	writeFileSync(path.join(repo, "chore.txt"), "x\n");
+	execFileSync("git", ["-C", repo, "add", "chore.txt"]);
+	execFileSync("git", ["-C", repo, "commit", "-qm", "release chore"], allow);
+	execFileSync("git", ["-C", repo, "switch", "-q", "-c", "side"]);
+	const blocked = await flow(["finish", "--confirmed"]);
+	assert.ok(blocked.isError);
+	assert.match(blocked.content[0].text, /local main has 2 commit\(s\) origin\/main does not have \(the main checkout is on side, not main — this is the local main branch\): \w+ release chore \| \w+ track playbook/, blocked.content[0].text);
+	assert.doesNotMatch(blocked.content[0].text, /HEAD is not on origin/);
+	// drop the chore: only the playbook commit is local-only now — a note, not a block, and no push to main is asked for
+	execFileSync("git", ["-C", repo, "branch", "-f", "main", "main~1"]);
+	const fin = await flow(["finish", "--confirmed"]);
+	assert.ok(!fin.isError, fin.content[0].text);
+	assert.match(fin.content[0].text, /local main carries 1 playbook commit\(s\) origin\/main does not have[\s\S]*never a direct push to main/, fin.content[0].text);
+});
+
 test("flow finish fast-forwards a main checkout that trails origin", async () => {
 	const pi = makePi();
 	const parent = mkdtempSync(path.join(tmpdir(), "df-ff-"));

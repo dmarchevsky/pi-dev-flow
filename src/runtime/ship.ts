@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed } from "../core.ts";
+import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed, localDefaultAhead } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
@@ -600,7 +600,7 @@ export async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 		// ancestry proves "not squashed, not rebased"; a squash and a rebase look identical here, so when it
 		// fails the forge itself is asked which one it was (gh/glab; self-hosted stays an advisory)
 		const ancestor = refsOk ? (await sh(`git merge-base --is-ancestor origin/${sq(br)} origin/${sq(cfg.defaultBranch)}`, root)).ok : null;
-		const proof = mergeShapeProof(cfg.release.merge, { ancestor, forgeStyle: ancestor === false ? await forgeMergeStyle(gateCwd(root, state!), forgeName, br) : null, branch: br, defaultBranch: cfg.defaultBranch });
+		const proof = mergeShapeProof(cfg.release.merge, { ancestor, forgeStyle: ancestor === false ? await forgeMergeStyle(gateCwd(root, state!), forgeName, br) : null, forgeAsked: forgeName === "github" || forgeName === "gitlab", branch: br, defaultBranch: cfg.defaultBranch });
 		if (proof.errors.length) errs.push(...proof.errors);
 		else mergeNote = proof.note;
 	}
@@ -734,24 +734,37 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
 	const origin = await originUrl(root);
 	const hasOriginF = origin !== null;
-	if (hasOriginF) {
-		const pushed = await sh(`git merge-base --is-ancestor HEAD ${sq(`origin/${cfg.defaultBranch}`)}`, root);
-		if (!pushed.ok) return { text: `HEAD is not on origin/${cfg.defaultBranch} — push the release (git push origin ${cfg.defaultBranch}) before finish`, isError: true };
+	// gh#234/gh#228: judge the local default branch, not whatever HEAD the main checkout happens to be on, and
+	// name what is local-only — playbook tracking is a note, anything else must reach origin first
+	const checkoutBranch = await currentBranch(root);
+	const localDef = `refs/heads/${cfg.defaultBranch}`;
+	let aheadNote = "";
+	if (hasOriginF && (await sh(`git rev-parse --verify -q ${sq(localDef)}`, root)).ok) {
+		const log = await sh(`git log --no-decorate --name-only --format=%x1e%h%x20%s ${sq(`origin/${cfg.defaultBranch}`)}..${sq(localDef)}`, root);
+		if (log.ok) {
+			const commits = log.out.split("\x1e").map((r) => r.split("\n").map((l) => l.trim()).filter(Boolean)).filter((r) => r.length).map(([line, ...files]) => ({ line, files }));
+			const ahead = localDefaultAhead({ defaultBranch: cfg.defaultBranch, checkoutBranch, commits });
+			if (ahead?.block) return { text: ahead.block, isError: true };
+			aheadNote = ahead?.note ?? "";
+		}
 	}
 	// close-out also syncs the main checkout: a released flow must never leave local
 	// <default> trailing origin — the push check above proved nothing local-only remains, so a
 	// differing sha means local trails and the fast-forward is safe. never a merge: a diverged
 	// or not-checked-out main prints the operator's exact command instead of touching anything
-	let syncNote = "";
-	if (hasOriginF) {
-		const headSha = await sh("git rev-parse HEAD", root);
+	let syncNote = aheadNote;
+	if (hasOriginF && !aheadNote) {
+		const localSha = await sh(`git rev-parse --verify -q ${sq(localDef)}`, root);
 		const originSha = await sh(`git rev-parse ${sq(`origin/${cfg.defaultBranch}`)}`, root);
-		if (headSha.ok && originSha.ok && headSha.out.trim() !== originSha.out.trim()) {
-			const onDefault = (await currentBranch(root)) === cfg.defaultBranch;
-			const ff = onDefault ? await sh(`git merge --ff-only ${sq(`origin/${cfg.defaultBranch}`)}`, root) : { ok: false, out: "" };
+		if (localSha.ok && originSha.ok && localSha.out.trim() !== originSha.out.trim()) {
+			const onDefault = checkoutBranch === cfg.defaultBranch;
+			// off the default branch, the local ref moves without touching the checkout: fetch into it fast-forward-only
+			const ff = onDefault
+				? await sh(`git merge --ff-only ${sq(`origin/${cfg.defaultBranch}`)}`, root)
+				: await sh(`git fetch -q . ${sq(`refs/remotes/origin/${cfg.defaultBranch}:${localDef}`)}`, root);
 			syncNote = ff.ok
-				? ` local ${cfg.defaultBranch} fast-forwarded to origin/${cfg.defaultBranch}.`
-				: ` local ${cfg.defaultBranch} trails origin/${cfg.defaultBranch} and did not fast-forward cleanly — sync by hand: git -C ${sq(root)} pull --ff-only`;
+				? ` local ${cfg.defaultBranch} fast-forwarded to origin/${cfg.defaultBranch}${onDefault ? "" : ` (the main checkout stays on ${checkoutBranch})`}.`
+				: ` local ${cfg.defaultBranch} trails origin/${cfg.defaultBranch} and did not fast-forward cleanly — sync by hand: git -C ${sq(root)} ${onDefault ? "pull --ff-only" : `fetch . origin/${cfg.defaultBranch}:${cfg.defaultBranch}`}`;
 		}
 	}
 	// After-merge checks (flow-check blocks under ## release): run from the main checkout, which now holds the

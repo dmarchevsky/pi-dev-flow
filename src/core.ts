@@ -940,6 +940,8 @@ export interface MergeShapeFacts {
 	ancestor: boolean | null;
 	/** What the forge says landed the PR, when `gh`/`glab` could answer — the only way to tell a squash from a rebase. */
 	forgeStyle?: MergeStyle | null;
+	/** Was a forge CLI (gh/glab) there to ask? false on a self-hosted forge: a null forgeStyle then means "unknown", not "no merged PR". */
+	forgeAsked?: boolean;
 	/** Wording only. */
 	branch?: string;
 	defaultBranch?: string;
@@ -959,7 +961,13 @@ export function mergeShapeProof(policy: MergeStyle | "any" | undefined, facts: M
 	if (facts.ancestor === null) return { errors, note: `merge = ${policy} could not be checked from here (no origin or ${br} is not fetched) — confirm the merge style by hand` };
 	const landed = facts.forgeStyle ?? null;
 	if (policy === "merge") {
-		if (!facts.ancestor) errors.push(`the playbook says merge = merge, but ${br} is not an ancestor of ${def} — the PR was ${landed ? MERGE_PAST[landed] : "squash- or rebase-merged"}, which rewrites the branch's commits out of the release's ancestry`);
+		// gh#237: "not an ancestor" is also what an unmerged PR and a stale origin/<default> look like — blame a
+		// squash only when the forge says one landed
+		if (!facts.ancestor && landed === "merge")
+			errors.push(`the forge reports ${br} merged as a merge commit, but it is not an ancestor of ${def} here — this clone's ${def} is behind the forge: git fetch origin, then re-run`);
+		else if (!facts.ancestor && !landed)
+			errors.push(`${br} is not an ancestor of ${def}, and the forge reports no merged PR for it — not merged yet, or merged moments ago and not fetched: let the merge finish, git fetch origin, then re-run${facts.forgeAsked === false ? " (no forge CLI answered here — a squash or rebase merge looks the same, and the playbook says merge = merge)" : ""}`);
+		else if (!facts.ancestor) errors.push(`the playbook says merge = merge, but ${br} is not an ancestor of ${def} — the PR was ${MERGE_PAST[landed!]}, which rewrites the branch's commits out of the release's ancestry`);
 		else if (landed && landed !== "merge") errors.push(`the forge reports a ${landed} merge, but the playbook says merge = merge`);
 		else return { errors, note: `merge shape matches the playbook: ${br} is an ancestor of ${def} (merge = merge)` };
 	} else {
@@ -1211,6 +1219,22 @@ export function playbookTamper(command: string): boolean {
 export function playbookOnlyChange(porcelain: string): boolean {
 	const paths = porcelain.split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
 	return paths.length === 1 && PLAYBOOK_PATH.test(paths[0]);
+}
+
+/** gh#234, gh#228: what `flow finish` says about commits on the local default branch that origin does not have.
+ *  `flow init --track` commits the playbook to local main and nothing ever pushes it, so "push the release"
+ *  sent the agent to merge origin into local main and push the default branch directly. Playbook-only commits
+ *  are setup, not an unpushed release: a note, never a block. Anything else is named, with the branch the
+ *  main checkout is actually on — "git push origin main" from a checkout on another branch pushes nothing
+ *  you meant. Null when nothing is local-only. */
+export function localDefaultAhead(o: { defaultBranch: string; checkoutBranch: string; commits: { line: string; files: string[] }[] }): { block: string | null; note: string } | null {
+	const { defaultBranch: d, checkoutBranch: cur, commits } = o;
+	if (!commits.length) return null;
+	const list = `${commits.slice(0, 5).map((c) => c.line).join(" | ")}${commits.length > 5 ? ` …(${commits.length - 5} more)` : ""}`;
+	const where = cur && cur !== d ? ` (the main checkout is on ${cur}, not ${d} — this is the local ${d} branch)` : "";
+	if (commits.every((c) => c.files.length > 0 && c.files.every((f) => PLAYBOOK_PATH.test(f))))
+		return { block: null, note: ` local ${d} carries ${commits.length} playbook commit(s) origin/${d} does not have (${list})${where} — playbook tracking from flow init --track; they reach origin through a docs flow, never a direct push to ${d}. To line local ${d} up with origin meanwhile: git -C <main checkout> rebase origin/${d} ${d}.` };
+	return { block: `local ${d} has ${commits.length} commit(s) origin/${d} does not have${where}: ${list} — finish removes the flow state, so nothing may stay local-only. If these are release chores, push them (git push origin ${d}); if they are work that belongs in a flow, move them onto a branch and ship them through one; then re-run flow finish`, note: "" };
 }
 
 /** The operator's authorisation for rewriting a branch that is already pushed — same contract as

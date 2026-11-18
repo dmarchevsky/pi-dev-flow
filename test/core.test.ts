@@ -1633,6 +1633,12 @@ test("mergeShapeProof: a measured contradiction refuses, an invisible topology a
 	assert.deepEqual(mergeShapeProof("merge", { ancestor: true, branch: "feat/x", defaultBranch: "main" }).errors, []);
 	assert.match(mergeShapeProof("merge", { ancestor: true, branch: "feat/x", defaultBranch: "main" }).note, /matches the playbook/);
 	assert.match(mergeShapeProof("merge", { ancestor: false, forgeStyle: "squash", branch: "feat/x", defaultBranch: "main" }).errors[0], /says merge = merge.*squash-merged/s);
+	// gh#237: an unmerged PR and a stale origin/main also fail ancestry — a squash is blamed only when the forge says so
+	assert.match(mergeShapeProof("merge", { ancestor: false, forgeStyle: "merge", forgeAsked: true, branch: "feat/x", defaultBranch: "main" }).errors[0], /forge reports origin\/feat\/x merged as a merge commit.*behind the forge: git fetch origin/s);
+	const open = mergeShapeProof("merge", { ancestor: false, forgeStyle: null, forgeAsked: true, branch: "feat/x", defaultBranch: "main" }).errors[0];
+	assert.match(open, /forge reports no merged PR for it — not merged yet, or merged moments ago and not fetched/);
+	assert.doesNotMatch(open, /squash/);
+	assert.match(mergeShapeProof("merge", { ancestor: false, forgeAsked: false }).errors[0], /no forge CLI answered here — a squash or rebase merge looks the same/);
 	assert.equal(mergeShapeProof("merge", { ancestor: null }).errors.length, 0, "unmeasurable ancestry never blocks a release");
 	assert.match(mergeShapeProof("merge", { ancestor: null }).note, /could not be checked/);
 	// squash policy: ancestry true means it was NOT squashed

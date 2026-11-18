@@ -193,8 +193,11 @@ call it.
    the remote branch only once it's proven merged. If local main is just behind origin, it
    fast-forwards it.
 
-It refuses until the release is recorded, the main checkout is clean and pushed, and the worktree has
-no uncommitted changes. Under `merge = merge`, commits missing from main are a policy violation that
+It refuses until the release is recorded, the main checkout is clean, the local default branch has
+nothing origin lacks, and the worktree has no uncommitted changes. It reads the local default branch
+even when the main checkout is on another branch, and names the commits that are local-only.
+Playbook commits from `flow init --track` are only noted: they reach origin through a docs flow,
+never a direct push. Under `merge = merge`, commits missing from main are a policy violation that
 yolo can't answer.
 
 **Finish? answers itself on a clean flow** (`finish = on-change`, the default): the release is
