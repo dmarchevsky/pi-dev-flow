@@ -28,7 +28,11 @@ playbook, dev-flow stays silent.
 - Paths are checked after resolving symlinks.
 - Scratch files outside the repo (the OS temp dir) are always fine. A bound feature's `TMPDIR`
   points to `.dev-flow/<slug>/tmp/`, which is cleaned up at finish.
-- Creating a new branch inside a feature worktree is refused. An unrelated fix gets its own flow.
+- Creating a new branch inside a feature worktree is refused (`checkout -b`, `switch -c` and
+  `git branch <name>`). An unrelated fix gets its own flow.
+- A worktree only takes its own feature's commits: a commit, merge, cherry-pick or revert while the
+  worktree is on any other branch is refused. Once the release is recorded the worktree takes no new
+  commits at all; follow-up work is a new flow, and release chores go in the main checkout.
 
 **No work outside a flow.**
 - In a repo with `.dev-flow/`, an unbound session can't edit source files. Everything starts with

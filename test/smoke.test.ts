@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -35,7 +35,24 @@ let viewsChecked = 0;
 // exercise a worker install their own fake over this.
 stageWorkerSpawn.run = async () => { throw new Error("test reached the real stage-worker spawn — stub stageWorkerSpawn.run"); };
 
-function makePi(): Stub & ((...a: never[]) => void) {
+/** gh#233: flow release requires a review on record. A test that walks a flow to release is not about the review
+ *  step, so the harness stamps one on every pre-release feature right before each release call (the same
+ *  shortcut markReflected takes) — makePi({ review: false }) leaves it off for the tests of the requirement. */
+function markReviewed(cwd: string) {
+	let dir = cwd;
+	while (!existsSync(path.join(dir, ".dev-flow", "project.md")) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+	const df = path.join(dir, ".dev-flow");
+	if (!existsSync(df)) return;
+	for (const slug of readdirSync(df)) {
+		const f = path.join(df, slug, "state.json");
+		if (!existsSync(f)) continue;
+		const st = JSON.parse(readFileSync(f, "utf8"));
+		if (st.stage === "pre-release" && !st.review) writeFileSync(f, JSON.stringify({ ...st, review: { by: "inline", at: "2026-01-01T00:00:00.000Z", verdict: "smoke fixture" } }, null, 2));
+	}
+}
+
+function makePi(opts: { review?: boolean } = {}): Stub & ((...a: never[]) => void) {
+	const autoReview = opts.review !== false;
 	const stub = { cmds: {}, tools: {}, handlers: {}, entries: [] } as Stub;
 	let cmdCtx: { notices?: string[]; sent?: { triggerTurn?: boolean }[] } | undefined; // last command's ctx — sendMessage output lands in its notices
 	const api = {
@@ -44,6 +61,7 @@ function makePi(): Stub & ((...a: never[]) => void) {
 			stub.cmds[n] = {
 				handler: async (a: string, c: unknown) => {
 					cmdCtx = c as { notices?: string[]; sent?: { triggerTurn?: boolean }[] };
+					if (autoReview && n === "flow" && /^release(\s|$)/.test(a.trim())) markReviewed((c as { cwd: string }).cwd);
 					await cmd.handler(a, c);
 				},
 			} as never;
@@ -54,6 +72,8 @@ function makePi(): Stub & ((...a: never[]) => void) {
 			stub.tools[t.name] = {
 				...t,
 				execute: async (...a: unknown[]) => {
+					const args = (a[1] as { args?: unknown } | undefined)?.args;
+					if (autoReview && t.name === "flow" && Array.isArray(args) && args[0] === "release") markReviewed((a[4] as { cwd: string }).cwd);
 					const r = await execute(...a);
 					const view = r?.details?.view;
 					if (view) {
@@ -2501,6 +2521,45 @@ test("unversioned release: --no-version ships merge + changelog and skips the bu
 	assert.match(rd.content[0].text, /release recorded as complete \(unversioned — the changelog entry ships under Unreleased; the next versioned release folds it\)/);
 });
 
+test("flow release requires a review on record: done records one, --skip is the operator's word, docs flows owe none (gh#233)", async () => {
+	const pi = makePi({ review: false });
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const state = (slug: string) => JSON.parse(readFileSync(path.join(repo, ".dev-flow", slug, "state.json"), "utf8"));
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "rv");
+	assert.match((await flow(["review"])).content[0].text, /no review on record — flow release requires one \(\/flow-review\)/);
+	await flow(["verify", "--confirmed"]);
+	assert.match((await flow(["status", "--json"])).content[0].text, /flow review done/, "the pre-release hint names how the review gets on record");
+	const refused = await flow(["release", "--no-version", "--confirmed"]);
+	assert.ok(refused.isError);
+	assert.match(refused.content[0].text, /no review is recorded for this flow — run the playbook's review step \(\/flow-review, or flow_stage op "review"\)[\s\S]*flow review done/);
+	assert.match((await flow(["review", "done"])).content[0].text, /needs the verdict in a line/);
+	const done = await flow(["review", "done", "PASS — one should-fix fixed"]);
+	assert.ok(!done.isError, done.content[0].text);
+	assert.equal(state("rv").review.by, "inline");
+	assert.equal(state("rv").review.verdict, "PASS — one should-fix fixed");
+	assert.match(state("rv").review.head, /^[0-9a-f]{40}$/);
+	assert.doesNotMatch((await flow(["release", "--no-version", "--confirmed"])).content[0].text, /no review is recorded/, "a recorded review answers the requirement");
+	// skipping is the operator's word: asked first, then recorded
+	await walkToImplement(flow, repo, "sk");
+	await flow(["verify", "--confirmed"]);
+	const ask = await flow(["review", "--skip"]);
+	assert.ok(ask.isError && /^NEEDS-OPERATOR Skip review\?/.test(ask.content[0].text), ask.content[0].text);
+	assert.equal(state("sk").review, undefined);
+	assert.ok(!(await flow(["review", "--skip", "--confirmed"])).isError);
+	assert.equal(state("sk").review.by, "skipped");
+	assert.doesNotMatch((await flow(["release", "--no-version", "--confirmed"])).content[0].text, /no review is recorded/);
+	// a docs flow owes none
+	await flow(["start", "dx", "--docs"]);
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "dx");
+	await flow(["verify", "--confirmed"]);
+	assert.doesNotMatch((await flow(["release", "--no-version", "--confirmed"])).content[0].text, /no review is recorded/, "a docs flow owes no code review");
+});
+
 test("release-only flow: verify accepts an empty branch over unreleased main, the bump lands at pre-release (#161)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -3052,6 +3111,32 @@ test("a feature worktree stays on its own branch, and a bound feature ships only
 	assert.match((await bash(`cd ${wt} && git tag v9.9.9`))?.reason ?? "", /tagging is release work/, "nor tag");
 });
 
+test("a feature worktree takes its own feature's commits only, and none once the release is recorded (gh#232)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "after");
+	const wt = path.join(repo, ".dev-flow", "after", "worktree");
+	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	assert.match((await bash(`cd ${wt} && git branch redesign`))?.reason ?? "", /stays on its own branch — not creating redesign[\s\S]*flow start <new-slug>/, "git branch <name> is a side branch too");
+	assert.equal(await bash(`cd ${wt} && git branch --list`), undefined, "listing branches reads");
+	assert.equal(await bash(`cd ${wt} && git commit -qm more`), undefined, "the feature's own commits pass");
+	// the agent got off the branch somehow (a cut the guard could not see): what lands there is refused
+	execFileSync("git", ["-C", wt, "switch", "-q", "-c", "redesign"]);
+	assert.match((await bash(`cd ${wt} && git commit -qm redesign`))?.reason ?? "", /is after's worktree \(branch feat\/after\), but it is on redesign[\s\S]*git switch feat\/after/);
+	assert.match((await bash(`cd ${wt} && git merge main`))?.reason ?? "", /but it is on redesign/, "a merge onto the side branch too");
+	execFileSync("git", ["-C", wt, "switch", "-q", "feat/after"]);
+	// release recorded: the worktree is closed to new work; the main checkout's release chores are not
+	const f = path.join(repo, ".dev-flow", "after", "state.json");
+	const st = JSON.parse(readFileSync(f, "utf8"));
+	writeFileSync(f, JSON.stringify({ ...st, stage: "release", approvals: { ...st.approvals, verify: "x", "pre-release": "x", release: "x" } }, null, 2));
+	assert.match((await bash(`cd ${wt} && git commit -qm follow-up`))?.reason ?? "", /after's release is recorded — its worktree takes no new commits[\s\S]*flow start <new-slug>/);
+	assert.equal(await bash(`git commit -qm "release chore"`), undefined, "a release chore in the main checkout still passes at stage release");
+});
+
 test("--ui is the agent's call: start takes it without --confirmed (it only adds the mockup gate)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -3169,7 +3254,7 @@ test("flow_stage implement: the brief carries the facts, a prose-ending worker i
 	}
 });
 
-test("flow_stage review: advisory verdict, read-only toolset, no gate state touched", async () => {
+test("flow_stage review: advisory verdict, read-only toolset; the only state it writes is the review record (gh#233)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
@@ -3190,10 +3275,14 @@ test("flow_stage review: advisory verdict, read-only toolset, no gate state touc
 		const r = await pi.tools.flow_stage.execute("id", { op: "review", note: "check it" }, undefined, undefined, ctx) as { content: [{ text: string }]; details?: { verdict?: string } };
 		assert.equal(r.details?.verdict, "FAIL");
 		assert.match(r.content[0].text, /off by one/);
-		assert.match(r.content[0].text, /no gate waits on this verdict/);
+		assert.match(r.content[0].text, /Review recorded for flow release; the verdict itself is advisory/);
 		assert.deepEqual(tools, ["read", "bash"], "a reviewer gets no edit tools");
 		assert.match(worker.prompts[0], /Check, don't fix/);
-		assert.equal(readFileSync(stateFile, "utf8"), before, "a review changes no flow state");
+		const { review, ...after } = JSON.parse(readFileSync(stateFile, "utf8"));
+		assert.deepEqual(after, JSON.parse(before), "the review record is the only state a review writes");
+		assert.equal(review.by, "worker");
+		assert.equal(review.verdict, "FAIL", "a FAIL verdict is still a review that ran — the verdict stays advisory");
+		assert.match(review.head, /^[0-9a-f]{40}$/);
 	} finally {
 		stageWorkerSpawn.run = orig;
 	}

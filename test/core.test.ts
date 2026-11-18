@@ -75,6 +75,9 @@ import {
 	workerOpError,
 	clampBudgetMin,
 	tagCreates,
+	branchCreateInvocation,
+	worktreeWorkGuard,
+	reviewOwed,
 	releaseOrderInvocation,
 	guessReflectSections,
 	reflectItems,
@@ -1916,4 +1919,31 @@ test("reflection numbers are stable rows: a batch of done <n> read off one list 
 	assert.match(text, /- \[x\] four — s 1 — fixed: fix-4/);
 	assert.deepEqual(reflectItems(text).map((i) => [i.n, i.body]), [[3, "three"]], "the untouched row keeps its number");
 	assert.deepEqual(reflectRow(text, 2), { index: 5, open: false, line: "- [x] two — s 1 — fixed: fix-2" });
+});
+
+test("branchCreateInvocation: only a new branch name creates (gh#232)", () => {
+	assert.equal(branchCreateInvocation("git branch redesign"), "redesign");
+	assert.equal(branchCreateInvocation("git -C wt branch -f redesign main"), "redesign");
+	for (const read of ["git branch", "git branch --list", "git branch -a", "git branch -d old", "git branch -m a b", "git branch --show-current", "git branch --contains HEAD", "git branch -vv"])
+		assert.equal(branchCreateInvocation(read), null, read);
+});
+
+test("worktreeWorkGuard: off-branch writes and post-release commits are new work (gh#232)", () => {
+	const home = { slug: "s", branch: "feat/s", released: false, wt: ".dev-flow/s/worktree" };
+	assert.equal(worktreeWorkGuard({ subs: ["commit"], command: "git commit -m x", branch: "feat/s", home }), null);
+	assert.match(worktreeWorkGuard({ subs: ["commit"], command: "git commit -m x", branch: "side", home }) ?? "", /but it is on side/);
+	assert.match(worktreeWorkGuard({ subs: ["cherry-pick"], command: "git cherry-pick abc", branch: "side", home }) ?? "", /but it is on side/);
+	assert.equal(worktreeWorkGuard({ subs: ["status"], command: "git status", branch: "side", home }), null, "reads pass on any branch");
+	assert.match(worktreeWorkGuard({ subs: ["commit"], command: "git commit -m x", branch: "feat/s", home: { ...home, released: true } }) ?? "", /release is recorded/);
+	assert.equal(worktreeWorkGuard({ subs: ["log"], command: "git log", branch: "feat/s", home: { ...home, released: true } }), null);
+});
+
+test("reviewOwed: the playbook's review step, unless docs, release-only, recorded or opted out (gh#233)", () => {
+	const cfg = buildConfig({});
+	const st = { slug: "s", stage: "pre-release", ui: false, branch: "feat/s", worktree: "w", createdAt: "", approvals: {}, checks: {} } as never as Parameters<typeof reviewOwed>[0];
+	assert.match(reviewOwed(st, cfg) ?? "", /no review is recorded/);
+	assert.equal(reviewOwed({ ...st, docs: true }, cfg), null);
+	assert.equal(reviewOwed({ ...st, releaseOnly: true }, cfg), null);
+	assert.equal(reviewOwed({ ...st, review: { by: "skipped", at: "" } }, cfg), null);
+	assert.equal(reviewOwed(st, { ...cfg, release: { ...cfg.release, review: "" } }), null);
 });

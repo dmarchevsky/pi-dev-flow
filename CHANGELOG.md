@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **`flow release` requires a review on record (gh#233).** The pre-release hint said to run the review step, but nothing checked it ran, and a 566-line change shipped unreviewed. The release gate now refuses until a review is recorded: a `flow_stage` review worker records itself, and an inline `/flow-review` is recorded with `flow review done "<verdict>"`. The verdict stays advisory. Shipping without a review is the operator's word (`flow review --skip`, asked as **Skip review?**). Docs flows and release-only cuts owe none, and `review = ""` under `## release` turns the requirement off.
+- **A feature worktree takes only its own feature's work (gh#232).** After a release was recorded, an agent created a branch in the same worktree, committed a redesign and merged it to production with no plan, check, review or Verified?. The guard now refuses `git branch <name>` in a feature worktree (as it already did `checkout -b`), any commit, merge, cherry-pick or revert while the worktree is on another branch, and any commit once the release is recorded. Each refusal says to start a new flow.
+
 ## [0.92.1] - 2026-11-14
 
 **Stage workers are told your guard rules, a docs flow's worker runs no project checks, and `flow reflect done` closes a batch.**

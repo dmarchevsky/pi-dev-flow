@@ -10,7 +10,10 @@ tags are `versioning.pattern` rendered from it. No `versioning.file` → stop
 and settle the scheme with the operator; never invent one.
 
 1. **Review**: `/flow-review` the change; fix every **Must fix** and **Should
-   fix**; `flow check` again if code changed.
+   fix**; `flow check` again if code changed. Then record it:
+   `flow review done "<verdict in a line>"` (a `flow_stage` review worker records
+   itself). `flow release` refuses until a review is on record; shipping without
+   one is the operator's word (`flow review --skip`, asked as **Skip review?**).
    - A fix that changes behaviour → `flow verify` again: it redeploys, then
      ask **Verified?** over the fixed build and run `flow verify --confirmed`
      on the answer (stays in pre-release; a standing yolo does not answer it).

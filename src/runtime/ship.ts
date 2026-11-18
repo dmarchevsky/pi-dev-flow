@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv } from "../core.ts";
+import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
@@ -244,6 +244,9 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 		const n = dirtyWt.out.split("\n").filter((l) => l.trim()).length;
 		return { text: `release gate FAILED:\n- ${n} uncommitted path(s) in ${state!.worktree} — a merge ships the branch, not your working tree: commit or discard them, then re-run\n${tail(dirtyWt.out)}`, isError: true };
 	}
+	// gh#233: the review step ran (or the operator waived it) before anything slow or anything ships
+	const noReview = reviewOwed(state!, cfg);
+	if (noReview) return { text: `release gate FAILED:\n- ${noReview}`, isError: true };
 	const branchProof = await branchState(wtCwd, cfg.defaultBranch);
 	const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
 		? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))

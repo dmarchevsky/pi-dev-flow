@@ -122,6 +122,11 @@ Proves the branch is ready to ship:
   before a commit holding only release prep (version file, changelog) stay green without a re-run;
   set `recheck = always` in `## release` to re-run them anyway. `release.preflight` passes if set.
 - There are no leftover conflict markers (`<<<<<<<`) and no uncommitted files in the worktree.
+- **A review is on record.** The playbook's review step (`release.review`, `/flow-review` by
+  default) has to have run: a `flow_stage` review worker records itself, and an inline review is
+  recorded with `flow review done "<verdict>"`. The verdict stays advisory; only that a review ran
+  is checked. Shipping without one is your call (`flow review --skip`, asked as **Skip review?**).
+  Docs flows and release-only cuts owe none, and `review = ""` under `## release` turns it off.
 
 **Release? often answers itself** (`ask = on-change`, the default). That happens when your call is
 on record and only release prep (bump, changelog) changed since Verified?. A `--confirmed` given before the gate asked doesn't count where a question must be put (a held yolo,

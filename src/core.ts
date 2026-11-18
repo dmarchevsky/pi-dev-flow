@@ -62,7 +62,17 @@ export interface FlowState {
 	friction?: number; // process refusals, a gate refusing twice in a row, guard blocks and post-Verified? code changes this feature hit (isFriction; a red check alone is not one) — finish skips the closing reflection at 0 (playbook reflect = on-friction)
 	reflectQuiet?: boolean; // finish skipped the closing reflection because the flow had no friction — with nothing else open, Finish? answers itself (release.finish = on-change)
 	reviewDeploy?: { wt: string; slot: string; at: string }; // the tree (checkFingerprint) and dev slot `flow verify` deployed for the operator's review — a --confirmed over the same tree does not build and deploy it a second time
+	review?: FlowReview; // the pre-release review step ran (worker or inline) or the operator skipped it — flow release refuses without one (gh#233)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
+}
+
+/** A recorded pre-release review: `worker` (a flow_stage review worker reported), `inline` (the agent ran the
+ *  playbook's review step and recorded it with `flow review done`), or `skipped` (the operator's word). */
+export interface FlowReview {
+	by: "worker" | "inline" | "skipped";
+	at: string;
+	head?: string; // the worktree HEAD the review read — release names commits after it
+	verdict?: string;
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features;
@@ -568,6 +578,14 @@ export function versionArg(value: string | null, noVersion: boolean): { choice: 
  * under Unreleased. The git-dependent proofs (touched, folded) skip with an advisory when no base
  * resolves; the content proofs always run (#97). Review/docs quality stays tier-2.
  */
+/** gh#233: the playbook's review step is a release prerequisite, not a hint — a 566-line change shipped with
+ *  no review because nothing recorded whether one ran. A docs flow and a release-only cut (nothing on the
+ *  branch to read) owe none; `release.review = ""` opts the project out. Null when nothing is owed. */
+export function reviewOwed(state: FlowState, cfg: Config): string | null {
+	if (!cfg.release.review || state.docs || state.releaseOnly || state.review) return null;
+	return `no review is recorded for this flow — run the playbook's review step (${cfg.release.review}, or flow_stage op "review"), fix what it finds, then record it: flow review done "<verdict in a line>" (a review worker records itself). To ship without a review, ask the operator; on their word: flow review --skip --confirmed`;
+}
+
 export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "pre-release") errs.push(`stage is "${state.stage}", the release gate only applies to "pre-release"`);
@@ -1305,6 +1323,36 @@ export function checkoutInvocation(command: string): { target: string; creates: 
 	if (i >= 0) return tok[i + 1] ? { target: unquote(tok[i + 1]), creates: true } : null;
 	const target = tok.find((t) => !t.startsWith("-"));
 	return target ? { target: unquote(target), creates: false } : null;
+}
+
+/** The branch a `git branch <name>` creates, or null (listing, deleting, renaming, copying and the query flags only read
+ *  or move what exists — a rename is still not new work). */
+export function branchCreateInvocation(command: string): string | null {
+	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?branch\b([^;|&\n]*)/);
+	if (!m) return null;
+	const tok = m[1].trim().split(/\s+/).filter(Boolean);
+	if (tok.some((t) => /^(-d|-D|--delete|-m|-M|--move|-c|-C|--copy|-l|--list|-a|--all|-r|--remotes|-v|-vv|--verbose|--contains|--no-contains|--merged|--no-merged|--points-at|--show-current|--edit-description|-u|--set-upstream-to(=.*)?|--unset-upstream|--format(=.*)?|--sort(=.*)?)$/.test(t))) return null;
+	const name = tok.find((t) => !t.startsWith("-"));
+	return name ? unquote(name) : null;
+}
+
+/** gh#232: a feature worktree holds its feature and nothing else. After `flow release` recorded the release, an
+ *  agent cut a side branch in the same worktree, committed a redesign on it and merged it to production with no
+ *  plan, check, review or Verified? — every gate is keyed to the feature branch, so none of them saw it. Judged
+ *  per git segment that runs inside a feature worktree: new branches, commits or merges on any branch but the
+ *  feature's own, and commits once its release is recorded, are refused. Null when the segment may run. */
+export function worktreeWorkGuard(o: { subs: string[]; command: string; branch: string; home: { slug: string; branch: string; released: boolean; wt: string } }): string | null {
+	const { subs, home } = o;
+	const newFlow = `follow-up work is its own flow: flow start <new-slug> (--patch for a small fix) — it gets a worktree, plan, checks, review and Verified? of its own`;
+	const created = subs.includes("branch") ? branchCreateInvocation(o.command) : null;
+	if (created) return `a feature worktree stays on its own branch — not creating ${created} in ${home.wt}; ${newFlow}`;
+	const writes = subs.includes("commit") || subs.includes("merge") || subs.includes("cherry-pick") || subs.includes("revert");
+	if (!writes) return null;
+	if (o.branch && home.branch && o.branch !== home.branch)
+		return `${home.wt} is ${home.slug}'s worktree (branch ${home.branch}), but it is on ${o.branch} — work committed here skips every gate of ${home.slug}; switch back (git switch ${home.branch}) — ${newFlow}`;
+	if (home.released)
+		return `${home.slug}'s release is recorded — its worktree takes no new commits (they would never ship through a gate); ${newFlow}. Release chores belong in the main checkout; flow finish closes ${home.slug}`;
+	return null;
 }
 
 // ------------------------------------------------------- project safety rules
@@ -2308,13 +2356,16 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "pre-release": {
 			// gh#198: the release call made with Verified? decides which prep this is
 			const vc = state.versionChoice;
+			// gh#233: flow release refuses until the review is on record — the hint says how it gets there
+			const rv = reviewOwed(state, cfg) ? `${cfg.release.review} (then record it: flow review done "<verdict>")` : cfg.release.review && state.review ? "review on record" : "";
+			const review = rv ? `${rv}, ` : "";
 			const auto = cfg.release.ask !== "always" ? " (release.ask = on-change: it asks Release? only when something beyond the prep changed)" : "";
 			if (vc === "unreleased")
-				return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}; show the PR summary, then run flow release${auto || " and ask Release?"}`;
+				return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}; show the PR summary, then run flow release${auto || " and ask Release?"}`;
 			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}${isBumpKind(vc) ? ` to ${bumpVersion(state.versionFrom, vc) ?? `the next ${vc}`} (a ${vc} release, the operator's call — the gate counts it from the newest tag, so a flow that released first moves the number)` : vc && vc !== "next" ? ` to ${vc} (the operator's call)` : ""}` : ""].filter(Boolean).join(" and ");
-			if (vc && prep) return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}; show the PR summary, version and changelog, then run flow release${auto || " and ask Release?"}`;
-			if (state.docs && prep) return `${cfg.release.review}, fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
-			return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, ask Release? and run flow release`;
+			if (vc && prep) return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}; show the PR summary, version and changelog, then run flow release${auto || " and ask Release?"}`;
+			if (state.docs && prep) return `${review}fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
+			return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, ask Release? and run flow release`;
 		}
 		case "release":
 			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then flow finish (closing reflection first; its fold/drop answer is Finish?)`;
