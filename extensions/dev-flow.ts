@@ -765,10 +765,14 @@ export default function devFlow(pi: ExtensionAPI) {
 				return branchCache.get(at)!;
 			};
 			const worktrees = featureRefs(guardRoot).map((f) => f.worktreeAbs).filter((w): w is string => !!w);
+			// gh#235: a checkout/switch earlier in the chain moves the branch the later segments run on — the probe
+			// reads the branch before anything runs, so `git checkout team-test && git merge feat/x` was judged as a
+			// merge into main
+			const switched = new Map<string, string>();
 			for (const g of inv.gitSegs) {
 				const gitDir = g.dir ? path.resolve(ctx.cwd, g.dir) : ctx.cwd;
 				const seg = gitInvocation(g.seg); // parsed once per segment — this runs on every bash call of every session
-				const branch = await branchOf(g.dir);
+				const branch = switched.get(gitDir) ?? (await branchOf(g.dir));
 				let pushRefs: PushRef[] | undefined;
 				const gp = seg.pushes;
 				if (gp.length) {
@@ -800,6 +804,8 @@ export default function devFlow(pi: ExtensionAPI) {
 				// worktree (and leaves it off its branch for the next gate); out-of-flow fixes get their own flow.
 				const co = checkoutInvocation(g.seg);
 				if (!co) continue;
+				// a path restore (`git checkout -- f`, `git checkout f`) is not a switch: only a branch that exists or is created moves
+				if (co.creates || (!/\s--(\s|$)/.test(g.seg) && (await sh(`git -C ${sq(gitDir)} rev-parse --verify -q ${sq(`refs/heads/${co.target}`)}`, ctx.cwd)).ok)) switched.set(gitDir, co.target);
 				const homeWt = worktrees.find((w) => gitDir === w || gitDir.startsWith(w + path.sep));
 				if (co.creates && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${co.target} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch)` };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout

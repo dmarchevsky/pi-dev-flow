@@ -2398,6 +2398,26 @@ export function nextHint(state: FlowState, cfg: Config): string {
 	}
 }
 
+/** gh#242: a failing check's output, trimmed for the gate result. The last lines alone pointed away from the
+ *  failure — a lint step's tail was its pre-existing warnings and "script exited with code 1", and the two files
+ *  it refused were 200 lines up. When the output is longer than the tail, the error-level lines that the tail
+ *  cuts off are lifted above it, each with the line before it (formatters name the file there), capped. */
+export function failTail(out: string, n = 15, maxErr = 12): string {
+	const lines = out.split("\n").filter((l) => l.trim());
+	if (lines.length <= n) return out;
+	const cut = lines.length - n;
+	const isErr = (l: string) => !/\bwarn(?:ing)?s?\b/i.test(l) && /(^|[\s[(:])(?:error|errors|ERR!|FAIL(?:ED|URE)?|fail(?:ed|ure)?|panic(?:ked)?|exception|Traceback)\b|[×✖✗]|^\s*E\s{2,}|AssertionError/i.test(l);
+	const pick = new Set<number>();
+	for (let i = 0; i < cut && pick.size < maxErr * 2; i++)
+		if (isErr(lines[i])) {
+			if (i > 0 && !isErr(lines[i - 1])) pick.add(i - 1);
+			pick.add(i);
+		}
+	const clip = (l: string) => (l.length > 240 ? `${l.slice(0, 240)}…` : l);
+	const head = [...pick].sort((a, b) => a - b).slice(0, maxErr * 2).map((i) => clip(lines[i]));
+	return `${head.length ? `error lines from the ${cut} cut off:\n${head.join("\n")}\n…\n` : `…(${cut} lines)…\n`}${lines.slice(-n).join("\n")}`;
+}
+
 /** Stable token prefixing every no-UI operator refusal, so a headless orchestrator can route refusals without grepping prose. */
 export const NEEDS_OPERATOR = "NEEDS-OPERATOR";
 

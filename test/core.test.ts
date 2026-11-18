@@ -78,6 +78,7 @@ import {
 	branchCreateInvocation,
 	worktreeWorkGuard,
 	reviewOwed,
+	failTail,
 	releaseOrderInvocation,
 	guessReflectSections,
 	reflectItems,
@@ -1952,4 +1953,15 @@ test("reviewOwed: the playbook's review step, unless docs, release-only, recorde
 	assert.equal(reviewOwed({ ...st, releaseOnly: true }, cfg), null);
 	assert.equal(reviewOwed({ ...st, review: { by: "skipped", at: "" } }, cfg), null);
 	assert.equal(reviewOwed(st, { ...cfg, release: { ...cfg.release, review: "" } }), null);
+});
+
+test("failTail: the errors a long failing run printed are lifted above its tail (gh#242)", () => {
+	const noise = Array.from({ length: 40 }, (_, i) => `src/x${i}.css:1 warning: specificity`);
+	const out = ["$ biome check", "fixtures/a.json format ━━━━━━", "  × Formatter would have printed the following content:", "fixtures/b.json format ━━━━━━", "  × Formatter would have printed the following content:", ...noise, "× Some errors were emitted while running checks", 'error: script "lint" exited with code 1'].join("\n");
+	const t = failTail(out);
+	assert.match(t, /^error lines from the \d+ cut off:\nfixtures\/a\.json format[^\n]*\n {2}× Formatter[^\n]*\nfixtures\/b\.json format/, t);
+	assert.doesNotMatch(t.split("\n…\n")[0], /warning/, "warnings are not lifted");
+	assert.match(t, /error: script "lint" exited with code 1$/, "the tail still ends the output");
+	assert.equal(failTail("short\nerror: x"), "short\nerror: x", "a short run is shown whole");
+	assert.match(failTail(Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")), /^…\(15 lines\)…\n/, "no error lines: the old tail");
 });

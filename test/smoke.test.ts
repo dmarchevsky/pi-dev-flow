@@ -3176,6 +3176,23 @@ test("a feature worktree takes its own feature's commits only, and none once the
 	assert.equal(await bash(`git commit -qm "release chore"`), undefined, "a release chore in the main checkout still passes at stage release");
 });
 
+test("a branch switch earlier in the chain is the branch a later merge lands on (gh#235)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	execFileSync("git", ["-C", repo, "branch", "team-test"]);
+	await walkToImplement(flow, repo, "tt");
+	const bash = (command: string) => pi.handlers.tool_call[0]({ toolName: "bash", input: { command, timeout: 60 } }, ctx) as Promise<{ block?: boolean; reason?: string } | undefined>;
+	assert.equal(await bash("git checkout team-test && git merge --no-edit feat/tt"), undefined, "a merge into the test branch is not a merge into main");
+	assert.equal(await bash("git switch team-test; git merge origin/main"), undefined);
+	assert.match((await bash("git checkout team-test && git checkout main && git merge feat/tt"))?.reason ?? "", /merging into main requires stage "release"/, "the last switch decides");
+	assert.match((await bash("git checkout main -- README.md && git merge feat/tt"))?.reason ?? "", /merging into main/, "a path restore moves no branch");
+	assert.match((await bash("git checkout README.md && git merge feat/tt"))?.reason ?? "", /merging into main/, "nor does a bare path");
+});
+
 test("--ui is the agent's call: start takes it without --confirmed (it only adds the mockup gate)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
