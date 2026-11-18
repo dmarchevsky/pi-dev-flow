@@ -4,7 +4,7 @@ description: >
   Read-only senior-engineer review of a change before it ships: correct, safe,
   holds under load, tested, fast, lean — judged also against the flow's plan.
   Report only, changes no code. Use for "review this", "code review", "is this
-  ready to ship?", and as the dev-flow pre-release review step. Default target:
+  ready to ship?", and as the dev-flow review step (implement, before Verified?). Default target:
   the bound flow's branch diff against the default branch.
 argument-hint: "[ref | base..head | file...]"
 ---

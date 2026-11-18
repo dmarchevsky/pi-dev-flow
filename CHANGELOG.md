@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Changed
+- **The review runs before Verified?, so you're asked Verified? once (gh#248).** The review step ran after your Verified?, so every finding changed the tree you had already approved and the agent asked again. One flow asked three times. The review now runs in implement once `flow check` is green, and the first `flow verify` refuses until one is on record (a review worker records itself; an inline one is recorded with `flow review done "<verdict>"`). Your one look covers the tree that ships. A flow already at pre-release without a review still owes it at release.
+
+### Fixed
+- **An unanswered re-verify holds the release (gh#249).** When `flow verify` at pre-release asked Verified? again, nothing recorded that it was waiting. The agent took your "verified", went straight to release prep and shipped without recording it, so the release went out under the older word with only a warning. `flow release` now refuses until the answer is recorded with `flow verify --confirmed`.
+- **Your Release? word stands on the first call under `yolo = until-release` (gh#206).** On a yolo flow the knob made the gate ask Release? itself first, so an answer you had already given in chat was refused twice and you had to repeat it. A plain `--confirmed` now stands like on any flow. A replayed `--yolo --confirmed` (gh#219) and a release with commits after Verified? or a stale build are still asked first.
+- **`flow roadmap done` closes the items you named (gh#245).** The list was numbered over open items only, so closing item 6 renumbered the rest: for "close 6 and 7", a second `done 7` hit the item that used to be 8. Numbers are now row numbers: a done item keeps its row, so the other numbers stay where the list printed them. `done 6,7` closes several in one call, and one bad number closes none. `drop` takes a batch too, and `drop` and `tidy` say the numbers changed.
+
 ## [0.93.0] - 2026-11-18
 
 **`flow release` needs a review on record and opens the PR with the body your template asks for; checks stay passed across a commit of the same tree; feature worktrees take only their own feature's work; and `flow finish` names what is really wrong.**

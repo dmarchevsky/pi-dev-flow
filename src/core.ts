@@ -53,6 +53,8 @@ export interface FlowState {
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
 	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
 	pendingAsk?: string; // the checkpoint word a gate asked for and has not been given ("Approve?", "Verified?", …) — presentation only (💬 in the footer), it never gates
+	/** when flow verify at pre-release asked Verified? over review fixes; cleared by the answer — flow release refuses while it is set */
+	reverifyAsked?: string;
 	releaseOnly?: boolean; // verify found nothing on the branch but unreleased work on main: this flow only cuts the version (#161)
 	versionChoice?: string; // the operator's release call, recorded with Verified? (gh#198): patch | minor | major (counted from the newest tag at release, so a parallel flow taking the number moves it), an exact version, "next" (playbook version = versioned: any bump past the last tag) or "unreleased"
 	versionFrom?: string; // the manifest version when the call was recorded — what a patch/minor/major call was counted from at Verified?
@@ -62,11 +64,11 @@ export interface FlowState {
 	friction?: number; // process refusals, a gate refusing twice in a row, guard blocks and post-Verified? code changes this feature hit (isFriction; a red check alone is not one) — finish skips the closing reflection at 0 (playbook reflect = on-friction)
 	reflectQuiet?: boolean; // finish skipped the closing reflection because the flow had no friction — with nothing else open, Finish? answers itself (release.finish = on-change)
 	reviewDeploy?: { wt: string; slot: string; at: string }; // the tree (checkFingerprint) and dev slot `flow verify` deployed for the operator's review — a --confirmed over the same tree does not build and deploy it a second time
-	review?: FlowReview; // the pre-release review step ran (worker or inline) or the operator skipped it — flow release refuses without one (gh#233)
+	review?: FlowReview; // the review step ran (worker or inline) or the operator skipped it — flow verify (before Verified?) and flow release refuse without one (gh#233)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
 }
 
-/** A recorded pre-release review: `worker` (a flow_stage review worker reported), `inline` (the agent ran the
+/** A recorded review (run in implement, before Verified?): `worker` (a flow_stage review worker reported), `inline` (the agent ran the
  *  playbook's review step and recorded it with `flow review done`), or `skipped` (the operator's word). */
 export interface FlowReview {
 	by: "worker" | "inline" | "skipped";
@@ -2251,45 +2253,57 @@ export function roadmapBriefFor(text: string, slug: string): { item: string; bri
 /** Number of open roadmap items. */
 export const roadmapOpenCount = (text: string) => openChecklistItems(text).length;
 
-/** Stamp the nth open item (1-based, open items only) with `(slug)` — the pick→finish handshake.
- *  Returns null when n is out of range. Re-picking the same slug is a no-op stamp. */
+/** gh#245: roadmap numbers are row numbers over every item, open and done, the way reflections number
+ *  theirs (gh#197). Numbered over open items only, `done 6` shifted the old 7 into 6, so "close 6 and 7"
+ *  closed one item twice over and the wrong one went with it. A done item keeps its row, so closing one
+ *  leaves every other number where `list` printed it; drop and tidy remove rows and renumber. */
+const isRoadmapRow = (l: string) => isOpenItem(l) || isDoneItem(l);
+
+/** The open items with their row numbers — what `flow roadmap` lists and pick/done/drop take. */
+export function roadmapOpenRows(text: string): { row: number; item: string }[] {
+	let row = 0;
+	const out: { row: number; item: string }[] = [];
+	for (const l of text.split("\n")) {
+		if (!isRoadmapRow(l)) continue;
+		row++;
+		if (isOpenItem(l)) out.push({ row, item: l.trim().slice(6) });
+	}
+	return out;
+}
+
+/** Rewrite the open item at row n (rows count open and done items, 1-based); null when row n is no open item. */
+function editOpenRow(text: string, n: number, edit: (line: string) => string): string | null {
+	let row = 0;
+	let hit = false;
+	const out = text.split("\n").map((l) => {
+		if (!isRoadmapRow(l) || ++row !== n || !isOpenItem(l)) return l;
+		hit = true;
+		return edit(l);
+	});
+	return hit ? out.join("\n") : null;
+}
+
+/** Stamp the open item at row n with `(slug)` — the pick→finish handshake. Null when row n is no open item.
+ *  Re-picking the same slug is a no-op stamp. */
 export function roadmapPick(text: string, n: number, slug: string): string | null {
-	let seen = 0;
-	let hit = false;
-	const out = text.split("\n").map((l) => {
-		if (!isOpenItem(l)) return l;
-		++seen;
-		if (seen !== n) return l;
-		hit = true;
-		return l.trim().includes(`(${slug})`) ? l.trim() : `${l.trim()} (${slug})`;
-	});
-	return hit ? out.join("\n") : null;
+	return editOpenRow(text, n, (l) => (l.trim().includes(`(${slug})`) ? l.trim() : `${l.trim()} (${slug})`));
 }
 
-/** Check the nth open item (1-based, open items only) with a done stamp. Returns null when n is out of range. */
+/** Check the open item at row n with a done stamp. Null when row n is no open item. */
 export function roadmapDone(text: string, n: number, stamp: string): string | null {
-	let seen = 0;
-	let hit = false;
-	const out = text.split("\n").map((l) => {
-		if (!isOpenItem(l)) return l;
-		++seen;
-		if (seen !== n) return l;
-		hit = true;
-		return stampItem(l, stamp);
-	});
-	return hit ? out.join("\n") : null;
+	return editOpenRow(text, n, (l) => stampItem(l, stamp));
 }
 
-/** Remove the nth open item (1-based, open items only) and its brief — an idea the operator no longer
- *  wants, which `done` would record as shipped. Returns null when n is out of range. */
+/** Remove the open item at row n and its brief — an idea the operator no longer wants, which `done` would
+ *  record as shipped. Null when row n is no open item. */
 export function roadmapDrop(text: string, n: number): { text: string; item: string } | null {
-	let seen = 0;
+	let row = 0;
 	let item: string | null = null;
 	let dropping = false;
 	const out = text.split("\n").filter((l) => {
 		if (isBriefLine(l)) return !dropping;
 		dropping = false;
-		if (!isOpenItem(l) || ++seen !== n) return true;
+		if (!isRoadmapRow(l) || ++row !== n || !isOpenItem(l)) return true;
 		item = l.trim().slice(6);
 		dropping = true;
 		return false;
@@ -2387,7 +2401,9 @@ export function nextHint(state: FlowState, cfg: Config): string {
 				const open = openItemsNote(cfg, state, "implement");
 				return `edit in ${state.worktree} (docs mode: no project commands)${open ? `, go through the checklist with the operator (${open})` : ""}, ask Verified?, then flow verify --confirmed`;
 			}
-			return `build and test in ${state.worktree}, commit as you go, flow check; then flow verify (deploys for review), look yourself, keep the app running, ask Verified? and run flow verify --confirmed on the answer`;
+			// the review comes before Verified? (flow verify refuses until it is on record), so the operator's one look covers the reviewed tree
+			const rv = reviewOwed(state, cfg) ? `; then the review — ${cfg.release.review}, fix what it finds and record it (flow review done "<verdict>"; a flow_stage review worker records itself)` : "";
+			return `build and test in ${state.worktree}, commit as you go, flow check${rv}; then flow verify (deploys for review), look yourself, keep the app running, ask Verified? and run flow verify --confirmed on the answer`;
 		case "pre-release": {
 			// gh#198: the release call made with Verified? decides which prep this is
 			const vc = state.versionChoice;

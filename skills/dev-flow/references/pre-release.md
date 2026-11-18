@@ -9,15 +9,14 @@ release gate hands over.
 tags are `versioning.pattern` rendered from it. No `versioning.file` → stop
 and settle the scheme with the operator; never invent one.
 
-1. **Review**: `/flow-review` the change; fix every **Must fix** and **Should
-   fix**; `flow check` again if code changed. Then record it:
-   `flow review done "<verdict in a line>"` (a `flow_stage` review worker records
-   itself). `flow release` refuses until a review is on record; shipping without
-   one is the operator's word (`flow review --skip`, asked as **Skip review?**).
+1. **Review**: it ran in implement, before Verified? — don't run it again.
+   A flow that reached pre-release without one (started on an older dev-flow)
+   runs it now: `/flow-review`, fix, `flow check`, `flow review done
+   "<verdict>"`; `flow release` refuses until a review is on record.
    - A fix that changes behaviour → `flow verify` again: it redeploys, then
      ask **Verified?** over the fixed build and run `flow verify --confirmed`
      on the answer (stays in pre-release; a standing yolo does not answer it).
-     Otherwise `flow release` warns that the fix shipped after Verified?.
+     `flow release` refuses while that re-verify is unanswered.
 2. **Docs**: update them to match the change.
 3. **Changelog + bump** — manifest, changelog heading and tag must agree;
    commit the prep on the feature branch. The release call recorded with

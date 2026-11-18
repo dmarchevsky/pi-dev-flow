@@ -71,8 +71,8 @@ The stage injection names the file to read now; this is the map.
 | --- | --- |
 | `references/start.md` | `flow init`, starting a feature, modes (`--patch`, `--docs`, `--ui`), merge policy |
 | `references/plan.md` | plan — research, clarify, plan file, mockups, Approve? |
-| `references/implement.md` | implement — worktree, commits, checks, workers, Verified? |
-| `references/pre-release.md` | pre-release — review, docs, changelog + bump, Release? |
+| `references/implement.md` | implement — worktree, commits, checks, workers, review, Verified? |
+| `references/pre-release.md` | pre-release — docs, changelog + bump, Release? |
 | `references/release.md` | release — PR, CI, merge, tag; hands over to finish |
 | `references/finish.md` | finish — closing reflection, fold/drop, cleanup |
 | `references/reflect.md` | reflections and the roadmap backlog |

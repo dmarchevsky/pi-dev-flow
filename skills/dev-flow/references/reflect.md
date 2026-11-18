@@ -54,6 +54,8 @@ never gating.
   --slug=<slug> --brief=<notes>` — `flow start <slug>` later seeds the plan
   from the brief. A hand-made `.dev-flow/<slug>/plan/` is a ghost; `flow start
   <slug> --confirmed` adopts it.
-- Shipped outside a flow: `flow roadmap done <n>`; `flow roadmap tidy` drops
-  checked lines. Not wanted any more (never built): `flow roadmap drop <n>` —
-  `done` would claim it shipped.
+- Shipped outside a flow: `flow roadmap done <n>` (several: `done 6,7` in one
+  call); `flow roadmap tidy` drops checked lines. Not wanted any more (never
+  built): `flow roadmap drop <n>` — `done` would claim it shipped.
+- `<n>` is the row number `flow roadmap` prints: `done` leaves every other
+  number in place; `drop` and `tidy` renumber, so list again after them.

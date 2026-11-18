@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gate runner and the gates that do not ship anything. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState } from "../core.ts";
+import { approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState } from "../core.ts";
 import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, ghostInfo, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
 import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
@@ -558,12 +558,20 @@ export async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 	const open = roadmapOpenCount(text);
 	const done = doneItemCount(text);
 	const save = (next: string) => writeFileSync(roadmapFile(root), next); // .dev-flow/ existence is runFlow's precondition
+	// gh#245: numbers are row numbers (open and done items) — a done keeps every other number where list printed it
+	const rows = roadmapOpenRows(text);
+	const openRows = new Set(rows.map((r) => r.row));
 	const idx = Number(args[0]);
-	const validIdx = Number.isInteger(idx) && idx >= 1 && idx <= open;
+	const validIdx = Number.isInteger(idx) && openRows.has(idx);
+	const rowRange = rows.length ? `an open row (${rows.map((r) => r.row).join(", ")})` : "an open item (none open)";
+	// done/drop take a batch (`done 6,7` or `done 6 7`), resolved against the list as it stands before any edit
+	const batch = [...new Set(args.flatMap((a) => a.split(",")).map((a) => a.trim()).filter(Boolean))];
+	const batchNums = batch.map(Number);
+	const badBatch = batch.filter((_, i) => !Number.isInteger(batchNums[i]) || !openRows.has(batchNums[i]));
 	switch (verb) {
 		case "list": {
 			if (!open) return { text: done ? `roadmap: nothing open (${done} done — flow roadmap tidy drops them)` : "roadmap: empty — flow roadmap add \"<future feature>\"" };
-			return { text: [`roadmap — ${open} open (${done} done):`, ...openChecklistItems(text).map((l, i) => `  ${i + 1}. ${l.slice(6)}`)].join("\n") };
+			return { text: [`roadmap — ${open} open (${done} done; numbers are row numbers: done leaves the others as they are, drop and tidy renumber):`, ...rows.map((r) => `  ${r.row}. ${r.item}`)].join("\n") };
 		}
 		case "add": {
 			if (!args.length) return { text: 'usage: flow roadmap add "<future feature>" [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]', isError: true };
@@ -580,33 +588,44 @@ export async function gateRoadmap(o: GateCtx): Promise<RunResult> {
 		}
 		case "pick": {
 			const slug = args[1] ?? "";
-			if (!validIdx) return { text: `pick: open item 1–${open} required — flow roadmap lists them`, isError: true };
+			if (!validIdx) return { text: `pick: ${rowRange} required — flow roadmap lists them`, isError: true };
 			if (!slug || !validSlug(slug)) return { text: `usage: flow roadmap pick <n> <slug> — the slug flow start will use (lowercase, dashes)`, isError: true };
 			save(roadmapPick(text, idx, slug)!);
 			return { text: `roadmap: item ${idx} picked for ${slug} — now: flow start ${slug} (flow finish checks the item off when it ships)` };
 		}
 		case "done": {
-			if (!validIdx) return { text: `done: open item 1–${open} required — flow roadmap lists them`, isError: true };
+			if (!batch.length || badBatch.length) return { text: `done: ${badBatch.length ? `${badBatch.join(", ")} ${badBatch.length > 1 ? "are" : "is"} not ` : ""}${rowRange}${badBatch.length ? "" : " required"} — nothing was changed; flow roadmap lists them`, isError: true };
 			// stamped with date + bound slug, so history says what shipped it
-			save(roadmapDone(text, idx, [new Date().toISOString().slice(0, 10), sess.slug].filter(Boolean).join(" "))!);
-			return { text: `roadmap: item ${idx} marked done (${open - 1} open)` };
+			const stamp = [new Date().toISOString().slice(0, 10), sess.slug].filter(Boolean).join(" ");
+			let next = text;
+			for (const n of batchNums) next = roadmapDone(next, n, stamp)!; // rows stay put under done
+			save(next);
+			const names = batchNums.map((n) => `${n}. ${rows.find((r) => r.row === n)!.item}`);
+			return { text: `roadmap: ${batchNums.length > 1 ? `${batchNums.length} items` : `item ${batchNums[0]}`} marked done (${open - batchNums.length} open) — ${names.join(" | ")}` };
 		}
 		case "drop":
 		case "remove":
 		case "delete": {
 			// not shipped, not wanted: gone from the backlog, so the done list never claims it was built
-			if (!validIdx) return { text: `drop: open item 1–${open} required — flow roadmap lists them`, isError: true };
-			const r = roadmapDrop(text, idx)!;
-			save(r.text);
-			return { text: `roadmap: item ${idx} dropped — "${r.item}" (${open - 1} open)` };
+			if (!batch.length || badBatch.length) return { text: `drop: ${badBatch.length ? `${badBatch.join(", ")} ${badBatch.length > 1 ? "are" : "is"} not ` : ""}${rowRange}${badBatch.length ? "" : " required"} — nothing was changed; flow roadmap lists them`, isError: true };
+			let next = text;
+			const gone: string[] = [];
+			// highest row first: removing a row shifts only the rows below it
+			for (const n of [...batchNums].sort((a, b) => b - a)) {
+				const r = roadmapDrop(next, n)!;
+				next = r.text;
+				gone.unshift(`"${r.item}"`);
+			}
+			save(next);
+			return { text: `roadmap: ${gone.length > 1 ? `${gone.length} items` : `item ${batchNums[0]}`} dropped — ${gone.join(", ")} (${open - gone.length} open); the row numbers below changed — run flow roadmap before the next pick, done or drop` };
 		}
 		case "tidy": {
 			if (!done) return { text: `roadmap: nothing to tidy (${open} open, 0 done)` };
 			save(roadmapTidy(text));
-			return { text: `roadmap: dropped ${done} done item(s) — ${open} open` };
+			return { text: `roadmap: dropped ${done} done item(s) — ${open} open; the row numbers changed — run flow roadmap before the next pick, done or drop` };
 		}
 		default:
-			return { text: "usage: flow roadmap [list|add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>|drop <n>|tidy]", isError: true };
+			return { text: "usage: flow roadmap [list|add <text> [--slug=<slug>] [--brief=<notes>|--brief-file=<path>]|pick <n> <slug>|done <n>[,<n>…]|drop <n>[,<n>…]|tidy] — <n> is the row number flow roadmap prints", isError: true };
 		}
 }
 
@@ -710,7 +729,7 @@ export async function gateHealth(o: GateCtx): Promise<RunResult> {
 	return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${probe}${triedNote(res.attempts)})\n${tail(res.out)}` };
 }
 
-/** gh#233: records the pre-release review flow release requires. `done "<verdict>"` — the agent ran the playbook's
+/** gh#233: records the review flow verify (before Verified?) and flow release require. `done "<verdict>"` — the agent ran the playbook's
  *  review step inline; `--skip` — the operator's word to ship without one (asked first: Skip review?). A
  *  flow_stage review worker records itself. Bare: what is on record. Bound flow only — `done`'s verdict is free text. */
 export async function gateReview(o: GateCtx): Promise<RunResult> {
@@ -722,7 +741,7 @@ export async function gateReview(o: GateCtx): Promise<RunResult> {
 	const onRecord = st.review
 		? `review on record: ${st.review.by === "skipped" ? "skipped on the operator's word" : `${st.review.by}${st.review.head ? ` over ${st.review.head.slice(0, 7)}` : ""}${st.review.verdict ? ` — ${st.review.verdict}` : ""}`} (${ago(st.review.at)})`
 		: "no review on record";
-	if (!words.length && !flag("skip")) return { text: `${onRecord}${cfg.release.review ? ` — flow release requires one (${cfg.release.review})` : " — the playbook sets no review step"}` };
+	if (!words.length && !flag("skip")) return { text: `${onRecord}${cfg.release.review ? ` — flow verify requires one before Verified? (${cfg.release.review})` : " — the playbook sets no review step"}` };
 	if (st.stage !== "implement" && st.stage !== "pre-release") return { text: `review is recorded at implement or pre-release — ${st.slug} is at ${st.stage}`, isError: true };
 	const head = st.worktree ? (await sh("git rev-parse HEAD", gateCwd(root, st))).out.trim() : "";
 	if (flag("skip")) {
