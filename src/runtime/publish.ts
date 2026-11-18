@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pickReleaseNotes, prepOnlyChange, sq } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
-import { gateCwd, mergeBase, releaseTags, sh, tail, writeState } from "./base.ts";
+import { featDir, gateCwd, mergeBase, releaseTags, sh, tail, writeState } from "./base.ts";
 
 /** How long the gate waits on a PR's CI; a seam so tests run in milliseconds (same shape as artifactWait). */
 export const publishWait = {
@@ -96,6 +96,25 @@ export async function gatePublishes(cfg: Config, forgeName: string, root: string
 	return (await sh("gh --version", root, 15_000)).ok;
 }
 
+/** gh#240: the repo's own pull-request template, when it has one (GitHub's single-file locations). */
+export function prTemplate(cwd: string): string | null {
+	for (const rel of [".github/pull_request_template.md", ".github/PULL_REQUEST_TEMPLATE.md", "pull_request_template.md", "PULL_REQUEST_TEMPLATE.md", "docs/pull_request_template.md", "docs/PULL_REQUEST_TEMPLATE.md"])
+		if (existsSync(path.join(cwd, rel))) return rel;
+	return null;
+}
+
+/** The PR body the agent authored for the gate to open the PR with (gh#240). */
+export const prBodyFile = (root: string, slug: string) => path.join(featDir(root, slug), "pr-body.md");
+
+/** gh#240: a repo with a PR template keeps its gate list there — what changed, who verified it, over which
+ *  commit. Synthesizing the body from the changelog dropped all of it, and the merged PR had to be patched
+ *  afterwards. With a template and no authored body the gate refuses before the PR exists; null when fine. */
+export function prBodyOwed(root: string, state: FlowState): string | null {
+	const tpl = prTemplate(gateCwd(root, state));
+	if (!tpl || existsSync(prBodyFile(root, state.slug))) return null;
+	return `this repo has a pull-request template (${tpl}) and no PR body is written — flow release opens the PR itself, and a body synthesized from the changelog drops the template's sections. Write .dev-flow/${state.slug}/pr-body.md from ${tpl} (every section filled; the changelog entry, and the commit the operator's Verified? was given over), then re-run`;
+}
+
 async function prsFor(branch: string, cwd: string): Promise<Pr[] | null> {
 	const r = await sh(`gh pr list --head ${sq(branch)} --state all --limit 20 --json number,state,url,headRefOid,mergeCommit`, cwd, 60_000);
 	return r.ok ? jsonArray<Pr>(r.out) ?? (r.out.trim() ? null : []) : null;
@@ -113,8 +132,11 @@ async function prTitle(cwd: string, cfg: Config, slug: string): Promise<string> 
 	return rows[0]?.[1] ?? slug;
 }
 
-/** Body for the PR: the changelog entry of the version being released, else the branch's commit subjects. */
-async function prBody(cwd: string, cfg: Config, state: FlowState): Promise<string> {
+/** Body for the PR: the authored .dev-flow/<slug>/pr-body.md (gh#240), else the changelog entry of the version
+ *  being released, else the branch's commit subjects. */
+async function prBody(root: string, cwd: string, cfg: Config, state: FlowState): Promise<string> {
+	const authored = prBodyFile(root, state.slug);
+	if (existsSync(authored)) return readFileSync(authored, "utf8").trim();
 	const file = cfg.release.changelog ? path.join(cwd, cfg.release.changelog) : "";
 	const entry = pickReleaseNotes({ changelog: file && existsSync(file) ? readFileSync(file, "utf8") : null, version: state.releaseVersion ?? null, annotation: "" }).notes;
 	if (entry) return entry;
@@ -157,13 +179,16 @@ export async function publishRelease(root: string, state: FlowState, cfg: Config
 		let pr = found.open;
 		if (pr) steps.push(`PR #${pr.number} already open`);
 		else {
-			const body = await prBody(wt, cfg, state);
+			const owed = prBodyOwed(root, state);
+			if (owed) return stop(owed, `write .dev-flow/${state.slug}/pr-body.md`);
+			const authored = existsSync(prBodyFile(root, state.slug));
+			const body = await prBody(root, wt, cfg, state);
 			const create = await sh(`gh pr create --head ${sq(br)} --base ${sq(cfg.defaultBranch)} --title ${sq(await prTitle(wt, cfg, state.slug))} --body ${sq(body || state.slug)}`, wt);
 			if (!create.ok) return stop(`opening the PR failed:\n${tail(create.out, 8)}`, "open the PR yourself");
 			found = await find();
 			pr = found?.open;
 			if (!pr) return stop("the PR was created but gh pr list does not show it yet", "wait a moment");
-			steps.push(`PR #${pr.number} opened`);
+			steps.push(`PR #${pr.number} opened (body: ${authored ? "your pr-body.md" : "the changelog entry"})`);
 		}
 		state.publish = { ...state.publish, pr: pr.number };
 		writeState(root, state);

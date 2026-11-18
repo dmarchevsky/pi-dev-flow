@@ -84,3 +84,13 @@ test("operatorCommandAsks leaves reports alone: generic CLI flags, verbs inside 
 	];
 	for (const r of reports) assert.deepEqual(operatorCommandAsks(r), [], r);
 });
+
+test("stageLine names the open tier-2 items of the current stage, clipped (gh#241)", () => {
+	const items = ["changelog entry reads as a user-facing change", "docs updated", "operator saw the screenshot", "migration notes", "fifth item"].map((text) => ({ text, uiOnly: false }));
+	const c: Config = { ...cfg, checklist: { "pre-release": items } };
+	const st = newState("tier", false);
+	st.stage = "pre-release";
+	const line = stageLine(st, c);
+	assert.match(line, /tier-2 `5 open` \? \(## pre-release: "changelog entry reads as a user-facing …" · "docs updated" · "operator saw the screenshot" · "migration notes" \+1\)/, line);
+	assert.ok(!commandish(line), "the stage line is operator-facing: no commands");
+});

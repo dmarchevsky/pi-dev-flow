@@ -24,7 +24,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import { compact, defineTool, isToolCallEventType, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type ExtensionAPI, type ToolCallEvent, type ToolCallEventResult, type TurnEndEvent, type TurnEndEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOW_REWRITE, applicableItems, openItemsNote, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, worktreeWorkGuard, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
+import { ALLOW_REWRITE, applicableItems, openItemsNote, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, worktreeWorkGuard, flowArgsShapeError, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
 import { loadProject } from "../src/projectmd.ts";
 import { bashTimeout, requireTimeout, timeoutClass } from "../src/timeouts.ts";
 import { AGENT_MARK, operatorCommandAsks, operatorCommandCorrection, viewHeader, askLine, type GateView } from "../src/present.ts";
@@ -232,6 +232,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			args: Type.Array(Type.String(), { description: 'Gate invocation, e.g. ["status"] or ["start", "my-slug"]' }),
 		}),
 		execute: async (id, params, signal, onUpdate, ctx) => {
+			const shape = flowArgsShapeError((params as { args?: unknown }).args);
+			if (shape) return { content: [{ type: "text", text: shape }], details: {}, isError: true };
 			const root = await flowRoot(ctx.cwd);
 			// the agent's call never opens a dialog (#181): a dialog inside a tool call blocks the turn, so nobody
 			// can talk to the agent while it waits, and the agent cannot see who answered. Gates answer with the

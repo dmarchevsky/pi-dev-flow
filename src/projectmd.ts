@@ -547,14 +547,34 @@ export function doctorFindings(root: string, cfg: Config, md: ParsedMd | null): 
 		if (!existsSync(mf)) f.push(`versioning.file "${cfg.versioning.file}" does not exist`);
 		else if (!parseVersion(cfg.versioning.file, readFileSync(mf, "utf8"))) f.push(`versioning.file "${cfg.versioning.file}": no parsable version found`);
 	}
-	// drift: `npm|pnpm|yarn|bun run <script>` where the script no longer exists
-	let pkgScripts: Record<string, string> | null = null;
-	const pkgRaw = existsSync(path.join(root, "package.json")) ? safeJson(readFileSync(path.join(root, "package.json"), "utf8")) : null;
-	if (pkgRaw && typeof pkgRaw === "object" && typeof (pkgRaw as { scripts?: unknown }).scripts === "object") pkgScripts = (pkgRaw as { scripts: Record<string, string> }).scripts;
+	// drift: `npm|pnpm|yarn|bun run <script>` where the script no longer exists — judged against the package.json
+	// the command actually runs in (gh#227): a leading `cd <dir> &&`, or npm --prefix / pnpm -C / yarn --cwd
+	const scriptsAt = new Map<string, Record<string, string> | null>();
+	const scriptsOf = (dir: string): Record<string, string> | null => {
+		if (!scriptsAt.has(dir)) {
+			const pj = path.join(root, dir, "package.json");
+			const raw = existsSync(pj) ? safeJson(readFileSync(pj, "utf8")) : null;
+			scriptsAt.set(dir, raw && typeof raw === "object" && typeof (raw as { scripts?: unknown }).scripts === "object" ? (raw as { scripts: Record<string, string> }).scripts : null);
+		}
+		return scriptsAt.get(dir)!;
+	};
 	const cmdList = [...Object.entries(cfg.commands).map(([k, v]) => [`commands.${k}`, v!] as [string, string]), ...cfg.checkList.map((c) => [`check ${c.name}`, c.cmd] as [string, string])];
 	for (const [label, cmd] of cmdList) {
-		const run = cmd.match(/\b(?:npm|pnpm|yarn|bun)\s+run\s+([\w:.-]+)/);
-		if (run && pkgScripts && !(run[1] in pkgScripts)) f.push(`${label} runs "run ${run[1]}" but package.json has no such script`);
+		let dir = ".";
+		for (const seg of cmd.split(/&&|;|\|\||\n/)) {
+			const cd = seg.match(/^\s*cd\s+(['"]?)([^'"\s]+)\1\s*$/);
+			if (cd) {
+				// only a relative cd is followable; an absolute or $VAR one leaves the package.json unknown
+				dir = /^[\w.][\w./-]*$/.test(cd[2]) ? path.join(dir, cd[2]) : "";
+				continue;
+			}
+			const run = seg.match(/\b(npm|pnpm|yarn|bun)\b(.*?)\s+run\s+([\w:.-]+)/);
+			if (!run || !dir) continue;
+			const pre = run[2].match(/(?:--prefix|-C|--cwd|--dir)[=\s]+(['"]?)([^'"\s]+)\1/);
+			const at = pre ? (/^[\w.][\w./-]*$/.test(pre[2]) ? path.join(dir, pre[2]) : "") : dir;
+			const scripts = at ? scriptsOf(at) : null;
+			if (scripts && !(run[3] in scripts)) f.push(`${label} runs "run ${run[3]}" but ${at === "." ? "" : `${at}/`}package.json has no such script`);
+		}
 		for (const tok of cmd.split(/\s+/)) {
 			// only root-relative paths are probeable — checks run in the worktree, where `../../docker/.env` is correct
 			if (/^[\w][\w-]*\/[\w./-]+$/.test(tok) && /\.\w+$/.test(tok) && !existsSync(path.join(root, tok))) {

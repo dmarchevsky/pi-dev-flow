@@ -38,14 +38,18 @@ and settle the scheme with the operator; never invent one.
      dropped or rewritten pending line, leftovers under `Unreleased`, and a
      changelog this branch never touched. `--no-fold-check` only on the
      operator's word.
-4. No `flow check` is owed after the prep commit: the gate keeps green checks across a commit that
+4. **PR body**: if the repo has a pull-request template, write
+   `.dev-flow/<slug>/pr-body.md` from it (every section; the changelog entry; the
+   commit Verified? was given over). `flow release` opens the PR with it, and
+   refuses without it.
+5. No `flow check` is owed after the prep commit: the gate keeps green checks across a commit that
    holds only the bump and changelog, and runs any stale check itself.
-5. **Run `flow release`.** By default (`ask = on-change`) it answers
+6. **Run `flow release`.** By default (`ask = on-change`) it answers
    Release? itself when the release call is on record and only the prep
    landed since Verified? — say in a few lines what the PR delivers (the
    changelog entry usually is that) and the version, and carry on with the
    release stage.
-6. **It returned `NEEDS-OPERATOR Release?`** (it says why: code after
+7. **It returned `NEEDS-OPERATOR Release?`** (it says why: code after
    Verified?, no call on record, a stale build, `yolo = until-release`, a
    major bump, or the playbook's `ask = always`) → **ask Release? and
    stop**, with the same summary and the version. Report opening:

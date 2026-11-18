@@ -39,8 +39,7 @@ criteria hold. Call it with an args array — `["start", "dark-mode"]`,
 - **Talk outcomes, not internals.** Chat is for the operator: what changed or
   is wrong, why it matters, in plain words and a few lines. Name a file or
   function only when they must act on it — no code-path walkthroughs or
-  internal identifiers. Depth lives in plan.md, commits and the diff; give it
-  in full when asked.
+  internal identifiers; give depth when asked.
 - **yolo** at a checkpoint → that gate with `--yolo --confirmed`; run the
   remaining gates back to back without asking, honoring guidance attached to
   the word ("yolo, patch bump", "yolo, no tag" → `--no-version`). Checks,
@@ -56,8 +55,9 @@ criteria hold. Call it with an args array — `["start", "dark-mode"]`,
 - **A guard blocking you means you skipped a stage or wrote outside your
   feature** — run the gate instead of working around it. A refusal lists what
   is missing: fix that, rerun.
-- **Every bash call has a timeout** (class default when unstated); pass
-  `timeout` (seconds) for longer runs.
+- **Every bash call has a timeout** (a class default when unstated).
+- **Run a gate only after the git/gh step it reads has returned**, never in
+  the same batch.
 - Abandon a feature with `flow abort <slug>`. The repo's own AGENTS.md and
   project skills still apply.
 

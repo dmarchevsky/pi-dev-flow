@@ -7,7 +7,7 @@ import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type RunResult, ago, releaseDevSlot, keepThroughPrep, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
 import { type GateCtx, markPendingAsk } from "./gates.ts";
-import { gatePublishes, publishRelease } from "./publish.ts";
+import { gatePublishes, prBodyOwed, publishRelease } from "./publish.ts";
 
 /** gh#198: the version question asked with Verified? — null when it is not the operator's to answer here
  *  (no manifest to version, the playbook decides, or an earlier Verified? already recorded the call). */
@@ -248,6 +248,9 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// gh#233: the review step ran (or the operator waived it) before anything slow or anything ships
 	const noReview = reviewOwed(state!, cfg);
 	if (noReview) return { text: `release gate FAILED:\n- ${noReview}`, isError: true };
+	// gh#240: the PR body the template asks for exists before Release? is asked — the gate opens and merges the PR
+	const noBody = prBodyOwed(root, state!);
+	if (noBody && (await gatePublishes(cfg, forgeOf(cfg, await originUrl(root)), root))) return { text: `release gate FAILED:\n- ${noBody}`, isError: true };
 	const branchProof = await branchState(wtCwd, cfg.defaultBranch);
 	const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
 		? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))
@@ -296,7 +299,11 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// — except across a commit that is nothing but release prep: those greens are carried onto the current tree
 	const fpRelease = await worktreeFingerprint(wtCwd);
 	const keptThroughPrep = await keepThroughPrep(root, state!, cfg, fpRelease);
-	if (freshenChecks(state!, fpRelease).length || keptThroughPrep.length) writeState(root, state!);
+	// gh#231: remember why each owed check is owed — the result names it instead of reading like skipped work
+	const failedBefore = new Set(Object.entries(state!.checks).filter(([, r]) => !r.ok).map(([n]) => n));
+	const staleNow = new Set(freshenChecks(state!, fpRelease));
+	if (staleNow.size || keptThroughPrep.length) writeState(root, state!);
+	const owedWhy = (n: string) => (staleNow.has(n) ? "the tree changed since it passed" : failedBefore.has(n) ? "its last run failed" : "no run on record");
 	// gh#198: the branch must carry the call the operator made — a bump they did not choose, or a bump on a flow
 	// they said merges unreleased, is prep that contradicts the word Release? would stand on. It runs before the
 	// generic proofs: when a parallel flow released first, "already tagged" alone would send the agent round a loop.
@@ -337,8 +344,9 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	let checksNote = carried.length ? ` Checks kept (${carried.join(", ")}): only release prep was committed since they passed.` : "";
 	if (owed.length) {
 		const ran = await runChecks(root, state!, cfg, owed);
-		if (ran.failed) return { text: `release gate FAILED — a check run at the gate failed:\n${ran.lines.join("\n")}`, isError: true };
-		checksNote += ` Checks ran at the gate (${owed.map((c) => c.name).join(", ")}).`;
+		const why = owed.map((c) => `${c.name}: ${owedWhy(c.name)}`).join("; ");
+		if (ran.failed) return { text: `release gate FAILED — a check run at the gate failed (run because ${why}):\n${ran.lines.join("\n")}`, isError: true };
+		checksNote += ` Checks ran at the gate (${why}).`;
 	}
 	const preGate = preReleaseGate(gateState(state!.checks), cfg, prep);
 	if (preGate.length) return { text: `release gate FAILED:\n- ${preGate.join("\n- ")}`, isError: true };

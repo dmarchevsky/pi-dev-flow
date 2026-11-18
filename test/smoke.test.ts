@@ -2192,16 +2192,35 @@ test("release gate: runs the checks it is owed after a code commit, refuses on a
 	// a code change after the checks: the gate runs them itself instead of sending the agent to flow check
 	const code = await run("owed", TEST_MD, (wt) => { prep(wt); writeFileSync(path.join(wt, "src.txt"), "code\n"); });
 	assert.ok(!code.isError, code.content[0].text);
-	assert.match(code.content[0].text, /Checks ran at the gate \(test\)/);
+	assert.match(code.content[0].text, /Checks ran at the gate \(test: the tree changed since it passed\)/, "the gate says why it re-ran (gh#231)");
 	assert.doesNotMatch(code.content[0].text, /Checks kept/);
 	// a red check at the gate is the refusal, with its output
 	const red = await run("red", TEST_MD.replace("test = node --version", "test = test ! -f broken"), (wt) => { prep(wt); writeFileSync(path.join(wt, "broken"), "x\n"); });
-	assert.ok(red.isError && /release gate FAILED — a check run at the gate failed:\ntest: FAIL/.test(red.content[0].text), red.content[0].text);
+	assert.ok(red.isError && /release gate FAILED — a check run at the gate failed \(run because test: the tree changed since it passed\):\ntest: FAIL/.test(red.content[0].text), red.content[0].text);
 	// recheck = always: a prep-only commit still re-runs the suite
 	const always = await run("always", TEST_MD.replace("merge = merge\n", "merge = merge\nrecheck = always\n"), prep);
 	assert.ok(!always.isError, always.content[0].text);
-	assert.match(always.content[0].text, /Checks ran at the gate \(test\)/);
+	assert.match(always.content[0].text, /Checks ran at the gate \(test: the tree changed since it passed\)/);
 	assert.doesNotMatch(always.content[0].text, /Checks kept/);
+});
+
+test("a check run over an uncommitted fix stands once that same fix is committed: the record is the tree's content (gh#231)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD.replace("merge = merge\n", "merge = merge\nrecheck = always\n")]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "same");
+	await flow(["verify", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "same", "worktree");
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- same ships\n");
+	writeFileSync(path.join(wt, "fix.txt"), "the fix\n");
+	assert.match((await flow(["check"])).content[0].text, /test: PASS/, "checked over the uncommitted fix");
+	commitWt(repo, "same", "the fix"); // identical content, new HEAD
+	const r = await flow(["release", "--no-version", "--confirmed"]);
+	assert.ok(!r.isError, r.content[0].text);
+	assert.doesNotMatch(r.content[0].text, /Checks ran at the gate/, "the passing record covered this exact tree — no re-run, even under recheck = always");
 });
 
 test("a live foreign claim cannot be taken silently; flow use takes over explicitly", async () => {
@@ -3191,6 +3210,20 @@ test("a branch switch earlier in the chain is the branch a later merge lands on 
 	assert.match((await bash("git checkout team-test && git checkout main && git merge feat/tt"))?.reason ?? "", /merging into main requires stage "release"/, "the last switch decides");
 	assert.match((await bash("git checkout main -- README.md && git merge feat/tt"))?.reason ?? "", /merging into main/, "a path restore moves no branch");
 	assert.match((await bash("git checkout README.md && git merge feat/tt"))?.reason ?? "", /merging into main/, "nor does a bare path");
+});
+
+test("the flow tool refuses a marshalled args array by its shape, and an unknown subcommand leads with the word (gh#238)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: unknown) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const blob = await flow(['["roadmap", "add", "x"]']);
+	assert.ok(blob.isError);
+	assert.match(blob.content[0].text, /^args must be an array of strings; this arrived as one string holding an array/);
+	const junk = await flow(["frobnicate"]);
+	assert.match(junk.content[0].text, /^unknown subcommand "frobnicate" — known: help, init, reflect, roadmap, doctor, status, start/);
+	assert.ok(junk.content[0].text.length < 600, "no full usage dump");
 });
 
 test("--ui is the agent's call: start takes it without --confirmed (it only adds the mockup gate)", async () => {
@@ -4303,7 +4336,7 @@ test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release
 		const text = r.content[0].text;
 		assert.ok(!r.isError, text);
 		assert.match(text, /release approved/);
-		assert.match(text, /published: branch pushed · PR #7 opened · CI green \(2 checks\) · merged \(merge\) · tag v1\.0\.1 pushed/, text);
+		assert.match(text, /published: branch pushed · PR #7 opened \(body: the changelog entry\) · CI green \(2 checks\) · merged \(merge\) · tag v1\.0\.1 pushed/, text);
 		assert.match(text, /release recorded as complete/);
 		assert.match(text, /Release v1\.0\.1 body matches CHANGELOG\.md/, "the forge release carries the changelog entry");
 		const pr = JSON.parse(readFileSync(path.join(p.ghState, "prs.json"), "utf8"))[0];
@@ -4317,6 +4350,29 @@ test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release
 		markReflected(p.repo, "pubone"); // the fixture's bare flow check counted as friction; the reflection is not under test
 		const fin = await p.flow(["finish", "--confirmed"]);
 		assert.match(fin.content[0].text, /feature pubone done[\s\S]*local main fast-forwarded to origin\/main/, fin.content[0].text);
+	} finally {
+		p.done();
+	}
+});
+
+test("a repo with a PR template gets an authored PR body: release refuses without one, then opens the PR with it (gh#240)", async () => {
+	const p = await publishFlow("pubtpl");
+	try {
+		mkdirSync(path.join(p.wt, ".github"), { recursive: true });
+		writeFileSync(path.join(p.wt, ".github", "pull_request_template.md"), "## What changed\n\n## Verified over\n");
+		commitWt(p.repo, "pubtpl", "pr template");
+		await p.toRelease("--version=patch", "1.0.1");
+		p.checks([[ck("build", "pass")]]);
+		const refused = await p.flow(["release"]);
+		assert.ok(refused.isError);
+		assert.match(refused.content[0].text, /pull-request template \(\.github\/pull_request_template\.md\) and no PR body is written[\s\S]*Write \.dev-flow\/pubtpl\/pr-body\.md/, refused.content[0].text);
+		assert.doesNotMatch(p.calls(), /pr create/, "nothing reached the forge");
+		writeFileSync(path.join(p.repo, ".dev-flow", "pubtpl", "pr-body.md"), "## What changed\npubtpl ships\n\n## Verified over\nabc1234\n");
+		const r = await p.flow(["release"]);
+		assert.ok(!r.isError, r.content[0].text);
+		assert.match(r.content[0].text, /PR #7 opened \(body: your pr-body\.md\)/);
+		const pr = JSON.parse(readFileSync(path.join(p.ghState, "prs.json"), "utf8"))[0];
+		assert.match(pr.body, /## Verified over\nabc1234/, "the authored body is the PR body");
 	} finally {
 		p.done();
 	}
@@ -4384,7 +4440,7 @@ test("flow release: merge unreleased publishes without a tag, and publish = manu
 		p.checks([[ck("build", "pass")]]);
 		const r = await p.flow(["release"]);
 		assert.ok(!r.isError, r.content[0].text);
-		assert.match(r.content[0].text, /published: branch pushed · PR #7 opened · CI green \(1 check\) · merged \(merge\)\n/, r.content[0].text);
+		assert.match(r.content[0].text, /published: branch pushed · PR #7 opened \(body: the changelog entry\) · CI green \(1 check\) · merged \(merge\)\n/, r.content[0].text);
 		assert.equal(p.git(["tag", "-l"], p.origin), "v1.0.0", "no tag was cut");
 		assert.doesNotMatch(p.calls(), /release create/, "and no forge release");
 	} finally {
