@@ -58,6 +58,8 @@ criteria hold. Call it with an args array — `["start", "dark-mode"]`,
   is missing: fix that, rerun.
 - **Every bash call has a timeout** (class default when unstated); pass
   `timeout` (seconds) for longer runs.
+- **A gate reads what git just did** — never batch it with the commit, merge,
+  checkout or `gh` step it depends on; call it after that step returns.
 - Abandon a feature with `flow abort <slug>`. The repo's own AGENTS.md and
   project skills still apply.
 
