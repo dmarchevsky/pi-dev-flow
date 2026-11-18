@@ -24,7 +24,7 @@ import path from "node:path";
 import { Type } from "typebox";
 import { compact, defineTool, isToolCallEventType, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type ExtensionAPI, type ToolCallEvent, type ToolCallEventResult, type TurnEndEvent, type TurnEndEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOW_REWRITE, applicableItems, openItemsNote, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
+import { ALLOW_REWRITE, applicableItems, openItemsNote, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, worktreeWorkGuard, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
 import { loadProject } from "../src/projectmd.ts";
 import { bashTimeout, requireTimeout, timeoutClass } from "../src/timeouts.ts";
 import { AGENT_MARK, operatorCommandAsks, operatorCommandCorrection, viewHeader, askLine, type GateView } from "../src/present.ts";
@@ -498,8 +498,17 @@ export default function devFlow(pi: ExtensionAPI) {
 		} else if (newCommits.trim() || dirty) {
 			parts.push("note: the reviewer changed the tree — treat its verdict with suspicion and inspect the change");
 		}
+		if (wop === "review" && report.found) {
+			// gh#233: the record flow release reads — a review ran for this flow. The verdict stays advisory.
+			const cur = readState(root, st.slug);
+			if (cur && (cur.stage === "implement" || cur.stage === "pre-release")) {
+				const head = (headAfter || "").trim();
+				cur.review = { by: "worker", at: now(), ...(head ? { head } : {}), ...(report.verdict ? { verdict: report.verdict } : {}) };
+				writeState(root, cur);
+			}
+		}
 		parts.push(`transcript: ${transcript || "(unknown)"}`);
-		parts.push(wop === "implement" ? "Next: read the report, decide what is left, and drive the gates yourself." : "Advisory review: fix what is real (inline is fine for small things), then carry on — no gate waits on this verdict.");
+		parts.push(wop === "implement" ? "Next: read the report, decide what is left, and drive the gates yourself." : "Review recorded for flow release; the verdict itself is advisory: fix what is real (inline is fine for small things), then carry on.");
 		return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: report.verdict, commits: newCommits.trim().split("\n").filter(Boolean).length } };
 	}
 
@@ -515,7 +524,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		name: "flow_stage",
 		label: "Stage worker",
 		description:
-			'Optional: hand a slice of work to a fresh pi session so this conversation stays lean. op "implement" (stage implement) — the worker edits and commits a slice on the feature branch; op "review" (implement or pre-release) — a fresh read-only reviewer that returns findings and a PASS/FAIL verdict (advisory: no gate depends on it); op "reflect" (any stage; flow finish runs it itself before cleanup) — a fresh read-only reviewer of this session\'s transcript and every worker transcript that returns classified reflection findings (docs / code / plugin) with a fold-or-drop recommendation each, for the operator to decide. The plan path, branch, commits so far and the project checks are added to the brief automatically — `note` is just the slice: what to do, operator answers and decisions the worker cannot see. The worker holds no flow tool; gates and checkpoints stay with you. Delegate an implement slice when it is in the plan, provable by flow check, needs no operator input mid-slice and is big enough (≈4+ files or heavy reading) to crowd this context; small work, small fixes, mid-debug work, operator-judged work and final integration stay inline (criteria: references/implement.md). In pi-web the worker appears in the session\'s Agents menu as a subagent (running while it works, then its final status); the opened transcript holds its report.',
+			'Optional: hand a slice of work to a fresh pi session so this conversation stays lean. op "implement" (stage implement) — the worker edits and commits a slice on the feature branch; op "review" (implement or pre-release) — a fresh read-only reviewer that returns findings and a PASS/FAIL verdict (the verdict is advisory; that a review ran is recorded — flow release requires a review on record); op "reflect" (any stage; flow finish runs it itself before cleanup) — a fresh read-only reviewer of this session\'s transcript and every worker transcript that returns classified reflection findings (docs / code / plugin) with a fold-or-drop recommendation each, for the operator to decide. The plan path, branch, commits so far and the project checks are added to the brief automatically — `note` is just the slice: what to do, operator answers and decisions the worker cannot see. The worker holds no flow tool; gates and checkpoints stay with you. Delegate an implement slice when it is in the plan, provable by flow check, needs no operator input mid-slice and is big enough (≈4+ files or heavy reading) to crowd this context; small work, small fixes, mid-debug work, operator-judged work and final integration stay inline (criteria: references/implement.md). In pi-web the worker appears in the session\'s Agents menu as a subagent (running while it works, then its final status); the opened transcript holds its report.',
 		promptSnippet: 'flow_stage(op: "implement"|"review"|"reflect", note, label?) — optional fresh-session worker for a big implement slice, an independent review, or a reflection (flow finish runs the closing one itself); gates stay with you; in pi-web workers show up as subagents in the Agents menu',
 		parameters: Type.Object({
 			op: Type.String({ description: '"implement" (a worker edits + commits a slice), "review" (read-only reviewer, findings + verdict) or "reflect" (read-only reviewer of the session transcripts, reflection findings + fold/drop recommendations)' }),
@@ -756,10 +765,14 @@ export default function devFlow(pi: ExtensionAPI) {
 				return branchCache.get(at)!;
 			};
 			const worktrees = featureRefs(guardRoot).map((f) => f.worktreeAbs).filter((w): w is string => !!w);
+			// gh#235: a checkout/switch earlier in the chain moves the branch the later segments run on — the probe
+			// reads the branch before anything runs, so `git checkout team-test && git merge feat/x` was judged as a
+			// merge into main
+			const switched = new Map<string, string>();
 			for (const g of inv.gitSegs) {
 				const gitDir = g.dir ? path.resolve(ctx.cwd, g.dir) : ctx.cwd;
 				const seg = gitInvocation(g.seg); // parsed once per segment — this runs on every bash call of every session
-				const branch = await branchOf(g.dir);
+				const branch = switched.get(gitDir) ?? (await branchOf(g.dir));
 				let pushRefs: PushRef[] | undefined;
 				const gp = seg.pushes;
 				if (gp.length) {
@@ -781,10 +794,18 @@ export default function devFlow(pi: ExtensionAPI) {
 				}
 				const reason = bashFlowGuard({ command: g.seg, branch, stage: bound?.stage ?? null, defaultBranch: cfg.defaultBranch, pushRefs, playbookChore, dir: gitDir, attribution: bound ? undefined : `not attributed to a bound feature (session ${key}; dev-flow ${loadedVersion() ?? "?"} at ${SELF_BUILD.dir}) — run flow use <slug> here if a binding is missing` });
 				if (reason) return { block: true, reason };
+				// gh#232: a feature worktree takes its feature's commits and nothing else
+				const home = featureRefs(guardRoot).find((f) => f.worktreeAbs && (gitDir === f.worktreeAbs || gitDir.startsWith(f.worktreeAbs + path.sep)));
+				if (home) {
+					const wtReason = worktreeWorkGuard({ subs: seg.subs, command: g.seg, branch, home: { slug: home.state.slug, branch: home.state.branch, released: !!home.state.approvals.release, wt: path.relative(guardRoot, home.worktreeAbs!) || home.worktreeAbs! } });
+					if (wtReason) return { block: true, reason: wtReason };
+				}
 				// A feature worktree stays on its feature branch: a side branch cut inside it repurposes the
 				// worktree (and leaves it off its branch for the next gate); out-of-flow fixes get their own flow.
 				const co = checkoutInvocation(g.seg);
 				if (!co) continue;
+				// a path restore (`git checkout -- f`, `git checkout f`) is not a switch: only a branch that exists or is created moves
+				if (co.creates || (!/\s--(\s|$)/.test(g.seg) && (await sh(`git -C ${sq(gitDir)} rev-parse --verify -q ${sq(`refs/heads/${co.target}`)}`, ctx.cwd)).ok)) switched.set(gitDir, co.target);
 				const homeWt = worktrees.find((w) => gitDir === w || gitDir.startsWith(w + path.sep));
 				if (co.creates && homeWt) return { block: true, reason: `a feature worktree stays on its own branch — not creating ${co.target} in ${homeWt}; an unrelated fix is its own flow (flow start <slug> --patch)` };
 				// Branch discipline: feature branches live in their worktree — never checked out or created (-b) in the main checkout

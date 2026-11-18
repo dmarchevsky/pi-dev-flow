@@ -169,7 +169,7 @@ These go under `## pre-release` or `## release`. Either section works.
 |---|---|---|
 | `versionFile` | — | the version manifest (`package.json`, `VERSION`, …). Without it, releases are unversioned. |
 | `versionTag` | `v{version}` | tag format |
-| `changelog` | `CHANGELOG.md` | set it empty to opt out |
+| `changelog` | `CHANGELOG.md` | set it empty (`changelog =` or `changelog = ""`) to opt out |
 | `merge` | *(asked)* | how a PR lands: `squash`, `merge`, `rebase` or `any`. See below. |
 | `version` | `ask` | who makes the release call: `ask` (you, at Verified?), or `versioned` / `unversioned` for every flow |
 | `ask` | `on-change` | `on-change`: Release? answers itself when only release prep changed. `always`: ask every time. |
@@ -178,7 +178,7 @@ These go under `## pre-release` or `## release`. Either section works.
 | `recheck` | `prep-skip` | `prep-skip`: checks stay green across a commit that holds only the version bump and changelog. `always`: re-run them. |
 | `yolo` | `all` | `until-release`: a yolo given earlier never answers Release?. The gate asks, and only your answer to that question releases. |
 | `reflect` | `on-friction` | `always`: run the closing reflection on every finish |
-| `review` | `/flow-review` | the review step at pre-release |
+| `review` | `/flow-review` | the review step at pre-release. `flow release` requires one on record (see [gates](gates.md#release-release)); set it empty to turn that off. |
 | `preflight` | — | runs in the worktree at `flow release` before anything ships, for example `docker build .` |
 | `artifact` | — | proves the release was published, for example `npm view <pkg>@{version} version` |
 | `releases` | `true` | `false` skips creating a forge release |

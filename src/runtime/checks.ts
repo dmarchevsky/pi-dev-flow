@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { createServer } from "node:net";
 import { freemem } from "node:os";
 import path from "node:path";
-import { AGENT_MARK, checkFingerprint, DEFAULTS, freshenChecks, healthProbe, prepOnlyChange, listFiles, needsOperator, newestTaggedVersion, parseVersion, sq, validSlug, formatSize, sideBySide, type BranchState, type Config, type DevSlot, type FlowState, type StageCheck } from "../core.ts";
+import { AGENT_MARK, checkFingerprint, DEFAULTS, failTail, freshenChecks, healthProbe, prepOnlyChange, listFiles, needsOperator, newestTaggedVersion, parseVersion, sq, validSlug, formatSize, sideBySide, type BranchState, type Config, type DevSlot, type FlowState, type StageCheck } from "../core.ts";
 import { loadProject } from "../projectmd.ts";
 import { agentText, presentGate, type GateView, type StageFacts } from "../present.ts";
 import { atomicWrite, boundFeature, buildSkew, dfDir, featDir, featureEnv, flagValue, gateCwd, initiated, mergeBase, now, originUrl, readState, runHealthProbe, sh, tail, worktreeAbs, writeState } from "./base.ts";
@@ -211,7 +211,7 @@ export async function runChecks(root: string, state: FlowState, cfg: Config, che
 		state.checks[c.name] = { ok: res.ok, at: now() };
 		ran.push(c.name);
 		const tried = triedNote((res as { attempts?: number }).attempts ?? 1);
-		lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd}${tried})${res.ok ? "" : `\n${tail(res.out)}`}`);
+		lines.push(`${c.name}: ${res.ok ? "PASS" : "FAIL"} (${c.cmd}${tried})${res.ok ? "" : `\n${failTail(res.out)}`}`);
 		if (!res.ok) failed = true;
 	}
 	await stampChecks(root, state, ran);

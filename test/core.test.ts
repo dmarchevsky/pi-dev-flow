@@ -75,6 +75,10 @@ import {
 	workerOpError,
 	clampBudgetMin,
 	tagCreates,
+	branchCreateInvocation,
+	worktreeWorkGuard,
+	reviewOwed,
+	failTail,
 	releaseOrderInvocation,
 	guessReflectSections,
 	reflectItems,
@@ -1630,6 +1634,12 @@ test("mergeShapeProof: a measured contradiction refuses, an invisible topology a
 	assert.deepEqual(mergeShapeProof("merge", { ancestor: true, branch: "feat/x", defaultBranch: "main" }).errors, []);
 	assert.match(mergeShapeProof("merge", { ancestor: true, branch: "feat/x", defaultBranch: "main" }).note, /matches the playbook/);
 	assert.match(mergeShapeProof("merge", { ancestor: false, forgeStyle: "squash", branch: "feat/x", defaultBranch: "main" }).errors[0], /says merge = merge.*squash-merged/s);
+	// gh#237: an unmerged PR and a stale origin/main also fail ancestry — a squash is blamed only when the forge says so
+	assert.match(mergeShapeProof("merge", { ancestor: false, forgeStyle: "merge", forgeAsked: true, branch: "feat/x", defaultBranch: "main" }).errors[0], /forge reports origin\/feat\/x merged as a merge commit.*behind the forge: git fetch origin/s);
+	const open = mergeShapeProof("merge", { ancestor: false, forgeStyle: null, forgeAsked: true, branch: "feat/x", defaultBranch: "main" }).errors[0];
+	assert.match(open, /forge reports no merged PR for it — not merged yet, or merged moments ago and not fetched/);
+	assert.doesNotMatch(open, /squash/);
+	assert.match(mergeShapeProof("merge", { ancestor: false, forgeAsked: false }).errors[0], /no forge CLI answered here — a squash or rebase merge looks the same/);
 	assert.equal(mergeShapeProof("merge", { ancestor: null }).errors.length, 0, "unmeasurable ancestry never blocks a release");
 	assert.match(mergeShapeProof("merge", { ancestor: null }).note, /could not be checked/);
 	// squash policy: ancestry true means it was NOT squashed
@@ -1916,4 +1926,42 @@ test("reflection numbers are stable rows: a batch of done <n> read off one list 
 	assert.match(text, /- \[x\] four — s 1 — fixed: fix-4/);
 	assert.deepEqual(reflectItems(text).map((i) => [i.n, i.body]), [[3, "three"]], "the untouched row keeps its number");
 	assert.deepEqual(reflectRow(text, 2), { index: 5, open: false, line: "- [x] two — s 1 — fixed: fix-2" });
+});
+
+test("branchCreateInvocation: only a new branch name creates (gh#232)", () => {
+	assert.equal(branchCreateInvocation("git branch redesign"), "redesign");
+	assert.equal(branchCreateInvocation("git -C wt branch -f redesign main"), "redesign");
+	for (const read of ["git branch", "git branch --list", "git branch -a", "git branch -d old", "git branch -m a b", "git branch --show-current", "git branch --contains HEAD", "git branch -vv"])
+		assert.equal(branchCreateInvocation(read), null, read);
+});
+
+test("worktreeWorkGuard: off-branch writes and post-release commits are new work (gh#232)", () => {
+	const home = { slug: "s", branch: "feat/s", released: false, wt: ".dev-flow/s/worktree" };
+	assert.equal(worktreeWorkGuard({ subs: ["commit"], command: "git commit -m x", branch: "feat/s", home }), null);
+	assert.match(worktreeWorkGuard({ subs: ["commit"], command: "git commit -m x", branch: "side", home }) ?? "", /but it is on side/);
+	assert.match(worktreeWorkGuard({ subs: ["cherry-pick"], command: "git cherry-pick abc", branch: "side", home }) ?? "", /but it is on side/);
+	assert.equal(worktreeWorkGuard({ subs: ["status"], command: "git status", branch: "side", home }), null, "reads pass on any branch");
+	assert.match(worktreeWorkGuard({ subs: ["commit"], command: "git commit -m x", branch: "feat/s", home: { ...home, released: true } }) ?? "", /release is recorded/);
+	assert.equal(worktreeWorkGuard({ subs: ["log"], command: "git log", branch: "feat/s", home: { ...home, released: true } }), null);
+});
+
+test("reviewOwed: the playbook's review step, unless docs, release-only, recorded or opted out (gh#233)", () => {
+	const cfg = buildConfig({});
+	const st = { slug: "s", stage: "pre-release", ui: false, branch: "feat/s", worktree: "w", createdAt: "", approvals: {}, checks: {} } as never as Parameters<typeof reviewOwed>[0];
+	assert.match(reviewOwed(st, cfg) ?? "", /no review is recorded/);
+	assert.equal(reviewOwed({ ...st, docs: true }, cfg), null);
+	assert.equal(reviewOwed({ ...st, releaseOnly: true }, cfg), null);
+	assert.equal(reviewOwed({ ...st, review: { by: "skipped", at: "" } }, cfg), null);
+	assert.equal(reviewOwed(st, { ...cfg, release: { ...cfg.release, review: "" } }), null);
+});
+
+test("failTail: the errors a long failing run printed are lifted above its tail (gh#242)", () => {
+	const noise = Array.from({ length: 40 }, (_, i) => `src/x${i}.css:1 warning: specificity`);
+	const out = ["$ biome check", "fixtures/a.json format ━━━━━━", "  × Formatter would have printed the following content:", "fixtures/b.json format ━━━━━━", "  × Formatter would have printed the following content:", ...noise, "× Some errors were emitted while running checks", 'error: script "lint" exited with code 1'].join("\n");
+	const t = failTail(out);
+	assert.match(t, /^error lines from the \d+ cut off:\nfixtures\/a\.json format[^\n]*\n {2}× Formatter[^\n]*\nfixtures\/b\.json format/, t);
+	assert.doesNotMatch(t.split("\n…\n")[0], /warning/, "warnings are not lifted");
+	assert.match(t, /error: script "lint" exited with code 1$/, "the tail still ends the output");
+	assert.equal(failTail("short\nerror: x"), "short\nerror: x", "a short run is shown whole");
+	assert.match(failTail(Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")), /^…\(15 lines\)…\n/, "no error lines: the old tail");
 });

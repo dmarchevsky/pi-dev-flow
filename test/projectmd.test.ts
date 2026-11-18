@@ -467,3 +467,18 @@ test("release.publish: gate or manual; anything else warns and keeps the default
 	assert.match(bad.warn.join("\n"), /publish = "agent" — expected gate or manual, keeping gate/);
 	assert.equal(mdToConfig(bad).release.publish, undefined);
 });
+
+test("an empty value is the opt-out: `key =`, `key = \"\"` and `key = ''` all mean unset (gh#226, gh#229)", () => {
+	for (const empty of ["", '""', "''"]) {
+		const md = `# dev-flow\n\n## implement\n\n\`\`\`flow\ntest = node --version\nhealth = ${empty}\n\`\`\`\n\n## release\n\n\`\`\`flow\nmerge = any\nchangelog = ${empty}\nreview = ${empty}\n\`\`\`\n`;
+		const p = parseProjectMd(md);
+		assert.deepEqual(p.hard, [], `${JSON.stringify(empty)}: no parse error`);
+		const c = mdToConfig(p);
+		assert.equal(c.release.changelog, "", `${JSON.stringify(empty)}: changelog opted out`);
+		assert.equal(c.release.review, "", `${JSON.stringify(empty)}: review opted out`);
+		assert.equal(c.commands.health, "");
+		assert.deepEqual(c.checkList.map((x) => x.name), ["test"], `${JSON.stringify(empty)}: an empty health is no check — never "health: PASS ( )"`);
+	}
+	// a quoted non-empty value keeps its quotes: only the empty pair is the opt-out
+	assert.equal(mdToConfig(parseProjectMd("# d\n\n## release\n\n```flow\nchangelog = \"CHANGES.md\"\n```\n")).release.changelog, '"CHANGES.md"');
+});

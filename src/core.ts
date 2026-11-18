@@ -62,7 +62,17 @@ export interface FlowState {
 	friction?: number; // process refusals, a gate refusing twice in a row, guard blocks and post-Verified? code changes this feature hit (isFriction; a red check alone is not one) — finish skips the closing reflection at 0 (playbook reflect = on-friction)
 	reflectQuiet?: boolean; // finish skipped the closing reflection because the flow had no friction — with nothing else open, Finish? answers itself (release.finish = on-change)
 	reviewDeploy?: { wt: string; slot: string; at: string }; // the tree (checkFingerprint) and dev slot `flow verify` deployed for the operator's review — a --confirmed over the same tree does not build and deploy it a second time
+	review?: FlowReview; // the pre-release review step ran (worker or inline) or the operator skipped it — flow release refuses without one (gh#233)
 	aborted?: string; // flow abort on a feature whose worktree exists: the state is a deliberate abandoned-feature record (gh#138) — the doctor's git-consistency sweep must never flag its hand-removed worktree as drift
+}
+
+/** A recorded pre-release review: `worker` (a flow_stage review worker reported), `inline` (the agent ran the
+ *  playbook's review step and recorded it with `flow review done`), or `skipped` (the operator's word). */
+export interface FlowReview {
+	by: "worker" | "inline" | "skipped";
+	at: string;
+	head?: string; // the worktree HEAD the review read — release names commits after it
+	verdict?: string;
 }
 
 /** Tier-2 item: operator prose; uiOnly items ("(ui)" in project.md) apply only to --ui features;
@@ -568,6 +578,14 @@ export function versionArg(value: string | null, noVersion: boolean): { choice: 
  * under Unreleased. The git-dependent proofs (touched, folded) skip with an advisory when no base
  * resolves; the content proofs always run (#97). Review/docs quality stays tier-2.
  */
+/** gh#233: the playbook's review step is a release prerequisite, not a hint — a 566-line change shipped with
+ *  no review because nothing recorded whether one ran. A docs flow and a release-only cut (nothing on the
+ *  branch to read) owe none; `release.review = ""` opts the project out. Null when nothing is owed. */
+export function reviewOwed(state: FlowState, cfg: Config): string | null {
+	if (!cfg.release.review || state.docs || state.releaseOnly || state.review) return null;
+	return `no review is recorded for this flow — run the playbook's review step (${cfg.release.review}, or flow_stage op "review"), fix what it finds, then record it: flow review done "<verdict in a line>" (a review worker records itself). To ship without a review, ask the operator; on their word: flow review --skip --confirmed`;
+}
+
 export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "pre-release") errs.push(`stage is "${state.stage}", the release gate only applies to "pre-release"`);
@@ -582,7 +600,7 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 		// A --docs flow does not (#163): it changes the playbook/docs, which many projects keep out of a
 		// user-facing changelog — an entry it writes is still welcome, just not proven.
 		if (cfg.release.changelog && !state.docs) {
-			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — an unversioned release must record its entry there (under Unreleased)`);
+			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — an unversioned release must record its entry there (under Unreleased), or set changelog = "" under ## release if this project keeps none`);
 			else {
 				if (prep.changelogChanged === false) errs.push(`${prep.changelog.file} is unchanged on this branch — an unversioned release must add its entry (under Unreleased)`);
 				// an unversioned release must leave a trail someone can find later: the section is where it lives,
@@ -607,7 +625,7 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 				errs.push(`version ${prep.manifestVersion} is already tagged — bump the manifest to the next version`);
 		}
 		if (cfg.release.changelog) {
-			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog`);
+			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog (a project that keeps none: set changelog = "" under ## release)`);
 			else {
 				const entry = prep.manifestVersion ? changelogEntry(prep.changelog.content, prep.manifestVersion) : "";
 				if (prep.manifestVersion && !entry)
@@ -922,6 +940,8 @@ export interface MergeShapeFacts {
 	ancestor: boolean | null;
 	/** What the forge says landed the PR, when `gh`/`glab` could answer — the only way to tell a squash from a rebase. */
 	forgeStyle?: MergeStyle | null;
+	/** Was a forge CLI (gh/glab) there to ask? false on a self-hosted forge: a null forgeStyle then means "unknown", not "no merged PR". */
+	forgeAsked?: boolean;
 	/** Wording only. */
 	branch?: string;
 	defaultBranch?: string;
@@ -941,7 +961,13 @@ export function mergeShapeProof(policy: MergeStyle | "any" | undefined, facts: M
 	if (facts.ancestor === null) return { errors, note: `merge = ${policy} could not be checked from here (no origin or ${br} is not fetched) — confirm the merge style by hand` };
 	const landed = facts.forgeStyle ?? null;
 	if (policy === "merge") {
-		if (!facts.ancestor) errors.push(`the playbook says merge = merge, but ${br} is not an ancestor of ${def} — the PR was ${landed ? MERGE_PAST[landed] : "squash- or rebase-merged"}, which rewrites the branch's commits out of the release's ancestry`);
+		// gh#237: "not an ancestor" is also what an unmerged PR and a stale origin/<default> look like — blame a
+		// squash only when the forge says one landed
+		if (!facts.ancestor && landed === "merge")
+			errors.push(`the forge reports ${br} merged as a merge commit, but it is not an ancestor of ${def} here — this clone's ${def} is behind the forge: git fetch origin, then re-run`);
+		else if (!facts.ancestor && !landed)
+			errors.push(`${br} is not an ancestor of ${def}, and the forge reports no merged PR for it — not merged yet, or merged moments ago and not fetched: let the merge finish, git fetch origin, then re-run${facts.forgeAsked === false ? " (no forge CLI answered here — a squash or rebase merge looks the same, and the playbook says merge = merge)" : ""}`);
+		else if (!facts.ancestor) errors.push(`the playbook says merge = merge, but ${br} is not an ancestor of ${def} — the PR was ${MERGE_PAST[landed!]}, which rewrites the branch's commits out of the release's ancestry`);
 		else if (landed && landed !== "merge") errors.push(`the forge reports a ${landed} merge, but the playbook says merge = merge`);
 		else return { errors, note: `merge shape matches the playbook: ${br} is an ancestor of ${def} (merge = merge)` };
 	} else {
@@ -1195,6 +1221,22 @@ export function playbookOnlyChange(porcelain: string): boolean {
 	return paths.length === 1 && PLAYBOOK_PATH.test(paths[0]);
 }
 
+/** gh#234, gh#228: what `flow finish` says about commits on the local default branch that origin does not have.
+ *  `flow init --track` commits the playbook to local main and nothing ever pushes it, so "push the release"
+ *  sent the agent to merge origin into local main and push the default branch directly. Playbook-only commits
+ *  are setup, not an unpushed release: a note, never a block. Anything else is named, with the branch the
+ *  main checkout is actually on — "git push origin main" from a checkout on another branch pushes nothing
+ *  you meant. Null when nothing is local-only. */
+export function localDefaultAhead(o: { defaultBranch: string; checkoutBranch: string; commits: { line: string; files: string[] }[] }): { block: string | null; note: string } | null {
+	const { defaultBranch: d, checkoutBranch: cur, commits } = o;
+	if (!commits.length) return null;
+	const list = `${commits.slice(0, 5).map((c) => c.line).join(" | ")}${commits.length > 5 ? ` …(${commits.length - 5} more)` : ""}`;
+	const where = cur && cur !== d ? ` (the main checkout is on ${cur}, not ${d} — this is the local ${d} branch)` : "";
+	if (commits.every((c) => c.files.length > 0 && c.files.every((f) => PLAYBOOK_PATH.test(f))))
+		return { block: null, note: ` local ${d} carries ${commits.length} playbook commit(s) origin/${d} does not have (${list})${where} — playbook tracking from flow init --track; they reach origin through a docs flow, never a direct push to ${d}. To line local ${d} up with origin meanwhile: git -C <main checkout> rebase origin/${d} ${d}.` };
+	return { block: `local ${d} has ${commits.length} commit(s) origin/${d} does not have${where}: ${list} — finish removes the flow state, so nothing may stay local-only. If these are release chores, push them (git push origin ${d}); if they are work that belongs in a flow, move them onto a branch and ship them through one; then re-run flow finish`, note: "" };
+}
+
 /** The operator's authorisation for rewriting a branch that is already pushed — same contract as
  *  DEV_FLOW_ALLOW_MAIN: the guard prints it, the operator grants it, the agent types it. (#83) */
 export const ALLOW_REWRITE = "DEV_FLOW_ALLOW_REWRITE=1";
@@ -1305,6 +1347,36 @@ export function checkoutInvocation(command: string): { target: string; creates: 
 	if (i >= 0) return tok[i + 1] ? { target: unquote(tok[i + 1]), creates: true } : null;
 	const target = tok.find((t) => !t.startsWith("-"));
 	return target ? { target: unquote(target), creates: false } : null;
+}
+
+/** The branch a `git branch <name>` creates, or null (listing, deleting, renaming, copying and the query flags only read
+ *  or move what exists — a rename is still not new work). */
+export function branchCreateInvocation(command: string): string | null {
+	const m = command.match(/\bgit\s+(?:-C\s+\S+\s+)?branch\b([^;|&\n]*)/);
+	if (!m) return null;
+	const tok = m[1].trim().split(/\s+/).filter(Boolean);
+	if (tok.some((t) => /^(-d|-D|--delete|-m|-M|--move|-c|-C|--copy|-l|--list|-a|--all|-r|--remotes|-v|-vv|--verbose|--contains|--no-contains|--merged|--no-merged|--points-at|--show-current|--edit-description|-u|--set-upstream-to(=.*)?|--unset-upstream|--format(=.*)?|--sort(=.*)?)$/.test(t))) return null;
+	const name = tok.find((t) => !t.startsWith("-"));
+	return name ? unquote(name) : null;
+}
+
+/** gh#232: a feature worktree holds its feature and nothing else. After `flow release` recorded the release, an
+ *  agent cut a side branch in the same worktree, committed a redesign on it and merged it to production with no
+ *  plan, check, review or Verified? — every gate is keyed to the feature branch, so none of them saw it. Judged
+ *  per git segment that runs inside a feature worktree: new branches, commits or merges on any branch but the
+ *  feature's own, and commits once its release is recorded, are refused. Null when the segment may run. */
+export function worktreeWorkGuard(o: { subs: string[]; command: string; branch: string; home: { slug: string; branch: string; released: boolean; wt: string } }): string | null {
+	const { subs, home } = o;
+	const newFlow = `follow-up work is its own flow: flow start <new-slug> (--patch for a small fix) — it gets a worktree, plan, checks, review and Verified? of its own`;
+	const created = subs.includes("branch") ? branchCreateInvocation(o.command) : null;
+	if (created) return `a feature worktree stays on its own branch — not creating ${created} in ${home.wt}; ${newFlow}`;
+	const writes = subs.includes("commit") || subs.includes("merge") || subs.includes("cherry-pick") || subs.includes("revert");
+	if (!writes) return null;
+	if (o.branch && home.branch && o.branch !== home.branch)
+		return `${home.wt} is ${home.slug}'s worktree (branch ${home.branch}), but it is on ${o.branch} — work committed here skips every gate of ${home.slug}; switch back (git switch ${home.branch}) — ${newFlow}`;
+	if (home.released)
+		return `${home.slug}'s release is recorded — its worktree takes no new commits (they would never ship through a gate); ${newFlow}. Release chores belong in the main checkout; flow finish closes ${home.slug}`;
+	return null;
 }
 
 // ------------------------------------------------------- project safety rules
@@ -2308,19 +2380,42 @@ export function nextHint(state: FlowState, cfg: Config): string {
 		case "pre-release": {
 			// gh#198: the release call made with Verified? decides which prep this is
 			const vc = state.versionChoice;
+			// gh#233: flow release refuses until the review is on record — the hint says how it gets there
+			const rv = reviewOwed(state, cfg) ? `${cfg.release.review} (then record it: flow review done "<verdict>")` : cfg.release.review && state.review ? "review on record" : "";
+			const review = rv ? `${rv}, ` : "";
 			const auto = cfg.release.ask !== "always" ? " (release.ask = on-change: it asks Release? only when something beyond the prep changed)" : "";
 			if (vc === "unreleased")
-				return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}; show the PR summary, then run flow release${auto || " and ask Release?"}`;
+				return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}; show the PR summary, then run flow release${auto || " and ask Release?"}`;
 			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}${isBumpKind(vc) ? ` to ${bumpVersion(state.versionFrom, vc) ?? `the next ${vc}`} (a ${vc} release, the operator's call — the gate counts it from the newest tag, so a flow that released first moves the number)` : vc && vc !== "next" ? ` to ${vc} (the operator's call)` : ""}` : ""].filter(Boolean).join(" and ");
-			if (vc && prep) return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}; show the PR summary, version and changelog, then run flow release${auto || " and ask Release?"}`;
-			if (state.docs && prep) return `${cfg.release.review}, fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
-			return `${cfg.release.review}, fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, ask Release? and run flow release`;
+			if (vc && prep) return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}; show the PR summary, version and changelog, then run flow release${auto || " and ask Release?"}`;
+			if (state.docs && prep) return `${review}fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
+			return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, ask Release? and run flow release`;
 		}
 		case "release":
 			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then flow finish (closing reflection first; its fold/drop answer is Finish?)`;
 			if (state.publish) return `flow release publishes (push, PR, CI wait, merge${state.noVersion ? "" : ", tag"}) and records the release — re-run it after a "publish stopped" or "publish waiting" result; then flow finish`;
 			return `publish: push the branch, open the PR, merge once CI is green (gh pr checks <n> --watch)${mergeHintFor(cfg)}${state.noVersion ? " — unversioned: no bump, no tag" : ", push the annotated tag"}; then flow finish records the release and closes out`;
 	}
+}
+
+/** gh#242: a failing check's output, trimmed for the gate result. The last lines alone pointed away from the
+ *  failure — a lint step's tail was its pre-existing warnings and "script exited with code 1", and the two files
+ *  it refused were 200 lines up. When the output is longer than the tail, the error-level lines that the tail
+ *  cuts off are lifted above it, each with the line before it (formatters name the file there), capped. */
+export function failTail(out: string, n = 15, maxErr = 12): string {
+	const lines = out.split("\n").filter((l) => l.trim());
+	if (lines.length <= n) return out;
+	const cut = lines.length - n;
+	const isErr = (l: string) => !/\bwarn(?:ing)?s?\b/i.test(l) && /(^|[\s[(:])(?:error|errors|ERR!|FAIL(?:ED|URE)?|fail(?:ed|ure)?|panic(?:ked)?|exception|Traceback)\b|[×✖✗]|^\s*E\s{2,}|AssertionError/i.test(l);
+	const pick = new Set<number>();
+	for (let i = 0; i < cut && pick.size < maxErr * 2; i++)
+		if (isErr(lines[i])) {
+			if (i > 0 && !isErr(lines[i - 1])) pick.add(i - 1);
+			pick.add(i);
+		}
+	const clip = (l: string) => (l.length > 240 ? `${l.slice(0, 240)}…` : l);
+	const head = [...pick].sort((a, b) => a - b).slice(0, maxErr * 2).map((i) => clip(lines[i]));
+	return `${head.length ? `error lines from the ${cut} cut off:\n${head.join("\n")}\n…\n` : `…(${cut} lines)…\n`}${lines.slice(-n).join("\n")}`;
 }
 
 /** Stable token prefixing every no-UI operator refusal, so a headless orchestrator can route refusals without grepping prose. */

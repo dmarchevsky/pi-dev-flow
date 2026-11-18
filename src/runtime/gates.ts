@@ -73,6 +73,9 @@ export async function runFlow(args: string[], root: string, ui: Ui, sess: Sessio
 		case "health":
 			return gateHealth(o);
 
+		case "review":
+			return gateReview(o);
+
 		case "release":
 			return gateRelease(o);
 
@@ -704,6 +707,38 @@ export async function gateHealth(o: GateCtx): Promise<RunResult> {
 	const res = await probeHealth(root, state!, cfg, probe);
 	if ("seedFail" in res) return res.seedFail;
 	return { text: `health: ${res.ok ? "PASS" : "FAIL"} (${probe}${triedNote(res.attempts)})\n${tail(res.out)}` };
+}
+
+/** gh#233: records the pre-release review flow release requires. `done "<verdict>"` — the agent ran the playbook's
+ *  review step inline; `--skip` — the operator's word to ship without one (asked first: Skip review?). A
+ *  flow_stage review worker records itself. Bare: what is on record. Bound flow only — `done`'s verdict is free text. */
+export async function gateReview(o: GateCtx): Promise<RunResult> {
+	const { root, ui, sess, cfg, rest, flag } = o;
+	const { state, err } = needState(root, sess);
+	if (err) return err;
+	const st = state!;
+	const words = rest.filter((a) => !a.startsWith("--"));
+	const onRecord = st.review
+		? `review on record: ${st.review.by === "skipped" ? "skipped on the operator's word" : `${st.review.by}${st.review.head ? ` over ${st.review.head.slice(0, 7)}` : ""}${st.review.verdict ? ` — ${st.review.verdict}` : ""}`} (${ago(st.review.at)})`
+		: "no review on record";
+	if (!words.length && !flag("skip")) return { text: `${onRecord}${cfg.release.review ? ` — flow release requires one (${cfg.release.review})` : " — the playbook sets no review step"}` };
+	if (st.stage !== "implement" && st.stage !== "pre-release") return { text: `review is recorded at implement or pre-release — ${st.slug} is at ${st.stage}`, isError: true };
+	const head = st.worktree ? (await sh("git rev-parse HEAD", gateCwd(root, st))).out.trim() : "";
+	if (flag("skip")) {
+		if (!flag("confirmed")) {
+			const ok = ui.hasUI && (await ui.confirm("Skip review?", `Release ${st.slug} without the review step (${cfg.release.review || "none set"})?`));
+			if (!ok) return { text: needsOperator(`shipping without a review is the operator's word — the playbook's review step is ${cfg.release.review || "unset"}`, "Skip review?", "ask the operator in chat, then re-run flow review --skip --confirmed once they answer"), isError: true };
+		}
+		st.review = { by: "skipped", at: now(), ...(head ? { head } : {}) };
+		writeState(root, st);
+		return { text: `review skipped on the operator's word — flow release will not ask for one` };
+	}
+	if (words[0] !== "done") return { text: `usage: flow review [done "<verdict>"] | --skip [--confirmed]`, isError: true };
+	const verdict = words.slice(1).join(" ").trim();
+	if (!verdict) return { text: `flow review done needs the verdict in a line — e.g. flow review done "PASS — 2 should-fix items fixed in abc1234"`, isError: true };
+	st.review = { by: "inline", at: now(), ...(head ? { head } : {}), verdict: verdict.slice(0, 300) };
+	writeState(root, st);
+	return { text: `review recorded${head ? ` over ${head.slice(0, 7)}` : ""} — ${st.review.verdict}` };
 }
 
 export async function gateUse(o: GateCtx): Promise<RunResult> {
