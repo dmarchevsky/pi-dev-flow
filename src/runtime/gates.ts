@@ -92,7 +92,8 @@ export async function runFlow(args: string[], root: string, ui: Ui, sess: Sessio
 			return gateAbort(o);
 
 		default:
-			return { text: `unknown subcommand "${sub}" — ${GATE_HELP}`, isError: true };
+			// gh#238: the unknown word first and alone — the full usage buried it
+			return { text: `unknown subcommand "${sub.length > 120 ? `${sub.slice(0, 120)}…` : sub}" — known: ${GATE_HELP.split(" — ")[0].split(" | ").map((g) => g.split(" ")[0]).join(", ")}; flow help prints the usage`, isError: true };
 	}
 }
 /** Records the checkpoint word a gate asked for and has not been given: the footer shows 💬 (“operator,

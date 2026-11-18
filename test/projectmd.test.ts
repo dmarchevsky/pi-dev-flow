@@ -482,3 +482,17 @@ test("an empty value is the opt-out: `key =`, `key = \"\"` and `key = ''` all me
 	// a quoted non-empty value keeps its quotes: only the empty pair is the opt-out
 	assert.equal(mdToConfig(parseProjectMd("# d\n\n## release\n\n```flow\nchangelog = \"CHANGES.md\"\n```\n")).release.changelog, '"CHANGES.md"');
 });
+
+test("doctor resolves a script against the package.json the command runs in (gh#227)", () => {
+	const root = mkdtempSync(path.join(tmpdir(), "df-cd-"));
+	mkdirSync(path.join(root, "storefront"), { recursive: true });
+	mkdirSync(path.join(root, "backend", "app"), { recursive: true });
+	writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { lint: "x" } }));
+	writeFileSync(path.join(root, "storefront", "package.json"), JSON.stringify({ scripts: { build: "x" } }));
+	writeFileSync(path.join(root, "backend", "app", "package.json"), JSON.stringify({ scripts: { "test:unit": "x" } }));
+	const cfg = buildConfig({ commands: { build: "cd storefront && npm run build", test: "cd backend/app && npm run test:unit", run: "npm --prefix storefront run start", setup: "cd $APP && npm run whatever" } });
+	const f = doctorFindings(root, cfg, null).filter((x) => /no such script/.test(x));
+	assert.deepEqual(f, ['commands.run runs "run start" but storefront/package.json has no such script'], f.join("\n"));
+	const root2 = buildConfig({ commands: { build: "npm run build" } });
+	assert.match(doctorFindings(root, root2, null).join("\n"), /commands\.build runs "run build" but package\.json has no such script/, "the root is still judged");
+});

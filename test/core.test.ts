@@ -79,6 +79,7 @@ import {
 	worktreeWorkGuard,
 	reviewOwed,
 	failTail,
+	flowArgsShapeError,
 	releaseOrderInvocation,
 	guessReflectSections,
 	reflectItems,
@@ -1096,6 +1097,19 @@ test("digestTranscript: operator words, flow calls and answers, errors and repea
 	assert.match(clipped, /digest clipped/);
 });
 
+test("digestTranscript: a guard event is the guard's own error result, never words inside a success (gh#239)", () => {
+	const msg = (role: string, content: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ type: "message", timestamp: "2026-11-03T20:00:00Z", message: { role, content, ...extra } });
+	const call = (id: string, command: string) => msg("assistant", [{ type: "toolCall", id, name: "bash", arguments: { command } }]);
+	const d = digestTranscript([
+		call("g1", "grep -rn NEEDS-OPERATOR src/"),
+		msg("toolResult", [{ type: "text", text: "src/core.ts:12: NEEDS-OPERATOR refused — confirmed by operator" }], { toolCallId: "g1", toolName: "bash", isError: false }),
+		call("g2", "docker compose restart"),
+		msg("toolResult", [{ type: "text", text: "NEEDS-OPERATOR — drops the upstream connection: this needs an operator confirmation" }], { toolCallId: "g2", toolName: "bash", isError: true }),
+	].join("\n"));
+	assert.doesNotMatch(d, /GUARD bash \(call L1/, "a successful grep that prints the marker is not a guard event");
+	assert.match(d, /L4 GUARD bash \(call L3: docker compose restart\) → NEEDS-OPERATOR — drops the upstream/);
+});
+
 test("workerSteer: names the time left; implement commits, read-only ops write the REPORT", () => {
 	assert.match(workerSteer("reflect", 20), /about 5 min of your 20-min budget/);
 	assert.match(workerSteer("reflect", 20), /Stop probing and write the REPORT section now/);
@@ -1964,4 +1978,12 @@ test("failTail: the errors a long failing run printed are lifted above its tail 
 	assert.match(t, /error: script "lint" exited with code 1$/, "the tail still ends the output");
 	assert.equal(failTail("short\nerror: x"), "short\nerror: x", "a short run is shown whole");
 	assert.match(failTail(Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")), /^…\(15 lines\)…\n/, "no error lines: the old tail");
+});
+
+test("flowArgsShapeError: a marshalled array is named, not dispatched (gh#238)", () => {
+	assert.equal(flowArgsShapeError(["roadmap", "add", "x"]), null);
+	assert.equal(flowArgsShapeError(["[not json"]), "args must be an array of strings; this arrived as one string holding an array ([not json) — pass the elements themselves: args: [not json");
+	assert.match(flowArgsShapeError(['["roadmap", "add", "Durable"]']) ?? "", /arrived as one string holding an array \(\["roadmap","add","Durable"\]\)/);
+	assert.match(flowArgsShapeError("status") ?? "", /arrived as string/);
+	assert.match(flowArgsShapeError(["a", 3]) ?? "", /element\(s\) 1 are not strings/);
 });

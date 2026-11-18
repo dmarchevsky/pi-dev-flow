@@ -3193,6 +3193,20 @@ test("a branch switch earlier in the chain is the branch a later merge lands on 
 	assert.match((await bash("git checkout README.md && git merge feat/tt"))?.reason ?? "", /merging into main/, "nor does a bare path");
 });
 
+test("the flow tool refuses a marshalled args array by its shape, and an unknown subcommand leads with the word (gh#238)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: unknown) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const blob = await flow(['["roadmap", "add", "x"]']);
+	assert.ok(blob.isError);
+	assert.match(blob.content[0].text, /^args must be an array of strings; this arrived as one string holding an array/);
+	const junk = await flow(["frobnicate"]);
+	assert.match(junk.content[0].text, /^unknown subcommand "frobnicate" — known: help, init, reflect, roadmap, doctor, status, start/);
+	assert.ok(junk.content[0].text.length < 600, "no full usage dump");
+});
+
 test("--ui is the agent's call: start takes it without --confirmed (it only adds the mockup gate)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

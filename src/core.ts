@@ -2418,6 +2418,21 @@ export function failTail(out: string, n = 15, maxErr = 12): string {
 	return `${head.length ? `error lines from the ${cut} cut off:\n${head.join("\n")}\n…\n` : `…(${cut} lines)…\n`}${lines.slice(-n).join("\n")}`;
 }
 
+/** gh#238: the flow tool's `args` must be an array of strings. A call whose array arrived marshalled as one JSON
+ *  string was dispatched with the whole blob as the subcommand, and the refusal ("unknown subcommand …" plus the
+ *  full usage) never said the shape was wrong. Null when the shape is fine. */
+export function flowArgsShapeError(args: unknown): string | null {
+	if (!Array.isArray(args)) return `args must be an array of strings, e.g. ["status"] or ["start", "my-slug"] — this arrived as ${args === null ? "null" : typeof args}`;
+	if (args.some((a) => typeof a !== "string")) return `args must be an array of strings — element(s) ${args.map((a, i) => (typeof a === "string" ? -1 : i)).filter((i) => i >= 0).join(", ")} are not strings`;
+	if (args.length === 1 && /^\s*\[/.test(args[0] as string)) {
+		let inner: unknown = null;
+		try { inner = JSON.parse(args[0] as string); } catch { /* not JSON: still looks like a marshalled array */ }
+		const shown = Array.isArray(inner) ? JSON.stringify(inner) : (args[0] as string).slice(0, 120);
+		return `args must be an array of strings; this arrived as one string holding an array (${shown}) — pass the elements themselves: args: ${shown}`;
+	}
+	return null;
+}
+
 /** Stable token prefixing every no-UI operator refusal, so a headless orchestrator can route refusals without grepping prose. */
 export const NEEDS_OPERATOR = "NEEDS-OPERATOR";
 
@@ -2746,11 +2761,13 @@ export function digestTranscript(jsonl: string, opts: { maxChars?: number } = {}
 			const res = textOf(m.content);
 			if (m.isError) {
 				errors++;
-				out.push(`${L} ERROR ${name}${call ? ` (call L${call.line}: ${clip(call.args, 160)})` : ""} → ${clip(res, 400)}`);
+				// gh#239: a guard block reaches the transcript as an error result whose text is the guard's reason;
+				// the operator-ask ones lead with the marker. A successful result is never a guard event, whatever
+				// words its output quotes — matching NEEDS-OPERATOR anywhere in a success tagged a grep as a block.
+				const guardAsk = name !== "flow" && name !== "flow_stage" && res.trimStart().startsWith(NEEDS_OPERATOR);
+				out.push(`${L} ${guardAsk ? "GUARD" : "ERROR"} ${name}${call ? ` (call L${call.line}: ${clip(call.args, 160)})` : ""} → ${clip(res, 400)}`);
 			} else if (name === "flow" || name === "flow_stage") {
 				out.push(`${L}   ↳ ${clip(res, name === "flow_stage" ? 600 : 400)}`);
-			} else if (/NEEDS-OPERATOR/.test(res.slice(0, 600))) {
-				out.push(`${L} GUARD ${name}${call ? ` (call L${call.line}: ${clip(call.args, 160)})` : ""} → ${clip(res, 300)}`);
 			}
 		}
 	}
