@@ -7,7 +7,7 @@ import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type RunResult, ago, releaseDevSlot, keepThroughPrep, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
 import { type GateCtx, markPendingAsk } from "./gates.ts";
-import { gatePublishes, publishRelease } from "./publish.ts";
+import { gatePublishes, prBodyOwed, publishRelease } from "./publish.ts";
 
 /** gh#198: the version question asked with Verified? — null when it is not the operator's to answer here
  *  (no manifest to version, the playbook decides, or an earlier Verified? already recorded the call). */
@@ -248,6 +248,9 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// gh#233: the review step ran (or the operator waived it) before anything slow or anything ships
 	const noReview = reviewOwed(state!, cfg);
 	if (noReview) return { text: `release gate FAILED:\n- ${noReview}`, isError: true };
+	// gh#240: the PR body the template asks for exists before Release? is asked — the gate opens and merges the PR
+	const noBody = prBodyOwed(root, state!);
+	if (noBody && (await gatePublishes(cfg, forgeOf(cfg, await originUrl(root)), root))) return { text: `release gate FAILED:\n- ${noBody}`, isError: true };
 	const branchProof = await branchState(wtCwd, cfg.defaultBranch);
 	const manifestVer = cfg.versioning.file && existsSync(path.join(wtCwd, cfg.versioning.file))
 		? parseVersion(cfg.versioning.file, readFileSync(path.join(wtCwd, cfg.versioning.file), "utf8"))

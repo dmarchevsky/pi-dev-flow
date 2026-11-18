@@ -4317,7 +4317,7 @@ test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release
 		const text = r.content[0].text;
 		assert.ok(!r.isError, text);
 		assert.match(text, /release approved/);
-		assert.match(text, /published: branch pushed · PR #7 opened · CI green \(2 checks\) · merged \(merge\) · tag v1\.0\.1 pushed/, text);
+		assert.match(text, /published: branch pushed · PR #7 opened \(body: the changelog entry\) · CI green \(2 checks\) · merged \(merge\) · tag v1\.0\.1 pushed/, text);
 		assert.match(text, /release recorded as complete/);
 		assert.match(text, /Release v1\.0\.1 body matches CHANGELOG\.md/, "the forge release carries the changelog entry");
 		const pr = JSON.parse(readFileSync(path.join(p.ghState, "prs.json"), "utf8"))[0];
@@ -4331,6 +4331,29 @@ test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release
 		markReflected(p.repo, "pubone"); // the fixture's bare flow check counted as friction; the reflection is not under test
 		const fin = await p.flow(["finish", "--confirmed"]);
 		assert.match(fin.content[0].text, /feature pubone done[\s\S]*local main fast-forwarded to origin\/main/, fin.content[0].text);
+	} finally {
+		p.done();
+	}
+});
+
+test("a repo with a PR template gets an authored PR body: release refuses without one, then opens the PR with it (gh#240)", async () => {
+	const p = await publishFlow("pubtpl");
+	try {
+		mkdirSync(path.join(p.wt, ".github"), { recursive: true });
+		writeFileSync(path.join(p.wt, ".github", "pull_request_template.md"), "## What changed\n\n## Verified over\n");
+		commitWt(p.repo, "pubtpl", "pr template");
+		await p.toRelease("--version=patch", "1.0.1");
+		p.checks([[ck("build", "pass")]]);
+		const refused = await p.flow(["release"]);
+		assert.ok(refused.isError);
+		assert.match(refused.content[0].text, /pull-request template \(\.github\/pull_request_template\.md\) and no PR body is written[\s\S]*Write \.dev-flow\/pubtpl\/pr-body\.md/, refused.content[0].text);
+		assert.doesNotMatch(p.calls(), /pr create/, "nothing reached the forge");
+		writeFileSync(path.join(p.repo, ".dev-flow", "pubtpl", "pr-body.md"), "## What changed\npubtpl ships\n\n## Verified over\nabc1234\n");
+		const r = await p.flow(["release"]);
+		assert.ok(!r.isError, r.content[0].text);
+		assert.match(r.content[0].text, /PR #7 opened \(body: your pr-body\.md\)/);
+		const pr = JSON.parse(readFileSync(path.join(p.ghState, "prs.json"), "utf8"))[0];
+		assert.match(pr.body, /## Verified over\nabc1234/, "the authored body is the PR body");
 	} finally {
 		p.done();
 	}
@@ -4398,7 +4421,7 @@ test("flow release: merge unreleased publishes without a tag, and publish = manu
 		p.checks([[ck("build", "pass")]]);
 		const r = await p.flow(["release"]);
 		assert.ok(!r.isError, r.content[0].text);
-		assert.match(r.content[0].text, /published: branch pushed · PR #7 opened · CI green \(1 check\) · merged \(merge\)\n/, r.content[0].text);
+		assert.match(r.content[0].text, /published: branch pushed · PR #7 opened \(body: the changelog entry\) · CI green \(1 check\) · merged \(merge\)\n/, r.content[0].text);
 		assert.equal(p.git(["tag", "-l"], p.origin), "v1.0.0", "no tag was cut");
 		assert.doesNotMatch(p.calls(), /release create/, "and no forge release");
 	} finally {

@@ -147,7 +147,10 @@ Escape hatches, used only on your word: `--no-fold-check` skips the line-level c
 
 On GitHub, the same `flow release` call then publishes. Your Release? answer is what authorizes it:
 
-1. Pushes the branch and opens the PR, with the changelog entry as the body.
+1. Pushes the branch and opens the PR. The body is `.dev-flow/<slug>/pr-body.md` when the agent
+   wrote one, else the changelog entry. If the repo has a pull-request template
+   (`.github/pull_request_template.md`), the gate refuses until `pr-body.md` exists, before
+   Release? is asked, so the template's sections are filled before the merge.
 2. Waits for the PR's CI, up to 30 minutes. A repo with no CI is given a minute for checks to show up.
 3. Merges in the playbook's `merge` style.
 4. Creates an annotated tag on the PR's merge commit and pushes it (versioned flows).
