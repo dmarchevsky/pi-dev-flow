@@ -481,7 +481,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const recurred = reflected?.open.filter((x) => x.status === "recurred").length ?? 0;
 			const nudges = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { recurred });
 			parts.push(
-				"Next: show the operator this numbered list with your recommendation per item and ask fold or drop for each (one answer like 'fold 1,3 drop 2' is fine) — then STOP until they answer. " +
+				"Next: show the operator the fold/drop list above as it stands — suggested folds grouped by plugin, playbook and code, then the drops, one short line each — and ask for one answer (the suggested 'fold … drop …' line is fine) — then STOP until they answer. " +
 					`Fold docs → flow reflect --playbook "<note>"; fold code → flow reflect --code "<note>"; fold plugin → ${selfRepo ? 'flow reflect --code "<note>" (this is the dev-flow repo)' : 'flow reflect --plugin "<note>" prints the upstream recipe (dedupe search, then gh issue create — the fold answer is the confirmation; never a reflections.md row)'}; drop → record nothing. Open items re-checked as fixed → propose checking them off.`,
 			);
 			if (nudges.fix) parts.push(`${nudges.fix} — offer it after the fold/drop answer.`);

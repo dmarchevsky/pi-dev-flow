@@ -3538,10 +3538,11 @@ test("flow_stage reflect: reads the driver and worker transcripts, renders fold/
 		assert.match(brief, /gh#142 \[closed\] worker cap cuts mid-stage/, "upstream issues are prefetched into the brief");
 		assert.match(brief, /Budget: 20 min/);
 		const out = r.content[0].text;
-		assert.match(out, /1\. \[fold\] docs: test command drifted\n\s+→ docs flow/);
-		assert.match(out, /2\. \[fold\] plugin: guard refused a scratch write\n\s+→ upstream GitHub issue/);
+		assert.match(out, /fold — playbook \(a docs flow\):\n  1\. test command drifted/, "the operator's short list names each finding");
+		assert.match(out, /1\. \[fold\] docs: test command drifted\n↪\s+→ docs flow/);
+		assert.match(out, /2\. \[fold\] plugin: guard refused a scratch write\n↪\s+→ upstream GitHub issue/);
 		assert.match(out, /#1 recurred — the seed note bit again → recommend fixing it now/);
-		assert.match(out, /ask fold or drop for each/);
+		assert.match(out, /show the operator the fold\/drop list above as it stands/);
 		assert.match(out, /⚑ fix the open reflections now\? \(1 recurred this session\)/);
 		assert.equal(r.details?.findings, 2);
 		assert.ok(JSON.parse(readFileSync(stateFile, "utf8")).reflectedAt, "the run is recorded for finish");
