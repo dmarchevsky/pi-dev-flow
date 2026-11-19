@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { buildConfig } from "./util/config.ts";
 import { mdToConfig, parseProjectMd } from "../src/projectmd.ts";
+import { commandish, splitLine } from "../src/present.ts";
 import {
 	applyAnswer,
 	appendReflection,
@@ -118,6 +119,8 @@ import {
 	workerSteer,
 	parseReflectReport,
 	renderReflectFindings,
+	shortFindingNote,
+	AGENT_MARK,
 	appendRoadmapItem,
 	roadmapBriefFor,
 	roadmapDone,
@@ -1236,6 +1239,38 @@ test("reflectDone: checks item n off with a fixed note, in list numbering (#165)
 	assert.equal(reflectDone(text, 4, "x"), null);
 });
 
+test("renderReflectFindings: the operator sees a short list — folds grouped plugin, playbook, code, then drops — and every row survives the view (gh#260)", () => {
+	const r = parseReflectReport([
+		"F1 | drop | plugin | The closing reflect worker burned 23 min and returned nothing, so `flow finish` removed nothing and the session ended un-finished with the fold/drop list never shown | dup: gh#252 | why: already filed",
+		"F2 | fold | plugin | The session ran gates on dev-flow 0.93.0 while 0.94.2 was installed | dup: gh#218 | why: still silent",
+		"F3 | fold | code | A scratch driver hand-rolled sign-in again | dup: #21 | why: fourth time",
+		"F4 | fold | docs | Two authorities give opposite scratch rules; `flow release --confirmed` refused on --version=patch | why: pick one",
+		"F5 | drop | docs | harness noise | why: no cost",
+	].join("\n"));
+	const out = renderReflectFindings(r, false);
+	const view = out.map((l) => splitLine(l).user).filter(Boolean);
+	assert.deepEqual(view, [
+		"findings (5) — suggested: fold 2,3,4 · drop 1,5",
+		"fold — plugin (an upstream dev-flow issue):",
+		"  2. The session ran gates on dev-flow 0.93.0 while 0.94.2 was installed",
+		"fold — playbook (a docs flow):",
+		"  4. Two authorities give opposite scratch rules; release confirmed refused on version=patch",
+		"fold — code (a patch flow):",
+		"  3. A scratch driver hand-rolled sign-in again",
+		"drop:",
+		"  1. The closing reflect worker burned 23 min and returned nothing, so finish removed nothing and the session…" + " (plugin)",
+		"  5. harness noise (playbook)",
+	]);
+	for (const l of view) assert.ok(!commandish(l), `no command text reaches the operator: ${l}`);
+	// the agent keeps every detail: the full note, the route, the dup and the why
+	const agent = out.filter((l) => l.startsWith(AGENT_MARK)).join("\n");
+	assert.match(agent, /1\. \[drop\] plugin: .*`flow finish` removed nothing.*list never shown\n↪    → upstream GitHub issue .* · dup: gh#252 · already filed/);
+	assert.match(agent, /4\. \[fold\] docs: .*\n↪    → docs flow · record: flow reflect --playbook · pick one/);
+	// in the dev-flow repo a plugin fold is code
+	assert.match(renderReflectFindings(r, true).join("\n"), /fold — code \(a patch flow\):\n  2\. The session ran gates[\s\S]*\n  3\. A scratch driver/);
+	assert.equal(shortFindingNote("x ".repeat(100)).endsWith("…"), true, "a long note is clipped");
+});
+
 test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, plugin routes upstream", () => {
 	const body = [
 		"F1 | fold | docs | test command drifted to pnpm | dup: none | why: hit 3 times | evidence: driver.jsonl:120",
@@ -1251,12 +1286,12 @@ test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, p
 	assert.equal(r.findings[0].evidence, "driver.jsonl:120");
 	assert.deepEqual(r.open.map((o) => [o.n, o.status]), [[1, "recurred"], [2, "fixed"]]);
 	const out = renderReflectFindings(r, false).join("\n");
-	assert.match(out, /1\. \[fold\] docs: test command drifted to pnpm\n      → docs flow · record: flow reflect --playbook · hit 3 times/);
-	assert.match(out, /2\. \[drop\] plugin: guard blocked a scratch write\n      → upstream GitHub issue · flow reflect --plugin prints the recipe \(never a local row\) · dup: gh#12/);
-	assert.match(out, /3\. \[fold\] code: .*\n      → patch flow · record: flow reflect --code · dup: #2/);
+	assert.match(out, /1\. \[fold\] docs: test command drifted to pnpm\n↪    → docs flow · record: flow reflect --playbook · hit 3 times/);
+	assert.match(out, /2\. \[drop\] plugin: guard blocked a scratch write\n↪    → upstream GitHub issue · flow reflect --plugin prints the recipe \(never a local row\) · dup: gh#12/);
+	assert.match(out, /3\. \[fold\] code: .*\n↪    → patch flow · record: flow reflect --code · dup: #2/);
 	assert.match(out, /#1 recurred — .* → recommend fixing it now/);
 	assert.match(out, /#2 fixed — .* → propose the check-off/);
-	assert.match(renderReflectFindings(r, true).join("\n"), /2\. \[drop\] plugin: .*\n      → patch flow/, "in the dev-flow repo plugin is code");
+	assert.match(renderReflectFindings(r, true).join("\n"), /2\. \[drop\] plugin: .*\n↪    → patch flow/, "in the dev-flow repo plugin is code");
 	assert.deepEqual(parseReflectReport("nothing useful here"), { findings: [], open: [] });
 	assert.match(renderReflectFindings({ findings: [], open: [] }, false).join("\n"), /findings: none/);
 });

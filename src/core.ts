@@ -2965,18 +2965,52 @@ export function parseReflectReport(body: string): { findings: ReflectFinding[]; 
 	return { findings, open };
 }
 
-/** The numbered list the driver shows the operator: one row per finding with its route, then the
- *  open-item re-check. Routes follow where the fix lives — plugin is always an upstream issue
- *  (code in the dev-flow repo itself), never a local row. */
+/** A finding as one short operator-facing line: clipped at a word boundary, with any dev-flow command text
+ *  spelled as plain words. The view drops a line that names a flow command, so a finding that merely quoted
+ *  one (`flow finish` removed nothing) vanished from the list the operator was answering about. */
+export function shortFindingNote(note: string, max = 110): string {
+	const plain = note
+		.replace(/`([^`]*)`/g, "$1")
+		.replace(/(^|[\s'"(*_])\/?flow (?=[a-z])/g, "$1")
+		.replace(/(^|\s)--(?=[a-z])/g, "$1")
+		.replace(/\bflow_stage\b/g, "worker")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (plain.length <= max) return plain;
+	const cut = plain.slice(0, max);
+	const at = cut.lastIndexOf(" ");
+	return `${(at > max * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,;:—-]+$/, "")}…`;
+}
+
+/** The fold/drop list the operator answers (gh#260): a short line per finding, the suggested folds first —
+ *  grouped by where the fix lives (plugin, playbook, code) — then the suggested drops, so "fold 2" names
+ *  something they can read. The full rows (route, dup, why) follow for the agent only. Routes follow where
+ *  the fix lives — plugin is always an upstream issue (code in the dev-flow repo itself), never a local row. */
 export function renderReflectFindings(r: { findings: ReflectFinding[]; open: ReflectOpenCheck[] }, selfRepo: boolean): string[] {
+	const kindOf = (f: ReflectFinding): ReflectKind => (f.kind === "plugin" && selfRepo ? "code" : f.kind);
 	const route = (k: ReflectKind) =>
-		k === "docs" ? "docs flow · record: flow reflect --playbook" : k === "code" || selfRepo ? "patch flow · record: flow reflect --code" : "upstream GitHub issue · flow reflect --plugin prints the recipe (never a local row)";
+		k === "docs" ? "docs flow · record: flow reflect --playbook" : k === "code" ? "patch flow · record: flow reflect --code" : "upstream GitHub issue · flow reflect --plugin prints the recipe (never a local row)";
+	const KIND_LABEL: Record<ReflectKind, string> = { plugin: "plugin (an upstream dev-flow issue)", docs: "playbook (a docs flow)", code: "code (a patch flow)" };
 	const out: string[] = [];
 	if (r.findings.length) {
-		out.push(`findings (${r.findings.length}) — recommendation · kind → route:`);
+		const folds = r.findings.filter((f) => f.rec === "fold");
+		const drops = r.findings.filter((f) => f.rec === "drop");
+		const nums = (fs: ReflectFinding[]) => fs.map((f) => f.n).join(",");
+		out.push(`findings (${r.findings.length}) — suggested: ${[folds.length ? `fold ${nums(folds)}` : "", drops.length ? `drop ${nums(drops)}` : ""].filter(Boolean).join(" · ")}`);
+		for (const k of ["plugin", "docs", "code"] as const) {
+			const group = folds.filter((f) => kindOf(f) === k);
+			if (!group.length) continue;
+			out.push(`fold — ${KIND_LABEL[k]}:`);
+			for (const f of group) out.push(`  ${f.n}. ${shortFindingNote(f.note)}`);
+		}
+		if (drops.length) {
+			out.push("drop:");
+			for (const f of drops) out.push(`  ${f.n}. ${shortFindingNote(f.note)} (${kindOf(f) === "docs" ? "playbook" : kindOf(f)})`);
+		}
+		out.push(`${AGENT_MARK}finding detail — recommendation · kind → route:`);
 		for (const f of r.findings) {
-			out.push(`  ${f.n}. [${f.rec}] ${f.kind}: ${f.note}`);
-			out.push(`      → ${route(f.kind === "plugin" && selfRepo ? "code" : f.kind)}${f.dup && f.dup !== "none" ? ` · dup: ${f.dup}` : ""}${f.why ? ` · ${f.why}` : ""}`);
+			out.push(`${AGENT_MARK}${f.n}. [${f.rec}] ${f.kind}: ${f.note}`);
+			out.push(`${AGENT_MARK}   → ${route(kindOf(f))}${f.dup && f.dup !== "none" ? ` · dup: ${f.dup}` : ""}${f.why ? ` · ${f.why}` : ""}`);
 		}
 	} else out.push("findings: none");
 	if (r.open.length) {

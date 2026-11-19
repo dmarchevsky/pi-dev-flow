@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **Fold or drop? lists the findings you're answering about (gh#260).** The closing reflection suggested "fold 2", but your view didn't show what 2 was. A finding that quoted a flow command (such as "`flow finish` removed nothing") lost its headline line, because the view hides command text. Finish now starts with a short list: one line per finding, with folds grouped by plugin, playbook and code, and drops after them. The header shows the suggested `fold … · drop …` answer. Only the agent sees each finding's full route, duplicate and reason.
+
 ## [0.94.2] - 2026-11-19
 
 **Publishes 0.94.1's fix: you're asked Release? once. 0.94.1 never reached npm because a flaky test failed its publish run.**
