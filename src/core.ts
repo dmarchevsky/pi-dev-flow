@@ -1761,6 +1761,8 @@ export interface SessionClaim {
 
 /** Whether a process is running (kill 0 only probes existence; EPERM means it exists, foreign-owned). */
 export function pidAlive(pid: number): boolean {
+	// a corrupt value is dead, never probed: process.kill coerces "123" to pid 123, which may be a live process
+	if (!Number.isInteger(pid) || pid <= 0) return false;
 	try {
 		process.kill(pid, 0);
 		return true;
