@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.94.0] - 2026-11-19
+
+**The review runs before Verified?, so you're asked Verified? once; an unanswered re-verify holds the release; your Release? word stands on the first call under `yolo = until-release`; and `flow roadmap done` closes the items you named.**
+
 ### Changed
 - **The review runs before Verified?, so you're asked Verified? once (gh#248).** The review step ran after your Verified?, so every finding changed the tree you had already approved and the agent asked again. One flow asked three times. The review now runs in implement once `flow check` is green, and the first `flow verify` refuses until one is on record (a review worker records itself; an inline one is recorded with `flow review done "<verdict>"`). Your one look covers the tree that ships. A flow already at pre-release without a review still owes it at release.
 
