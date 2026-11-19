@@ -43,7 +43,9 @@ and settle the scheme with the operator; never invent one.
    refuses without it.
 5. No `flow check` is owed after the prep commit: the gate keeps green checks across a commit that
    holds only the bump and changelog, and runs any stale check itself.
-6. **Run `flow release`.** By default (`ask = on-change`) it answers
+6. **Run `flow release` before asking anything.** Never ask Release? in
+   chat ahead of the call: the gate did not see that question, and when it
+   needs the word it asks again, so the operator answers twice. By default (`ask = on-change`) it answers
    Release? itself when the release call is on record and only the prep
    landed since Verified? — say in a few lines what the PR delivers (the
    changelog entry usually is that) and the version, and carry on with the
@@ -59,7 +61,8 @@ and settle the scheme with the operator; never invent one.
      `NEEDS-OPERATOR Release?` when commits landed after Verified?, the
      playbook says `yolo = until-release`, or the session build is stale —
      then ask. A `--confirmed` passed before the gate asked is not an answer
-     there: the gate asks first.
+     there: the gate asks first. Never carry the standing yolo onto the call
+     as `--yolo`: the operator's answer is `flow release --confirmed`.
    - Operator ships **without a version** → `flow release --no-version
      --confirmed`: no bump or tag, but the branch must add its line under
      `Unreleased`. A changed call is `--version=<v>` / `--no-version` with

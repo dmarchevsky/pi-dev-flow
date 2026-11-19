@@ -58,6 +58,9 @@ export interface FlowState {
 	releaseOnly?: boolean; // verify found nothing on the branch but unreleased work on main: this flow only cuts the version (#161)
 	versionChoice?: string; // the operator's release call, recorded with Verified? (gh#198): patch | minor | major (counted from the newest tag at release, so a parallel flow taking the number moves it), an exact version, "next" (playbook version = versioned: any bump past the last tag) or "unreleased"
 	versionFrom?: string; // the manifest version when the call was recorded — what a patch/minor/major call was counted from at Verified?
+	/** the session and its operator-message count when Verified? moved this flow to pre-release (gh#254): under
+	 *  yolo = until-release, a message after it is the operator's own Release? word, not a replayed plan-stage yolo */
+	verifiedAtMessage?: { key: string; users: number };
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
@@ -2411,12 +2414,15 @@ export function nextHint(state: FlowState, cfg: Config): string {
 			const rv = reviewOwed(state, cfg) ? `${cfg.release.review} (then record it: flow review done "<verdict>")` : cfg.release.review && state.review ? "review on record" : "";
 			const review = rv ? `${rv}, ` : "";
 			const auto = cfg.release.ask !== "always" ? " (release.ask = on-change: it asks Release? only when something beyond the prep changed)" : "";
+			// gh#254: the gate is the one that asks Release? — asked in chat first, the gate never saw the question and
+			// put it again (a yolo or until-release hold), so the operator answered twice
+			const gateAsks = `${auto} — the gate asks Release? when it needs the operator's word (NEEDS-OPERATOR Release?): ask it then, never before the call`;
 			if (vc === "unreleased")
-				return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}; show the PR summary, then run flow release${auto || " and ask Release?"}`;
+				return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}; show the PR summary, then run flow release${gateAsks}`;
 			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}${isBumpKind(vc) ? ` to ${bumpVersion(state.versionFrom, vc) ?? `the next ${vc}`} (a ${vc} release, the operator's call — the gate counts it from the newest tag, so a flow that released first moves the number)` : vc && vc !== "next" ? ` to ${vc} (the operator's call)` : ""}` : ""].filter(Boolean).join(" and ");
-			if (vc && prep) return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}; show the PR summary, version and changelog, then run flow release${auto || " and ask Release?"}`;
-			if (state.docs && prep) return `${review}fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then ask Release? and run flow release`;
-			return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, ask Release? and run flow release`;
+			if (vc && prep) return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}; show the PR summary, version and changelog, then run flow release${gateAsks}`;
+			if (state.docs && prep) return `${review}fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then run flow release${gateAsks}`;
+			return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, then run flow release${gateAsks}`;
 		}
 		case "release":
 			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then flow finish (closing reflection first; its fold/drop answer is Finish?)`;

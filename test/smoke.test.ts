@@ -2435,6 +2435,42 @@ test("yolo stops short of Release? when commits landed after Verified?, or when 
 	assert.match((await d.flow(["release", "--confirmed"])).content[0].text, /release approved \(confirmed by operator instruction\)/, "the chat word stands without a gate round trip");
 });
 
+test("until-release: the operator's word after Verified? stands even as --yolo --confirmed; a replay is still asked first (gh#254)", async () => {
+	const run = async (slug: string) => {
+		const pi = makePi();
+		const repo = makeRepo();
+		const branch: unknown[] = [{ type: "message", message: { role: "user" } }];
+		const ctx = { ...makeCtx(repo), sessionManager: { getBranch: () => branch, getSessionId: () => `sess-${slug}`, getSessionFile: () => undefined, getSessionDir: () => repo } };
+		const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+		await flow(["init", "--write", "# dev-flow\n\n## implement\n\n```flow\ntest = exit 0\n```\n\n## release\n\n```flow\nmerge = merge\nyolo = until-release\n```\n"]);
+		trackPlaybook(repo);
+		await flow(["start", slug]);
+		mkdirSync(path.join(repo, ".dev-flow", slug, "plan"), { recursive: true });
+		writeFileSync(path.join(repo, ".dev-flow", slug, "plan", "plan.md"), "# plan\n");
+		branch.push({ type: "message", message: { role: "user" } }); // "yolo"
+		await flow(["approve", "--yolo", "--confirmed"]);
+		await flow(["check"]);
+		commitWt(repo, slug);
+		assert.match((await flow(["verify"])).content[0].text, /yolo: pre-confirmed/);
+		const inj = (await pi.handlers.before_agent_start[0]({}, ctx)) as { message?: { content: string } };
+		return { flow, repo, branch, inj: inj.message?.content ?? "" };
+	};
+	// the injected context no longer tells the agent a standing yolo answers Release?
+	const a = await run("answered");
+	assert.match(a.inj, /YOLO mode \(until-release\)[\s\S]*Release\? is NOT pre-confirmed[\s\S]*never with --yolo/, a.inj);
+	assert.doesNotMatch(a.inj, /pre-confirmed every gate question/);
+	// the agent asked Release? in chat, the operator answered, and the agent carried the yolo onto the call:
+	// the answer stands on the first call — the operator is not asked twice
+	a.branch.push({ type: "message", message: { role: "user" } }); // "release unversioned"
+	const first = await a.flow(["release", "--yolo", "--confirmed"]);
+	assert.match(first.content[0].text, /release approved \(confirmed by operator instruction\)/, first.content[0].text);
+	// no operator message since Verified?: a replayed plan-stage yolo is asked first, as before (gh#219)
+	const b = await run("replayed");
+	const replayed = await b.flow(["release", "--yolo", "--confirmed"]);
+	assert.ok(replayed.isError && /NEEDS-OPERATOR Release\?[\s\S]*yolo = until-release/.test(replayed.content[0].text), replayed.content[0].text);
+	assert.equal(JSON.parse(readFileSync(path.join(b.repo, ".dev-flow", "replayed", "state.json"), "utf8")).stage, "pre-release", "nothing shipped on a replayed flag");
+});
+
 test("Finish? answers itself on a clean flow; finish = always, an open release item or a red after-merge check still stop it", async (t) => {
 	// no path in this test may reach a real reflection worker
 	const origSpawn = stageWorkerSpawn.run;

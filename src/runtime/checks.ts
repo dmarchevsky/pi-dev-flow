@@ -471,4 +471,7 @@ export interface Session {
 	bind: (slug: string | null) => void;
 	/** Name the pi session after a slug (one session = one feature: the picker shows the feature). */
 	rename: (slug: string) => void;
+	/** Operator messages in this session's branch so far, or null/undefined when it cannot be read — a gate
+	 *  compares it with the count it recorded earlier to know whether the operator spoke since (gh#254). */
+	operatorMessages?: number | null;
 }

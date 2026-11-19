@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **You're asked Release? once (gh#254, gh#253).** The pre-release hint told the agent to ask Release? in chat and then run `flow release`. The gate never saw that question, so when it needed your word (`yolo = until-release`, commits after Verified?, a stale build) it asked again, and you answered twice. A PR-body refusal could also land after your answer. The hint now says to run `flow release` first and ask only when it returns `NEEDS-OPERATOR Release?`. Under `yolo = until-release` the injected yolo note no longer claims Release? is pre-confirmed, and says to run `flow release` without `--yolo`. When the agent still adds `--yolo` to your answer, the gate accepts it if you've sent a message since Verified?. A yolo replayed with nothing said since is still asked first (gh#219).
+
 ## [0.94.0] - 2026-11-19
 
 **The review runs before Verified?, so you're asked Verified? once; an unanswered re-verify holds the release; your Release? word stands on the first call under `yolo = until-release`; and `flow roadmap done` closes the items you named.**
