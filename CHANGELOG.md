@@ -4,6 +4,13 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.94.2] - 2026-11-19
+
+**Publishes 0.94.1's fix: you're asked Release? once. 0.94.1 never reached npm because a flaky test failed its publish run.**
+
+### Fixed
+- **A malformed session pid always reads as dead.** `pidAlive("123")` was meant to treat a malformed pid as dead, but `process.kill` turned it into pid 123. On a machine where a process with that pid existed, the claim read as alive, and that failed the 0.94.1 publish run. `pidAlive` now treats anything but a positive integer as dead without checking for the process.
+
 ## [0.94.1] - 2026-11-19
 
 **You're asked Release? once: the gate asks it, never the agent ahead of the call, and your answer after Verified? stands even when the agent carries a yolo onto it.**
