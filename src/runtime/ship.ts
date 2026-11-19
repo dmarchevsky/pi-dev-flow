@@ -207,6 +207,9 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const choiceNote = choice ? `\nrelease call: ${describeVersionChoice(choice, state!.versionFrom)}` : "";
 	const before = state!.stage;
 	state!.stage = "pre-release";
+	// gh#254: what the operator says after this point is said over a tree they verified — the release gate reads it
+	if (typeof sess.operatorMessages === "number") state!.verifiedAtMessage = { key: sess.key, users: sess.operatorMessages };
+	else delete state!.verifiedAtMessage;
 	delete state!.pendingAsk;
 	delete state!.reverifyAsked;
 	writeState(root, state!);
@@ -445,8 +448,14 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// stands on the first call, as it does on a flow without yolo; asking first made them repeat a word already
 	// given. gh#219's shape — `--yolo --confirmed` replayed from the plan-stage word — still gets the question.
 	// Commits after Verified? and a stale build carry news, so those holds always ask first.
+	// gh#254: the agent carried the standing yolo onto the call as `--yolo --confirmed` after the operator had
+	// answered Release? in chat, and the replay guard threw the fresh answer out with the replayed flag. A replay
+	// has no operator message behind it since Verified? moved the flow here; an answer does — so a message in
+	// this session after that point lets the flag stand, and only a true replay is asked first.
+	const vm = state!.verifiedAtMessage;
+	const spokeSinceVerify = !!vm && vm.key === sess.key && typeof sess.operatorMessages === "number" && sess.operatorMessages > vm.users;
 	const untilReleaseOnly = cfg.release.yolo === "until-release" && !postVerify && !stale;
-	const mustAskFirst = (!!holdWhy && !(untilReleaseOnly && !flag("yolo"))) || stale;
+	const mustAskFirst = (!!holdWhy && !(untilReleaseOnly && (!flag("yolo") || spokeSinceVerify))) || stale;
 	const confirmed = flag("confirmed") && !(mustAskFirst && !ui.hasUI && state!.pendingAsk !== "Release?");
 	const yoloHeld = confirmed ? "" : holdWhy;
 	// gh#198: release.ask = on-change — Release? answers itself when it would only re-confirm Verified?: the call

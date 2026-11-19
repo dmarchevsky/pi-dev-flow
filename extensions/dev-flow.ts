@@ -120,6 +120,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		return {
 			key,
 			slug: bindings.get(key) ?? null,
+			operatorMessages: operatorMessageCount((() => { try { return ctx.sessionManager?.getBranch(); } catch { return null; } })()),
 			bind: (slug) => {
 				const prev = bindings.get(key);
 				bindings.set(key, slug);
@@ -907,7 +908,11 @@ export default function devFlow(pi: ExtensionAPI) {
 			return { message: { customType: "dev-flow-context", display: false, content: `${core}${sameAsLast(key, content, `[dev-flow] no flow bound — unchanged since the last [dev-flow] note (playbook map is ${path.join(SKILL_DIR, "SKILL.md")}).`)}` } };
 		}
 		const guidance: string[] = [];
-		if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every gate question from here on (Verified?/Release?/Finish?) — run the remaining gates (verify → release → finish) back to back without stopping to ask; guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
+		// gh#254: under yolo = until-release the standing word does not answer Release? — saying it did sent the agent
+		// to carry it onto the call as --yolo --confirmed, which the gate reads as a replay and asks again
+		if (state.yolo && cfg.release.yolo === "until-release")
+			guidance.push("YOLO mode (until-release): the operator pre-confirmed Verified? and Finish? — run verify and finish without stopping to ask; Release? is NOT pre-confirmed (the playbook sets yolo = until-release). Run flow release bare — never with --yolo — and when it returns NEEDS-OPERATOR Release?, ask Release? in chat, stop, and on their answer re-run flow release --confirmed (plus --version=… / --no-version if they named the call). Guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
+		else if (state.yolo) guidance.push("YOLO mode: the operator pre-confirmed every gate question from here on (Verified?/Release?/Finish?) — run the remaining gates (verify → release → finish) back to back without stopping to ask; guidance the operator attached to the yolo word (e.g. patch bump, no tag) is a binding directive for the chain; checks and guardrails stay fully enforced.");
 		// The one playbook file this stage needs, named outright: the model reads it instead of
 		// guessing what a stage asks of it, and it pays for itself the first time a gate is refused.
 		const ref = stageReference(state.stage);

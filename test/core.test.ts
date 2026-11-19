@@ -1218,6 +1218,12 @@ test("--docs --no-version: no changelog proof (#163); (versioned) items stand do
 	const hint = nextHint({ ...docs, noVersion: false }, c);
 	assert.match(hint, /a docs flow usually ships unversioned — ask the operator \(flow release --no-version on their word\)/);
 	assert.match(nextHint({ ...newState("v", false), stage: "pre-release" as const }, c), /bump version in VERSION/, "a normal flow keeps the versioned hint");
+	// gh#254: the gate asks Release?, never the agent ahead of the call — asked first in chat, the gate asked again
+	for (const st of [{ ...newState("v", false), stage: "pre-release" as const }, { ...newState("v", false), stage: "pre-release" as const, versionChoice: "patch" }, { ...newState("v", false), stage: "pre-release" as const, versionChoice: "unreleased" }]) {
+		const h = nextHint(st, c);
+		assert.doesNotMatch(h, /ask Release\? and run flow release/, h);
+		assert.match(h, /run flow release[\s\S]*NEEDS-OPERATOR Release\?\): ask it then, never before the call/, h);
+	}
 });
 
 test("reflectDone: checks item n off with a fixed note, in list numbering (#165)", () => {
