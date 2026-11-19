@@ -48,6 +48,14 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	// tier-1 gate first (tier-2 confirmation is recorded by this very command, so it is excluded here)
 	const preGate = verifyGate({ ...state!, confirmations: { ...state!.confirmations, implement: { hash: checklistHash(items), at: now() } } }, cfg, branch);
 	if (preGate.length) return { text: `verify gate FAILED:\n- ${preGate.join("\n- ")}\n${branchLine}`, isError: true };
+	// The review runs before the operator is asked Verified?, not after it: reviewed in pre-release, every
+	// finding the review turned up changed the tree the operator had already said yes to, and Verified? was
+	// asked again — three times in one flow. Reviewed first, the operator's one look covers the tree that ships.
+	// A re-verify at pre-release and a release-only cut (nothing on the branch to read) owe none here.
+	if (state!.stage === "implement" && !isReleaseOnly(cfg, branch)) {
+		const owed = reviewOwed(state!, cfg);
+		if (owed) return { text: `verify gate FAILED:\n- the review comes before Verified?, so the operator's word covers the reviewed tree and review fixes never re-ask it — ${owed}\n${branchLine}`, isError: true };
+	}
 	// a stack another flow is reviewing or releasing on is not this gate's to take — ask before deploying
 	const slotted = cfg.commands.dev && !state!.docs ? await devSlotCheck(o, state!) : { note: "" };
 	if ("text" in slotted) return slotted;
@@ -151,6 +159,10 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 		const fpDeployed = state!.docs ? null : await worktreeFingerprint(gateCwd(root, state!));
 		if (fpDeployed) state!.reviewDeploy = { wt: fpDeployed, slot: slotKey(devPortOf(state!, cfg)), at: now() };
 		else delete state!.reviewDeploy;
+		// a re-verify the gate asked for holds the release until it is answered: the operator's "verified" in chat
+		// reached the agent once, which went on to release prep and never recorded it, and the release shipped
+		// under the older word with a warning nobody acted on
+		if (reverify) state!.reverifyAsked = now();
 		markPendingAsk(root, state!, "Verified?"); // pending however it is asked — a chat question or a dialog
 		// the agent's call never opens a dialog (#181): this is the review deploy — the app is up for the
 		// operator, and the answer comes back in chat as flow verify --confirmed
@@ -164,6 +176,7 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 		const ok = await ui.confirm("Operator verification", `Verified? All checks green${cfg.commands.dev && !state!.docs ? `; dev deploy is up for review (${cfg.commands.dev})` : ""} \u2014 does it work?`);
 		if (!ok) {
 			delete state!.pendingAsk;
+			delete state!.reverifyAsked;
 			writeState(root, state!);
 			return { text: `verification declined — stay in ${reverify ? "pre-release" : "implement"} and fix what failed` };
 		}
@@ -195,6 +208,7 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const before = state!.stage;
 	state!.stage = "pre-release";
 	delete state!.pendingAsk;
+	delete state!.reverifyAsked;
 	writeState(root, state!);
 	if (before === "pre-release")
 		return { text: `re-verified${audit} over ${state!.verifiedHead?.slice(0, 7) ?? "the current tree"} — the Verified? word now covers the review fixes; still in pre-release.${choiceNote}\n${ran}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
@@ -245,6 +259,9 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 		const n = dirtyWt.out.split("\n").filter((l) => l.trim()).length;
 		return { text: `release gate FAILED:\n- ${n} uncommitted path(s) in ${state!.worktree} — a merge ships the branch, not your working tree: commit or discard them, then re-run\n${tail(dirtyWt.out)}`, isError: true };
 	}
+	// a re-verify flow verify asked for and nobody recorded: the release would ship under the older Verified?
+	if (state!.reverifyAsked)
+		return { text: `release gate FAILED:\n- flow verify asked the operator Verified? over the review fixes (${ago(state!.reverifyAsked)}) and no answer is recorded — once they answer in chat, run flow verify --confirmed (an unchanged tree is not deployed again); if they said no, fix it and run flow verify again`, isError: true };
 	// gh#233: the review step ran (or the operator waived it) before anything slow or anything ships
 	const noReview = reviewOwed(state!, cfg);
 	if (noReview) return { text: `release gate FAILED:\n- ${noReview}`, isError: true };
@@ -423,7 +440,13 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 				: stale
 					? "a yolo given earlier does not choose to release under an older dev-flow build — ask Release? with the update-or-proceed question"
 					: "";
-	const mustAskFirst = !!holdWhy || stale;
+	// gh#206: a yolo held back only by the playbook's until-release knob carries nothing new for the operator
+	// to weigh — it just means "Release? is asked like on any flow". Their chat answer (a plain --confirmed)
+	// stands on the first call, as it does on a flow without yolo; asking first made them repeat a word already
+	// given. gh#219's shape — `--yolo --confirmed` replayed from the plan-stage word — still gets the question.
+	// Commits after Verified? and a stale build carry news, so those holds always ask first.
+	const untilReleaseOnly = cfg.release.yolo === "until-release" && !postVerify && !stale;
+	const mustAskFirst = (!!holdWhy && !(untilReleaseOnly && !flag("yolo"))) || stale;
 	const confirmed = flag("confirmed") && !(mustAskFirst && !ui.hasUI && state!.pendingAsk !== "Release?");
 	const yoloHeld = confirmed ? "" : holdWhy;
 	// gh#198: release.ask = on-change — Release? answers itself when it would only re-confirm Verified?: the call

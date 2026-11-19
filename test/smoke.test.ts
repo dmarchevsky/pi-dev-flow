@@ -47,7 +47,7 @@ function markReviewed(cwd: string) {
 		const f = path.join(df, slug, "state.json");
 		if (!existsSync(f)) continue;
 		const st = JSON.parse(readFileSync(f, "utf8"));
-		if (st.stage === "pre-release" && !st.review) writeFileSync(f, JSON.stringify({ ...st, review: { by: "inline", at: "2026-01-01T00:00:00.000Z", verdict: "smoke fixture" } }, null, 2));
+		if ((st.stage === "implement" || st.stage === "pre-release") && !st.review) writeFileSync(f, JSON.stringify({ ...st, review: { by: "inline", at: "2026-01-01T00:00:00.000Z", verdict: "smoke fixture" } }, null, 2));
 	}
 }
 
@@ -61,7 +61,7 @@ function makePi(opts: { review?: boolean } = {}): Stub & ((...a: never[]) => voi
 			stub.cmds[n] = {
 				handler: async (a: string, c: unknown) => {
 					cmdCtx = c as { notices?: string[]; sent?: { triggerTurn?: boolean }[] };
-					if (autoReview && n === "flow" && /^release(\s|$)/.test(a.trim())) markReviewed((c as { cwd: string }).cwd);
+					if (autoReview && n === "flow" && /^(release|verify)(\s|$)/.test(a.trim())) markReviewed((c as { cwd: string }).cwd);
 					await cmd.handler(a, c);
 				},
 			} as never;
@@ -73,7 +73,7 @@ function makePi(opts: { review?: boolean } = {}): Stub & ((...a: never[]) => voi
 				...t,
 				execute: async (...a: unknown[]) => {
 					const args = (a[1] as { args?: unknown } | undefined)?.args;
-					if (autoReview && t.name === "flow" && Array.isArray(args) && args[0] === "release") markReviewed((a[4] as { cwd: string }).cwd);
+					if (autoReview && t.name === "flow" && Array.isArray(args) && (args[0] === "release" || args[0] === "verify")) markReviewed((a[4] as { cwd: string }).cwd);
 					const r = await execute(...a);
 					const view = r?.details?.view;
 					if (view) {
@@ -1323,8 +1323,15 @@ test("roadmap: add → list → pick → done → tidy route through the backlog
 	assert.match((await flow(["roadmap", "pick", "1", "dark-mode"])).content[0].text, /now: flow start dark-mode/, "pick stamps and points at flow start (one verb)");
 	assert.match(readFileSync(rf, "utf8"), /- \[ \] dark mode \(dark-mode\)/);
 	assert.match((await flow(["roadmap", "done", "2"])).content[0].text, /item 2 marked done \(1 open\)/);
-	assert.match((await flow(["roadmap", "done", "5"])).content[0].text, /1–1 required/);
-	assert.match((await flow(["roadmap", "tidy"])).content[0].text, /dropped 1 done item/);
+	assert.match((await flow(["roadmap", "done", "5"])).content[0].text, /5 is not an open row \(1\) — nothing was changed/);
+	// gh#245: row numbers survive a done — "close 1 and 3" in two calls closes the two items named
+	await flow(["roadmap", "add", "third"]);
+	await flow(["roadmap", "add", "fourth"]);
+	assert.match((await flow(["roadmap"])).content[0].text, /1\. dark mode[\s\S]*3\. third[\s\S]*4\. fourth/, "a done row keeps its number");
+	assert.match((await flow(["roadmap", "done", "1,3"])).content[0].text, /2 items marked done \(1 open\) — 1\. dark mode \(dark-mode\) \| 3\. third/);
+	assert.ok((await flow(["roadmap", "done", "4,9"])).isError, "one bad number closes none");
+	assert.match(readFileSync(rf, "utf8"), /- \[ \] fourth/);
+	assert.match((await flow(["roadmap", "tidy"])).content[0].text, /dropped 3 done item\(s\) — 1 open; the row numbers changed/);
 	assert.ok(!readFileSync(rf, "utf8").includes("[x]"), "tidy drops the history line");
 	assert.match((await flow(["status"])).content[0].text, /1 roadmap item\(s\) open/, "status nudges the backlog");
 });
@@ -2422,6 +2429,10 @@ test("yolo stops short of Release? when commits landed after Verified?, or when 
 	assert.ok(replayed.isError && /NEEDS-OPERATOR Release\?[\s\S]*yolo = until-release/.test(replayed.content[0].text), replayed.content[0].text);
 	assert.equal(JSON.parse(readFileSync(path.join(c.repo, ".dev-flow", "replay", "state.json"), "utf8")).stage, "pre-release", "nothing shipped on a replayed flag");
 	assert.match((await c.flow(["release", "--confirmed"])).content[0].text, /release approved \(confirmed by operator instruction\)/, "the answer to the gate's own question stands");
+	// (d) gh#206: the operator's Release? answered in chat (a plain --confirmed) stands on the first call — the
+	// until-release knob only means Release? is asked like on any flow, and asking again made them repeat it
+	const d = await run(`${base}yolo = until-release\n\`\`\`\n`, "chatword");
+	assert.match((await d.flow(["release", "--confirmed"])).content[0].text, /release approved \(confirmed by operator instruction\)/, "the chat word stands without a gate round trip");
 });
 
 test("Finish? answers itself on a clean flow; finish = always, an open release item or a red after-merge check still stop it", async (t) => {
@@ -2579,43 +2590,82 @@ test("unversioned release: --no-version ships merge + changelog and skips the bu
 	assert.match(rd.content[0].text, /release recorded as complete \(unversioned — the changelog entry ships under Unreleased; the next versioned release folds it\)/);
 });
 
-test("flow release requires a review on record: done records one, --skip is the operator's word, docs flows owe none (gh#233)", async () => {
+test("the review comes before Verified?: verify requires one on record, done records it, --skip is the operator's word, docs flows owe none (gh#233)", async () => {
 	const pi = makePi({ review: false });
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
-	const state = (slug: string) => JSON.parse(readFileSync(path.join(repo, ".dev-flow", slug, "state.json"), "utf8"));
+	const stFile = (slug: string) => path.join(repo, ".dev-flow", slug, "state.json");
+	const state = (slug: string) => JSON.parse(readFileSync(stFile(slug), "utf8"));
 	await flow(["init", "--write", TEST_MD]);
 	trackPlaybook(repo);
 	await walkToImplement(flow, repo, "rv");
-	assert.match((await flow(["review"])).content[0].text, /no review on record — flow release requires one \(\/flow-review\)/);
-	await flow(["verify", "--confirmed"]);
-	assert.match((await flow(["status", "--json"])).content[0].text, /flow review done/, "the pre-release hint names how the review gets on record");
-	const refused = await flow(["release", "--no-version", "--confirmed"]);
-	assert.ok(refused.isError);
-	assert.match(refused.content[0].text, /no review is recorded for this flow — run the playbook's review step \(\/flow-review, or flow_stage op "review"\)[\s\S]*flow review done/);
+	assert.match((await flow(["review"])).content[0].text, /no review on record — flow verify requires one before Verified\? \(\/flow-review\)/);
+	assert.match((await flow(["status", "--json"])).content[0].text, /flow check; then the review — \/flow-review[^"]*flow review done/, "the implement hint puts the review before verify");
+	// asked before the review ran, verify refuses — before anything is deployed or asked
+	const early = await flow(["verify"]);
+	assert.ok(early.isError && !/NEEDS-OPERATOR/.test(early.content[0].text), early.content[0].text);
+	assert.match(early.content[0].text, /the review comes before Verified\?[\s\S]*no review is recorded for this flow — run the playbook's review step \(\/flow-review, or flow_stage op "review"\)[\s\S]*flow review done/);
+	assert.ok((await flow(["verify", "--confirmed"])).isError, "the operator's word does not stand in for the review either");
+	assert.equal(state("rv").stage, "implement");
 	assert.match((await flow(["review", "done"])).content[0].text, /needs the verdict in a line/);
 	const done = await flow(["review", "done", "PASS — one should-fix fixed"]);
 	assert.ok(!done.isError, done.content[0].text);
 	assert.equal(state("rv").review.by, "inline");
 	assert.equal(state("rv").review.verdict, "PASS — one should-fix fixed");
 	assert.match(state("rv").review.head, /^[0-9a-f]{40}$/);
+	const v = await flow(["verify", "--confirmed"]);
+	assert.ok(!v.isError, v.content[0].text);
 	assert.doesNotMatch((await flow(["release", "--no-version", "--confirmed"])).content[0].text, /no review is recorded/, "a recorded review answers the requirement");
+	// a flow that reached pre-release without one (an older dev-flow) still owes it at release
+	await walkToImplement(flow, repo, "old");
+	await flow(["review", "done", "PASS"]);
+	await flow(["verify", "--confirmed"]);
+	writeFileSync(stFile("old"), JSON.stringify({ ...state("old"), review: undefined }, null, 2));
+	assert.match((await flow(["status", "--json"])).content[0].text, /flow review done/, "the pre-release hint names how the review gets on record");
+	const refused = await flow(["release", "--no-version", "--confirmed"]);
+	assert.ok(refused.isError);
+	assert.match(refused.content[0].text, /no review is recorded for this flow/);
 	// skipping is the operator's word: asked first, then recorded
 	await walkToImplement(flow, repo, "sk");
-	await flow(["verify", "--confirmed"]);
 	const ask = await flow(["review", "--skip"]);
 	assert.ok(ask.isError && /^NEEDS-OPERATOR Skip review\?/.test(ask.content[0].text), ask.content[0].text);
 	assert.equal(state("sk").review, undefined);
 	assert.ok(!(await flow(["review", "--skip", "--confirmed"])).isError);
 	assert.equal(state("sk").review.by, "skipped");
+	assert.ok(!(await flow(["verify", "--confirmed"])).isError, "a skipped review lets verify ask");
 	assert.doesNotMatch((await flow(["release", "--no-version", "--confirmed"])).content[0].text, /no review is recorded/);
 	// a docs flow owes none
 	await flow(["start", "dx", "--docs"]);
 	await flow(["approve", "--confirmed"]);
 	commitWt(repo, "dx");
-	await flow(["verify", "--confirmed"]);
+	assert.ok(!(await flow(["verify", "--confirmed"])).isError, "a docs flow owes no code review before Verified?");
 	assert.doesNotMatch((await flow(["release", "--no-version", "--confirmed"])).content[0].text, /no review is recorded/, "a docs flow owes no code review");
+});
+
+test("a re-verify flow verify asked for holds the release until the operator's answer is recorded", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const state = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "rh", "state.json"), "utf8"));
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await walkToImplement(flow, repo, "rh");
+	assert.ok(!(await flow(["verify", "--confirmed"])).isError);
+	commitWt(repo, "rh", "late fix");
+	await flow(["check"]);
+	const ask = await flow(["verify"]);
+	assert.match(ask.content[0].text, /NEEDS-OPERATOR Verified\?[\s\S]*re-verify over the review fixes/);
+	assert.ok(state().reverifyAsked, "the unanswered re-verify is on record");
+	const held = await flow(["release", "--no-version", "--confirmed"]);
+	assert.ok(held.isError, held.content[0].text);
+	assert.match(held.content[0].text, /flow verify asked the operator Verified\? over the review fixes[\s\S]*run flow verify --confirmed/);
+	assert.equal(state().stage, "pre-release", "nothing shipped under the older word");
+	const answered = await flow(["verify", "--confirmed"]);
+	assert.match(answered.content[0].text, /re-verified \(confirmed by operator instruction\)/);
+	assert.equal(state().reverifyAsked, undefined);
+	assert.doesNotMatch((await flow(["release", "--no-version", "--confirmed"])).content[0].text, /flow verify asked the operator/);
 });
 
 test("release-only flow: verify accepts an empty branch over unreleased main, the bump lands at pre-release (#161)", async () => {

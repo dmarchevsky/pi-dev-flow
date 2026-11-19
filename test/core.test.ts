@@ -123,6 +123,7 @@ import {
 	roadmapDone,
 	roadmapDoneForSlug,
 	roadmapDrop,
+	roadmapOpenRows,
 	roadmapOpenCount,
 	roadmapPick,
 	roadmapTidy,
@@ -621,31 +622,39 @@ test("roadmap: append mints the header once and adds open items", () => {
 	assert.equal(doneItemCount(two), 0);
 });
 
-test("roadmap: pick stamps the nth open item, idempotent per slug", () => {
+test("roadmap: pick stamps the open item at a row, idempotent per slug", () => {
 	const src = "# r\n- [ ] a\n- [x] gone\n- [ ] b\n";
-	assert.equal(roadmapPick(src, 2, "my-slug"), "# r\n- [ ] a\n- [x] gone\n- [ ] b (my-slug)\n");
-	assert.equal(roadmapPick(roadmapPick(src, 2, "s")!, 2, "s"), "# r\n- [ ] a\n- [x] gone\n- [ ] b (s)\n", "re-pick does not double-stamp");
-	assert.equal(roadmapPick(src, 3, "x"), null, "only open items are numberable");
+	assert.equal(roadmapPick(src, 3, "my-slug"), "# r\n- [ ] a\n- [x] gone\n- [ ] b (my-slug)\n", "rows count done items too (gh#245)");
+	assert.equal(roadmapPick(roadmapPick(src, 3, "s")!, 3, "s"), "# r\n- [ ] a\n- [x] gone\n- [ ] b (s)\n", "re-pick does not double-stamp");
+	assert.equal(roadmapPick(src, 2, "x"), null, "a done row is not pickable");
+	assert.equal(roadmapPick(src, 4, "x"), null);
 	// odd spacing is no item anywhere: counting and editing must never disagree
 	assert.equal(roadmapOpenCount("-  [ ] loose\n"), 0);
 	assert.equal(roadmapPick("-  [ ] loose\n", 1, "s"), null);
 });
 
-test("roadmap: done checks the nth open item with a stamp", () => {
-	const src = "- [ ] a\n- [x] old\n- [ ] b\n";
-	assert.match(roadmapDone(src, 2, "2025-10-19 fin")!, /- \[x\] b — done: 2025-10-19 fin/);
-	assert.equal(roadmapDone(src, 3, "x"), null);
+test("roadmap: done checks the open item at a row with a stamp; the other rows keep their numbers (gh#245)", () => {
+	const src = "- [ ] a\n- [x] old\n- [ ] b\n- [ ] c\n";
+	assert.match(roadmapDone(src, 3, "2025-10-19 fin")!, /- \[x\] b — done: 2025-10-19 fin/);
+	assert.equal(roadmapDone(src, 2, "x"), null, "a done row cannot be closed again");
+	assert.equal(roadmapDone(src, 5, "x"), null);
 	assert.equal(doneItemCount(roadmapDone(src, 1, "d")!), 2);
+	// "close 3 and 4": the second number still names c after the first done
+	const both = roadmapDone(roadmapDone(src, 3, "d")!, 4, "d")!;
+	assert.match(both, /- \[x\] b — done: d\n- \[x\] c — done: d/);
+	assert.deepEqual(roadmapOpenRows(both), [{ row: 1, item: "a" }]);
+	assert.deepEqual(roadmapOpenRows(src), [{ row: 1, item: "a" }, { row: 3, item: "b" }, { row: 4, item: "c" }]);
 });
 
 test("roadmap: drop removes the nth open item and its brief, never marks it done", () => {
 	const src = "# head\n- [ ] a\n  > a's brief\n- [x] old\n- [ ] b\n  > b's brief\n  > more\n- [ ] c\n";
-	const r = roadmapDrop(src, 2)!;
+	const r = roadmapDrop(src, 3)!;
 	assert.equal(r.item, "b");
 	assert.equal(r.text, "# head\n- [ ] a\n  > a's brief\n- [x] old\n- [ ] c\n");
 	assert.equal(doneItemCount(r.text), 1, "a dropped item is not counted as shipped");
 	assert.equal(roadmapDrop(src, 1)!.text, "# head\n- [x] old\n- [ ] b\n  > b's brief\n  > more\n- [ ] c\n");
-	assert.equal(roadmapDrop(src, 4), null);
+	assert.equal(roadmapDrop(src, 2), null, "a done row is not dropped");
+	assert.equal(roadmapDrop(src, 5), null);
 });
 
 test("roadmap: finish hook checks off every item stamped (slug)", () => {

@@ -88,6 +88,7 @@ Run without `--confirmed`, it deploys for your review:
 4. Asks **Verified?**
 
 It refuses if:
+- no review is on record (see below);
 - the branch has no commits (except a release-only flow on a versioned project with unreleased
   commits on main);
 - a check, the build or the post-deploy health probe fails;
@@ -102,8 +103,17 @@ With `--confirmed`, it never rewrites history. If main moved since the review de
 your review, it only checks that the app still answers. If the tree changed, or the app stopped
 answering, it deploys again.
 
-**At pre-release, `verify` is the re-verify:** after review fixes, it re-runs the build, deploy and
-probes on the current tree and asks Verified? again. A standing yolo never answers this.
+**The review comes before Verified?** The playbook's review step (`release.review`, `/flow-review`
+by default) runs in implement, once `flow check` is green, and the first `flow verify` refuses until
+it is on record: a `flow_stage` review worker records itself, and an inline review is recorded with
+`flow review done "<verdict>"`. Run after Verified?, every review finding changed the tree you had
+already approved and you were asked again. Reviewed first, your one look covers the tree that ships.
+Docs flows and release-only cuts owe none, `review = ""` under `## release` turns it off, and
+skipping it is your call (`flow review --skip`, asked as **Skip review?**).
+
+**At pre-release, `verify` is the re-verify:** after a late fix, it re-runs the build, deploy and
+probes on the current tree and asks Verified? again. A standing yolo never answers this, and
+`flow release` refuses until the answer is recorded with `flow verify --confirmed`.
 
 ## release: Release?
 
@@ -122,15 +132,16 @@ Proves the branch is ready to ship:
   before a commit holding only release prep (version file, changelog) stay green without a re-run;
   set `recheck = always` in `## release` to re-run them anyway. `release.preflight` passes if set.
 - There are no leftover conflict markers (`<<<<<<<`) and no uncommitted files in the worktree.
-- **A review is on record.** The playbook's review step (`release.review`, `/flow-review` by
-  default) has to have run: a `flow_stage` review worker records itself, and an inline review is
-  recorded with `flow review done "<verdict>"`. The verdict stays advisory; only that a review ran
-  is checked. Shipping without one is your call (`flow review --skip`, asked as **Skip review?**).
-  Docs flows and release-only cuts owe none, and `review = ""` under `## release` turns it off.
+- **A review is on record.** It normally ran before Verified? (see [verify](#verify-verified)); a
+  flow that reached pre-release without one owes it here. The verdict stays advisory; only that a
+  review ran is checked.
+- **No re-verify is waiting.** When `flow verify` at pre-release asked Verified? again, the answer
+  has to be recorded (`flow verify --confirmed`) before the release ships under it.
 
 **Release? often answers itself** (`ask = on-change`, the default). That happens when your call is
-on record and only release prep (bump, changelog) changed since Verified?. A `--confirmed` given before the gate asked doesn't count where a question must be put (a held yolo,
-or a stale build): the gate asks first.
+on record and only release prep (bump, changelog) changed since Verified?. A `--confirmed` given before the gate asked doesn't count where a question carries news you haven't
+seen (commits after Verified? on a yolo flow, or a stale build): the gate asks first. A yolo held back
+only by `yolo = until-release` is asked like any flow, so your chat answer stands on the first call.
 
 It still asks when:
 - code changed after Verified?;
@@ -213,7 +224,7 @@ To drop an unreleased feature, use `flow abort` instead.
 ## reflect, roadmap, doctor
 
 - `flow reflect …` manages the notes queue. See [reflections](reflections.md).
-- `flow roadmap [add "<feature>" [--slug=] [--brief=] | pick <n> <slug> | done <n> | drop <n> | tidy]`
+- `flow roadmap [add "<feature>" [--slug=] [--brief=] | pick <n> <slug> | done <n>[,<n>…] | drop <n>[,<n>…] | tidy]` — `<n>` is the row number the list prints; `done` leaves the others in place, `drop` and `tidy` renumber
   manages `.dev-flow/roadmap.md`. `pick` stamps an item for `flow start <slug>`, and `finish` checks
   it off when the feature ships.
 - `flow doctor ["<note>"]` is a read-only health report: playbook drift, dead commands, ghost

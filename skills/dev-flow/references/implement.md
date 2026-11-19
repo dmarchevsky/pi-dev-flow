@@ -22,6 +22,14 @@ note). Other sessions' worktrees are theirs.
 5. UI feature → a real browser visual pass, not just a typecheck.
 6. Walk the **tier-2 checklist** (`- [ ]` items) with the operator honestly —
    it cannot be scripted.
+7. **Review before Verified?**: once `flow check` is green, run the playbook's
+   review step (`/flow-review`, or `flow_stage` op `"review"` for a fresh
+   reviewer); fix every **Must fix** and **Should fix**, `flow check` again,
+   then record it: `flow review done "<verdict in a line>"` (a worker records
+   itself). `flow verify` refuses until a review is on record, so the
+   operator's Verified? covers the reviewed tree and review fixes never re-ask
+   it. Run the review once; skipping it is the operator's word
+   (`flow review --skip`, asked as **Skip review?**).
 
 ### Verified? — two calls
 
@@ -51,7 +59,8 @@ note). Other sessions' worktrees are theirs.
    deploy again when the tree is the one it deployed for review — it only
    probes that the app still answers. If the
    default branch moved since the review deploy it refuses: run `flow verify`
-   again first. Fixes → iterate and re-verify; that loop is free.
+   again first. Fixes → iterate and re-verify; that loop is free (a fix that
+   changes behaviour needs no new review unless it is large).
 
 Verify lands the feature in **pre-release**. A `--docs` feature runs no
 project command and asks only the question.
