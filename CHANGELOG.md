@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.95.1] - 2026-11-20
+
+**`flow release` waits for the merge commit's CI to go green before it cuts the tag; `tagWait = none` opts out.**
+
 ### Fixed
 - **`flow release` tags only once the merge commit's CI is green (gh#271).** The gate merged, then cut and pushed the tag in the same call. A playbook rule like "test green on the merge commit before the tag" could therefore never be met, and the checklist printed it as open next to "tag pushed". The gate now waits for the CI that the merge commit started.
   - Green, or no CI on that commit after a minute: it tags.
