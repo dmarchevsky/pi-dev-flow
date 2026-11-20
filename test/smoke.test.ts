@@ -3591,12 +3591,62 @@ test("flow_stage: steered before the budget, and a worker cut at it is asked onc
 		const r = (await pi.tools.flow_stage.execute("id", { op: "reflect", note: "" }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
 		const out = r.content[0].text;
 		assert.equal(steers.length, 1, "steered once before the cut");
-		assert.match(steers[0], /Time check: about 5 min of your 20-min budget are left/);
+		assert.match(steers[0], /Time check: about 8 min of your 20-min budget are left/, "a read-only worker is steered at 60%");
 		assert.equal(prompts.length, 2, "no nudges after the cut — one salvage prompt");
 		assert.match(prompts[1], /Do not call any more tools/);
-		assert.match(out, /interrupted at the 20-min budget \(steered to wrap up at 75%\) — REPORT salvaged after the cut, treat it as partial/);
+		assert.match(out, /interrupted at the 20-min budget \(steered to wrap up at 60%\) — REPORT salvaged after the cut, treat it as partial/);
 		assert.match(out, /1\. \[fold\] docs: the seed command drifted/, "the salvaged rows are rendered");
 		assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "cut", "state.json"), "utf8")).reflectedAt, "a salvaged reflection still counts for finish");
+	} finally {
+		stageWorkerSpawn.run = orig;
+		reflectSeams.upstreamIssues = origIssues;
+		delete workerTiming.softMs; delete workerTiming.hardMs; delete workerTiming.graceMs;
+	}
+});
+
+test("flow_stage salvage: the queued steer is dropped and thinking lowered; when the salvage says nothing, rows already written survive (gh#252)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "lost"]);
+	const calls: string[] = [];
+	let release: (() => void) | undefined;
+	let prompts = 0;
+	const messages: unknown[] = [];
+	const worker = {
+		...fakeWorker([]),
+		// the first turn drafts two rows, then thinks until the cut; the salvage turn is cut while thinking too
+		prompt: async (t: string) => {
+			prompts++;
+			if (prompts === 1) {
+				messages.push({ role: "assistant", content: [{ type: "text", text: "Draft so far:\nF1 | fold | code | the seed script skips admins | dup: none | why: real bug\nF2 | drop | docs | a typo | why: no cost" }] });
+				messages.push({ role: "assistant", content: [{ type: "thinking", thinking: "F3 | fold | docs | mused, never written" }] });
+				await new Promise<void>((r) => { release = r; });
+			} else calls.push(`prompt:${/Do not call any more tools/.test(t) ? "salvage" : t}`);
+		},
+		messages,
+		getLastAssistantText: () => "",
+		steer: async () => { calls.push("steer"); },
+		clearQueue: () => { calls.push("clearQueue"); return { steering: [], followUp: [] }; },
+		setThinkingLevel: (l: string) => { calls.push(`thinking:${l}`); },
+		abort: async () => { release?.(); },
+	};
+	const orig = stageWorkerSpawn.run;
+	const origIssues = reflectSeams.upstreamIssues;
+	reflectSeams.upstreamIssues = async () => null;
+	stageWorkerSpawn.run = async () => worker as never;
+	Object.assign(workerTiming, { softMs: 20, hardMs: 80, graceMs: 2000 });
+	try {
+		const r = (await pi.tools.flow_stage.execute("id", { op: "reflect", note: "" }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
+		const out = r.content[0].text;
+		assert.deepEqual(calls, ["steer", "clearQueue", "thinking:minimal", "prompt:salvage"], "the stale steer is dropped and thinking lowered before the salvage prompt");
+		assert.match(out, /the salvage prompt got no REPORT; the finding rows it had already written are shown, treat them as partial/);
+		assert.match(out, /fold — code \(a patch flow\):\n  1\. the seed script skips admins/, "the drafted rows reach the fold\/drop list");
+		assert.ok(!/mused, never written/.test(out), "thinking is not a finding");
+		assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "lost", "state.json"), "utf8")).reflectedAt, "a recovered reflection counts for finish");
 	} finally {
 		stageWorkerSpawn.run = orig;
 		reflectSeams.upstreamIssues = origIssues;
