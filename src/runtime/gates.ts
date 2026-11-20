@@ -1,12 +1,12 @@
 /** dev-flow runtime — The gate runner and the gates that do not ship anything. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, parseRowIds, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState, DF_GITIGNORE } from "../core.ts";
+import { skipsChecks, approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState, parseRowIds, DF_GITIGNORE } from "../core.ts";
 import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, ghostInfo, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
 import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
 import { AGENT_MARK } from "../present.ts";
-import { GATE_HELP, SELF_BUILD, type Ui, buildSkew, copyWarning, currentBranch, dfDir, featDir, featureEnv, flagValue, gateCwd, gitConsistency, initiated, loadedVersion, mergeHistoryEvidence, needState, now, originUrl, publishedVersion, readClaim, readReflections, readReflectionsText, readRoadmap, readState, roadmapFile, sh, stateFile, tail, unfinishedStates, writePlaybookMergePolicy, writeState } from "./base.ts";
+import { GATE_HELP, SELF_BUILD, refreshDocsCode, type Ui, buildSkew, copyWarning, currentBranch, dfDir, featDir, featureEnv, flagValue, gateCwd, gitConsistency, initiated, loadedVersion, mergeHistoryEvidence, needState, now, originUrl, publishedVersion, readClaim, readReflections, readReflectionsText, readRoadmap, readState, roadmapFile, sh, stateFile, tail, unfinishedStates, writePlaybookMergePolicy, writeState } from "./base.ts";
 import { type RunResult, type Session, ago, behindNote, releaseDevSlot, pendingChecks, probeHealth, readDevPorts, runChecks, stampChecks, triedNote } from "./checks.ts";
 import { GIT_TRACK_NOTE, isSelfRepo, renderQuestions, setupQuestions, tagPatternEvidence } from "./setup.ts";
 import { foldRows, foldView, legacyPluginRows, pluginUpstream, reflectDeferNote, reflectDoneNote, reflectList, reflectMoveNote, reflectNote, reflectPlanNote, reflectReopenNote, reflectSameNote, reflectTidy } from "./reflect.ts";
@@ -749,13 +749,14 @@ export async function gateCheck(o: GateCtx): Promise<RunResult> {
 	// a docs flow runs no project command anywhere else — pendingChecks, verifyGate and releaseGate all skip
 	// it — so running tier-1 here only produced a FAIL that read like a broken deploy in a checkout that
 	// never built the binary (#96)
-	// shortcut: --docs is the operator's word, nothing checks the changeset is docs-only, so a mislabelled
-	// flow now gets no test run at all; the mechanical fix is a diff-scope guard at verify if it ever bites
-	if (state!.docs) return { text: "docs mode: project commands skipped — a docs flow runs no tier-1 checks (CI on the tag and the artifact proof still do)" };
+	// --docs is the operator's word for the change's kind, but the diff decides: one that reaches code runs the checks
+	await refreshDocsCode(root, state!, cfg);
+	if (skipsChecks(state!)) return { text: "docs mode: project commands skipped — a docs flow runs no tier-1 checks (CI on the tag and the artifact proof still do)" };
+	const docsNote = state!.docs ? `docs flow, but its diff reaches code (${state!.docsCode!.slice(0, 6).join(", ")}${state!.docsCode!.length > 6 ? ` +${state!.docsCode!.length - 6}` : ""}) — the tier-1 checks run as on any flow\n` : "";
 	if (!cfg.checkList.length) return { text: 'no tier-1 checks configured — add ```flow blocks / flow-check blocks to ## implement in project.md', isError: true };
 	const ran = await runChecks(root, state!, cfg, cfg.checkList);
 	const behind = await behindNote(root, state!, cfg);
-	return { text: `tier-1 checks:\n${ran.lines.join("\n")}${behind ? `\n${behind}` : ""}`, isError: ran.failed };
+	return { text: `${docsNote}tier-1 checks:\n${ran.lines.join("\n")}${behind ? `\n${behind}` : ""}`, isError: ran.failed };
 }
 
 export async function gateHealth(o: GateCtx): Promise<RunResult> {

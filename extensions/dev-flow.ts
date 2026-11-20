@@ -117,6 +117,11 @@ export default function devFlow(pi: ExtensionAPI) {
 
 	const sessFor = (ctx: ExtensionContext, root: string): Session => {
 		const key = sessionKey(ctx);
+		// the same resolution the per-turn context and the guards use (the binding, else this session's claim): a
+		// binding lost from memory while the claim still names this session made the context say "bound to X"
+		// and the next gate say "nothing bound" — one round trip spent inside Release?
+		const claimed = bindings.get(key) ? null : boundFeature(root, key)?.slug ?? null;
+		if (claimed) bindings.set(key, claimed);
 		return {
 			key,
 			slug: bindings.get(key) ?? null,

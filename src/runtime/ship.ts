@@ -1,10 +1,10 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { applicableItems, operatorDirt, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail } from "../core.ts";
+import { skipsChecks, applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail, operatorDirt } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
-import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
+import { refreshDocsCode, buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type RunResult, ago, releaseDevSlot, keepThroughPrep, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
 import { type GateCtx, markPendingAsk } from "./gates.ts";
 import { closeLinkedReflections } from "./reflect.ts";
@@ -43,6 +43,7 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	const fpAtGate = await worktreeFingerprint(gateCwd(root, state!));
 	const staleAtGate = freshenChecks(state!, fpAtGate, (n) => n === "health" && healthRerunsAfterDeploy(cfg));
 	if (staleAtGate.length) writeState(root, state!);
+	await refreshDocsCode(root, state!, cfg); // a docs flow whose diff reaches code owes the checks like any flow
 	const pending = pendingChecks(state!, cfg);
 	const gateRun = pending.length ? await runChecks(root, state!, cfg, pending) : null;
 	if (gateRun?.failed) return { text: `verify gate FAILED — a check run at the gate failed:\n${gateRun.lines.join("\n")}\n${branchLine}`, isError: true };
@@ -355,7 +356,8 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// tier-2 pre-release confirmation is recorded by this very command, so it is excluded here
 	// The checks this gate needs green are run by the gate, as verify does (#84) — after the cheap proofs, so a
 	// wrong version or a missing changelog entry is refused before minutes are spent on a suite.
-	const owed = state!.docs ? [] : cfg.checkList.filter((c) => !state!.checks[c.name]?.ok);
+	await refreshDocsCode(root, state!, cfg);
+	const owed = skipsChecks(state!) ? [] : cfg.checkList.filter((c) => !state!.checks[c.name]?.ok);
 	const assumed = { ...state!.checks, ...Object.fromEntries(owed.map((c) => [c.name, { ok: true, at: now() }])) };
 	const gateState = (checks: FlowState["checks"]) => ({ ...state!, checks, noVersion, confirmations: { ...state!.confirmations, "pre-release": { hash: checklistHash(items), at: now() } } });
 	const cheap = preReleaseGate(gateState(assumed), cfg, prep);
