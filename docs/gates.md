@@ -163,7 +163,7 @@ On GitHub, the same `flow release` call then publishes. Your Release? answer is 
    (`.github/pull_request_template.md`), the gate refuses until `pr-body.md` exists, before
    Release? is asked, so the template's sections are filled before the merge.
 2. Checks the branch merges cleanly into the default branch. On a conflict it names the files and pushes nothing.
-3. Waits for the PR's CI, up to 30 minutes. A repo with no CI is given a minute for checks to show up.
+3. Waits for the PR's CI, up to 30 minutes. A repo with no CI is given a minute for checks to show up. A check pending for 5 minutes has its Actions job asked directly: GitHub can leave a check run `in_progress` after its job finished, and the job's result is used then.
 4. Merges in the playbook's `merge` style.
 5. Waits for the merge commit's own CI to go green, because the tag publishes from that commit. If it's red, the
    gate stops without tagging. If no CI runs on that commit, it tags after a minute. `tagWait = none` under

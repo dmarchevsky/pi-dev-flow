@@ -70,3 +70,37 @@ test("checkBucket reads GitHub's status rollup: check runs and commit statuses",
 	assert.equal(checkBucket({ __typename: "StatusContext", state: "PENDING" }), "pending");
 	assert.equal(checkBucket({ __typename: "StatusContext", state: "ERROR" }), "fail");
 });
+
+test("awaitPrChecks (gh#275): a check stuck at in_progress whose job concluded is taken at its job's word", async () => {
+	const job = "https://github.com/o/r/actions/runs/11/job/22";
+	const probed: string[] = [];
+	const savedProbe = publishWait.probe;
+	await withFakeChecks(() => [{ name: "actionlint", bucket: "pending", link: job }, ck("build", "pass")], async () => {
+		publishWait.probe = async (link) => { probed.push(link); return "pass"; };
+		const r = await awaitPrChecks(7, tmpdir());
+		assert.equal(r.state, "green");
+		assert.match("note" in r ? r.note : "", /actionlint: its job concluded pass while the check still said in_progress/);
+		assert.deepEqual(probed, [job], "asked once the check was pending past the threshold, and only that check");
+	});
+	assert.equal(publishWait.probe, savedProbe);
+	await withFakeChecks(() => [{ name: "actionlint", bucket: "pending", link: job }], async () => {
+		publishWait.probe = async () => "fail";
+		const r = await awaitPrChecks(7, tmpdir());
+		assert.equal(r.state, "red", "a concluded failure is red, not 30 more minutes of waiting");
+	});
+	await withFakeChecks(() => [{ name: "actionlint", bucket: "pending", link: job }], async () => {
+		publishWait.probe = async () => null;
+		const r = await awaitPrChecks(7, tmpdir());
+		assert.equal(r.state, "running");
+		assert.match("why" in r ? r.why : "", /stale check run: pushing a new commit to the branch clears it/, "names the escape when the job is still running too");
+	});
+});
+
+test("awaitPrChecks: a check pending under the threshold is not probed", async () => {
+	let probes = 0;
+	await withFakeChecks((t) => (t < 2 * MIN ? [ck("build", "pending")] : [ck("build", "pass")]), async () => {
+		publishWait.probe = async () => { probes++; return "pass"; };
+		assert.equal((await awaitPrChecks(7, tmpdir())).state, "green");
+	});
+	assert.equal(probes, 0);
+});

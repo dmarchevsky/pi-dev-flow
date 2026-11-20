@@ -19,7 +19,24 @@ export const publishWait = {
 	checks: (pr: number, cwd: string): Promise<PrCheck[] | null> => prChecks(pr, cwd),
 	/** the CI runs a commit started — the merge commit, before it is tagged (gh#271) */
 	commitChecks: (sha: string, cwd: string): Promise<PrCheck[] | null> => commitRuns(sha, cwd),
+	/** gh#275: a check pending this long has its Actions job asked directly — GitHub can leave a check run
+	 *  `in_progress` for good after its job concluded */
+	staleMs: 5 * 60_000,
+	/** the bucket of the Actions job or run behind a check's link once it has concluded; null while it runs or when
+	 *  the link is not an Actions one */
+	probe: (link: string, cwd: string): Promise<string | null> => actionsConclusion(link, cwd),
 };
+
+/** gh#275: the Actions job (or run) a check links to — its own conclusion, which GitHub sets even when the check
+ *  run shown on the PR is stuck at in_progress. */
+async function actionsConclusion(link: string, cwd: string): Promise<string | null> {
+	const m = /github\.com\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)(?:\/job\/(\d+))?/.exec(link);
+	if (!m) return null;
+	const api = m[4] ? `repos/${m[1]}/${m[2]}/actions/jobs/${m[4]}` : `repos/${m[1]}/${m[2]}/actions/runs/${m[3]}`;
+	const r = await sh(`gh api ${sq(api)} --jq '.conclusion // ""'`, cwd, 60_000);
+	const k = r.ok ? r.out.trim() : "";
+	return /^[a-z_]+$/.test(k) ? checkBucket({ status: "COMPLETED", conclusion: k.toUpperCase() }) : null;
+}
 
 /** Workflow runs of one commit as checks; [] when none started, null when gh cannot say. */
 async function commitRuns(sha: string, cwd: string): Promise<PrCheck[] | null> {
@@ -82,27 +99,57 @@ export type CiVerdict = { state: "green" | "none"; note: string } | { state: "re
 
 /** Wait (bounded) for the PR's checks to settle. */
 export const awaitPrChecks = (pr: number, cwd: string): Promise<CiVerdict> =>
-	awaitChecks(() => publishWait.checks(pr, cwd), { who: `PR #${pr}`, read: `gh pr view ${pr} --json statusCheckRollup`, none: "no CI checks on the PR", green: "CI green" });
+	awaitChecks(() => publishWait.checks(pr, cwd), cwd, {
+		who: `PR #${pr}`,
+		read: `gh pr view ${pr} --json statusCheckRollup`,
+		none: "no CI checks on the PR",
+		green: "CI green",
+		stuck: "a check whose job already finished on GitHub but still shows in_progress is a stale check run: pushing a new commit to the branch clears it",
+	});
 
 /** gh#271: wait (bounded) for the CI the merge commit started — a tag publishes from it, so it is cut on green only. */
 export const awaitCommitChecks = (sha: string, cwd: string): Promise<CiVerdict> =>
-	awaitChecks(() => publishWait.commitChecks(sha, cwd), { who: `merge commit ${sha.slice(0, 9)}`, read: `gh run list --commit ${sha}`, none: "no CI ran on the merge commit", green: "merge-commit CI green" });
+	awaitChecks(() => publishWait.commitChecks(sha, cwd), cwd, { who: `merge commit ${sha.slice(0, 9)}`, read: `gh run list --commit ${sha}`, none: "no CI ran on the merge commit", green: "merge-commit CI green" });
 
-async function awaitChecks(read: () => Promise<PrCheck[] | null>, l: { who: string; read: string; none: string; green: string }): Promise<CiVerdict> {
+async function awaitChecks(read: () => Promise<PrCheck[] | null>, cwd: string, l: { who: string; read: string; none: string; green: string; stuck?: string }): Promise<CiVerdict> {
 	const start = publishWait.clock();
 	const mins = () => `${Math.max(1, Math.round((publishWait.clock() - start) / 60_000))} min`;
+	// gh#275: when each check was first seen pending, and what its job concluded once asked — a check run GitHub left
+	// at in_progress after its job finished burned three 30-min waits; it is taken at its job's word instead
+	const since = new Map<string, number>();
+	const settled = new Map<string, string>();
+	const stale: string[] = [];
 	for (;;) {
-		const rows = await read();
+		const raw = await read();
 		const elapsed = publishWait.clock() - start;
+		const rows = raw?.map((c) => {
+			if (c.bucket !== "pending") return c;
+			const key = `${c.name}\u0000${c.link}`;
+			const b = settled.get(key);
+			return b ? { ...c, bucket: b } : c;
+		}) ?? null;
+		for (const c of rows ?? []) {
+			if (c.bucket !== "pending" || !c.link) continue;
+			const key = `${c.name}\u0000${c.link}`;
+			const first = since.get(key) ?? elapsed;
+			since.set(key, first);
+			if (elapsed - first < publishWait.staleMs) continue;
+			const b = await publishWait.probe(c.link, cwd);
+			if (!b || b === "pending") continue;
+			settled.set(key, b);
+			stale.push(`${c.name}: its job concluded ${b} while the check still said in_progress`);
+			c.bucket = b;
+		}
+		const staleNote = stale.length ? `; ${stale.join(", ")}` : "";
 		if (rows === null) return { state: "unknown", why: `cannot read the checks of ${l.who} (${l.read})` };
 		if (!rows.length) {
 			if (elapsed >= publishWait.appearMs) return { state: "none", note: l.none };
 		} else {
 			const failed = rows.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
-			if (failed.length) return { state: "red", why: `${l.who} checks failed — ${failed.map((c) => `${c.name}: ${c.bucket}${c.link ? ` (${c.link})` : ""}`).join(", ")}` };
+			if (failed.length) return { state: "red", why: `${l.who} checks failed — ${failed.map((c) => `${c.name}: ${c.bucket}${c.link ? ` (${c.link})` : ""}`).join(", ")}${staleNote}` };
 			const pending = rows.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
-			if (!pending.length) return { state: "green", note: `${l.green} (${rows.length} check${rows.length === 1 ? "" : "s"}${elapsed >= 60_000 ? `, waited ${mins()}` : ""})` };
-			if (elapsed >= publishWait.budgetMs) return { state: "running", why: `${l.who} checks still running after ${mins()} (${pending.map((c) => c.name).join(", ")})` };
+			if (!pending.length) return { state: "green", note: `${l.green} (${rows.length} check${rows.length === 1 ? "" : "s"}${elapsed >= 60_000 ? `, waited ${mins()}` : ""}${staleNote})` };
+			if (elapsed >= publishWait.budgetMs) return { state: "running", why: `${l.who} checks still running after ${mins()} (${pending.map((c) => c.name).join(", ")})${l.stuck ? ` — ${l.stuck}` : ""}` };
 		}
 		await publishWait.sleep(publishWait.pollMs);
 	}
