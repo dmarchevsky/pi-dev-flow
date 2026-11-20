@@ -120,6 +120,10 @@ import {
 	workerSteer,
 	parseReflectReport,
 	renderReflectFindings,
+	defaultBudgetMin,
+	workerSteerAt,
+	recoverReflectRows,
+	assistantTexts,
 	shortFindingNote,
 	AGENT_MARK,
 	appendRoadmapItem,
@@ -1137,7 +1141,7 @@ test("digestTranscript: a guard event is the guard's own error result, never wor
 });
 
 test("workerSteer: names the time left; implement commits, read-only ops write the REPORT", () => {
-	assert.match(workerSteer("reflect", 20), /about 5 min of your 20-min budget/);
+	assert.match(workerSteer("reflect", 20), /about 8 min of your 20-min budget/, "read-only ops are steered at 60% (gh#252)");
 	assert.match(workerSteer("reflect", 20), /Stop probing and write the REPORT section now/);
 	assert.match(workerSteer("implement", 60), /about 15 min .* commit what works/);
 });
@@ -1282,6 +1286,29 @@ test("renderReflectFindings: the operator sees a short list — folds grouped pl
 	// in the dev-flow repo a plugin fold is code
 	assert.match(renderReflectFindings(r, true).join("\n"), /fold — code \(a patch flow\):\n  2\. The session ran gates[\s\S]*\n  3\. A scratch driver/);
 	assert.equal(shortFindingNote("x ".repeat(100)).endsWith("…"), true, "a long note is clipped");
+});
+
+test("worker budgets grow with the work; read-only workers are steered at 60%; drafted rows are recoverable (gh#252)", () => {
+	assert.equal(defaultBudgetMin("reflect"), 20);
+	assert.equal(defaultBudgetMin("reflect", { transcriptBytes: 250_000 }), 20, "a small flow keeps the old default");
+	assert.equal(defaultBudgetMin("reflect", { transcriptBytes: 1_500_000 }), 45, "yesterday's 1.5 MB flow gets 45 min, not 20");
+	assert.equal(defaultBudgetMin("reflect", { transcriptBytes: 50_000_000 }), 60, "capped");
+	assert.equal(defaultBudgetMin("review", { diffLines: 1600 }), 60, "a 1,600-line review gets 60 min, not 30");
+	assert.equal(defaultBudgetMin("review", { diffLines: 99_999 }), 90, "capped");
+	assert.equal(defaultBudgetMin("implement", { diffLines: 5000 }), 60, "implement is not sized");
+	assert.equal(clampBudgetMin(15, "reflect", { transcriptBytes: 9_000_000 }), 15, "an explicit budget wins");
+	assert.equal(clampBudgetMin(undefined, "reflect", { transcriptBytes: 1_500_000 }), 45);
+	assert.equal(workerSteerAt("implement"), 0.75);
+	assert.equal(workerSteerAt("reflect"), 0.6);
+	assert.match(workerSteer("review", 30), /about 12 min of your 30-min budget/);
+	const texts = assistantTexts([
+		{ role: "user", content: "F9 | fold | docs | the brief, not a finding" },
+		{ role: "assistant", content: [{ type: "text", text: "F1 | fold | code | first take | why: x" }, { type: "thinking", thinking: "F2 | fold | docs | thought only" }] },
+		{ role: "assistant", content: "F1 | fold | code | revised take | why: y\nO2 | fixed | now passes" },
+	]);
+	assert.deepEqual(texts.length, 2, "assistant text only");
+	assert.equal(recoverReflectRows(texts), "F1 | fold | code | revised take | why: y\nO2 | fixed | now passes", "a later row for the same F<n> replaces the earlier one");
+	assert.equal(recoverReflectRows(["no rows here", "F7 | maybe | docs | bad"]), null);
 });
 
 test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, plugin routes upstream", () => {

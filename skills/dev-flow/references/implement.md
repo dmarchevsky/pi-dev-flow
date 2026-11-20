@@ -96,5 +96,7 @@ wiring before Verified?.
 - One worker at a time; read each diff before briefing the next; slice along
   plan steps. A worker that fails or stalls → take the slice inline. A
   `model failed: stopReason=error` means the provider is down, not slow.
-- Budget (`budgetMin`; default 60 implement, 30 review, 20 reflect): steered
-  to wrap up at 75%, asked once for its report when cut.
+- Budget (`budgetMin`; default 60 implement, 30 review, 20 reflect; review
+  and reflect grow with the diff and the transcripts, up to 90 and 60):
+  steered to wrap up at 75% (implement) or 60% (review, reflect), asked once
+  for its report when cut; a reflection's rows already written survive a cut.
