@@ -2567,10 +2567,25 @@ export const WORKER_BUDGET_MIN: Record<WorkerOp, number> = { implement: 60, revi
 /** Times a worker that stopped without its REPORT is told to keep going before the run gives up. */
 export const WORKER_NUDGES = 2;
 
-export const clampBudgetMin = (n: unknown, op: WorkerOp): number => {
-	const v = typeof n === "number" && Number.isFinite(n) ? n : WORKER_BUDGET_MIN[op];
+export const clampBudgetMin = (n: unknown, op: WorkerOp, size?: WorkerSize): number => {
+	const v = typeof n === "number" && Number.isFinite(n) ? n : defaultBudgetMin(op, size);
 	return Math.min(180, Math.max(5, Math.round(v)));
 };
+
+/** How much a worker has to read: the transcripts a reflection reviews, the diff a review reads. */
+export interface WorkerSize { transcriptBytes?: number; diffLines?: number }
+
+/** The default budget, grown with the work (gh#252). One default for every flow cut a long flow's reflection off
+ *  at 20 min three times in a day — it returned nothing and finish removed nothing — and a 1,600-line review ran
+ *  its whole 30. A reflection gets 5 min per 250 KB of transcript past the first 250 KB (up to 60); a review
+ *  10 min per 500 changed lines past the first 500 (up to 90). An explicit budgetMin always wins. */
+export function defaultBudgetMin(op: WorkerOp, size: WorkerSize = {}): number {
+	const base = WORKER_BUDGET_MIN[op];
+	const steps = (amount: number | undefined, free: number, per: number) => Math.max(0, Math.ceil(((amount ?? 0) - free) / per));
+	if (op === "reflect") return Math.min(60, base + 5 * steps(size.transcriptBytes, 250_000, 250_000));
+	if (op === "review") return Math.min(90, base + 10 * steps(size.diffLines, 500, 500));
+	return base;
+}
 
 /** Why an op is not legal for a feature at this stage, or null. */
 export function workerOpError(op: string, stage: Stage): string | null {
@@ -2720,18 +2735,49 @@ export const WORKER_NUDGE = "You stopped before finishing and without the REPORT
 /** The nudge a read-only worker (review, reflect) gets — it has nothing to commit. */
 export const WORKER_NUDGE_READONLY = "You stopped before finishing and without the REPORT section. Continue the task now (keep using tools; change no files). When it is done — or you are truly blocked — end with the `REPORT` section the contract asks for.";
 
-/** Share of the budget at which a worker is steered to wrap up (gh#142's grace, restored for every op). */
+/** Share of the budget at which a worker is steered to wrap up (gh#142's grace, restored for every op). A steer
+ *  is delivered between turns, and a read-only worker on a thinking model spends minutes in one turn — the 75%
+ *  steer reached the 20-min reflection after the cut (gh#252) — so review and reflect are steered at 60%. */
 export const WORKER_STEER_AT = 0.75;
+export const workerSteerAt = (op: WorkerOp): number => (op === "implement" ? WORKER_STEER_AT : 0.6);
 
 /** Grace after the hard cut: one REPORT-only prompt, so an interrupted worker hands back what it found. */
 export const WORKER_SALVAGE_MS = 3 * 60_000;
 
 /** The steer a worker gets at WORKER_STEER_AT of its budget — wrap up while there is time to. */
 export function workerSteer(op: WorkerOp, budgetMin: number): string {
-	const left = Math.max(1, Math.round(budgetMin * (1 - WORKER_STEER_AT)));
+	const left = Math.max(1, Math.round(budgetMin * (1 - workerSteerAt(op))));
 	return op === "implement"
 		? `Time check: about ${left} min of your ${budgetMin}-min budget are left. Finish the edit in hand, commit what works, and end with the REPORT section now (done, commits, open items, risks) — an honest partial report beats being cut off.`
 		: `Time check: about ${left} min of your ${budgetMin}-min budget are left. Stop probing and write the REPORT section now with what you have — rows you could not fully prove say so in their evidence. Being cut off loses every finding.`;
+}
+
+/** The visible text of every assistant message, in order (thinking excluded: rows are written, not mused). */
+export function assistantTexts(messages: readonly unknown[]): string[] {
+	const out: string[] = [];
+	for (const m of messages) {
+		const msg = m as { role?: string; content?: unknown };
+		if (msg?.role !== "assistant") continue;
+		if (typeof msg.content === "string") out.push(msg.content);
+		else if (Array.isArray(msg.content)) for (const c of msg.content as { type?: string; text?: string }[]) if (c?.type === "text" && c.text) out.push(c.text);
+	}
+	return out;
+}
+
+/** The finding rows a reflection already wrote in any of its messages, as a REPORT body — the last fallback when
+ *  the salvage turn returned nothing (gh#252): rows written before the cut are findings, not lost work. A later
+ *  row for the same F<n>/O<n> replaces an earlier one. Null when there are none. */
+export function recoverReflectRows(texts: readonly string[]): string | null {
+	const rows = new Map<string, string>();
+	for (const t of texts)
+		for (const raw of (t ?? "").split("\n")) {
+			const m = /^[\s>*`-]*([FO]\d+)\s*\|/i.exec(raw);
+			if (m) rows.set(m[1].toUpperCase(), raw.trim());
+		}
+	if (!rows.size) return null;
+	const body = [...rows.values()].join("\n");
+	const parsed = parseReflectReport(body);
+	return parsed.findings.length || parsed.open.length ? body : null;
 }
 
 /** The prompt an interrupted worker gets once after the hard cut — report only, no more tools. */
