@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **A long flow's reflection is no longer cut off with nothing to show (gh#252).** Every reflection got 20 minutes and every review 30, whatever the size. Three closing reflections ran out of time in one day, the salvage step returned nothing, and `flow finish` removed nothing. The default limit now grows with the work. A reflection gets 5 more minutes for every 250 KB of transcript past the first 250 KB, up to 60. A review gets 10 more minutes for every 500 changed lines past the first 500, up to 90. An explicit `budgetMin` still wins. Review and reflect workers now get the wrap-up warning at 60% instead of 75%: the warning only arrives between turns, and a worker spends minutes on one long thinking turn. Before the salvage request, the queued warning is now cleared and the worker's thinking level is lowered, so the 3 minutes go to writing the report. If the salvage still returns nothing, the finding rows the reflection already wrote are shown as a partial report.
+
 ## [0.94.3] - 2026-11-19
 
 **Fold or drop? shows the findings you're answering about: a short list, folds grouped by plugin, playbook and code, then the drops.**

@@ -19,12 +19,12 @@
  * The stage logic lives in src/core.ts (unit-tested), the runtime in src/runtime/; this file is pi wiring.
  * Inactive (fully pass-through) in repos without a .dev-flow/ directory.
  */
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { Type } from "typebox";
 import { compact, defineTool, isToolCallEventType, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type ExtensionAPI, type ToolCallEvent, type ToolCallEventResult, type TurnEndEvent, type TurnEndEventResult } from "@earendil-works/pi-coding-agent";
-import { ALLOW_REWRITE, applicableItems, openItemsNote, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, WORKER_STEER_AT, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, worktreeWorkGuard, flowArgsShapeError, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
+import { ALLOW_REWRITE, applicableItems, openItemsNote, bashFlowGuard, checklistPending, checkoutInvocation, claimBlocks, featureBranchPrefix, FLOW_SHELL_HINT, flowShellInvocation, forcePushInvocation, freshenChecks, gitInvocation, guardBash, guardPath, mergeStyleInvocation, parsePushRefs, playbookTamper, playbookOnlyChange, pluginVersion, reflectionNudges, buildReflectBrief, parseReflectReport, renderReflectFindings, childSessionFiles, workerSteer, workerSteerAt, recoverReflectRows, assistantTexts, WORKER_SALVAGE, WORKER_SALVAGE_MS, WORKER_NUDGE_READONLY, stageReference, needsOperator, NEEDS_OPERATOR, nextHint, roadmapOpenCount, shouldTakeOverCompaction, stageGuidance, stateTamper, statusFor, sq, featureTmpDir, compactionStateBlock, withTmpDir, widgetLines, chipLabel, writeGuard, buildWorkerBrief, clampBudgetMin, parseWorkerReport, workerTurnError, hollowStop, hollowStopNote, workerOpError, WORKER_NUDGE, WORKER_NUDGES, releaseOrderInvocation, worktreeWorkGuard, flowArgsShapeError, type WorkerOp, type FlowState, type PushRef } from "../src/core.ts";
 import { loadProject } from "../src/projectmd.ts";
 import { bashTimeout, requireTimeout, timeoutClass } from "../src/timeouts.ts";
 import { AGENT_MARK, operatorCommandAsks, operatorCommandCorrection, viewHeader, askLine, type GateView } from "../src/present.ts";
@@ -304,7 +304,20 @@ export default function devFlow(pi: ExtensionAPI) {
 		if (runningWorkers.has(key)) return err("a worker is already running for this session — wait for it to return");
 		runningWorkers.add(key);
 		const cfg = loadProject(dfDir(root)).cfg;
-		const budgetMin = clampBudgetMin(params.budgetMin, wop);
+		let lineage: { id?: string; file?: string; dir?: string } = {};
+		try { lineage = { id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? undefined, dir: ctx.sessionManager.getSessionDir() ?? undefined }; } catch { /* unbacked driver: the worker is unlinked */ }
+		const children = wop === "reflect" && lineage.file ? childSessionFiles(lineage.file, sessionHeaders(lineage.dir)) : [];
+		// gh#252: the default budget grows with what the worker has to read — never a measurement failure
+		const sizeOf = (f: string) => { try { return statSync(f).size; } catch { return 0; } };
+		const diffLines = async () => {
+			if (wop !== "review") return undefined;
+			const r = await sh(`git diff --shortstat ${sq(cfg.defaultBranch)}...HEAD`, work);
+			return r.ok ? [...r.out.matchAll(/(\d+) (?:insertion|deletion)/g)].reduce((n, m) => n + Number(m[1]), 0) : undefined;
+		};
+		const budgetMin = clampBudgetMin(params.budgetMin, wop, {
+			transcriptBytes: wop === "reflect" ? [lineage.file, ...children.map((c) => c.file)].reduce((n, f) => n + (f ? sizeOf(f) : 0), 0) : undefined,
+			diffLines: await diffLines(),
+		});
 		const glyph = wop === "implement" ? "🔨" : wop === "review" ? "🔍" : "🪞";
 		const name = workerName(glyph, st.slug, wop, params.label);
 		const started = Date.now();
@@ -312,8 +325,6 @@ export default function devFlow(pi: ExtensionAPI) {
 		const headBefore = (await git("git rev-parse HEAD")).trim();
 		// the reflect worker runs in the main checkout, which may already carry the operator's edits
 		const statusBefore = wop === "reflect" ? (await git("git status --short")).trim() : "";
-		let lineage: { id?: string; file?: string; dir?: string } = {};
-		try { lineage = { id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? undefined, dir: ctx.sessionManager.getSessionDir() ?? undefined }; } catch { /* unbacked driver: the worker is unlinked */ }
 		const selfRepo = isSelfRepo(root);
 		// gh#216: the brief is built before the worker's try/finally — a throw here used to leave this session
 		// marked as running a worker forever and hand the caller nothing
@@ -323,7 +334,6 @@ export default function devFlow(pi: ExtensionAPI) {
 						const items = readReflections(root);
 						const fold = await foldView(root, items);
 						const upstream = await pluginUpstream(root);
-						const children = lineage.file ? childSessionFiles(lineage.file, sessionHeaders(lineage.dir)) : [];
 						return buildReflectBrief({
 							slug: st.slug, root, today: now().slice(0, 10),
 							driverFile: lineage.file ?? null,
@@ -367,6 +377,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		let timedOut = false;
 		let steered = false;
 		let salvaged = false;
+		let recovered = false;
 		let crash: string | null = null;
 		let nudges = 0;
 		let report = parseWorkerReport("");
@@ -379,7 +390,7 @@ export default function devFlow(pi: ExtensionAPI) {
 		const softTimer = setTimeout(() => {
 			steered = true;
 			try { void Promise.resolve(child?.steer(workerSteer(wop, budgetMin))).catch(() => {}); } catch { /* the hard cut follows */ }
-		}, workerTiming.softMs ?? Math.round(hardMs * WORKER_STEER_AT));
+		}, workerTiming.softMs ?? Math.round(hardMs * workerSteerAt(wop)));
 		const timer = setTimeout(() => { timedOut = true; abortChild(); }, hardMs);
 		signal?.addEventListener("abort", abortChild);
 		let unsub: (() => void) | undefined;
@@ -412,6 +423,10 @@ export default function devFlow(pi: ExtensionAPI) {
 			// an aborted reflection otherwise loses every finding it had already made
 			if (!report.found && !modelError && timedOut && !signal?.aborted) {
 				salvaged = true;
+				// gh#252: the steer still queued from before the cut rode into the salvage turn, and the grace went
+				// on thinking — drop the queue and the thinking, so the turn is spent writing the rows
+				try { child.clearQueue?.(); } catch { /* nothing queued */ }
+				try { child.setThinkingLevel?.("minimal"); } catch { /* a model without thinking levels */ }
 				const grace = setTimeout(abortChild, workerTiming.graceMs ?? WORKER_SALVAGE_MS);
 				try {
 					await child.prompt(WORKER_SALVAGE);
@@ -420,6 +435,11 @@ export default function devFlow(pi: ExtensionAPI) {
 					/* a failed salvage is still an interrupted run, not a crash */
 				} finally {
 					clearTimeout(grace);
+				}
+				// the last fallback: finding rows the reflection already wrote, in any of its messages
+				if (!report.found && wop === "reflect") {
+					const rows = recoverReflectRows(assistantTexts((child as { messages?: unknown[] }).messages ?? []));
+					if (rows) { report = { found: true, body: rows, verdict: null }; recovered = true; }
 				}
 			}
 		} catch (e) {
@@ -441,7 +461,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			: modelError
 				? modelLine
 				: timedOut
-				? `interrupted at the ${budgetMin}-min budget${steered ? " (steered to wrap up at " + Math.round(WORKER_STEER_AT * 100) + "%)" : ""}${report.found ? " — REPORT salvaged after the cut, treat it as partial" : salvaged ? " — the salvage prompt got no REPORT either" : ""}`
+				? `interrupted at the ${budgetMin}-min budget${steered ? " (steered to wrap up at " + Math.round(workerSteerAt(wop) * 100) + "%)" : ""}${recovered ? " — the salvage prompt got no REPORT; the finding rows it had already written are shown, treat them as partial" : report.found ? " — REPORT salvaged after the cut, treat it as partial" : salvaged ? " — the salvage prompt got no REPORT either" : ""}`
 				: report.found
 					? `reported${steered ? " (after the wrap-up steer)" : ""}`
 					: `ended without REPORT after ${nudges} nudge(s)`;
@@ -533,7 +553,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			op: Type.String({ description: '"implement" (a worker edits + commits a slice), "review" (read-only reviewer, findings + verdict) or "reflect" (read-only reviewer of the session transcripts, reflection findings + fold/drop recommendations)' }),
 			note: Type.String({ description: "The slice: what to do and anything from this conversation the worker must know (operator answers, decisions). Facts (plan path, commits, checks) are added for you." }),
 			label: Type.Optional(Type.String({ description: "A few words naming this delegation, shown in the worker's session name." })),
-			budgetMin: Type.Optional(Type.Number({ description: "Wall-clock budget in minutes (5-180; default 60 implement, 30 review, 20 reflect). Past it the worker is interrupted." })),
+			budgetMin: Type.Optional(Type.Number({ description: "Wall-clock budget in minutes (5-180). Default 60 implement; 30 review, +10 per 500 changed lines past 500 (up to 90); 20 reflect, +5 per 250 KB of transcript past 250 KB (up to 60). Past it the worker is interrupted." })),
 		}),
 		execute: async (id, params, signal, onUpdate, ctx) => {
 			const err = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined, isError: true });
