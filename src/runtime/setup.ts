@@ -82,4 +82,4 @@ export function renderQuestions(qs: SetupQuestion[]): string[] {
 	return out;
 }
 
-export const GIT_TRACK_NOTE = AGENT_MARK + 'the playbook belongs in git: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering; the env prefix is for the pre-commit hook, dev-flow itself lets a main commit whose only change is the playbook)';
+export const GIT_TRACK_NOTE = AGENT_MARK + 'the playbook belongs in git, with the folder\'s ignore file (untracked, a fresh clone loses it and every feature dir reads as uncommitted work): git add -f .dev-flow/project.md .dev-flow/.gitignore && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force-add: a root .gitignore may exclude .dev-flow/ entirely — tracked once, the ignore stops mattering; the env prefix is for the pre-commit hook, dev-flow itself lets a main commit whose only change is the playbook)';

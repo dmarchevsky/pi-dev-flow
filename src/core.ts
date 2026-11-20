@@ -64,6 +64,9 @@ export interface FlowState {
 	/** a docs flow's changed paths that are not documentation (its branch vs the default branch, plus uncommitted):
 	 *  any at all and the tier-1 checks apply to it as to any flow — docs mode skips them for docs, not for code */
 	docsCode?: string[];
+	/** reflection rows this flow set out to fix (`flow start --reflections=r3,r7`): finish closes each as fixed by
+	 *  this flow, unless `flow reflect defer <id> "<why>"` left it open with a reason */
+	reflections?: { id: number; body: string; deferred?: string }[];
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
@@ -1156,6 +1159,8 @@ export function parsePushRefs(pushes: string[][]): PushRef[] {
 const STATE_PATH = /(^|[\s'"\/])(?:state|claim)\.json$/;
 const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:state|claim)\.json$/;
 const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
+/** A file the playbook chore may carry: the playbook, or the folder's own ignore file tracked beside it. */
+const isPlaybookFile = (p: string): boolean => PLAYBOOK_PATH.test(p) || p === ".dev-flow/.gitignore";
 const DF_ANYWHERE = /\.dev-flow\b/;
 /** The `.dev-flow/` folder itself or one feature directory under it — deleting either destroys the flow
  *  state and its plan for good. The advisory files the agent owns, and anything deeper (a worktree, a
@@ -1243,7 +1248,27 @@ export function playbookTamper(command: string): boolean {
  *  and no command parsing to fool. shortcut: a guard rail against accidents, not a sandbox. */
 export function playbookOnlyChange(porcelain: string): boolean {
 	const paths = porcelain.split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
-	return paths.length === 1 && PLAYBOOK_PATH.test(paths[0]);
+	// the playbook, and the folder's own ignore file (tracked so a clone carries it — see DF_GITIGNORE); it ignores
+	// itself, so it shows here only once staged: `git add -f` it in one call, commit in the next
+	return paths.length > 0 && paths.every(isPlaybookFile);
+}
+
+/** `.dev-flow/.gitignore`: the folder ignores everything but the playbook. Untracked, it ignores itself too — a
+ *  fresh clone brought project.md back without it, every feature dir then showed as untracked work, and flow
+ *  finish refused on "uncommitted changes" that were two flows' own state (ollamaMQ, 2026-11-20). */
+export const DF_GITIGNORE = "*\n!project.md\n";
+
+/** `git status --porcelain` lines that are the operator's work: dev-flow's own folder is never that — the
+ *  playbook excepted, which is tracked and edited by hand. */
+export function operatorDirt(porcelain: string): string {
+	return porcelain
+		.split("\n")
+		.filter((l) => {
+			const p = l.slice(3).trim().replace(/^"|"$/g, "");
+			if (!p) return false;
+			return !(p === ".dev-flow/" || (p.startsWith(".dev-flow/") && p !== ".dev-flow/project.md"));
+		})
+		.join("\n");
 }
 
 /** gh#234, gh#228: what `flow finish` says about commits on the local default branch that origin does not have.
@@ -1257,7 +1282,7 @@ export function localDefaultAhead(o: { defaultBranch: string; checkoutBranch: st
 	if (!commits.length) return null;
 	const list = `${commits.slice(0, 5).map((c) => c.line).join(" | ")}${commits.length > 5 ? ` …(${commits.length - 5} more)` : ""}`;
 	const where = cur && cur !== d ? ` (the main checkout is on ${cur}, not ${d} — this is the local ${d} branch)` : "";
-	if (commits.every((c) => c.files.length > 0 && c.files.every((f) => PLAYBOOK_PATH.test(f))))
+	if (commits.every((c) => c.files.length > 0 && c.files.every(isPlaybookFile)))
 		return { block: null, note: ` local ${d} carries ${commits.length} playbook commit(s) origin/${d} does not have (${list})${where} — playbook tracking from flow init --track; they reach origin through a docs flow, never a direct push to ${d}. To line local ${d} up with origin meanwhile: git -C <main checkout> rebase origin/${d} ${d}.` };
 	return { block: `local ${d} has ${commits.length} commit(s) origin/${d} does not have${where}: ${list} — finish removes the flow state, so nothing may stay local-only. If these are release chores, push them (git push origin ${d}); if they are work that belongs in a flow, move them onto a branch and ship them through one; then re-run flow finish`, note: "" };
 }
@@ -1893,17 +1918,157 @@ export function reflectionsTidy(text: string): string {
 }
 
 /** Shared wording for every surface that notices closed items piling up, so all hints read alike. */
-export const reflectionsTidyHint = (closed: number) => `↻ ${closed} closed reflection(s) — flow reflect tidy drops them`;
+export const reflectionsTidyHint = (closed: number) => `↻ ${closed} closed reflection(s) — flow reflect tidy moves them to the archive`;
 
 /** The note text of an item, without the checkbox and without the trailing ` — <attribution>`: what
  *  two reflects are compared on, so the same note at another date is still the same note.
  *  shortcut: split on the last em dash — matches what the tool writes; a hand-written item ending in
  *  an em-dash clause compares wider than intended. */
-const reflectionBody = (l: string) => l.trim().replace(/^-\s*\[[ xX]\]\s*/, "").replace(/\s*—.*$/, "").trim();
+const reflectionBody = (l: string) => l.trim().replace(/^-\s*\[[ xX]\]\s*/, "").replace(REFLECT_ID, "").replace(/\s*—.*$/, "").trim();
 
-/** One reflections.md item line — with no flow bound the slug is left out; `— - <date>` read as a broken slug. */
-export function reflectionLine(note: string, slug: string | null, date: string): string {
-	return `- [ ] ${note.trim()} — ${slug ? `${slug} ` : ""}${date}`;
+/** One reflections.md item line — with no flow bound the slug is left out; `— - <date>` read as a broken slug.
+ *  The evidence the reflect worker named (a transcript file:line) rides on the row, so whoever fixes it can
+ *  re-check the claim instead of writing a rule from a paraphrase (a fold flow's review failed on exactly that). */
+export function reflectionLine(note: string, slug: string | null, date: string, evidence = ""): string {
+	return `- [ ] ${note.trim()} — ${slug ? `${slug} ` : ""}${date}${evidence.trim() ? ` · evidence: ${evidence.trim()}` : ""}`;
+}
+
+/** A row's stable id (`[r42]` after the checkbox): assigned once, never reused — `tidy` archives closed rows with
+ *  theirs — so a number read off one list names the same row after any tidy, move or parallel session (gh#263,
+ *  where positional numbers shifted under a batch and closed seven wrong rows). */
+const REFLECT_ID = /^\[r(\d+)\]\s*/;
+const ROW_HEAD = /^(\s*-\s*\[[ xX]\]\s*)/;
+export function rowId(line: string): number | null {
+	const m = REFLECT_ID.exec(line.trim().replace(ROW_HEAD, ""));
+	return m ? Number(m[1]) : null;
+}
+const maxRowId = (text: string): number => Math.max(0, ...text.split("\n").map((l) => (isOpenItem(l) || isDoneItem(l) ? (rowId(l) ?? 0) : 0)));
+
+/** Give every checklist row without an id the next free one (counted over the archive too, so an id is never
+ *  reused). Idempotent; unchanged text comes back as is. */
+export function ensureReflectIds(text: string, archive = ""): string {
+	let next = Math.max(maxRowId(text), maxRowId(archive));
+	let changed = false;
+	const out = text.split("\n").map((l) => {
+		if ((!isOpenItem(l) && !isDoneItem(l)) || rowId(l) !== null) return l;
+		changed = true;
+		return l.replace(ROW_HEAD, `$1[r${++next}] `);
+	});
+	return changed ? out.join("\n") : text;
+}
+
+/** Parse `r42`, `42`, `r3,r7` into ids; NaN marks a token that is not one. */
+export const parseRowIds = (arg: string): number[] => [...new Set(String(arg ?? "").split(",").map((p) => p.trim()).filter(Boolean).map((p) => (/^r?\d+$/i.test(p) ? Number(p.replace(/^r/i, "")) : Number.NaN)))];
+
+/** How many times a row was reported: the filing, plus each `· seen again` a recurrence appended. */
+export const rowOccurrences = (line: string): number => 1 + (line.match(/ · seen again /g)?.length ?? 0);
+
+/** A recurrence: append ` · seen again <stamp>[: evidence]` to open row `id` — the count, not a new row, ranks it.
+ *  null when no open row has that id. */
+export function reflectSame(text: string, id: number, stamp: string, evidence = ""): string | null {
+	const row = reflectRow(text, id);
+	if (!row?.open) return null;
+	const lines = text.split("\n");
+	lines[row.index] = `${lines[row.index].trimEnd()} · seen again ${stamp}${evidence.trim() ? `: ${evidence.trim()}` : ""}`;
+	return lines.join("\n");
+}
+
+/** Reopen closed row `id` in place: ` — fixed: X` becomes ` · reopened <stamp>: <why> (was fixed: X)`, so the
+ *  history stays on the row. null when no closed row has that id here. */
+export function reflectReopen(text: string, id: number, stamp: string, why: string): string | null {
+	const row = reflectRow(text, id);
+	if (!row || row.open) return null;
+	const lines = text.split("\n");
+	const l = lines[row.index].replace(/^(\s*)-\s*\[[xX]\]\s*/, "$1- [ ] ");
+	const at = l.lastIndexOf(" — fixed: ");
+	const was = at >= 0 ? l.slice(at + " — fixed: ".length) : "";
+	lines[row.index] = `${at >= 0 ? l.slice(0, at) : l.trimEnd()} · reopened ${stamp}${why.trim() ? `: ${why.trim()}` : ""}${was ? ` (was fixed: ${was})` : ""}`;
+	return lines.join("\n");
+}
+
+/** What ties rows together for a fix plan: the files and code names a note mentions. */
+function rowTokens(body: string): Set<string> {
+	const out = new Set<string>();
+	for (const m of body.matchAll(/`([^`]{3,60})`/g)) out.add(m[1].toLowerCase().replace(/[()]+$/, ""));
+	for (const m of body.matchAll(/\b[\w.-]*[\w-]\/[\w./-]*\w|\b[\w-][\w.-]*\.(?:ts|tsx|js|mjs|cjs|md|sh|yml|yaml|json|toml|rs|py)\b/g)) out.add(m[0].toLowerCase());
+	return out;
+}
+
+export interface FixGroup { section: string; ids: number[]; hits: number; topic: string; bodies: string[] }
+
+/** "33 code items → a patch flow" left the grouping to the agent. Rows of a section that share a
+ *  file or code name (one no more than half the section shares) form a group — one flow each, ranked by how often
+ *  their rows were hit. Playbook rows are one group: a single docs flow takes them all. */
+export function reflectFixPlan(items: readonly ReflectItem[]): { groups: FixGroup[]; singles: FixGroup[] } {
+	const groups: FixGroup[] = [];
+	const singles: FixGroup[] = [];
+	const slugPart = (t: string) => (t.split("/").filter(Boolean).pop() ?? t).replace(/\.[a-z]+$/i, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 24) || "misc";
+	const docs = items.filter((i) => i.section === "playbook" || i.section === "unfiled");
+	if (docs.length) groups.push({ section: "playbook", ids: docs.map((i) => i.n), hits: docs.reduce((n, i) => n + (i.hits ?? 1), 0), topic: "playbook", bodies: docs.map((i) => i.body) });
+	const code = items.filter((i) => i.section === "code");
+	const toks = code.map((i) => rowTokens(i.body));
+	const df = new Map<string, number>();
+	for (const t of toks) for (const k of t) df.set(k, (df.get(k) ?? 0) + 1);
+	const parent = code.map((_, i) => i);
+	const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+	const owner = new Map<string, number>();
+	toks.forEach((t, i) => {
+		for (const k of t) {
+			const n = df.get(k) ?? 0;
+			if (n < 2 || n > Math.max(2, code.length / 2)) continue;
+			const o = owner.get(k);
+			if (o === undefined) owner.set(k, i);
+			else parent[find(i)] = find(o);
+		}
+	});
+	const byRoot = new Map<number, number[]>();
+	code.forEach((_, i) => byRoot.set(find(i), [...(byRoot.get(find(i)) ?? []), i]));
+	for (const members of byRoot.values()) {
+		const shared = new Map<string, number>();
+		for (const i of members) for (const k of toks[i]) if ((df.get(k) ?? 0) >= 2) shared.set(k, (shared.get(k) ?? 0) + 1);
+		const topic = [...shared].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)[0]?.[0] ?? "";
+		const g: FixGroup = { section: "code", ids: members.map((i) => code[i].n), hits: members.reduce((n, i) => n + (code[i].hits ?? 1), 0), topic: slugPart(topic || code[members[0]].body.split(/\s+/).slice(0, 3).join("-")), bodies: members.map((i) => code[i].body) };
+		(members.length > 1 ? groups : singles).push(g);
+	}
+	groups.sort((a, b) => (a.section === "playbook" ? -1 : b.section === "playbook" ? 1 : b.hits - a.hits || b.ids.length - a.ids.length));
+	singles.sort((a, b) => b.hits - a.hits);
+	return { groups, singles };
+}
+
+/** The closed rows of a ledger with the section each sits under — what `tidy` moves to the archive. */
+export function closedRowsBySection(text: string): { section: string; line: string }[] {
+	const out: { section: string; line: string }[] = [];
+	let section = "unfiled";
+	for (const raw of text.split("\n")) {
+		const l = raw.trim();
+		if (ANY_HEADING.test(l)) { section = REFLECT_HEADING.exec(l)?.[1].toLowerCase() ?? "unfiled"; continue; }
+		if (isDoneItem(l)) out.push({ section, line: l });
+	}
+	return out;
+}
+
+/** Archive text with closed rows appended under their headings (`## section` blocks, appended per tidy). */
+export function archiveAppend(archive: string, rows: { section: string; line: string }[], stamp: string): string {
+	if (!rows.length) return archive;
+	const head = archive.trim() ? archive.trimEnd() : "# dev-flow reflections archive\n\n<!-- Closed reflections, moved here by flow reflect tidy. Ids are never reused; flow reflect reopen <id> brings one back. -->";
+	const bySection = new Map<string, string[]>();
+	for (const r of rows) bySection.set(r.section, [...(bySection.get(r.section) ?? []), r.line]);
+	return `${head}\n\n<!-- tidy ${stamp} -->\n${[...bySection].map(([s, ls]) => `## ${s}\n\n${ls.join("\n")}`).join("\n\n")}\n`;
+}
+
+/** Remove closed row `id` from archive text — the row comes back through reopen. */
+export function archiveTake(archive: string, id: number): { archive: string; row: { section: string; line: string } } | null {
+	const lines = archive.split("\n");
+	let section = "unfiled";
+	for (let i = 0; i < lines.length; i++) {
+		const l = lines[i].trim();
+		if (ANY_HEADING.test(l)) { section = REFLECT_HEADING.exec(l)?.[1].toLowerCase() ?? "unfiled"; continue; }
+		if (isDoneItem(l) && rowId(l) === id) {
+			lines.splice(i, 1);
+			return { archive: lines.join("\n"), row: { section, line: l } };
+		}
+	}
+	return null;
 }
 
 export const REFLECT_HEADER =
@@ -1937,8 +2102,11 @@ export interface ReflectItem {
 	body: string;
 	/** gh#197: the row's stable number — its position among every checklist row of the file, open or closed. Checking
 	 *  an item off leaves every other number where it was, so a batch of `done <n>` read off one list stays paired;
-	 *  only `tidy` (drops closed rows) and `move` (relocates one) renumber. */
+	 *  only `tidy` (drops closed rows) and `move` (relocates one) renumber. gh#263: once rows carry ids (`[r42]`)
+	 *  this is the id, which nothing renumbers. */
 	n: number;
+	/** how many times it was reported (the filing plus each `· seen again`) */
+	hits?: number;
 }
 
 /** Open items of reflections.md, each carrying the heading that owns it. Items above every known
@@ -1957,7 +2125,9 @@ export function reflectItems(text: string): ReflectItem[] {
 		}
 		if (isDoneItem(l)) row++;
 		if (!isOpenItem(l)) continue;
-		out.push({ section, line: l, body: reflectionBody(l), n: ++row });
+		// the row's id once it has one; a ledger not yet given ids keeps the old position numbering
+		row++;
+		out.push({ section, line: l, body: reflectionBody(l), n: rowId(l) ?? row, hits: rowOccurrences(l) });
 	}
 	return out;
 }
@@ -1965,11 +2135,14 @@ export function reflectItems(text: string): ReflectItem[] {
 /** Row `n` of reflections.md (the stable numbering, gh#197): its line index and whether it is still open; null when no such row. */
 export function reflectRow(text: string, n: number): { index: number; open: boolean; line: string } | null {
 	const lines = text.split("\n");
+	// gh#263: a ledger with ids is addressed by id only — a position never stands in for one
+	const byId = lines.some((l) => (isOpenItem(l) || isDoneItem(l)) && rowId(l) !== null);
 	let row = 0;
 	for (let i = 0; i < lines.length; i++) {
 		const open = isOpenItem(lines[i]);
 		if (!open && !isDoneItem(lines[i])) continue;
-		if (++row === n) return { index: i, open, line: lines[i].trim() };
+		row++;
+		if (byId ? rowId(lines[i]) === n : row === n) return { index: i, open, line: lines[i].trim() };
 	}
 	return null;
 }
@@ -2059,7 +2232,7 @@ const CODE_ROUTE = "patch flow (flow start fix-<topic> --patch), normal flow whe
 
 export function reflectionRoutes(items: ReflectItem[], selfRepo: boolean): ReflectionRoute[] {
 	return items.map((it) => {
-		const text = it.line.replace(/^-\s*\[[ xX]\]\s*/, "").trim();
+		const text = it.line.replace(/^-\s*\[[ xX]\]\s*/, "").replace(/^\[r\d+\]\s*/, "").trim();
 		const sections = [it.section];
 		if (it.section === "code") return { text, sections, mode: "code" as const, route: CODE_ROUTE };
 		if (it.section === "plugin")
@@ -2227,7 +2400,7 @@ export function reflectionNudges(text: string, today: string, opts: { recurred?:
 	let fix: string | null = null;
 	if (open.length && why.length) {
 		const split = [docs ? `${docs} playbook item(s) → one docs flow (flow start fold-<topic> --docs)` : "", code ? `${code} code item(s) → patch flow (flow start fix-<topic> --patch)` : ""].filter(Boolean).join("; ");
-		fix = `⚑ fix the open reflections now? (${why.join(", ")}) — ${split}`;
+		fix = `⚑ fix the open reflections now? (${why.join(", ")}) — ${split}; flow reflect plan groups them into flows`;
 	}
 	const closedLines = text.split("\n").filter(isDoneItem);
 	const closed = closedLines.length;
@@ -2417,6 +2590,14 @@ export function compactionStateBlock(state: FlowState, cfg: Config): string {
  *  holds the how; this carries only what the gate knows and the file cannot: paths, the playbook's
  *  merge command, which versioning steps apply. */
 export function nextHint(state: FlowState, cfg: Config): string {
+	const base = stageHint(state, cfg);
+	// the linked reflection rows ride every hint until finish closes them: fixed by this branch, or deferred with a reason
+	const open = (state.reflections ?? []).filter((r) => !r.deferred);
+	if (!open.length || state.stage === "release") return base;
+	return `${base} — linked reflections ${open.map((r) => `r${r.id}`).join(", ")}: fix each on this branch (finish closes them as fixed), or flow reflect defer <id> "<why>" for one it will not fix`;
+}
+
+function stageHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
 			if (state.patch || state.docs) return `${state.patch ? "patch" : "docs"} (proposed — the Approve? answer grants the mode): describe the change in one line, ask Approve? in chat naming the mode, then flow approve --confirmed — no plan file${state.docs ? ", no tier-1 checks" : ""}`;
@@ -2587,10 +2768,25 @@ export const WORKER_BUDGET_MIN: Record<WorkerOp, number> = { implement: 60, revi
 /** Times a worker that stopped without its REPORT is told to keep going before the run gives up. */
 export const WORKER_NUDGES = 2;
 
-export const clampBudgetMin = (n: unknown, op: WorkerOp): number => {
-	const v = typeof n === "number" && Number.isFinite(n) ? n : WORKER_BUDGET_MIN[op];
+export const clampBudgetMin = (n: unknown, op: WorkerOp, size?: WorkerSize): number => {
+	const v = typeof n === "number" && Number.isFinite(n) ? n : defaultBudgetMin(op, size);
 	return Math.min(180, Math.max(5, Math.round(v)));
 };
+
+/** How much a worker has to read: the transcripts a reflection reviews, the diff a review reads. */
+export interface WorkerSize { transcriptBytes?: number; diffLines?: number }
+
+/** The default budget, grown with the work (gh#252). One default for every flow cut a long flow's reflection off
+ *  at 20 min three times in a day — it returned nothing and finish removed nothing — and a 1,600-line review ran
+ *  its whole 30. A reflection gets 5 min per 250 KB of transcript past the first 250 KB (up to 60); a review
+ *  10 min per 500 changed lines past the first 500 (up to 90). An explicit budgetMin always wins. */
+export function defaultBudgetMin(op: WorkerOp, size: WorkerSize = {}): number {
+	const base = WORKER_BUDGET_MIN[op];
+	const steps = (amount: number | undefined, free: number, per: number) => Math.max(0, Math.ceil(((amount ?? 0) - free) / per));
+	if (op === "reflect") return Math.min(60, base + 5 * steps(size.transcriptBytes, 250_000, 250_000));
+	if (op === "review") return Math.min(90, base + 10 * steps(size.diffLines, 500, 500));
+	return base;
+}
 
 /** Why an op is not legal for a feature at this stage, or null. */
 export function workerOpError(op: string, stage: Stage): string | null {
@@ -2740,18 +2936,49 @@ export const WORKER_NUDGE = "You stopped before finishing and without the REPORT
 /** The nudge a read-only worker (review, reflect) gets — it has nothing to commit. */
 export const WORKER_NUDGE_READONLY = "You stopped before finishing and without the REPORT section. Continue the task now (keep using tools; change no files). When it is done — or you are truly blocked — end with the `REPORT` section the contract asks for.";
 
-/** Share of the budget at which a worker is steered to wrap up (gh#142's grace, restored for every op). */
+/** Share of the budget at which a worker is steered to wrap up (gh#142's grace, restored for every op). A steer
+ *  is delivered between turns, and a read-only worker on a thinking model spends minutes in one turn — the 75%
+ *  steer reached the 20-min reflection after the cut (gh#252) — so review and reflect are steered at 60%. */
 export const WORKER_STEER_AT = 0.75;
+export const workerSteerAt = (op: WorkerOp): number => (op === "implement" ? WORKER_STEER_AT : 0.6);
 
 /** Grace after the hard cut: one REPORT-only prompt, so an interrupted worker hands back what it found. */
 export const WORKER_SALVAGE_MS = 3 * 60_000;
 
 /** The steer a worker gets at WORKER_STEER_AT of its budget — wrap up while there is time to. */
 export function workerSteer(op: WorkerOp, budgetMin: number): string {
-	const left = Math.max(1, Math.round(budgetMin * (1 - WORKER_STEER_AT)));
+	const left = Math.max(1, Math.round(budgetMin * (1 - workerSteerAt(op))));
 	return op === "implement"
 		? `Time check: about ${left} min of your ${budgetMin}-min budget are left. Finish the edit in hand, commit what works, and end with the REPORT section now (done, commits, open items, risks) — an honest partial report beats being cut off.`
 		: `Time check: about ${left} min of your ${budgetMin}-min budget are left. Stop probing and write the REPORT section now with what you have — rows you could not fully prove say so in their evidence. Being cut off loses every finding.`;
+}
+
+/** The visible text of every assistant message, in order (thinking excluded: rows are written, not mused). */
+export function assistantTexts(messages: readonly unknown[]): string[] {
+	const out: string[] = [];
+	for (const m of messages) {
+		const msg = m as { role?: string; content?: unknown };
+		if (msg?.role !== "assistant") continue;
+		if (typeof msg.content === "string") out.push(msg.content);
+		else if (Array.isArray(msg.content)) for (const c of msg.content as { type?: string; text?: string }[]) if (c?.type === "text" && c.text) out.push(c.text);
+	}
+	return out;
+}
+
+/** The finding rows a reflection already wrote in any of its messages, as a REPORT body — the last fallback when
+ *  the salvage turn returned nothing (gh#252): rows written before the cut are findings, not lost work. A later
+ *  row for the same F<n>/O<n> replaces an earlier one. Null when there are none. */
+export function recoverReflectRows(texts: readonly string[]): string | null {
+	const rows = new Map<string, string>();
+	for (const t of texts)
+		for (const raw of (t ?? "").split("\n")) {
+			const m = /^[\s>*`-]*([FO]\d+)\s*\|/i.exec(raw);
+			if (m) rows.set(m[1].toUpperCase(), raw.trim());
+		}
+	if (!rows.size) return null;
+	const body = [...rows.values()].join("\n");
+	const parsed = parseReflectReport(body);
+	return parsed.findings.length || parsed.open.length ? body : null;
 }
 
 /** The prompt an interrupted worker gets once after the hard cut — report only, no more tools. */
@@ -2898,7 +3125,7 @@ export interface ReflectBriefInput {
  *  the operator decides fold or drop per finding in the driving session. */
 export function buildReflectBrief(o: ReflectBriefInput): string {
 	const up = o.upstream || "(unknown — say so in the REPORT)";
-	const open = o.items.length ? o.items.map((it) => `  ${it.n}. [${it.section}] ${it.line.replace(/^- \[ \] /, "")}`).join("\n") : "  (none)";
+	const open = o.items.length ? o.items.map((it) => `  r${it.n}. [${it.section}] ${it.line.replace(/^- \[ \] /, "").replace(/^\[r\d+\]\s*/, "")}`).join("\n") : "  (none)";
 	const kids = o.children.length ? o.children.map((c) => `  - ${c.file}${c.name ? ` (${c.name})` : ""}`).join("\n") : "  (none — no flow_stage worker ran in this session)";
 	const digests = o.digests?.length ? o.digests.map((d) => `  - ${d.digest}  (of ${path.basename(d.transcript)})`).join("\n") : "";
 	const upIssues = o.upstreamIssues ? (o.upstreamIssues.length ? o.upstreamIssues.map((i) => `  gh#${i.number} [${i.state.toLowerCase()}] ${i.title}`).join("\n") : "  (none)") : "";
@@ -2937,8 +3164,8 @@ export function buildReflectBrief(o: ReflectBriefInput): string {
 		"## Contract",
 		"- Check, don't fix: read and run read-only probes only. Change no files, make no commits, file nothing.",
 		"- Finish with a final message whose last section starts with a line `REPORT`, then one row per line, pipe-separated, nothing else in the section:",
-		"  F<n> | fold|drop | docs|code|plugin | <one-line note, written as the reflection itself> | dup: none|#<open item>|gh#<N> | why: <reason> | evidence: <transcript file:line or a short quote>",
-		"  O<n> | still-open|fixed|recurred | <reason, with evidence>",
+		"  F<n> | fold|drop | docs|code|plugin | <one-line note, written as the reflection itself> | dup: none|r<open item id>|gh#<N> | why: <reason> | evidence: <transcript file:line or a short quote>",
+		"  O<id> | still-open|fixed|recurred | <reason, with evidence>   (<id> is the open item's r<n> above, digits only)",
 		"  (no findings → a single line `F0 | none`; no open items → no O rows)",
 	].join("\n");
 }
@@ -3035,7 +3262,7 @@ export function renderReflectFindings(r: { findings: ReflectFinding[]; open: Ref
 	} else out.push("findings: none");
 	if (r.open.length) {
 		out.push("open items re-checked:");
-		for (const o of r.open) out.push(`  #${o.n} ${o.status}${o.reason ? ` — ${o.reason}` : ""}${o.status === "fixed" ? " → propose the check-off" : o.status === "recurred" ? " → recommend fixing it now" : ""}`);
+		for (const o of r.open) out.push(`  r${o.n} ${o.status}${o.reason ? ` — ${o.reason}` : ""}${o.status === "fixed" ? " → propose the check-off" : o.status === "recurred" ? " → recommend fixing it now" : ""}`);
 	}
 	return out;
 }

@@ -1,12 +1,13 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { skipsChecks, applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail } from "../core.ts";
+import { skipsChecks, applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail, operatorDirt } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { refreshDocsCode, buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type RunResult, ago, releaseDevSlot, keepThroughPrep, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
 import { type GateCtx, markPendingAsk } from "./gates.ts";
+import { closeLinkedReflections } from "./reflect.ts";
 import { gatePublishes, prBodyOwed, publishRelease } from "./publish.ts";
 
 /** gh#198: the version question asked with Verified? — null when it is not the operator's to answer here
@@ -774,7 +775,9 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 		return { text: `finish closes a released feature — stage is "${state!.stage}" and no release is recorded; publish it first — flow release (to abandon an unfinished feature, run flow abort)`, isError: true };
 	// after this the flow state is gone: nothing may sit uncommitted or unpushed
 	const dirty = await sh("git status --porcelain", root);
-	if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
+	// dev-flow's own folder is never the operator's uncommitted work — another flow's state least of all
+	const work = dirty.ok ? operatorDirt(dirty.out) : "";
+	if (work.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(work)}`, isError: true };
 	const origin = await originUrl(root);
 	const hasOriginF = origin !== null;
 	// gh#234/gh#228: judge the local default branch, not whatever HEAD the main checkout happens to be on, and
@@ -962,8 +965,12 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 			roadmapNote = ` roadmap: ${r.count} item(s) marked done.`;
 		}
 	}
+	// the reflection rows this flow was linked to close with it — the fix and the ledger agree the moment it ships
+	const closedRefl = closeLinkedReflections(root, state!, state!.publish?.pr ? ` (PR #${state!.publish.pr})` : "");
+	const deferred = (state!.reflections ?? []).filter((r) => r.deferred);
+	const reflNote = closedRefl.length || deferred.length ? ` reflections: ${closedRefl.length ? `closed ${closedRefl.map((n) => `r${n}`).join(", ")} as fixed by this flow` : ""}${closedRefl.length && deferred.length ? "; " : ""}${deferred.length ? `left open ${deferred.map((r) => `r${r.id} (${r.deferred})`).join(", ")}` : ""}.` : "";
 	// finish is the moment between flows: name the fix / tidy suggestion when a rule fires, nothing otherwise
 	const nudge = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { between: true });
 	const nudgeNote = [nudge.fix, nudge.tidy].filter(Boolean).map((n) => ` ${n} — offer it to the operator.`).join("");
-	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${forgeSkipNote}${reflectSkipNote}${quietNote}${releaseChecksNote}${autoNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
+	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${reflNote}${forgeSkipNote}${reflectSkipNote}${quietNote}${releaseChecksNote}${autoNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 }

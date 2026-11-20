@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gate runner and the gates that do not ship anything. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { skipsChecks, approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState } from "../core.ts";
+import { skipsChecks, approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState, parseRowIds, DF_GITIGNORE } from "../core.ts";
 import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, ghostInfo, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
 import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
@@ -9,13 +9,26 @@ import { AGENT_MARK } from "../present.ts";
 import { GATE_HELP, SELF_BUILD, refreshDocsCode, type Ui, buildSkew, copyWarning, currentBranch, dfDir, featDir, featureEnv, flagValue, gateCwd, gitConsistency, initiated, loadedVersion, mergeHistoryEvidence, needState, now, originUrl, publishedVersion, readClaim, readReflections, readReflectionsText, readRoadmap, readState, roadmapFile, sh, stateFile, tail, unfinishedStates, writePlaybookMergePolicy, writeState } from "./base.ts";
 import { type RunResult, type Session, ago, behindNote, releaseDevSlot, pendingChecks, probeHealth, readDevPorts, runChecks, stampChecks, triedNote } from "./checks.ts";
 import { GIT_TRACK_NOTE, isSelfRepo, renderQuestions, setupQuestions, tagPatternEvidence } from "./setup.ts";
-import { foldRows, foldView, legacyPluginRows, pluginUpstream, reflectDoneNote, reflectList, reflectMoveNote, reflectNote, reflectTidy } from "./reflect.ts";
+import { foldRows, foldView, legacyPluginRows, pluginUpstream, reflectDeferNote, reflectDoneNote, reflectList, reflectMoveNote, reflectNote, reflectPlanNote, reflectReopenNote, reflectSameNote, reflectTidy } from "./reflect.ts";
 import { gateFinish, gateRelease, gateReleaseDone, gateVerify } from "./ship.ts";
 
 /** What a gate may need from the extension closure: finish runs the closing reflection worker itself. */
 export interface FlowHooks {
 	reflect?: (state: FlowState, note: string) => Promise<{ text: string; recorded: boolean; findings: number; failed: boolean }>;
 }
+
+/** Write `.dev-flow/.gitignore` when it is missing; true when it did. Best effort — never fails a gate. */
+export function healDfIgnore(root: string): boolean {
+	const gi = path.join(dfDir(root), ".gitignore");
+	if (existsSync(gi)) return false;
+	try {
+		writeFileSync(gi, DF_GITIGNORE);
+		return true;
+	} catch {
+		return false;
+	}
+}
+const HEALED_NOTE = `restored .dev-flow/.gitignore — it was missing (a fresh clone does not carry an untracked one), so every feature dir under .dev-flow/ showed as uncommitted work\n${AGENT_MARK}track it so the next clone keeps it — tell the operator, and on their word: git add -f .dev-flow/.gitignore, then (a separate call — the file ignores itself, so it shows as a playbook chore only once staged) DEV_FLOW_ALLOW_MAIN=1 git commit -m "track .dev-flow/.gitignore" -- .dev-flow/.gitignore`;
 
 /** Single runner for both the /flow command and the flow tool. */
 export async function runFlow(args: string[], root: string, ui: Ui, sess: Session, hooks: FlowHooks = {}): Promise<RunResult> {
@@ -24,6 +37,13 @@ export async function runFlow(args: string[], root: string, ui: Ui, sess: Sessio
 	if (sub === "help" || sub === "--help" || sub === "-h") return { text: rest.includes("--json") ? gateHelpJson(GATE_HELP, loadedVersion()) : `usage: flow <sub> — ${GATE_HELP}` };
 	// an uninitiated folder is dormant: every gate verb but init and version needs the operator playbook (project.md)
 	if (!initiated(root) && sub !== "init" && sub !== "version") return { text: "dev-flow is not initiated here — no .dev-flow/project.md — run flow init first", isError: true };
+	// the folder's ignore file is dev-flow's, and its content never varies: a clone that lost it is healed here,
+	// before any gate reads git status (finish's clean-checkout proof, doctor's tracking probe)
+	const healed = sub !== "init" && sub !== "version" ? healDfIgnore(root) : false;
+	if (healed) {
+		const res = await runFlow(args, root, ui, sess, hooks);
+		return { ...res, text: `${res.text}\n${HEALED_NOTE}` };
+	}
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
 	// the yolo word at Verified?/Release?/Finish?: the operator said it in chat, then re-run with --confirmed; checks and guardrails stay enforced
@@ -127,7 +147,7 @@ export async function gateInit(o: GateCtx): Promise<RunResult> {
 	mkdirSync(dfDir(root), { recursive: true });
 	const notes: string[] = dfExisted ? [] : [`.dev-flow/ created in ${root}`];
 	// self-ignoring folder with one exception: the playbook is the only file under .dev-flow/ that lives in git
-	writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n!project.md\n");
+	writeFileSync(path.join(dfDir(root), ".gitignore"), DF_GITIGNORE);
 	const mdFile = path.join(dfDir(root), "project.md");
 	const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
 	const curBr = await currentBranch(root);
@@ -175,8 +195,9 @@ export async function gateInit(o: GateCtx): Promise<RunResult> {
 			notes.push(GIT_TRACK_NOTE, AGENT_MARK + "(or re-run the same call with --track on the operator's word)");
 			return;
 		}
-		const c = await sh(`git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -q -m ${sq(before ? "chore: update dev-flow playbook" : "chore: add dev-flow playbook")} -- .dev-flow/project.md`, root, 60_000);
-		notes.push(c.ok ? "project.md committed (git add -f + playbook chore)" : `commit failed — ${c.out.split("\n").find(Boolean) ?? "?"}; ${GIT_TRACK_NOTE}`);
+		// the folder's ignore file rides along: untracked, a fresh clone lost it and every feature dir became "uncommitted"
+		const c = await sh(`git add -f .dev-flow/project.md .dev-flow/.gitignore && DEV_FLOW_ALLOW_MAIN=1 git commit -q -m ${sq(before ? "chore: update dev-flow playbook" : "chore: add dev-flow playbook")} -- .dev-flow/project.md .dev-flow/.gitignore`, root, 60_000);
+		notes.push(c.ok ? "project.md and .dev-flow/.gitignore committed (git add -f + playbook chore)" : `commit failed — ${c.out.split("\n").find(Boolean) ?? "?"}; ${GIT_TRACK_NOTE}`);
 	};
 	const answerToks = [...flagValues(rest, "answers"), ...(flag("answers-file") ? (() => { const f = flagValues(rest, "answers-file")[0]; return f && existsSync(path.resolve(root, f)) ? readFileSync(path.resolve(root, f), "utf8").split("\n") : [`<missing answers file ${f ?? ""}>`]; })() : [])];
 	if (flag("answers") || flag("answers-file")) {
@@ -372,9 +393,25 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 		cfg.release.merge = style;
 		notes.push(written.note);
 	}
+	// the reflection rows this flow sets out to fix, proven open before anything is created: a linked row is
+	// closed by finish as fixed by this flow — the fix and the ledger can no longer drift apart
+	const linkArg = flagValue(rest, "reflections");
+	let linked: { id: number; body: string }[] = [];
+	if (linkArg !== null) {
+		const ids = parseRowIds(linkArg);
+		const open = readReflections(root);
+		const bad = ids.filter((id) => !open.some((i) => i.n === id));
+		if (!ids.length || bad.length) return { text: `start: --reflections names ${bad.length ? `no open row ${bad.map((b) => (Number.isNaN(b) ? "?" : `r${b}`)).join(", ")}` : "nothing"} — open: ${open.map((i) => `r${i.n}`).join(", ") || "none"} (flow reflect list prints them; flow reflect plan groups them)`, isError: true };
+		linked = ids.map((id) => ({ id, body: open.find((i) => i.n === id)!.body }));
+	}
 	// stamp the dev-flow build that started this feature — a stuck flow can later be read against its tooling.
 	// the stamp is what ran, not what the disk claims (that mismatch is the warning above).
 	const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), loadedVersion() ?? undefined);
+	if (linked.length) {
+		state.reflections = linked;
+		const rows = readReflections(root).filter((i) => linked.some((l) => l.id === i.n));
+		notes.push(`linked reflections (finish closes each as fixed by this flow; one it does not fix: flow reflect defer <id> "<why>"):\n${rows.map((i) => `  r${i.n}. ${i.line.replace(/^- \[ \] /, "").replace(/^\[r\d+\]\s*/, "")}`).join("\n")}`);
+	}
 	const planDir = path.join(featDir(root, slugArg), "plan");
 	if (ghost) notes.push(gi!.plan ? `adopted ghost .dev-flow/${slugArg}/ — its plan/ (${listFiles(planDir).join(", ") || "empty"}) is this feature's draft` : `adopted ghost .dev-flow/${slugArg}/ — kept ${gi!.entries.join(", ") || "nothing (it was empty)"}`);
 	mkdirSync(planDir, { recursive: true });
@@ -529,9 +566,13 @@ export async function gateReflect(o: GateCtx): Promise<RunResult> {
 	// single words are verbs (roadmap-style); a note merely starting with one stays a note
 	if (words.length === 1 && words[0] === "tidy") return reflectTidy(root);
 	if (words.length === 1 && words[0] === "list") return await reflectList(root);
+	if (words.length === 1 && words[0] === "plan") return reflectPlanNote(root);
+	if (flag("same")) return reflectSameNote(root, sess, words);
 	if (words[0] === "move") return reflectMoveNote(root, words.slice(1), forced);
 	if (words[0] === "done") return reflectDoneNote(root, sess, words.slice(1));
-	if (words.length) return await reflectNote(root, sess, words, forced);
+	if (words[0] === "reopen") return reflectReopenNote(root, sess, words.slice(1));
+	if (words[0] === "defer") return reflectDeferNote(root, sess, words.slice(1));
+	if (words.length) return await reflectNote(root, sess, words, forced, flagValue(rest, "evidence") ?? "");
 	const self = pluginVersion(import.meta.dirname);
 	const upstream = await pluginUpstream(root);
 	const refl = readReflections(root);
@@ -644,7 +685,7 @@ export async function gateDoctor(o: GateCtx): Promise<RunResult> {
 		// note text made doctor's table disagree with where the note was actually filed
 		reflectionRoutes(refl, isSelfRepo(root)).forEach((r, i) => {
 			const link = fold.state === "ok" ? fold.result.linked.find((l) => l.item === i) : undefined;
-			findings.push(`  [${r.sections.join("+")}] ${r.text}${link ? linkedTag(link.issue) : ""}\n      → ${r.route}${link ? ` — already upstream (gh#${link.issue}); check off with — filed: gh#${link.issue} once it lands` : ""}`);
+			findings.push(`  r${refl[i].n} [${r.sections.join("+")}] ${r.text}${link ? linkedTag(link.issue) : ""}\n      → ${r.route}${link ? ` — already upstream (gh#${link.issue}); check off with — filed: gh#${link.issue} once it lands` : ""}`);
 		});
 	}
 	findings.push(...foldRows(fold, isSelfRepo(root), refl));

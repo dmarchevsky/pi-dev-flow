@@ -67,6 +67,7 @@ import {
 	parseVersion,
 	pidAlive,
 	playbookOnlyChange,
+	operatorDirt,
 	sessionRunsOlderBuild,
 	changelogVersionsBetween,
 	inScratchDir,
@@ -121,6 +122,18 @@ import {
 	workerSteer,
 	parseReflectReport,
 	renderReflectFindings,
+	ensureReflectIds,
+	parseRowIds,
+	reflectSame,
+	reflectReopen,
+	archiveAppend,
+	closedRowsBySection,
+	archiveTake,
+	reflectFixPlan,
+	defaultBudgetMin,
+	workerSteerAt,
+	recoverReflectRows,
+	assistantTexts,
 	shortFindingNote,
 	AGENT_MARK,
 	appendRoadmapItem,
@@ -476,6 +489,18 @@ test("playbookOnlyChange: the lane for the tracking chore (#53)", () => {
 	assert.equal(playbookOnlyChange(""), false, "nothing staged, nothing to grant");
 	assert.equal(playbookOnlyChange("A  .dev-flow/project.md\nM  src/app.ts"), false, "any other dirty path closes the lane");
 	assert.equal(playbookOnlyChange("M  README.md"), false);
+	// the folder's ignore file rides the same lane: alone (staged, it shows only then) or with the playbook
+	assert.equal(playbookOnlyChange("A  .dev-flow/.gitignore"), true);
+	assert.equal(playbookOnlyChange("A  .dev-flow/.gitignore\nA  .dev-flow/project.md"), true);
+	assert.equal(playbookOnlyChange("A  .dev-flow/.gitignore\nM  src/app.ts"), false);
+});
+
+test("operatorDirt: dev-flow's own folder is never the operator's uncommitted work; the playbook is", () => {
+	assert.equal(operatorDirt("?? .dev-flow/auto-review/\n?? .dev-flow/details-close-to-overview/"), "", "two flows' state dirs — the ollamaMQ refusal");
+	assert.equal(operatorDirt("?? .dev-flow/"), "");
+	assert.equal(operatorDirt(" M .dev-flow/project.md\n?? .dev-flow/x/"), " M .dev-flow/project.md", "the playbook is edited by hand and tracked");
+	assert.equal(operatorDirt(" M src/app.ts\n?? .dev-flow/x/"), " M src/app.ts");
+	assert.equal(operatorDirt('?? ".dev-flow/a b/"'), "", "a quoted path");
 });
 
 test("bashFlowGuard: the playbook tracking chore may land on the default branch (#53)", () => {
@@ -718,7 +743,7 @@ test("reflections: closed count; tidy drops closed items and headings left empty
 	const flat = "# dev-flow reflections\n\n<!-- n -->\n- [x] closed\n- [ ] open\n";
 	assert.deepEqual(reflectionsTidy(flat).split("\n").filter((l) => l.startsWith("- [")), ["- [ ] open"]);
 	// the hint every surface shares
-	assert.match(reflectionsTidyHint(3), /↻ 3 closed reflection\(s\) — flow reflect tidy drops them/);
+	assert.match(reflectionsTidyHint(3), /↻ 3 closed reflection\(s\) — flow reflect tidy moves them to the archive/);
 });
 
 const reflectTarget = (note: string) => guessReflectSections(note).target;
@@ -845,7 +870,7 @@ test("reflectionNudges: fix fires on recurrence, age, a docs batch or code betwe
 	// tidy
 	const closed = (n: number, d = "2026-11-01") => Array.from({ length: n }, (_, i) => `- [x] c${i} — s ${d} — fixed: v1`);
 	assert.equal(reflectionNudges(q(["- [ ] a — s 2026-11-01", "- [ ] b — s 2026-11-01", "- [ ] c — s 2026-11-01"], closed(2)), today).tidy, null, "a couple of fresh closed items among many open: no tidy");
-	assert.match(reflectionNudges(q([], closed(5)), today).tidy ?? "", /↻ 5 closed reflection\(s\) — flow reflect tidy drops them/);
+	assert.match(reflectionNudges(q([], closed(5)), today).tidy ?? "", /↻ 5 closed reflection\(s\) — flow reflect tidy moves them to the archive/);
 	assert.match(reflectionNudges(q(["- [ ] a — s 2026-11-01"], closed(3)), today).tidy ?? "", /3 closed/, "closed ≥ open with at least 3 closed");
 	assert.match(reflectionNudges(q(["- [ ] a — s 2026-11-01", "- [ ] b — s 2026-11-01"], closed(1, "2026-09-01")), today).tidy ?? "", /1 closed/, "a month-old closed item is history worth dropping");
 });
@@ -1025,8 +1050,8 @@ test("reflectProtocol: session-review steps, npm-based update probe, fold/drop d
 });
 
 test("reflectProtocol: fix and tidy nudges ride after the decision step", () => {
-	const out = reflectProtocol(reflectItems("## playbook\n\n- [ ] an open note"), true, { version: "1.2.3", upstream: "dmarchevsky/dev-flow", tidy: "↻ 6 closed reflection(s) — flow reflect tidy drops them", fix: "⚑ fix the open reflections now? (x)" }).join("\n");
-	assert.match(out, /↻ 6 closed reflection\(s\) — flow reflect tidy drops them — offer it to the operator after the fold\/drop answer/);
+	const out = reflectProtocol(reflectItems("## playbook\n\n- [ ] an open note"), true, { version: "1.2.3", upstream: "dmarchevsky/dev-flow", tidy: "↻ 6 closed reflection(s) — flow reflect tidy moves them to the archive", fix: "⚑ fix the open reflections now? (x)" }).join("\n");
+	assert.match(out, /↻ 6 closed reflection\(s\) — flow reflect tidy moves them to the archive — offer it to the operator after the fold\/drop answer/);
 	assert.match(out, /⚑ fix the open reflections now\? \(x\) — offer it/);
 	assert.ok(out.indexOf("closed reflection(s)") < out.indexOf("open items ("), "the hint precedes the routed list the agent acts on");
 });
@@ -1062,7 +1087,7 @@ test("buildReflectBrief: transcripts, queue, upstream dedupe and the row contrac
 	assert.match(brief, /Operator context: the operator hated the double prompt/);
 	assert.match(brief, /no gh issue create/);
 	assert.match(brief, /F<n> \| fold\|drop \| docs\|code\|plugin/);
-	assert.match(brief, /O<n> \| still-open\|fixed\|recurred/);
+	assert.match(brief, /O<id> \| still-open\|fixed\|recurred/);
 	const self = buildReflectBrief({ slug: "s", root: "/r", today: "d", driverFile: null, children: [], reflectionsFile: "f", items: [], projectMd: "p", version: null, upstream: "", selfRepo: true, note: "" });
 	assert.match(self, /not file-backed/);
 	assert.match(self, /no flow_stage worker ran/);
@@ -1138,7 +1163,7 @@ test("digestTranscript: a guard event is the guard's own error result, never wor
 });
 
 test("workerSteer: names the time left; implement commits, read-only ops write the REPORT", () => {
-	assert.match(workerSteer("reflect", 20), /about 5 min of your 20-min budget/);
+	assert.match(workerSteer("reflect", 20), /about 8 min of your 20-min budget/, "read-only ops are steered at 60% (gh#252)");
 	assert.match(workerSteer("reflect", 20), /Stop probing and write the REPORT section now/);
 	assert.match(workerSteer("implement", 60), /about 15 min .* commit what works/);
 });
@@ -1285,6 +1310,69 @@ test("renderReflectFindings: the operator sees a short list — folds grouped pl
 	assert.equal(shortFindingNote("x ".repeat(100)).endsWith("…"), true, "a long note is clipped");
 });
 
+test("reflection ids: assigned once, never reused, addressed by id whatever moves; recurrences and reopen keep history on the row", () => {
+	const legacy = "## code\n\n- [x] closed one — s 2026-01-01 — fixed: v1\n- [ ] open one — s 2026-01-02\n";
+	const withIds = ensureReflectIds(legacy, "## code\n\n- [x] [r7] archived — fixed: v0\n");
+	assert.match(withIds, /- \[x\] \[r8\] closed one[\s\S]*- \[ \] \[r9\] open one/, "the next id is past the archive's: an id is never handed out twice");
+	assert.equal(ensureReflectIds(withIds), withIds, "idempotent");
+	assert.deepEqual(reflectItems(withIds).map((i) => [i.n, i.body]), [[9, "open one"]]);
+	assert.equal(reflectRow(withIds, 9)?.open, true);
+	assert.equal(reflectRow(withIds, 2), null, "a position never stands in for an id");
+	assert.deepEqual(parseRowIds("r3, 7,r3,x"), [3, 7, Number.NaN]);
+	const seen = reflectSame(withIds, 9, "2026-02-01 f2", "w.jsonl:40")!;
+	assert.match(seen, /open one — s 2026-01-02 · seen again 2026-02-01 f2: w\.jsonl:40/);
+	assert.equal(reflectItems(seen)[0].hits, 2);
+	assert.equal(reflectItems(seen)[0].body, "open one", "a recurrence does not change what the row is compared on");
+	const reopened = reflectReopen(withIds, 8, "2026-02-02 f3", "it came back")!;
+	assert.match(reopened, /- \[ \] \[r8\] closed one — s 2026-01-01 · reopened 2026-02-02 f3: it came back \(was fixed: v1\)/);
+	assert.equal(reflectReopen(withIds, 9, "x", "y"), null, "an open row is not reopened");
+	assert.match(reflectionLine("a note", "f", "2026-02-03", "driver.jsonl:120"), /^- \[ \] a note — f 2026-02-03 · evidence: driver\.jsonl:120$/);
+	const arch = archiveAppend("", closedRowsBySection(withIds), "2026-02-04");
+	assert.match(arch, /## code\n\n- \[x\] \[r8\] closed one/);
+	assert.deepEqual(archiveTake(arch, 8)?.row, { section: "code", line: "- [x] [r8] closed one — s 2026-01-01 — fixed: v1" });
+});
+
+test("reflectFixPlan: code rows sharing a file form one flow, ranked by hits; playbook rows are one docs flow", () => {
+	const text = ensureReflectIds([
+		"## playbook", "", "- [ ] the release prose is stale — s 2026-01-01", "- [ ] name the sign-in helper — s 2026-01-01", "",
+		"## code", "",
+		"- [ ] `scripts/harness.ts` should export captureSurface — s 2026-01-01 · seen again 2026-01-05 f",
+		"- [ ] seed rows for ui-check via scripts/harness.ts — s 2026-01-01",
+		"- [ ] scripts/test.ts leaks tmp dirs — s 2026-01-01",
+		"- [ ] the flaky pi.test.ts — s 2026-01-01",
+		"- [ ] pi.test.ts stop outranks exit code — s 2026-01-01 · seen again 2026-01-02 x · seen again 2026-01-03 y",
+	].join("\n"));
+	const { groups, singles } = reflectFixPlan(reflectItems(text));
+	assert.equal(groups[0].section, "playbook");
+	assert.deepEqual(groups[0].ids, [1, 2]);
+	const code = groups.filter((g) => g.section === "code");
+	assert.deepEqual(code.map((g) => [g.topic, g.ids, g.hits]), [["pi-test", [6, 7], 4], ["harness", [3, 4], 3]], "most-hit group first, named after the shared file");
+	assert.deepEqual(singles.map((g) => g.ids), [[5]]);
+});
+
+test("worker budgets grow with the work; read-only workers are steered at 60%; drafted rows are recoverable (gh#252)", () => {
+	assert.equal(defaultBudgetMin("reflect"), 20);
+	assert.equal(defaultBudgetMin("reflect", { transcriptBytes: 250_000 }), 20, "a small flow keeps the old default");
+	assert.equal(defaultBudgetMin("reflect", { transcriptBytes: 1_500_000 }), 45, "yesterday's 1.5 MB flow gets 45 min, not 20");
+	assert.equal(defaultBudgetMin("reflect", { transcriptBytes: 50_000_000 }), 60, "capped");
+	assert.equal(defaultBudgetMin("review", { diffLines: 1600 }), 60, "a 1,600-line review gets 60 min, not 30");
+	assert.equal(defaultBudgetMin("review", { diffLines: 99_999 }), 90, "capped");
+	assert.equal(defaultBudgetMin("implement", { diffLines: 5000 }), 60, "implement is not sized");
+	assert.equal(clampBudgetMin(15, "reflect", { transcriptBytes: 9_000_000 }), 15, "an explicit budget wins");
+	assert.equal(clampBudgetMin(undefined, "reflect", { transcriptBytes: 1_500_000 }), 45);
+	assert.equal(workerSteerAt("implement"), 0.75);
+	assert.equal(workerSteerAt("reflect"), 0.6);
+	assert.match(workerSteer("review", 30), /about 12 min of your 30-min budget/);
+	const texts = assistantTexts([
+		{ role: "user", content: "F9 | fold | docs | the brief, not a finding" },
+		{ role: "assistant", content: [{ type: "text", text: "F1 | fold | code | first take | why: x" }, { type: "thinking", thinking: "F2 | fold | docs | thought only" }] },
+		{ role: "assistant", content: "F1 | fold | code | revised take | why: y\nO2 | fixed | now passes" },
+	]);
+	assert.deepEqual(texts.length, 2, "assistant text only");
+	assert.equal(recoverReflectRows(texts), "F1 | fold | code | revised take | why: y\nO2 | fixed | now passes", "a later row for the same F<n> replaces the earlier one");
+	assert.equal(recoverReflectRows(["no rows here", "F7 | maybe | docs | bad"]), null);
+});
+
 test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, plugin routes upstream", () => {
 	const body = [
 		"F1 | fold | docs | test command drifted to pnpm | dup: none | why: hit 3 times | evidence: driver.jsonl:120",
@@ -1303,8 +1391,8 @@ test("parseReflectReport + renderReflectFindings: rows parse, junk is skipped, p
 	assert.match(out, /1\. \[fold\] docs: test command drifted to pnpm\n↪    → docs flow · record: flow reflect --playbook · hit 3 times/);
 	assert.match(out, /2\. \[drop\] plugin: guard blocked a scratch write\n↪    → upstream GitHub issue · flow reflect --plugin prints the recipe \(never a local row\) · dup: gh#12/);
 	assert.match(out, /3\. \[fold\] code: .*\n↪    → patch flow · record: flow reflect --code · dup: #2/);
-	assert.match(out, /#1 recurred — .* → recommend fixing it now/);
-	assert.match(out, /#2 fixed — .* → propose the check-off/);
+	assert.match(out, /r1 recurred — .* → recommend fixing it now/);
+	assert.match(out, /r2 fixed — .* → propose the check-off/);
 	assert.match(renderReflectFindings(r, true).join("\n"), /2\. \[drop\] plugin: .*\n↪    → patch flow/, "in the dev-flow repo plugin is code");
 	assert.deepEqual(parseReflectReport("nothing useful here"), { findings: [], open: [] });
 	assert.match(renderReflectFindings({ findings: [], open: [] }, false).join("\n"), /findings: none/);

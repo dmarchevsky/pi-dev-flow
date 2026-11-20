@@ -154,6 +154,8 @@ test("bare reflect from the command bar wakes the model; other commands stay dis
  *  The DEV_FLOW_ALLOW_MAIN env is the sanctioned override of the pre-commit hook the tests' own init installed. */
 function trackPlaybook(repo: string) {
 	execFileSync("git", ["-C", repo, "add", ".dev-flow/project.md"]);
+	// as flow init --track does: the folder's ignore file rides along, so a clone keeps flow state out of git status
+	execFileSync("git", ["-C", repo, "add", "-f", ".dev-flow/.gitignore"]);
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 }
 
@@ -880,7 +882,7 @@ test("reflect <note>: section by wording, protocol lists open items, check-off s
 	assert.match(r2.content[0].text, /plugin note — not written to reflections\.md/, "a plugin-shaped note goes upstream, never into the project's file");
 	assert.match(r2.content[0].text, /filed as plugin: plugin wording/, "the echo says why it was read as plugin");
 	assert.ok(!readFileSync(reflFile, "utf8").includes("ui panels"), "nothing written");
-	assert.match(readFileSync(reflFile, "utf8"), /## playbook\n\n- \[ \] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}\n\n## code\n\n- \[ \] the seed script skips admins — rfeat /);
+	assert.match(readFileSync(reflFile, "utf8"), /## playbook\n\n- \[ \] \[r1\] test cmd is stale — rfeat \d{4}-\d{2}-\d{2}\n\n## code\n\n- \[ \] \[r2\] the seed script skips admins — rfeat /);
 	const proto = await flow(["reflect"]);
 	assert.match(proto.content[0].text, /flow reflect — session reflection \(dev-flow \d+\.\d+\.\d+, upstream: dmarchevsky\/pi-dev-flow\)/);
 	assert.match(proto.content[0].text, /1\. delegate the review: call flow_stage\(op: "reflect"/, "a bound session delegates the review");
@@ -903,10 +905,10 @@ test("reflect --playbook/--code file by decision, --plugin prints the upstream r
 	await flow(["init", "--write", TEST_MD]);
 	const reflFile = path.join(repo, ".dev-flow", "reflections.md");
 	const a = await flow(["reflect", "--playbook", "the", "seed", "data", "note", "is", "stale"]);
-	assert.match(a.content[0].text, /reflected \(playbook — as told\)/);
+	assert.match(a.content[0].text, /reflected as r1 \(playbook — as told\)/, "the echo names the row's id");
 	const b = await flow(["reflect", "--code", "the", "deploy", "gate", "in", "CI", "is", "flaky"]);
-	assert.match(b.content[0].text, /reflected \(code — as told\)/, "an explicit flag beats the keyword guess");
-	assert.match(readFileSync(reflFile, "utf8"), /## code\n\n- \[ \] the deploy gate in CI is flaky — /);
+	assert.match(b.content[0].text, /reflected as r2 \(code — as told\)/, "an explicit flag beats the keyword guess");
+	assert.match(readFileSync(reflFile, "utf8"), /## code\n\n- \[ \] \[r2\] the deploy gate in CI is flaky — /);
 	const before = readFileSync(reflFile, "utf8");
 	const p = await flow(["reflect", "--plugin", "flow", "doctor", "prints", "twice"]);
 	assert.match(p.content[0].text, /gh issue list --repo dmarchevsky\/pi-dev-flow --state all --search/);
@@ -915,15 +917,15 @@ test("reflect --playbook/--code file by decision, --plugin prints the upstream r
 	assert.ok(!/filed as plugin/.test(p.content[0].text), "an explicit --plugin needs no guess explanation");
 	assert.equal(readFileSync(reflFile, "utf8"), before, "--plugin never writes the project's queue");
 	const list = await flow(["reflect", "list"]);
-	assert.match(list.content[0].text, /1\. \[playbook\] the seed data note is stale/);
-	assert.match(list.content[0].text, /2\. \[code\] the deploy gate in CI is flaky/);
+	assert.match(list.content[0].text, /r1\. \[playbook\] the seed data note is stale/);
+	assert.match(list.content[0].text, /r2\. \[code\] the deploy gate in CI is flaky/);
 	const moved = await flow(["reflect", "move", "2", "--playbook"]);
-	assert.match(moved.content[0].text, /item 2 re-filed under ## playbook[\s\S]*row numbers changed — run flow reflect list/);
+	assert.match(moved.content[0].text, /r2 re-filed under ## playbook/);
 	const filed = readFileSync(reflFile, "utf8");
 	assert.ok(!/^## code$/m.test(filed), "the emptied section goes with its item");
 	assert.equal(filed.split("- [ ] ").length - 1, 2, "the move moves one item, it does not copy it");
 	assert.match((await flow(["reflect", "move", "1", "--playbook"])).content[0].text, /already under ## playbook/);
-	assert.match((await flow(["reflect", "move", "9", "--code"])).content[0].text, /no open item 9 — open: 1, 2/);
+	assert.match((await flow(["reflect", "move", "9", "--code"])).content[0].text, /no open row r9 — open: r1, r2/);
 	assert.match((await flow(["reflect", "move", "1", "--plugin"])).content[0].text, /plugin notes are not kept in reflections\.md/);
 	assert.match((await flow(["reflect", "move", "1"])).content[0].text, /usage: flow reflect move <n> --playbook \| --code/);
 	const doctor = await flow(["doctor"]);
@@ -945,21 +947,69 @@ test("reflect done <n>: checks a fixed item off with date, slug and what fixed i
 	await flow(["init", "--write", TEST_MD]);
 	const file = path.join(repo, ".dev-flow", "reflections.md");
 	writeFileSync(file, "# dev-flow reflections\n\n## playbook\n\n- [ ] seed cmd drifted — s 2026-10-01\n\n## code\n\n- [ ] seed skips admins — s 2026-10-02\n");
-	assert.match((await flow(["reflect", "done", "3"])).content[0].text, /no open item 3 — open: 1, 2/);
+	assert.match((await flow(["reflect", "done", "3"])).content[0].text, /no open row r3 — open: r1, r2/);
 	const r = await flow(["reflect", "done", "2", "PR", "#93"]);
 	assert.ok(!r.isError, r.content[0].text);
-	assert.match(r.content[0].text, /item 2 checked off — seed skips admins — fixed: PR #93/);
-	assert.match(readFileSync(file, "utf8"), /- \[x\] seed skips admins — s 2026-10-02 — fixed: \d{4}-\d\d-\d\d — PR #93/);
+	assert.match(r.content[0].text, /r2 checked off — seed skips admins — fixed: PR #93/);
+	assert.match(readFileSync(file, "utf8"), /- \[x\] \[r2\] seed skips admins — s 2026-10-02 — fixed: \d{4}-\d\d-\d\d — PR #93/);
 	assert.match((await flow(["reflect", "list"])).content[0].text, /1 open/);
 	// gh#220: a fold closes several rows at once, and the list names the command that does it
 	writeFileSync(file, "# dev-flow reflections\n\n## playbook\n\n- [ ] a drifted — s 2026-10-01\n- [ ] b drifted — s 2026-10-01\n- [ ] c drifted — s 2026-10-01\n");
-	assert.match((await flow(["reflect", "list"])).content[0].text, /close fixed rows with flow reflect done <n>\[,<n>…\] "<what fixed it>" — never by editing reflections\.md/);
+	assert.match((await flow(["reflect", "list"])).content[0].text, /close fixed rows with flow reflect done <id>\[,<id>…\] "<what fixed it>" — never by editing reflections\.md/);
 	const bad = await flow(["reflect", "done", "1,9", "nope"]);
-	assert.ok(bad.isError && /no open item 9[\s\S]*nothing was checked off/.test(bad.content[0].text), bad.content[0].text);
+	assert.ok(bad.isError && /no open row r9[\s\S]*nothing was checked off/.test(bad.content[0].text), bad.content[0].text);
 	assert.ok(!readFileSync(file, "utf8").includes("[x]"), "one bad number closes none");
 	const batch = await flow(["reflect", "done", "1,3", "playbook", "fold"]);
-	assert.match(batch.content[0].text, /2 items checked off — fixed: playbook fold\n  1\. a drifted[^\n]*\n  3\. c drifted/, batch.content[0].text);
-	assert.match(readFileSync(file, "utf8"), /- \[x\] a drifted[^\n]*fixed: \d{4}-\d\d-\d\d — playbook fold\n- \[ \] b drifted[^\n]*\n- \[x\] c drifted[^\n]*playbook fold/);
+	assert.match(batch.content[0].text, /2 items checked off — fixed: playbook fold\n  r1\. a drifted[^\n]*\n  r3\. c drifted/, batch.content[0].text);
+	assert.match(readFileSync(file, "utf8"), /- \[x\] \[r1\] a drifted[^\n]*fixed: \d{4}-\d\d-\d\d — playbook fold\n- \[ \] \[r2\] b drifted[^\n]*\n- \[x\] \[r3\] c drifted[^\n]*playbook fold/);
+});
+
+test("reflections are linked to the flow that fixes them: start --reflections, defer, finish closes the rest; ids survive tidy; reopen, --same, --evidence, plan", async (t) => {
+	const origSpawn = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = async () => { throw new Error("this test must not spawn a worker"); };
+	t.after(() => { stageWorkerSpawn.run = origSpawn; });
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	const file = path.join(repo, ".dev-flow", "reflections.md");
+	// a ledger from before ids: the first read gives every row its id, closed rows included
+	writeFileSync(file, "# dev-flow reflections\n\n## code\n\n- [x] old fix — s 2026-01-01 — fixed: v0\n- [ ] `scripts/harness.ts` lacks captureSurface — s 2026-01-02\n- [ ] scripts/harness.ts has no seed rows — s 2026-01-02\n- [ ] the flaky pi.test.ts — s 2026-01-03\n");
+	const list = await flow(["reflect", "list"]);
+	assert.match(list.content[0].text, /r2\. \[code\] `scripts\/harness\.ts` lacks captureSurface[\s\S]*r3\. \[code\] scripts\/harness\.ts has no seed rows[\s\S]*r4\. \[code\] the flaky pi\.test\.ts/, list.content[0].text);
+	assert.match(readFileSync(file, "utf8"), /- \[x\] \[r1\] old fix/, "ids are written to the file, closed rows included");
+	// a recurrence counts on its row; evidence rides on a new one
+	assert.match((await flow(["reflect", "--same", "r4", "w.jsonl:12"])).content[0].text, /r4 seen again — now hit 2×/);
+	assert.match((await flow(["reflect", "--code", "the", "seed", "skips", "admins", "--evidence=driver.jsonl:88"])).content[0].text, /reflected as r5 \(code — as told\): - \[ \] the seed skips admins — \d{4}-\d\d-\d\d · evidence: driver\.jsonl:88/);
+	const plan = await flow(["reflect", "plan"]);
+	assert.match(plan.content[0].text, /code · harness \(2 row\(s\), hit 2×\): r2,r3/, plan.content[0].text);
+	assert.match(plan.content[0].text, /flow start fix-harness --patch --reflections=r2,r3/);
+	// tidy archives; a mistaken close is reopened — from the archive too
+	assert.match((await flow(["reflect", "tidy"])).content[0].text, /moved 1 closed item\(s\) to \.dev-flow\/reflections-archive\.md/);
+	assert.match((await flow(["reflect", "reopen", "r1", "it", "came", "back"])).content[0].text, /r1 reopened \(taken back from the archive\) — old fix/);
+	assert.match(readFileSync(file, "utf8"), /- \[ \] \[r1\] old fix — s 2026-01-01 · reopened \d{4}-\d\d-\d\d: it came back \(was fixed: v0\)/);
+	assert.match((await flow(["reflect", "done", "r1", "really fixed"])).content[0].text, /r1 checked off/);
+	// the link: a bad id refuses before anything is created
+	const bad = await flow(["start", "fixh", "--patch", "--reflections=r2,r99"]);
+	assert.ok(bad.isError && /--reflections names no open row r99/.test(bad.content[0].text), bad.content[0].text);
+	assert.ok(!existsSync(path.join(repo, ".dev-flow", "fixh")), "nothing was created");
+	const started = await flow(["start", "fixh", "--patch", "--reflections=r2,r3,r4"]);
+	assert.match(started.content[0].text, /linked reflections[\s\S]*r2\. `scripts\/harness\.ts` lacks captureSurface/, started.content[0].text);
+	assert.match(started.content[0].text, /linked reflections r2, r3, r4: fix each on this branch/, "the hint carries them");
+	await flow(["approve", "--confirmed"]);
+	assert.match((await flow(["reflect", "defer", "r4", "flaky", "test", "is", "its", "own", "flow"])).content[0].text, /r4 deferred by fixh — it stays open/);
+	assert.match((await flow(["reflect", "defer", "r5", "x"])).content[0].text, /r5 is not linked to fixh — linked: r2, r3, r4/);
+	commitWt(repo, "fixh");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]);
+	markReflected(repo, "fixh");
+	const done = await flow(["finish", "--confirmed"]);
+	assert.match(done.content[0].text, /reflections: closed r2, r3 as fixed by this flow; left open r4 \(flaky test is its own flow\)/, done.content[0].text);
+	const after = readFileSync(file, "utf8");
+	assert.match(after, /- \[x\] \[r2\][^\n]*fixed: \d{4}-\d\d-\d\d fixh — fixed by this flow/);
+	assert.match(after, /- \[ \] \[r4\][^\n]*deferred by fixh \d{4}-\d\d-\d\d: flaky test is its own flow/);
 });
 
 test("reflect tidy: drops closed items; the nudge fires once the pile is worth a tidy", async () => {
@@ -978,13 +1028,14 @@ test("reflect tidy: drops closed items; the nudge fires once the pile is worth a
 	const old = Array.from({ length: 5 }, (_, i) => `- [x] handled ${i} — s 2026-01-0${i + 1} — fixed: v0.1`).join("\n");
 	writeFileSync(reflFile, readFileSync(reflFile, "utf8") + old + "\n");
 	const queued = await flow(["reflect", "the", "docs", "page", "lies"]);
-	assert.match(queued.content[0].text, /↻ 6 closed reflection\(s\) — flow reflect tidy drops them/, "queueing a note points at the tidy once the pile is real");
+	assert.match(queued.content[0].text, /↻ 6 closed reflection\(s\) — flow reflect tidy moves them to the archive/, "queueing a note points at the tidy once the pile is real");
 	assert.match((await flow(["reflect"])).content[0].text, /↻ 6 closed reflection\(s\)/, "the protocol carries the hint too");
 	assert.match((await flow(["doctor"])).content[0].text, /↻ 6 closed reflection\(s\)/, "doctor carries it too");
-	assert.match((await flow(["reflect", "tidy", "up", "the", "readme"])).content[0].text, /reflected \(playbook — playbook wording\): - \[ \] tidy up the readme/);
+	assert.match((await flow(["reflect", "tidy", "up", "the", "readme"])).content[0].text, /reflected as r\d+ \(playbook — playbook wording\): - \[ \] tidy up the readme/);
 	const t = await flow(["reflect", "tidy"]);
-	assert.match(t.content[0].text, /dropped 6 closed item\(s\) — 4 open/);
+	assert.match(t.content[0].text, /moved 6 closed item\(s\) to \.dev-flow\/reflections-archive\.md — 4 open; ids are unchanged/);
 	assert.ok(!readFileSync(reflFile, "utf8").includes("- [x]"), "closed lines are gone from the file");
+	assert.match(readFileSync(path.join(repo, ".dev-flow", "reflections-archive.md"), "utf8"), /- \[x\] \[r\d+\] handled one — fixed: v0\.1/, "and kept in the archive, ids and fixed-notes intact");
 	const again = await flow(["reflect", "tidy"]);
 	assert.match(again.content[0].text, /nothing to tidy \(4 open, 0 closed\)/);
 });
@@ -1157,6 +1208,10 @@ test("guard: a scratch file outside the checkout is stage-free while the worktre
 	writeFileSync(path.join(repo, ".dev-flow", "scratch", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	assert.match((await write(path.join(repo, "junk.ts")))?.reason ?? "", /edit its worktree/, "the checkout stays confined to the worktree");
+	// gh#258's shape: an edit of a tracked file by its main-checkout path, relative to the session's cwd
+	const edit = (p: string) => pi.handlers.tool_call[0]({ toolName: "edit", input: { path: p, edits: [{ oldText: "# scratch", newText: "# changed" }] } }, ctx);
+	assert.match((await edit("README.md"))?.reason ?? "", /edit its worktree \(\.dev-flow\/scratch\/worktree\)/, "an edit of a tracked main-checkout file is refused and names the worktree");
+	assert.equal(await edit(".dev-flow/scratch/worktree/README.md"), undefined, "the same file in the worktree is the working area");
 	assert.equal(await write(path.join(tmpdir(), "split_skill.py")), undefined, "a throwaway in the OS temp dir is not a repo write");
 	assert.equal(await write(path.join(tmpdir(), "nested", "x.py")), undefined, "including a scratch directory the agent makes for itself");
 });
@@ -2072,6 +2127,7 @@ test("flow doctor: findings without writing, deleting or asking", async () => {
 	assert.ok(!d.isError, "findings are advisory, not a failure");
 	execFileSync("rm", ["-rf", path.join(repo, ".dev-flow", "ghosty")]);
 	execFileSync("git", ["-C", repo, "add", ".dev-flow/project.md"]);
+	execFileSync("git", ["-C", repo, "add", "-f", ".dev-flow/.gitignore"]);
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 	assert.match((await flow(["doctor"])).content[0].text, /doctor: no findings/, "a clean repo gets the no-findings line");
 });
@@ -2513,6 +2569,44 @@ test("until-release: the operator's word after Verified? stands even as --yolo -
 	const replayed = await b.flow(["release", "--yolo", "--confirmed"]);
 	assert.ok(replayed.isError && /NEEDS-OPERATOR Release\?[\s\S]*yolo = until-release/.test(replayed.content[0].text), replayed.content[0].text);
 	assert.equal(JSON.parse(readFileSync(path.join(b.repo, ".dev-flow", "replayed", "state.json"), "utf8")).stage, "pre-release", "nothing shipped on a replayed flag");
+});
+
+test("a clone that lost .dev-flow/.gitignore: the next gate restores it, finish is not blocked by flow state, and --track commits it (ollamaMQ 2026-11-20)", async (t) => {
+	const origSpawn = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = async () => { throw new Error("this test must not spawn a worker"); };
+	t.after(() => { stageWorkerSpawn.run = origSpawn; });
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const gi = path.join(repo, ".dev-flow", ".gitignore");
+	const tracked = (p: string) => execFileSync("git", ["-C", repo, "ls-files", p], { encoding: "utf8" }).trim();
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n", "--track"]);
+	assert.equal(tracked(".dev-flow/.gitignore"), ".dev-flow/.gitignore", "--track commits the ignore file with the playbook");
+	assert.equal(tracked(".dev-flow/project.md"), ".dev-flow/project.md");
+	// an older repo: the playbook tracked, the ignore file not — doctor names it
+	execFileSync("git", ["-C", repo, "rm", "-q", "--cached", ".dev-flow/.gitignore"]);
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "untrack"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
+	assert.match((await flow(["doctor"])).content[0].text, /\.dev-flow\/\.gitignore is not tracked in git — a fresh clone loses it/);
+	await flow(["start", "lost"]);
+	mkdirSync(path.join(repo, ".dev-flow", "lost", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "lost", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "lost");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]);
+	markReflected(repo, "lost");
+	// the fresh clone: the ignore file is gone, and another flow's state sits beside this one
+	rmSync(gi);
+	mkdirSync(path.join(repo, ".dev-flow", "other-flow"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "other-flow", "state.json"), "{}");
+	assert.match(execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }), /\?\? \.dev-flow\/other-flow\//, "fixture: flow state reads as untracked work");
+	const done = await flow(["finish", "--confirmed"]);
+	assert.ok(!done.isError, done.content[0].text);
+	assert.match(done.content[0].text, /feature lost done/);
+	assert.match(done.content[0].text, /restored \.dev-flow\/\.gitignore — it was missing/);
+	assert.equal(readFileSync(gi, "utf8"), "*\n!project.md\n");
+	assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }).trim(), "", "flow state is ignored again");
 });
 
 test("Finish? answers itself on a clean flow; finish = always, an open release item or a red after-merge check still stop it", async (t) => {
@@ -3585,7 +3679,7 @@ test("flow_stage reflect: reads the driver and worker transcripts, renders fold/
 		assert.match(out, /fold — playbook \(a docs flow\):\n  1\. test command drifted/, "the operator's short list names each finding");
 		assert.match(out, /1\. \[fold\] docs: test command drifted\n↪\s+→ docs flow/);
 		assert.match(out, /2\. \[fold\] plugin: guard refused a scratch write\n↪\s+→ upstream GitHub issue/);
-		assert.match(out, /#1 recurred — the seed note bit again → recommend fixing it now/);
+		assert.match(out, /r1 recurred — the seed note bit again → recommend fixing it now/);
 		assert.match(out, /show the operator the fold\/drop list above as it stands/);
 		assert.match(out, /⚑ fix the open reflections now\? \(1 recurred this session\)/);
 		assert.equal(r.details?.findings, 2);
@@ -3631,12 +3725,62 @@ test("flow_stage: steered before the budget, and a worker cut at it is asked onc
 		const r = (await pi.tools.flow_stage.execute("id", { op: "reflect", note: "" }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
 		const out = r.content[0].text;
 		assert.equal(steers.length, 1, "steered once before the cut");
-		assert.match(steers[0], /Time check: about 5 min of your 20-min budget are left/);
+		assert.match(steers[0], /Time check: about 8 min of your 20-min budget are left/, "a read-only worker is steered at 60%");
 		assert.equal(prompts.length, 2, "no nudges after the cut — one salvage prompt");
 		assert.match(prompts[1], /Do not call any more tools/);
-		assert.match(out, /interrupted at the 20-min budget \(steered to wrap up at 75%\) — REPORT salvaged after the cut, treat it as partial/);
+		assert.match(out, /interrupted at the 20-min budget \(steered to wrap up at 60%\) — REPORT salvaged after the cut, treat it as partial/);
 		assert.match(out, /1\. \[fold\] docs: the seed command drifted/, "the salvaged rows are rendered");
 		assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "cut", "state.json"), "utf8")).reflectedAt, "a salvaged reflection still counts for finish");
+	} finally {
+		stageWorkerSpawn.run = orig;
+		reflectSeams.upstreamIssues = origIssues;
+		delete workerTiming.softMs; delete workerTiming.hardMs; delete workerTiming.graceMs;
+	}
+});
+
+test("flow_stage salvage: the queued steer is dropped and thinking lowered; when the salvage says nothing, rows already written survive (gh#252)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "lost"]);
+	const calls: string[] = [];
+	let release: (() => void) | undefined;
+	let prompts = 0;
+	const messages: unknown[] = [];
+	const worker = {
+		...fakeWorker([]),
+		// the first turn drafts two rows, then thinks until the cut; the salvage turn is cut while thinking too
+		prompt: async (t: string) => {
+			prompts++;
+			if (prompts === 1) {
+				messages.push({ role: "assistant", content: [{ type: "text", text: "Draft so far:\nF1 | fold | code | the seed script skips admins | dup: none | why: real bug\nF2 | drop | docs | a typo | why: no cost" }] });
+				messages.push({ role: "assistant", content: [{ type: "thinking", thinking: "F3 | fold | docs | mused, never written" }] });
+				await new Promise<void>((r) => { release = r; });
+			} else calls.push(`prompt:${/Do not call any more tools/.test(t) ? "salvage" : t}`);
+		},
+		messages,
+		getLastAssistantText: () => "",
+		steer: async () => { calls.push("steer"); },
+		clearQueue: () => { calls.push("clearQueue"); return { steering: [], followUp: [] }; },
+		setThinkingLevel: (l: string) => { calls.push(`thinking:${l}`); },
+		abort: async () => { release?.(); },
+	};
+	const orig = stageWorkerSpawn.run;
+	const origIssues = reflectSeams.upstreamIssues;
+	reflectSeams.upstreamIssues = async () => null;
+	stageWorkerSpawn.run = async () => worker as never;
+	Object.assign(workerTiming, { softMs: 20, hardMs: 80, graceMs: 2000 });
+	try {
+		const r = (await pi.tools.flow_stage.execute("id", { op: "reflect", note: "" }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
+		const out = r.content[0].text;
+		assert.deepEqual(calls, ["steer", "clearQueue", "thinking:minimal", "prompt:salvage"], "the stale steer is dropped and thinking lowered before the salvage prompt");
+		assert.match(out, /the salvage prompt got no REPORT; the finding rows it had already written are shown, treat them as partial/);
+		assert.match(out, /fold — code \(a patch flow\):\n  1\. the seed script skips admins/, "the drafted rows reach the fold\/drop list");
+		assert.ok(!/mused, never written/.test(out), "thinking is not a finding");
+		assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "lost", "state.json"), "utf8")).reflectedAt, "a recovered reflection counts for finish");
 	} finally {
 		stageWorkerSpawn.run = orig;
 		reflectSeams.upstreamIssues = origIssues;
@@ -4383,6 +4527,7 @@ if (k === "pr create") {
 	console.log("https://gh/pr/" + n);
 	process.exit(0);
 }
+if (k === "pr view" && arg("--json") === "mergeable") { console.log(JSON.stringify({ mergeable: fs.existsSync(f("conflicting")) ? "CONFLICTING" : "MERGEABLE" })); process.exit(0); }
 if (k === "pr view") {
 	const script = rd("checks.json", null);
 	if (!script) { console.log(JSON.stringify({ statusCheckRollup: [] })); process.exit(0); }
@@ -4481,6 +4626,43 @@ test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release
 		markReflected(p.repo, "pubone"); // the fixture's bare flow check counted as friction; the reflection is not under test
 		const fin = await p.flow(["finish", "--confirmed"]);
 		assert.match(fin.content[0].text, /feature pubone done[\s\S]*local main fast-forwarded to origin\/main/, fin.content[0].text);
+	} finally {
+		p.done();
+	}
+});
+
+test("flow release finds a merge conflict before the push and the CI wait, and resumes once it is resolved (gh#259)", async () => {
+	const p = await publishFlow("pubconf");
+	try {
+		await p.toRelease("--version=patch", "1.0.1");
+		// a parallel flow merged first: its changelog line sits where this branch's entry goes
+		const other = mkdtempSync(path.join(tmpdir(), "devflow-other-"));
+		execFileSync("git", ["clone", "-q", p.origin, other]);
+		writeFileSync(path.join(other, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- another flow ships\n");
+		p.git(["add", "-A"], other);
+		p.git(["commit", "-qm", "another flow"], other);
+		p.git(["push", "-q", "origin", "main"], other);
+		p.checks([[ck("build", "pass")]]);
+		const r = await p.flow(["release"]);
+		assert.match(r.content[0].text, /publish stopped — feat\/pubconf conflicts with origin\/main in CHANGELOG\.md — the merge would be refused after the CI wait, so nothing was pushed/, r.content[0].text);
+		assert.match(r.content[0].text, /git merge origin\/main[\s\S]*keep both sides' changelog lines/, "it says how to resolve");
+		assert.doesNotMatch(p.calls(), /pr create|pr view/, "no PR, no CI wait");
+		assert.equal(execFileSync("git", ["ls-remote", p.origin, "refs/heads/feat/pubconf"], { encoding: "utf8" }).trim(), "", "nothing was pushed");
+		// resolved: both lines kept
+		try { p.git(["merge", "-q", "origin/main"], p.wt); } catch { /* the conflict, resolved below */ }
+		writeFileSync(path.join(p.wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- another flow ships\n\n## [1.0.1]\n\n- pubconf ships\n");
+		p.git(["add", "-A"], p.wt);
+		p.git(["commit", "-qm", "merge origin/main"], p.wt);
+		// the forge's view: GitHub reporting the PR conflicting stops before the wait as well
+		writeFileSync(path.join(p.ghState, "conflicting"), "");
+		const forge = await p.flow(["release"]);
+		assert.match(forge.content[0].text, /publish stopped — PR #7 has merge conflicts with main — the merge would be refused after the CI wait/, forge.content[0].text);
+		assert.match(p.calls(), /pr create/, "the branch merged clean locally, so the PR was opened");
+		assert.doesNotMatch(p.calls(), /statusCheckRollup/, "the CI wait never started");
+		rmSync(path.join(p.ghState, "conflicting"));
+		const ok = await p.flow(["release"]);
+		assert.ok(!ok.isError, ok.content[0].text);
+		assert.match(ok.content[0].text, /PR #7 already open · CI green \(1 check\) · merged \(merge\) · tag v1\.0\.1 pushed/, ok.content[0].text);
 	} finally {
 		p.done();
 	}
