@@ -12,6 +12,17 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 - **Reflections keep their evidence.** `flow reflect … --evidence="<file:line>"` stores the transcript line the reflect worker cited. A fold flow can re-check a claim before turning it into a rule; one fold's review failed on rules written from paraphrases.
 - **`flow reflect plan` groups the open rows into flows.** Code rows that share a file or code name form a group, and the playbook rows form one docs flow. Groups are ranked by hit count, and each comes with the `flow start … --reflections=` command that links its rows. The "fix the open reflections now?" nudge points at it.
 
+### Fixed
+- **A fresh clone no longer makes `flow finish` refuse on other flows' state.** `.dev-flow/.gitignore` was never tracked, because it ignores itself. A re-clone brought `project.md` back without it, so every feature folder under `.dev-flow/` showed up as untracked. In ollamaMQ, two flows' `finish` each refused on "uncommitted changes" that were the two flows' own folders. Four changes:
+  - Any gate now recreates the file if it's missing, and says so.
+  - `flow init --track` commits the file together with the playbook.
+  - `flow doctor` reports the file when it isn't tracked.
+  - `finish`'s clean-checkout check ignores dev-flow's own folder, except the playbook.
+
+  The bash guard's playbook-chore exception now also covers committing the ignore file. Because the file ignores itself, it has to be added with `git add -f` in one call and committed in the next.
+- **`flow release` finds a merge conflict before the push and the CI wait (gh#259).** The gate pushed the branch, opened the PR and waited for CI to go green, and only then did `gh pr merge` report the conflict, which was there from the start. Parallel flows collide on the changelog and version file all the time. The gate now fetches the default branch and runs `git merge-tree` before pushing. On a conflict it names the files, pushes nothing, and says how to resolve. Once the PR is open, GitHub's own `mergeable` check runs before the wait, because the default branch can move after the local check. A re-run picks up from where it stopped.
+- **A long flow's reflection is no longer cut off with nothing to show (gh#252).** Every reflection got 20 minutes and every review 30, whatever the size. Three closing reflections ran out of time in one day, the salvage step returned nothing, and `flow finish` removed nothing. The default limit now grows with the work. A reflection gets 5 more minutes for every 250 KB of transcript past the first 250 KB, up to 60. A review gets 10 more minutes for every 500 changed lines past the first 500, up to 90. An explicit `budgetMin` still wins. Review and reflect workers now get the wrap-up warning at 60% instead of 75%: the warning only arrives between turns, and a worker spends minutes on one long thinking turn. Before the salvage request, the queued warning is now cleared and the worker's thinking level is lowered, so the 3 minutes go to writing the report. If the salvage still returns nothing, the finding rows the reflection already wrote are shown as a partial report.
+
 ## [0.94.3] - 2026-11-19
 
 **Fold or drop? shows the findings you're answering about: a short list, folds grouped by plugin, playbook and code, then the drops.**

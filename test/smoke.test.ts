@@ -153,6 +153,8 @@ test("bare reflect from the command bar wakes the model; other commands stay dis
  *  The DEV_FLOW_ALLOW_MAIN env is the sanctioned override of the pre-commit hook the tests' own init installed. */
 function trackPlaybook(repo: string) {
 	execFileSync("git", ["-C", repo, "add", ".dev-flow/project.md"]);
+	// as flow init --track does: the folder's ignore file rides along, so a clone keeps flow state out of git status
+	execFileSync("git", ["-C", repo, "add", "-f", ".dev-flow/.gitignore"]);
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 }
 
@@ -1162,6 +1164,10 @@ test("guard: a scratch file outside the checkout is stage-free while the worktre
 	writeFileSync(path.join(repo, ".dev-flow", "scratch", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	assert.match((await write(path.join(repo, "junk.ts")))?.reason ?? "", /edit its worktree/, "the checkout stays confined to the worktree");
+	// gh#258's shape: an edit of a tracked file by its main-checkout path, relative to the session's cwd
+	const edit = (p: string) => pi.handlers.tool_call[0]({ toolName: "edit", input: { path: p, edits: [{ oldText: "# scratch", newText: "# changed" }] } }, ctx);
+	assert.match((await edit("README.md"))?.reason ?? "", /edit its worktree \(\.dev-flow\/scratch\/worktree\)/, "an edit of a tracked main-checkout file is refused and names the worktree");
+	assert.equal(await edit(".dev-flow/scratch/worktree/README.md"), undefined, "the same file in the worktree is the working area");
 	assert.equal(await write(path.join(tmpdir(), "split_skill.py")), undefined, "a throwaway in the OS temp dir is not a repo write");
 	assert.equal(await write(path.join(tmpdir(), "nested", "x.py")), undefined, "including a scratch directory the agent makes for itself");
 });
@@ -2077,6 +2083,7 @@ test("flow doctor: findings without writing, deleting or asking", async () => {
 	assert.ok(!d.isError, "findings are advisory, not a failure");
 	execFileSync("rm", ["-rf", path.join(repo, ".dev-flow", "ghosty")]);
 	execFileSync("git", ["-C", repo, "add", ".dev-flow/project.md"]);
+	execFileSync("git", ["-C", repo, "add", "-f", ".dev-flow/.gitignore"]);
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 	assert.match((await flow(["doctor"])).content[0].text, /doctor: no findings/, "a clean repo gets the no-findings line");
 });
@@ -2518,6 +2525,44 @@ test("until-release: the operator's word after Verified? stands even as --yolo -
 	const replayed = await b.flow(["release", "--yolo", "--confirmed"]);
 	assert.ok(replayed.isError && /NEEDS-OPERATOR Release\?[\s\S]*yolo = until-release/.test(replayed.content[0].text), replayed.content[0].text);
 	assert.equal(JSON.parse(readFileSync(path.join(b.repo, ".dev-flow", "replayed", "state.json"), "utf8")).stage, "pre-release", "nothing shipped on a replayed flag");
+});
+
+test("a clone that lost .dev-flow/.gitignore: the next gate restores it, finish is not blocked by flow state, and --track commits it (ollamaMQ 2026-11-20)", async (t) => {
+	const origSpawn = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = async () => { throw new Error("this test must not spawn a worker"); };
+	t.after(() => { stageWorkerSpawn.run = origSpawn; });
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const gi = path.join(repo, ".dev-flow", ".gitignore");
+	const tracked = (p: string) => execFileSync("git", ["-C", repo, "ls-files", p], { encoding: "utf8" }).trim();
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n", "--track"]);
+	assert.equal(tracked(".dev-flow/.gitignore"), ".dev-flow/.gitignore", "--track commits the ignore file with the playbook");
+	assert.equal(tracked(".dev-flow/project.md"), ".dev-flow/project.md");
+	// an older repo: the playbook tracked, the ignore file not — doctor names it
+	execFileSync("git", ["-C", repo, "rm", "-q", "--cached", ".dev-flow/.gitignore"]);
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "untrack"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
+	assert.match((await flow(["doctor"])).content[0].text, /\.dev-flow\/\.gitignore is not tracked in git — a fresh clone loses it/);
+	await flow(["start", "lost"]);
+	mkdirSync(path.join(repo, ".dev-flow", "lost", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "lost", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "lost");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]);
+	markReflected(repo, "lost");
+	// the fresh clone: the ignore file is gone, and another flow's state sits beside this one
+	rmSync(gi);
+	mkdirSync(path.join(repo, ".dev-flow", "other-flow"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "other-flow", "state.json"), "{}");
+	assert.match(execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }), /\?\? \.dev-flow\/other-flow\//, "fixture: flow state reads as untracked work");
+	const done = await flow(["finish", "--confirmed"]);
+	assert.ok(!done.isError, done.content[0].text);
+	assert.match(done.content[0].text, /feature lost done/);
+	assert.match(done.content[0].text, /restored \.dev-flow\/\.gitignore — it was missing/);
+	assert.equal(readFileSync(gi, "utf8"), "*\n!project.md\n");
+	assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }).trim(), "", "flow state is ignored again");
 });
 
 test("Finish? answers itself on a clean flow; finish = always, an open release item or a red after-merge check still stop it", async (t) => {
@@ -3636,12 +3681,62 @@ test("flow_stage: steered before the budget, and a worker cut at it is asked onc
 		const r = (await pi.tools.flow_stage.execute("id", { op: "reflect", note: "" }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
 		const out = r.content[0].text;
 		assert.equal(steers.length, 1, "steered once before the cut");
-		assert.match(steers[0], /Time check: about 5 min of your 20-min budget are left/);
+		assert.match(steers[0], /Time check: about 8 min of your 20-min budget are left/, "a read-only worker is steered at 60%");
 		assert.equal(prompts.length, 2, "no nudges after the cut — one salvage prompt");
 		assert.match(prompts[1], /Do not call any more tools/);
-		assert.match(out, /interrupted at the 20-min budget \(steered to wrap up at 75%\) — REPORT salvaged after the cut, treat it as partial/);
+		assert.match(out, /interrupted at the 20-min budget \(steered to wrap up at 60%\) — REPORT salvaged after the cut, treat it as partial/);
 		assert.match(out, /1\. \[fold\] docs: the seed command drifted/, "the salvaged rows are rendered");
 		assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "cut", "state.json"), "utf8")).reflectedAt, "a salvaged reflection still counts for finish");
+	} finally {
+		stageWorkerSpawn.run = orig;
+		reflectSeams.upstreamIssues = origIssues;
+		delete workerTiming.softMs; delete workerTiming.hardMs; delete workerTiming.graceMs;
+	}
+});
+
+test("flow_stage salvage: the queued steer is dropped and thinking lowered; when the salvage says nothing, rows already written survive (gh#252)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	trackPlaybook(repo);
+	await flow(["start", "lost"]);
+	const calls: string[] = [];
+	let release: (() => void) | undefined;
+	let prompts = 0;
+	const messages: unknown[] = [];
+	const worker = {
+		...fakeWorker([]),
+		// the first turn drafts two rows, then thinks until the cut; the salvage turn is cut while thinking too
+		prompt: async (t: string) => {
+			prompts++;
+			if (prompts === 1) {
+				messages.push({ role: "assistant", content: [{ type: "text", text: "Draft so far:\nF1 | fold | code | the seed script skips admins | dup: none | why: real bug\nF2 | drop | docs | a typo | why: no cost" }] });
+				messages.push({ role: "assistant", content: [{ type: "thinking", thinking: "F3 | fold | docs | mused, never written" }] });
+				await new Promise<void>((r) => { release = r; });
+			} else calls.push(`prompt:${/Do not call any more tools/.test(t) ? "salvage" : t}`);
+		},
+		messages,
+		getLastAssistantText: () => "",
+		steer: async () => { calls.push("steer"); },
+		clearQueue: () => { calls.push("clearQueue"); return { steering: [], followUp: [] }; },
+		setThinkingLevel: (l: string) => { calls.push(`thinking:${l}`); },
+		abort: async () => { release?.(); },
+	};
+	const orig = stageWorkerSpawn.run;
+	const origIssues = reflectSeams.upstreamIssues;
+	reflectSeams.upstreamIssues = async () => null;
+	stageWorkerSpawn.run = async () => worker as never;
+	Object.assign(workerTiming, { softMs: 20, hardMs: 80, graceMs: 2000 });
+	try {
+		const r = (await pi.tools.flow_stage.execute("id", { op: "reflect", note: "" }, undefined, undefined, ctx)) as { content: [{ text: string }]; isError?: boolean };
+		const out = r.content[0].text;
+		assert.deepEqual(calls, ["steer", "clearQueue", "thinking:minimal", "prompt:salvage"], "the stale steer is dropped and thinking lowered before the salvage prompt");
+		assert.match(out, /the salvage prompt got no REPORT; the finding rows it had already written are shown, treat them as partial/);
+		assert.match(out, /fold — code \(a patch flow\):\n  1\. the seed script skips admins/, "the drafted rows reach the fold\/drop list");
+		assert.ok(!/mused, never written/.test(out), "thinking is not a finding");
+		assert.ok(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "lost", "state.json"), "utf8")).reflectedAt, "a recovered reflection counts for finish");
 	} finally {
 		stageWorkerSpawn.run = orig;
 		reflectSeams.upstreamIssues = origIssues;
@@ -4388,6 +4483,7 @@ if (k === "pr create") {
 	console.log("https://gh/pr/" + n);
 	process.exit(0);
 }
+if (k === "pr view" && arg("--json") === "mergeable") { console.log(JSON.stringify({ mergeable: fs.existsSync(f("conflicting")) ? "CONFLICTING" : "MERGEABLE" })); process.exit(0); }
 if (k === "pr view") {
 	const script = rd("checks.json", null);
 	if (!script) { console.log(JSON.stringify({ statusCheckRollup: [] })); process.exit(0); }
@@ -4486,6 +4582,43 @@ test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release
 		markReflected(p.repo, "pubone"); // the fixture's bare flow check counted as friction; the reflection is not under test
 		const fin = await p.flow(["finish", "--confirmed"]);
 		assert.match(fin.content[0].text, /feature pubone done[\s\S]*local main fast-forwarded to origin\/main/, fin.content[0].text);
+	} finally {
+		p.done();
+	}
+});
+
+test("flow release finds a merge conflict before the push and the CI wait, and resumes once it is resolved (gh#259)", async () => {
+	const p = await publishFlow("pubconf");
+	try {
+		await p.toRelease("--version=patch", "1.0.1");
+		// a parallel flow merged first: its changelog line sits where this branch's entry goes
+		const other = mkdtempSync(path.join(tmpdir(), "devflow-other-"));
+		execFileSync("git", ["clone", "-q", p.origin, other]);
+		writeFileSync(path.join(other, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- another flow ships\n");
+		p.git(["add", "-A"], other);
+		p.git(["commit", "-qm", "another flow"], other);
+		p.git(["push", "-q", "origin", "main"], other);
+		p.checks([[ck("build", "pass")]]);
+		const r = await p.flow(["release"]);
+		assert.match(r.content[0].text, /publish stopped — feat\/pubconf conflicts with origin\/main in CHANGELOG\.md — the merge would be refused after the CI wait, so nothing was pushed/, r.content[0].text);
+		assert.match(r.content[0].text, /git merge origin\/main[\s\S]*keep both sides' changelog lines/, "it says how to resolve");
+		assert.doesNotMatch(p.calls(), /pr create|pr view/, "no PR, no CI wait");
+		assert.equal(execFileSync("git", ["ls-remote", p.origin, "refs/heads/feat/pubconf"], { encoding: "utf8" }).trim(), "", "nothing was pushed");
+		// resolved: both lines kept
+		try { p.git(["merge", "-q", "origin/main"], p.wt); } catch { /* the conflict, resolved below */ }
+		writeFileSync(path.join(p.wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- another flow ships\n\n## [1.0.1]\n\n- pubconf ships\n");
+		p.git(["add", "-A"], p.wt);
+		p.git(["commit", "-qm", "merge origin/main"], p.wt);
+		// the forge's view: GitHub reporting the PR conflicting stops before the wait as well
+		writeFileSync(path.join(p.ghState, "conflicting"), "");
+		const forge = await p.flow(["release"]);
+		assert.match(forge.content[0].text, /publish stopped — PR #7 has merge conflicts with main — the merge would be refused after the CI wait/, forge.content[0].text);
+		assert.match(p.calls(), /pr create/, "the branch merged clean locally, so the PR was opened");
+		assert.doesNotMatch(p.calls(), /statusCheckRollup/, "the CI wait never started");
+		rmSync(path.join(p.ghState, "conflicting"));
+		const ok = await p.flow(["release"]);
+		assert.ok(!ok.isError, ok.content[0].text);
+		assert.match(ok.content[0].text, /PR #7 already open · CI green \(1 check\) · merged \(merge\) · tag v1\.0\.1 pushed/, ok.content[0].text);
 	} finally {
 		p.done();
 	}

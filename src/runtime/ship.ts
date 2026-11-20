@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail } from "../core.ts";
+import { applicableItems, operatorDirt, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, bumpVersion, isBumpKind, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
@@ -773,7 +773,9 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 		return { text: `finish closes a released feature — stage is "${state!.stage}" and no release is recorded; publish it first — flow release (to abandon an unfinished feature, run flow abort)`, isError: true };
 	// after this the flow state is gone: nothing may sit uncommitted or unpushed
 	const dirty = await sh("git status --porcelain", root);
-	if (dirty.ok && dirty.out.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(dirty.out)}`, isError: true };
+	// dev-flow's own folder is never the operator's uncommitted work — another flow's state least of all
+	const work = dirty.ok ? operatorDirt(dirty.out) : "";
+	if (work.trim()) return { text: `main checkout has uncommitted changes — commit them first (finish deletes .dev-flow/${state!.slug}/):\n${tail(work)}`, isError: true };
 	const origin = await originUrl(root);
 	const hasOriginF = origin !== null;
 	// gh#234/gh#228: judge the local default branch, not whatever HEAD the main checkout happens to be on, and
