@@ -918,6 +918,42 @@ test("reflect done <n>: checks a fixed item off with date, slug and what fixed i
 	assert.match(readFileSync(file, "utf8"), /- \[x\] a drifted[^\n]*fixed: \d{4}-\d\d-\d\d — playbook fold\n- \[ \] b drifted[^\n]*\n- \[x\] c drifted[^\n]*playbook fold/);
 });
 
+test("reflect done/move refuse numbers another session's tidy shifted, and name what moved (gh#263)", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const sessCtx = (id: string) => ({ ...makeCtx(repo), sessionManager: { getBranch: () => null, getSessionId: () => id, getSessionFile: () => undefined, getSessionDir: () => repo } });
+	const as = (ctx: ReturnType<typeof sessCtx>) => (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const a = as(sessCtx("sess-A"));
+	const b = as(sessCtx("sess-B"));
+	await a(["init", "--write", TEST_MD]);
+	const file = path.join(repo, ".dev-flow", "reflections.md");
+	writeFileSync(file, "# dev-flow reflections\n\n## code\n\n- [ ] alpha broke — s 2026-10-01\n- [ ] beta broke — s 2026-10-01\n- [ ] gamma broke — s 2026-10-01\n- [ ] delta broke — s 2026-10-01\n");
+	assert.match((await a(["reflect", "list"])).content[0].text, /3\. \[code\] gamma broke[\s\S]*4\. \[code\] delta broke/);
+	// session B closes alpha and tidies: every later row moves up one
+	assert.ok(!(await b(["reflect", "done", "1", "fixed"])).isError);
+	assert.match((await b(["reflect", "tidy"])).content[0].text, /dropped 1 closed/);
+	const before = readFileSync(file, "utf8");
+	// A closes "3,4" off its own list: today that closed delta and nothing (the neighbours), and said it went fine
+	const stale = await a(["reflect", "done", "3,4", "fixed by PR #1"]);
+	assert.equal(stale.isError, true, stale.content[0].text);
+	assert.match(stale.content[0].text, /3 was "gamma broke[^"]*", now "delta broke[^"]*"; 4 was "delta broke[^"]*", now no open row[\s\S]*nothing was changed/);
+	assert.equal(readFileSync(file, "utf8"), before, "nothing was checked off");
+	assert.match((await a(["reflect", "move", "3", "--playbook"])).content[0].text, /move: the queue changed since this session listed it/, "move is guarded the same way");
+	// a fresh list makes the numbers good again
+	assert.match((await a(["reflect", "list"])).content[0].text, /2\. \[code\] gamma broke/);
+	const ok = await a(["reflect", "done", "2,3", "fixed by PR #1"]);
+	assert.match(ok.content[0].text, /2 items checked off[\s\S]*2\. gamma broke[\s\S]*3\. delta broke/, ok.content[0].text);
+	// an append from elsewhere does not shift anything above it: no false refusal
+	await a(["reflect", "list"]);
+	writeFileSync(file, readFileSync(file, "utf8") + "- [ ] epsilon broke — s 2026-10-02\n");
+	assert.ok(!(await a(["reflect", "done", "1", "fixed"])).isError, "the numbers this session holds still name the same rows");
+	// the session's own tidy renumbers too: epsilon was 4 on its list and is 1 after the tidy
+	assert.match((await a(["reflect", "list"])).content[0].text, /4\. \[code\] epsilon broke/);
+	await a(["reflect", "tidy"]);
+	assert.match((await a(["reflect", "done", "4", "x"])).content[0].text, /4 was "epsilon broke[^"]*", now no open row[\s\S]*nothing was changed/);
+	assert.match((await a(["reflect", "done", "1", "x"])).content[0].text, /1 was not open, now "epsilon broke[^"]*"[\s\S]*nothing was changed/, "a number the list did not show, made open by the shift");
+});
+
 test("reflect tidy: drops closed items; the nudge fires once the pile is worth a tidy", async () => {
 	const pi = makePi();
 	const repo = makeRepo();

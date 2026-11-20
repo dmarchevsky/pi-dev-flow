@@ -528,8 +528,8 @@ export async function gateReflect(o: GateCtx): Promise<RunResult> {
 	const forced: ReflectTarget | null = flag("plugin") ? "plugin" : flag("code") ? "code" : flag("playbook") || flag("docs") ? "playbook" : null;
 	// single words are verbs (roadmap-style); a note merely starting with one stays a note
 	if (words.length === 1 && words[0] === "tidy") return reflectTidy(root);
-	if (words.length === 1 && words[0] === "list") return await reflectList(root);
-	if (words[0] === "move") return reflectMoveNote(root, words.slice(1), forced);
+	if (words.length === 1 && words[0] === "list") return await reflectList(root, sess);
+	if (words[0] === "move") return reflectMoveNote(root, words.slice(1), forced, sess);
 	if (words[0] === "done") return reflectDoneNote(root, sess, words.slice(1));
 	if (words.length) return await reflectNote(root, sess, words, forced);
 	const self = pluginVersion(import.meta.dirname);

@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **`flow reflect done` and `move` refuse numbers that point to different rows since your list (gh#263).** Row numbers are positions in the one `reflections.md` that every session of a repo shares. A tidy in another session shifted them, so a `done` batch read off an earlier list closed the next row down for every number. Seven unfixed reflections were closed that way, then deleted by a tidy. Each session now remembers which reflection each number pointed to the last time it was shown the list or the reflect brief. A number that now points to a different reflection, or to no open one, is refused. The refusal names what the number pointed to then and now, and nothing is changed. An append elsewhere doesn't move any number, so it isn't refused.
+
 ## [0.94.3] - 2026-11-19
 
 **Fold or drop? shows the findings you're answering about: a short list, folds grouped by plugin, playbook and code, then the drops.**

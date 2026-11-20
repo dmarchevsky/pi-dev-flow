@@ -81,11 +81,40 @@ export function foldRows(fold: FoldView, selfRepo: boolean, items: readonly Refl
 	return rows;
 }
 
+/** gh#263: what each row number named when this session was last shown the queue (`list`, the reflect brief).
+ *  Numbers are positions in one file every session of the repo shares: another session's tidy or move shifts
+ *  them, and a batch read before it closed the neighbours of every row it meant — seven open defects closed,
+ *  then tidied away. A number is only trusted while it still names the row it named when it was printed. */
+const shownRows = new Map<string, Map<number, string>>();
+
+/** Record the numbering a session was just shown. */
+export function noteShownRows(key: string, items: readonly ReflectItem[]): void {
+	shownRows.set(key, new Map(items.map((it) => [it.n, it.body])));
+}
+
+const clipBody = (s: string) => (s.length > 70 ? `${s.slice(0, 69)}…` : s);
+
+/** The refusal for numbers that no longer name the row this session was shown, or null. Judged by the row's
+ *  text, not the file's revision: an append elsewhere leaves the numbers good, and a renumbering — another
+ *  session's tidy, or this session's own tidy or move — is caught on exactly the numbers it shifted. A number
+ *  the session was never shown is judged on the file as it stands, as before. */
+export function staleRows(key: string, nums: readonly number[], items: readonly ReflectItem[]): string | null {
+	const s = shownRows.get(key);
+	if (!s) return null;
+	const now_ = (n: number) => items.find((x) => x.n === n)?.body;
+	// a number the last list showed that names another row now, or one it did not show that a shift made open
+	const moved = nums.filter((n) => (s.has(n) ? now_(n) !== s.get(n) : now_(n) !== undefined));
+	if (!moved.length) return null;
+	const was = (n: number) => (s.has(n) ? `"${clipBody(s.get(n)!)}"` : "not open");
+	return `the queue changed since this session listed it (a tidy or move here or in another session), so these numbers name different rows now — ${moved.map((n) => `${n} was ${was(n)}, now ${now_(n) ? `"${clipBody(now_(n)!)}"` : "no open row"}`).join("; ")}. Run flow reflect list again and use its numbers; nothing was changed`;
+}
+
 /** `flow reflect list` — the queue numbered, so `move <n>` can address an item (same numbering as
  *  `flow roadmap`). Upstream items ride below the local queue as gh#N — never numbered, never
  *  addressable by move: each item keeps the home it is resolved in. */
-export async function reflectList(root: string): Promise<RunResult> {
+export async function reflectList(root: string, sess?: Session): Promise<RunResult> {
 	const items = readReflections(root);
+	if (sess) noteShownRows(sess.key, items);
 	const fold = await foldView(root, items);
 	const local = items.length
 		? [
@@ -117,13 +146,15 @@ export function legacyPluginRows(text: string, selfRepo: boolean): string[] {
 /** `flow reflect move <n> --playbook|--code` — re-file an item under the other heading, so fixing a
  *  misfile is one command instead of hand-editing markdown. Nothing moves INTO `## plugin`: dev-flow
  *  feedback is filed upstream (flow reflect --plugin prints the recipe), then the row is checked off. */
-export function reflectMoveNote(root: string, args: string[], forced: ReflectTarget | null): RunResult {
+export function reflectMoveNote(root: string, args: string[], forced: ReflectTarget | null, sess?: Session): RunResult {
 	if (forced === "plugin") return { text: "move: plugin notes are not kept in reflections.md — file the item upstream (flow reflect --plugin \"<note>\" prints the recipe), then check the row off '— filed: gh#NNN' (in the dev-flow repo itself: move <n> --code)", isError: true };
 	if (!forced) return { text: "usage: flow reflect move <n> --playbook | --code", isError: true };
 	const section = forced;
 	const n = Number(args[0]);
 	const text = readReflectionsText(root);
 	const items = reflectItems(text);
+	const stale = sess ? staleRows(sess.key, [n], items) : null;
+	if (stale) return { text: `move: ${stale}`, isError: true };
 	const it = items.find((x) => x.n === n);
 	if (!it) return { text: `move: ${noOpenRow(text, n, items)}`, isError: true };
 	if (it.section === section) return { text: `reflect: item ${n} is already under ## ${section}` };
@@ -152,16 +183,24 @@ export function reflectDoneNote(root: string, sess: Session, args: string[]): Ru
 	const text = readReflectionsText(root);
 	const items = reflectItems(text);
 	// gh#220: a fold closes several rows with one fix — `done 3,4,7 "<what>"` checks them off together. Checking a
-	// row off leaves the other numbers as they are, so the batch is all or nothing: one bad number closes none.
+	// row off leaves the other numbers as they are, so the batch is all or nothing: a number that names no open
+	// row, or (gh#263) a different row from the one this session was shown, closes none.
 	const nums = [...new Set(String(args[0] ?? "").split(",").map((p) => p.trim()).filter(Boolean).map(Number))];
 	if (!nums.length) return { text: 'usage: flow reflect done <n>[,<n>…] "<what fixed it>"', isError: true };
+	const stale = staleRows(sess.key, nums, items);
+	if (stale) return { text: `done: ${stale}`, isError: true };
 	const picked = nums.map((n) => ({ n, it: items.find((x) => x.n === n) }));
 	const bad = picked.filter((p) => !p.it);
 	if (bad.length) return { text: `done: ${bad.map((p) => noOpenRow(text, p.n, items)).join("; ")}${nums.length > 1 ? " — nothing was checked off" : ""}`, isError: true };
 	const stamp = [now().slice(0, 10), sess.slug].filter(Boolean).join(" ");
 	const what = args.slice(1).join(" ").trim();
 	let next = text;
-	for (const n of nums) next = reflectDone(next, n, what ? `${stamp} — ${what}` : stamp)!;
+	for (const n of nums) {
+		const closed = reflectDone(next, n, what ? `${stamp} — ${what}` : stamp);
+		// every number was proven open above and closing one renumbers nothing — a miss here is a bug, never a skip
+		if (closed === null) return { text: `done: row ${n} could not be checked off — nothing was changed`, isError: true };
+		next = closed;
+	}
 	writeFileSync(path.join(dfDir(root), "reflections.md"), next);
 	const { tidy } = reflectionNudges(next, now().slice(0, 10));
 	const head = nums.length === 1

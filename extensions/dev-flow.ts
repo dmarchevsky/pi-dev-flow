@@ -32,7 +32,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { CONTEXT_EMITTED, COPIES, GATE_HELP, SELF_BUILD, SKILL_DIR, type Ui, WEB_CHIP_KEYS, LEGACY_CHIP_KEYS, nextChipKeys, baseSeams, bindings, boundFeature, claimBlocker, claimFile, compacting, compactionTakeover, coreInjected, coreStale, currentBranch, dfDir, featDir, featureRefs, flowCompactInstructions, flowRoot, guardsAreMine, initiated, lastContext, loadedVersion, maybeCompactNow, noteFriction, now, readClaim, readReflections, readReflectionsText, readRoadmap, readState, registerCopy, releaseSession, sessionKey, sh, skillCore, unfinishedStates, worktreeAbs, writeClaim, writeState } from "../src/runtime/base.ts";
 import { type Session, presentRun } from "../src/runtime/checks.ts";
 import { isSelfRepo } from "../src/runtime/setup.ts";
-import { foldView, pluginUpstream } from "../src/runtime/reflect.ts";
+import { foldView, noteShownRows, pluginUpstream } from "../src/runtime/reflect.ts";
 import { type FlowHooks, runFlow } from "../src/runtime/gates.ts";
 import { grantCheck, grantRecord, isFriction, newGrantLedger, operatorMessageCount, type RefusalStreak } from "../src/runtime/grants.ts";
 import { PIWEB_SUBAGENT, WORKER_TOOLS, piwebLiveClaim, piwebStamp, piwebWorkerMeta, reflectSeams, sessionHeaders, stageWorkerSpawn, workerName, workerSessions, workerTiming, writeTranscriptDigests } from "../src/runtime/workers.ts";
@@ -321,6 +321,8 @@ export default function devFlow(pi: ExtensionAPI) {
 			wop === "reflect"
 				? await (async () => {
 						const items = readReflections(root);
+						// gh#263: the brief numbers the open rows the worker re-checks (O<n>); the driver closes them by number
+						noteShownRows(sessionKey(ctx), items);
 						const fold = await foldView(root, items);
 						const upstream = await pluginUpstream(root);
 						const children = lineage.file ? childSessionFiles(lineage.file, sessionHeaders(lineage.dir)) : [];
