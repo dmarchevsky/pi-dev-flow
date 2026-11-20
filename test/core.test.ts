@@ -65,6 +65,7 @@ import {
 	parseVersion,
 	pidAlive,
 	playbookOnlyChange,
+	operatorDirt,
 	sessionRunsOlderBuild,
 	changelogVersionsBetween,
 	inScratchDir,
@@ -466,6 +467,18 @@ test("playbookOnlyChange: the lane for the tracking chore (#53)", () => {
 	assert.equal(playbookOnlyChange(""), false, "nothing staged, nothing to grant");
 	assert.equal(playbookOnlyChange("A  .dev-flow/project.md\nM  src/app.ts"), false, "any other dirty path closes the lane");
 	assert.equal(playbookOnlyChange("M  README.md"), false);
+	// the folder's ignore file rides the same lane: alone (staged, it shows only then) or with the playbook
+	assert.equal(playbookOnlyChange("A  .dev-flow/.gitignore"), true);
+	assert.equal(playbookOnlyChange("A  .dev-flow/.gitignore\nA  .dev-flow/project.md"), true);
+	assert.equal(playbookOnlyChange("A  .dev-flow/.gitignore\nM  src/app.ts"), false);
+});
+
+test("operatorDirt: dev-flow's own folder is never the operator's uncommitted work; the playbook is", () => {
+	assert.equal(operatorDirt("?? .dev-flow/auto-review/\n?? .dev-flow/details-close-to-overview/"), "", "two flows' state dirs — the ollamaMQ refusal");
+	assert.equal(operatorDirt("?? .dev-flow/"), "");
+	assert.equal(operatorDirt(" M .dev-flow/project.md\n?? .dev-flow/x/"), " M .dev-flow/project.md", "the playbook is edited by hand and tracked");
+	assert.equal(operatorDirt(" M src/app.ts\n?? .dev-flow/x/"), " M src/app.ts");
+	assert.equal(operatorDirt('?? ".dev-flow/a b/"'), "", "a quoted path");
 });
 
 test("bashFlowGuard: the playbook tracking chore may land on the default branch (#53)", () => {

@@ -489,6 +489,10 @@ export async function gitConsistency(root: string, cfg: Config): Promise<string[
 	// the playbook belongs in git — an untracked project.md is invisible to teammates and lost on machine changes
 	if (existsSync(path.join(root, ".dev-flow", "project.md")) && !(await sh("git ls-files --error-unmatch -- .dev-flow/project.md", root)).ok)
 		out.push('.dev-flow/project.md is not tracked in git — track it: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force: a root .gitignore may exclude .dev-flow/ wholesale; the env prefix is for the installed hook — dev-flow allows a main commit whose only change is the playbook)');
+	// its ignore file too: untracked, it ignores itself, and a fresh clone comes back without it — every feature
+	// dir then reads as uncommitted work (a gate restores the file, but only tracking keeps it across clones)
+	else if (existsSync(path.join(root, ".dev-flow", "project.md")) && !(await sh("git ls-files --error-unmatch -- .dev-flow/.gitignore", root)).ok)
+		out.push('.dev-flow/.gitignore is not tracked in git — a fresh clone loses it and every feature dir shows as uncommitted work; track it: git add -f .dev-flow/.gitignore, then (a separate call — the file ignores itself, so it shows as a playbook chore only once staged) DEV_FLOW_ALLOW_MAIN=1 git commit -m "track .dev-flow/.gitignore" -- .dev-flow/.gitignore');
 	return out;
 }
 

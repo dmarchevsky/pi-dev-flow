@@ -1136,6 +1136,8 @@ export function parsePushRefs(pushes: string[][]): PushRef[] {
 const STATE_PATH = /(^|[\s'"\/])(?:state|claim)\.json$/;
 const STATE_PATH_ABS = /\.dev-flow\/[\w./-]*(?:state|claim)\.json$/;
 const PLAYBOOK_PATH = /\.dev-flow\/[\w./-]*project\.md/;
+/** A file the playbook chore may carry: the playbook, or the folder's own ignore file tracked beside it. */
+const isPlaybookFile = (p: string): boolean => PLAYBOOK_PATH.test(p) || p === ".dev-flow/.gitignore";
 const DF_ANYWHERE = /\.dev-flow\b/;
 /** The `.dev-flow/` folder itself or one feature directory under it — deleting either destroys the flow
  *  state and its plan for good. The advisory files the agent owns, and anything deeper (a worktree, a
@@ -1223,7 +1225,27 @@ export function playbookTamper(command: string): boolean {
  *  and no command parsing to fool. shortcut: a guard rail against accidents, not a sandbox. */
 export function playbookOnlyChange(porcelain: string): boolean {
 	const paths = porcelain.split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
-	return paths.length === 1 && PLAYBOOK_PATH.test(paths[0]);
+	// the playbook, and the folder's own ignore file (tracked so a clone carries it — see DF_GITIGNORE); it ignores
+	// itself, so it shows here only once staged: `git add -f` it in one call, commit in the next
+	return paths.length > 0 && paths.every(isPlaybookFile);
+}
+
+/** `.dev-flow/.gitignore`: the folder ignores everything but the playbook. Untracked, it ignores itself too — a
+ *  fresh clone brought project.md back without it, every feature dir then showed as untracked work, and flow
+ *  finish refused on "uncommitted changes" that were two flows' own state (ollamaMQ, 2026-11-20). */
+export const DF_GITIGNORE = "*\n!project.md\n";
+
+/** `git status --porcelain` lines that are the operator's work: dev-flow's own folder is never that — the
+ *  playbook excepted, which is tracked and edited by hand. */
+export function operatorDirt(porcelain: string): string {
+	return porcelain
+		.split("\n")
+		.filter((l) => {
+			const p = l.slice(3).trim().replace(/^"|"$/g, "");
+			if (!p) return false;
+			return !(p === ".dev-flow/" || (p.startsWith(".dev-flow/") && p !== ".dev-flow/project.md"));
+		})
+		.join("\n");
 }
 
 /** gh#234, gh#228: what `flow finish` says about commits on the local default branch that origin does not have.
@@ -1237,7 +1259,7 @@ export function localDefaultAhead(o: { defaultBranch: string; checkoutBranch: st
 	if (!commits.length) return null;
 	const list = `${commits.slice(0, 5).map((c) => c.line).join(" | ")}${commits.length > 5 ? ` …(${commits.length - 5} more)` : ""}`;
 	const where = cur && cur !== d ? ` (the main checkout is on ${cur}, not ${d} — this is the local ${d} branch)` : "";
-	if (commits.every((c) => c.files.length > 0 && c.files.every((f) => PLAYBOOK_PATH.test(f))))
+	if (commits.every((c) => c.files.length > 0 && c.files.every(isPlaybookFile)))
 		return { block: null, note: ` local ${d} carries ${commits.length} playbook commit(s) origin/${d} does not have (${list})${where} — playbook tracking from flow init --track; they reach origin through a docs flow, never a direct push to ${d}. To line local ${d} up with origin meanwhile: git -C <main checkout> rebase origin/${d} ${d}.` };
 	return { block: `local ${d} has ${commits.length} commit(s) origin/${d} does not have${where}: ${list} — finish removes the flow state, so nothing may stay local-only. If these are release chores, push them (git push origin ${d}); if they are work that belongs in a flow, move them onto a branch and ship them through one; then re-run flow finish`, note: "" };
 }

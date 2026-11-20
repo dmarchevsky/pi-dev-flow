@@ -153,6 +153,8 @@ test("bare reflect from the command bar wakes the model; other commands stay dis
  *  The DEV_FLOW_ALLOW_MAIN env is the sanctioned override of the pre-commit hook the tests' own init installed. */
 function trackPlaybook(repo: string) {
 	execFileSync("git", ["-C", repo, "add", ".dev-flow/project.md"]);
+	// as flow init --track does: the folder's ignore file rides along, so a clone keeps flow state out of git status
+	execFileSync("git", ["-C", repo, "add", "-f", ".dev-flow/.gitignore"]);
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 }
 
@@ -2032,6 +2034,7 @@ test("flow doctor: findings without writing, deleting or asking", async () => {
 	assert.ok(!d.isError, "findings are advisory, not a failure");
 	execFileSync("rm", ["-rf", path.join(repo, ".dev-flow", "ghosty")]);
 	execFileSync("git", ["-C", repo, "add", ".dev-flow/project.md"]);
+	execFileSync("git", ["-C", repo, "add", "-f", ".dev-flow/.gitignore"]);
 	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "track playbook"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
 	assert.match((await flow(["doctor"])).content[0].text, /doctor: no findings/, "a clean repo gets the no-findings line");
 });
@@ -2473,6 +2476,44 @@ test("until-release: the operator's word after Verified? stands even as --yolo -
 	const replayed = await b.flow(["release", "--yolo", "--confirmed"]);
 	assert.ok(replayed.isError && /NEEDS-OPERATOR Release\?[\s\S]*yolo = until-release/.test(replayed.content[0].text), replayed.content[0].text);
 	assert.equal(JSON.parse(readFileSync(path.join(b.repo, ".dev-flow", "replayed", "state.json"), "utf8")).stage, "pre-release", "nothing shipped on a replayed flag");
+});
+
+test("a clone that lost .dev-flow/.gitignore: the next gate restores it, finish is not blocked by flow state, and --track commits it (ollamaMQ 2026-11-20)", async (t) => {
+	const origSpawn = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = async () => { throw new Error("this test must not spawn a worker"); };
+	t.after(() => { stageWorkerSpawn.run = origSpawn; });
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const gi = path.join(repo, ".dev-flow", ".gitignore");
+	const tracked = (p: string) => execFileSync("git", ["-C", repo, "ls-files", p], { encoding: "utf8" }).trim();
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\n```\n", "--track"]);
+	assert.equal(tracked(".dev-flow/.gitignore"), ".dev-flow/.gitignore", "--track commits the ignore file with the playbook");
+	assert.equal(tracked(".dev-flow/project.md"), ".dev-flow/project.md");
+	// an older repo: the playbook tracked, the ignore file not — doctor names it
+	execFileSync("git", ["-C", repo, "rm", "-q", "--cached", ".dev-flow/.gitignore"]);
+	execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "untrack"], { env: { ...process.env, DEV_FLOW_ALLOW_MAIN: "1" } });
+	assert.match((await flow(["doctor"])).content[0].text, /\.dev-flow\/\.gitignore is not tracked in git — a fresh clone loses it/);
+	await flow(["start", "lost"]);
+	mkdirSync(path.join(repo, ".dev-flow", "lost", "plan"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "lost", "plan", "plan.md"), "# plan\n");
+	await flow(["approve", "--confirmed"]);
+	commitWt(repo, "lost");
+	await flow(["verify", "--confirmed"]);
+	await flow(["release", "--confirmed"]);
+	markReflected(repo, "lost");
+	// the fresh clone: the ignore file is gone, and another flow's state sits beside this one
+	rmSync(gi);
+	mkdirSync(path.join(repo, ".dev-flow", "other-flow"), { recursive: true });
+	writeFileSync(path.join(repo, ".dev-flow", "other-flow", "state.json"), "{}");
+	assert.match(execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }), /\?\? \.dev-flow\/other-flow\//, "fixture: flow state reads as untracked work");
+	const done = await flow(["finish", "--confirmed"]);
+	assert.ok(!done.isError, done.content[0].text);
+	assert.match(done.content[0].text, /feature lost done/);
+	assert.match(done.content[0].text, /restored \.dev-flow\/\.gitignore — it was missing/);
+	assert.equal(readFileSync(gi, "utf8"), "*\n!project.md\n");
+	assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }).trim(), "", "flow state is ignored again");
 });
 
 test("Finish? answers itself on a clean flow; finish = always, an open release item or a red after-merge check still stop it", async (t) => {
