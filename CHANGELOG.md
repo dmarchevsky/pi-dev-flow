@@ -4,10 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
-### Fixed
-- **A docs flow whose diff reaches code runs the checks.** `--docs` skipped every check whatever the branch changed, and a playbook fold that also edited `scripts/harness.ts` and `scripts/verify.ts` shipped with no checks. The gates now read the branch's changed paths. Anything that isn't documentation (markdown, plain text, license files or images) puts the checks back for that flow: `flow check` runs them and names the paths, and `verify` and `release` require them green. A docs-only diff keeps the docs contract.
-- **The release gate names the version as written.** The fold-the-Unreleased refusal printed `vv0.46.2-…`. Its two version refusals now also give the unversioned way out (`flow release --no-version`, on the operator's word) when no release call is recorded or the flow is a docs flow. Before, they only offered the versioned repair.
-- **A gate no longer says "nothing bound" while the context shows the binding.** The per-turn context and the guards fall back to the session's claim when the in-memory binding is gone; the gates did not. Gates now resolve the bound flow the same way, and the binding is restored.
+## [0.95.0] - 2026-11-20
+
+**Reflections are tied to the flow that fixes them: `flow start --reflections` links rows and `finish` closes them, rows have ids that never change, `tidy` archives and `reopen` undoes, repeats count on their row, evidence is kept, and `flow reflect plan` groups the open rows into flows. Also: a long reflection keeps what it found when it runs out of time, `flow release` checks for merge conflicts before waiting on CI, a fresh clone no longer blocks `finish`, and a docs flow that edits code runs the checks.**
+
 ### Changed
 - **A flow states which reflections it fixes, and `finish` closes them.** `flow start <slug> --reflections=r3,r7` links rows to the flow, and its hints carry them until finish. `finish` then closes each one as fixed by the flow, noting the PR. A row the flow won't fix is `flow reflect defer <id> "<why>"`: it stays open with the reason on it. Before this, a flow that fixed 30 code reflections shipped with all 30 still open. Closing them by hand afterwards hit the wrong rows, and the agent misreported its progress twice.
 - **Reflections have stable ids.** Every row gets an id, `[r42]`, the first time the ledger is read. Ids are never reused, and `list`, `done`, `move`, the reflect worker's brief and doctor all use them. A tidy or move in any session can no longer shift the row a number points to (gh#263, where a batch `done` closed seven wrong rows).
@@ -16,6 +16,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 - **Reflections keep their evidence.** `flow reflect … --evidence="<file:line>"` stores the transcript line the reflect worker cited. A fold flow can re-check a claim before turning it into a rule; one fold's review failed on rules written from paraphrases.
 - **`flow reflect plan` groups the open rows into flows.** Code rows that share a file or code name form a group, and the playbook rows form one docs flow. Groups are ranked by hit count, and each comes with the `flow start … --reflections=` command that links its rows. The "fix the open reflections now?" nudge points at it.
 
+### Fixed
+- **A docs flow whose diff reaches code runs the checks.** `--docs` skipped every check whatever the branch changed, and a playbook fold that also edited `scripts/harness.ts` and `scripts/verify.ts` shipped with no checks. The gates now read the branch's changed paths. Anything that isn't documentation (markdown, plain text, license files or images) puts the checks back for that flow: `flow check` runs them and names the paths, and `verify` and `release` require them green. A docs-only diff keeps the docs contract.
+- **The release gate names the version as written.** The fold-the-Unreleased refusal printed `vv0.46.2-…`. Its two version refusals now also give the unversioned way out (`flow release --no-version`, on the operator's word) when no release call is recorded or the flow is a docs flow. Before, they only offered the versioned repair.
+- **A gate no longer says "nothing bound" while the context shows the binding.** The per-turn context and the guards fall back to the session's claim when the in-memory binding is gone; the gates did not. Gates now resolve the bound flow the same way, and the binding is restored.
 - **A fresh clone no longer makes `flow finish` refuse on other flows' state.** `.dev-flow/.gitignore` was never tracked, because it ignores itself. A re-clone brought `project.md` back without it, so every feature folder under `.dev-flow/` showed up as untracked. In ollamaMQ, two flows' `finish` each refused on "uncommitted changes" that were the two flows' own folders. Four changes:
   - Any gate now recreates the file if it's missing, and says so.
   - `flow init --track` commits the file together with the playbook.
