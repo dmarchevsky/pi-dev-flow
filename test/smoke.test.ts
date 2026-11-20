@@ -4555,6 +4555,16 @@ if (k === "pr merge") {
 }
 if (k === "release create") { const r = rd("releases.json", {}); r[a[2]] = arg("--notes") || ""; wr("releases.json", r); process.exit(0); }
 if (k === "release view") { const r = rd("releases.json", {}); if (!(a[2] in r)) process.exit(1); if (a.includes("--json")) console.log(r[a[2]]); process.exit(0); }
+if (k === "run list" && arg("--commit")) {
+	// the merge commit's CI, scripted per poll like checks.json (the last row set repeats); none started when absent
+	const script = rd("commitruns.json", null);
+	if (!script) { console.log("[]"); process.exit(0); }
+	const i = rd("commitruns.i", 0);
+	wr("commitruns.i", i + 1);
+	const conc = { pass: "success", fail: "failure" };
+	console.log(JSON.stringify(script[Math.min(i, script.length - 1)].map((r) => ({ name: r.name, status: r.bucket === "pending" ? "in_progress" : "completed", conclusion: conc[r.bucket] || "", url: r.link }))));
+	process.exit(0);
+}
 if (k === "run list") { console.log("[]"); process.exit(0); }
 console.error("unscripted gh call: " + a.join(" "));
 process.exit(97);
@@ -4612,7 +4622,7 @@ test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release
 		const text = r.content[0].text;
 		assert.ok(!r.isError, text);
 		assert.match(text, /release approved/);
-		assert.match(text, /published: branch pushed · PR #7 opened \(body: the changelog entry\) · CI green \(2 checks\) · merged \(merge\) · tag v1\.0\.1 pushed/, text);
+		assert.match(text, /published: branch pushed · PR #7 opened \(body: the changelog entry\) · CI green \(2 checks\) · merged \(merge\) · no CI ran on the merge commit · tag v1\.0\.1 pushed/, text);
 		assert.match(text, /release recorded as complete/);
 		assert.match(text, /Release v1\.0\.1 body matches CHANGELOG\.md/, "the forge release carries the changelog entry");
 		const pr = JSON.parse(readFileSync(path.join(p.ghState, "prs.json"), "utf8"))[0];
@@ -4662,7 +4672,55 @@ test("flow release finds a merge conflict before the push and the CI wait, and r
 		rmSync(path.join(p.ghState, "conflicting"));
 		const ok = await p.flow(["release"]);
 		assert.ok(!ok.isError, ok.content[0].text);
-		assert.match(ok.content[0].text, /PR #7 already open · CI green \(1 check\) · merged \(merge\) · tag v1\.0\.1 pushed/, ok.content[0].text);
+		assert.match(ok.content[0].text, /PR #7 already open · CI green \(1 check\) · merged \(merge\) · no CI ran on the merge commit · tag v1\.0\.1 pushed/, ok.content[0].text);
+	} finally {
+		p.done();
+	}
+});
+
+test("flow release tags only on a green merge-commit CI: red stops before the tag, running waits, green tags (gh#271)", async () => {
+	const p = await publishFlow("pubtagci");
+	const runs = (script: { name: string; bucket: string; link: string }[][]) => {
+		rmSync(path.join(p.ghState, "commitruns.i"), { force: true });
+		writeFileSync(path.join(p.ghState, "commitruns.json"), JSON.stringify(script));
+	};
+	const tagged = () => execFileSync("git", ["ls-remote", "--tags", p.origin, "v1.0.1"], { encoding: "utf8" }).trim() !== "";
+	try {
+		await p.toRelease("--version=patch", "1.0.1");
+		p.checks([[ck("build", "pass")]]);
+		runs([[ck("test", "pending")], [ck("test", "fail")]]);
+		const red = await p.flow(["release"]);
+		assert.match(red.content[0].text, /publish stopped — merge commit [0-9a-f]{9} checks failed — test: fail \(https:\/\/ci\/test\) — merged, but the tag was not cut: it would publish a red build/, red.content[0].text);
+		assert.match(red.content[0].text, /done so far: [^\n]*merged \(merge\)/);
+		assert.match(red.content[0].text, /re-run it \(gh run rerun --failed <run>\), then re-run flow release, which tags on green/);
+		assert.ok(!tagged(), "no tag on a red merge commit");
+		// the job re-ran: still going, then green — a re-run resumes at the tag step and waits
+		const { budgetMs } = publishWait;
+		publishWait.budgetMs = 30_000;
+		runs([[ck("test", "pending")]]);
+		const waiting = await p.flow(["release"]);
+		assert.match(waiting.content[0].text, /publish waiting — merge commit [0-9a-f]{9} checks still running[^\n]*; the tag waits for it/, waiting.content[0].text);
+		assert.ok(!tagged());
+		publishWait.budgetMs = budgetMs;
+		runs([[ck("test", "pass")]]);
+		const ok = await p.flow(["release"]);
+		assert.ok(!ok.isError, ok.content[0].text);
+		assert.match(ok.content[0].text, /PR #7 already merged · merge-commit CI green \(1 check\) · tag v1\.0\.1 pushed/, ok.content[0].text);
+		assert.ok(tagged());
+	} finally {
+		p.done();
+	}
+});
+
+test("tagWait = none tags right after the merge, as before", async () => {
+	const p = await publishFlow("pubnowait", "tagWait = none\n");
+	try {
+		await p.toRelease("--version=patch", "1.0.1");
+		p.checks([[ck("build", "pass")]]);
+		writeFileSync(path.join(p.ghState, "commitruns.json"), JSON.stringify([[ck("test", "fail")]]));
+		const ok = await p.flow(["release"]);
+		assert.ok(!ok.isError, ok.content[0].text);
+		assert.match(ok.content[0].text, /merged \(merge\) · tag v1\.0\.1 pushed/, "no merge-commit wait at all");
 	} finally {
 		p.done();
 	}
@@ -4709,7 +4767,7 @@ test("flow release resumes: CI still running, then a re-run finishes without rep
 		p.checks([[ck("build", "pass")]]);
 		const ok = await p.flow(["release"]);
 		assert.ok(!ok.isError, ok.content[0].text);
-		assert.match(ok.content[0].text, /published: branch already on origin · PR #7 already open · CI green \(1 check\) · merged \(merge\) · tag v1\.0\.1 pushed/, ok.content[0].text);
+		assert.match(ok.content[0].text, /published: branch already on origin · PR #7 already open · CI green \(1 check\) · merged \(merge\) · no CI ran on the merge commit · tag v1\.0\.1 pushed/, ok.content[0].text);
 		assert.equal((p.calls().match(/^pr create /gm) ?? []).length, 1, "one PR, however many runs");
 	} finally {
 		p.done();
@@ -4737,7 +4795,7 @@ test("flow release: a merge the forge refuses stops it; a PR merged by hand is a
 		p.git(["push", "-q", "origin", "main"], other);
 		const ok = await p.flow(["release"]);
 		assert.ok(!ok.isError, ok.content[0].text);
-		assert.match(ok.content[0].text, /published: PR #7 already merged · tag v1\.0\.1 pushed/, ok.content[0].text);
+		assert.match(ok.content[0].text, /published: PR #7 already merged · no CI ran on the merge commit · tag v1\.0\.1 pushed/, ok.content[0].text);
 		const pr = JSON.parse(readFileSync(path.join(p.ghState, "prs.json"), "utf8"))[0];
 		assert.equal(p.git(["rev-parse", "v1.0.1^{commit}"], p.origin), pr.mergeCommit.oid, "the tag is the PR's merge commit");
 		assert.notEqual(p.git(["rev-parse", "main"], p.origin), pr.mergeCommit.oid, "not the tip a parallel flow moved");
