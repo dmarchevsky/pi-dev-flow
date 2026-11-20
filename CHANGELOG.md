@@ -4,6 +4,15 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **A fresh clone no longer makes `flow finish` refuse on other flows' state.** `.dev-flow/.gitignore` was never tracked, because it ignores itself. A re-clone brought `project.md` back without it, so every feature folder under `.dev-flow/` showed up as untracked. In ollamaMQ, two flows' `finish` each refused on "uncommitted changes" that were the two flows' own folders. Four changes:
+  - Any gate now recreates the file if it's missing, and says so.
+  - `flow init --track` commits the file together with the playbook.
+  - `flow doctor` reports the file when it isn't tracked.
+  - `finish`'s clean-checkout check ignores dev-flow's own folder, except the playbook.
+
+  The bash guard's playbook-chore exception now also covers committing the ignore file. Because the file ignores itself, it has to be added with `git add -f` in one call and committed in the next.
+
 ## [0.94.3] - 2026-11-19
 
 **Fold or drop? shows the findings you're answering about: a short list, folds grouped by plugin, playbook and code, then the drops.**

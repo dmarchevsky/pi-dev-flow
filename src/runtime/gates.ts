@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gate runner and the gates that do not ship anything. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState } from "../core.ts";
+import { approveGate, DF_GITIGNORE, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState } from "../core.ts";
 import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, ghostInfo, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
 import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
@@ -17,6 +17,19 @@ export interface FlowHooks {
 	reflect?: (state: FlowState, note: string) => Promise<{ text: string; recorded: boolean; findings: number; failed: boolean }>;
 }
 
+/** Write `.dev-flow/.gitignore` when it is missing; true when it did. Best effort — never fails a gate. */
+export function healDfIgnore(root: string): boolean {
+	const gi = path.join(dfDir(root), ".gitignore");
+	if (existsSync(gi)) return false;
+	try {
+		writeFileSync(gi, DF_GITIGNORE);
+		return true;
+	} catch {
+		return false;
+	}
+}
+const HEALED_NOTE = `restored .dev-flow/.gitignore — it was missing (a fresh clone does not carry an untracked one), so every feature dir under .dev-flow/ showed as uncommitted work\n${AGENT_MARK}track it so the next clone keeps it — tell the operator, and on their word: git add -f .dev-flow/.gitignore, then (a separate call — the file ignores itself, so it shows as a playbook chore only once staged) DEV_FLOW_ALLOW_MAIN=1 git commit -m "track .dev-flow/.gitignore" -- .dev-flow/.gitignore`;
+
 /** Single runner for both the /flow command and the flow tool. */
 export async function runFlow(args: string[], root: string, ui: Ui, sess: Session, hooks: FlowHooks = {}): Promise<RunResult> {
 	const [sub = "status", ...rest] = args;
@@ -24,6 +37,13 @@ export async function runFlow(args: string[], root: string, ui: Ui, sess: Sessio
 	if (sub === "help" || sub === "--help" || sub === "-h") return { text: rest.includes("--json") ? gateHelpJson(GATE_HELP, loadedVersion()) : `usage: flow <sub> — ${GATE_HELP}` };
 	// an uninitiated folder is dormant: every gate verb but init and version needs the operator playbook (project.md)
 	if (!initiated(root) && sub !== "init" && sub !== "version") return { text: "dev-flow is not initiated here — no .dev-flow/project.md — run flow init first", isError: true };
+	// the folder's ignore file is dev-flow's, and its content never varies: a clone that lost it is healed here,
+	// before any gate reads git status (finish's clean-checkout proof, doctor's tracking probe)
+	const healed = sub !== "init" && sub !== "version" ? healDfIgnore(root) : false;
+	if (healed) {
+		const res = await runFlow(args, root, ui, sess, hooks);
+		return { ...res, text: `${res.text}\n${HEALED_NOTE}` };
+	}
 	const cfg = loadProject(dfDir(root)).cfg;
 	const flag = (name: string) => rest.includes(`--${name}`);
 	// the yolo word at Verified?/Release?/Finish?: the operator said it in chat, then re-run with --confirmed; checks and guardrails stay enforced
@@ -127,7 +147,7 @@ export async function gateInit(o: GateCtx): Promise<RunResult> {
 	mkdirSync(dfDir(root), { recursive: true });
 	const notes: string[] = dfExisted ? [] : [`.dev-flow/ created in ${root}`];
 	// self-ignoring folder with one exception: the playbook is the only file under .dev-flow/ that lives in git
-	writeFileSync(path.join(dfDir(root), ".gitignore"), "*\n!project.md\n");
+	writeFileSync(path.join(dfDir(root), ".gitignore"), DF_GITIGNORE);
 	const mdFile = path.join(dfDir(root), "project.md");
 	const head = await sh("git symbolic-ref refs/remotes/origin/HEAD", root);
 	const curBr = await currentBranch(root);
@@ -175,8 +195,9 @@ export async function gateInit(o: GateCtx): Promise<RunResult> {
 			notes.push(GIT_TRACK_NOTE, AGENT_MARK + "(or re-run the same call with --track on the operator's word)");
 			return;
 		}
-		const c = await sh(`git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -q -m ${sq(before ? "chore: update dev-flow playbook" : "chore: add dev-flow playbook")} -- .dev-flow/project.md`, root, 60_000);
-		notes.push(c.ok ? "project.md committed (git add -f + playbook chore)" : `commit failed — ${c.out.split("\n").find(Boolean) ?? "?"}; ${GIT_TRACK_NOTE}`);
+		// the folder's ignore file rides along: untracked, a fresh clone lost it and every feature dir became "uncommitted"
+		const c = await sh(`git add -f .dev-flow/project.md .dev-flow/.gitignore && DEV_FLOW_ALLOW_MAIN=1 git commit -q -m ${sq(before ? "chore: update dev-flow playbook" : "chore: add dev-flow playbook")} -- .dev-flow/project.md .dev-flow/.gitignore`, root, 60_000);
+		notes.push(c.ok ? "project.md and .dev-flow/.gitignore committed (git add -f + playbook chore)" : `commit failed — ${c.out.split("\n").find(Boolean) ?? "?"}; ${GIT_TRACK_NOTE}`);
 	};
 	const answerToks = [...flagValues(rest, "answers"), ...(flag("answers-file") ? (() => { const f = flagValues(rest, "answers-file")[0]; return f && existsSync(path.resolve(root, f)) ? readFileSync(path.resolve(root, f), "utf8").split("\n") : [`<missing answers file ${f ?? ""}>`]; })() : [])];
 	if (flag("answers") || flag("answers-file")) {
