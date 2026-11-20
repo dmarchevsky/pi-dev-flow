@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.95.2] - 2026-11-20
+
+**`flow release` stops waiting on a check that GitHub left stuck at "in progress" after its job finished.**
+
 ### Fixed
 - **`flow release` no longer waits on a check that GitHub left stuck at "in progress" (gh#275).** Sometimes a check run on the PR keeps saying `in_progress` after its Actions job has finished. In one case the gate spent three 30-minute waits on `actionlint` this way. Now, when a check has been pending for 5 minutes, the gate asks GitHub for the job's own result (`gh api …/actions/jobs/<id>`). If the job has finished, the gate uses that result, so a pass counts as green and a failure counts as red, and the release note names the stale check. A wait that still runs out of time now also says how to clear a stale check: push a new commit to the branch.
 
