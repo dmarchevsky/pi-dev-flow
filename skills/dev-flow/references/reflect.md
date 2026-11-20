@@ -17,12 +17,20 @@ friction only, never the same issue twice. `.dev-flow/reflections.md` holds
   re-filed. Body ends `— reflection from <slug> <date>`. In the dev-flow repo
   itself, plugin feedback is code.
 - No flag → the wording decides and the printed line says why.
-- `flow reflect list` numbers the queue; `flow reflect move <n>
-  --playbook|--code` re-files; `flow reflect done <n>[,<n>…] ["<what fixed it>"]`
-  checks one off; `flow reflect tidy` drops closed items. The numbers are
-  row numbers: checking items off leaves the others' numbers alone, so a
-  batch of `done` calls read off one `list` is safe; after `move` or `tidy`,
-  list again.
+- Every row has an id, `r<n>`. It never changes and is never reused, so
+  ids read off one `list` stay valid after any done, move or tidy, from this
+  session or another.
+- `flow reflect list` prints the queue by id; `flow reflect move <id>
+  --playbook|--code` re-files; `flow reflect done <id>[,<id>…] ["<what fixed
+  it>"]` checks rows off; `flow reflect tidy` moves closed rows to
+  `reflections-archive.md`; `flow reflect reopen <id> ["<why>"]` brings back
+  one closed by mistake, from the archive too.
+- A finding the reflect worker marks `dup: r<id>` is a recurrence:
+  `flow reflect --same <id> "<evidence>"` counts it on that row. Never file it
+  again as a new row.
+- File a finding with its evidence: `flow reflect --code "<note>"
+  --evidence="<transcript file:line>"`. Whoever fixes it re-checks the claim
+  there before writing a rule from it.
 - `flow doctor "<observation>"` prints an investigation brief without queueing.
 - The end-of-session reflection runs at finish (see [finish.md](finish.md)).
 
@@ -31,10 +39,14 @@ reflections now?` (an item recurred, is ≥ 14 days old, ≥ 3 playbook items, o
 a code item between flows). It surfaces at finish, unbound, and in `flow
 doctor` — never mid-feature. One line; the operator decides.
 
-**Folding items in** on the operator's word: investigate, propose, confirm,
-open the routed flow and apply it there (`project.md` is editable only in a
-docs/patch worktree), then `flow reflect done <n> "<what>"` once merged (`done 3,4,7 "<what>"`
-closes a batch) — never by editing `reflections.md`.
+**Folding items in** on the operator's word: `flow reflect plan` groups the
+open rows into flows (shared files make a group; playbook rows are one docs
+flow), most-hit first, each with its start command. Start the flow with the
+rows it fixes: `flow start fix-<topic> --patch --reflections=r3,r7`. Fix them
+on the branch, and run `flow reflect defer <id> "<why>"` for any linked row
+the flow won't fix. `finish` closes the others as fixed by the flow, so never
+check linked rows off by hand. Rows not linked to a flow are closed with
+`flow reflect done <id> "<what>"`. Never edit `reflections.md`.
 
 **GitHub issues** fold into `flow doctor` / `reflect list` when the repo has a
 GitHub remote: a local row an open issue covers shows `⟷ gh#NNN` (check it off

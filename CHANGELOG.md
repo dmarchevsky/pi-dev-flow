@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Changed
+- **A flow states which reflections it fixes, and `finish` closes them.** `flow start <slug> --reflections=r3,r7` links rows to the flow, and its hints carry them until finish. `finish` then closes each one as fixed by the flow, noting the PR. A row the flow won't fix is `flow reflect defer <id> "<why>"`: it stays open with the reason on it. Before this, a flow that fixed 30 code reflections shipped with all 30 still open. Closing them by hand afterwards hit the wrong rows, and the agent misreported its progress twice.
+- **Reflections have stable ids.** Every row gets an id, `[r42]`, the first time the ledger is read. Ids are never reused, and `list`, `done`, `move`, the reflect worker's brief and doctor all use them. A tidy or move in any session can no longer shift the row a number points to (gh#263, where a batch `done` closed seven wrong rows).
+- **`tidy` archives instead of deleting, and `flow reflect reopen <id>` undoes a mistaken close.** Closed rows move to `.dev-flow/reflections-archive.md` with their `— fixed:` note. `reopen` brings a row back from the ledger or the archive, and keeps its history on the row.
+- **A recurrence counts on its row.** `flow reflect --same <id> "<evidence>"` adds `· seen again <date> <slug>: <evidence>` to the row. `list` and `plan` show the hit count. Finish's fold/drop instructions now use `--same` for a finding the worker marked as a duplicate, instead of filing a fourth copy of the same defect.
+- **Reflections keep their evidence.** `flow reflect … --evidence="<file:line>"` stores the transcript line the reflect worker cited. A fold flow can re-check a claim before turning it into a rule; one fold's review failed on rules written from paraphrases.
+- **`flow reflect plan` groups the open rows into flows.** Code rows that share a file or code name form a group, and the playbook rows form one docs flow. Groups are ranked by hit count, and each comes with the `flow start … --reflections=` command that links its rows. The "fix the open reflections now?" nudge points at it.
+
 ### Fixed
 - **A fresh clone no longer makes `flow finish` refuse on other flows' state.** `.dev-flow/.gitignore` was never tracked, because it ignores itself. A re-clone brought `project.md` back without it, so every feature folder under `.dev-flow/` showed up as untracked. In ollamaMQ, two flows' `finish` each refused on "uncommitted changes" that were the two flows' own folders. Four changes:
   - Any gate now recreates the file if it's missing, and says so.

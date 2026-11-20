@@ -24,10 +24,15 @@ dev-flow repo, filed only when you say so.
 | `flow reflect --code "<note>"` | adds a code note |
 | `flow reflect --plugin "<note>"` | prints how to file a dev-flow issue (search first, then `gh issue create`); writes nothing |
 | `flow reflect "<note>"` | guesses the section from the wording and says why |
-| `flow reflect list` | numbers the open notes |
-| `flow reflect move <n> --code` | moves a note to the other section |
-| `flow reflect done <n> "<what>"` | checks a note off as fixed. `done 3,4,7 "<what>"` closes several at once; one bad number closes none. |
-| `flow reflect tidy` | removes the checked-off notes |
+| `flow reflect --code "<note>" --evidence="<file:line>"` | adds a note with the transcript line that shows it |
+| `flow reflect list` | lists the open notes by id (`r<n>`). An id never changes and is never reused. |
+| `flow reflect plan` | groups the open notes into flows, most-hit first, each with its start command |
+| `flow reflect --same <id> "<evidence>"` | counts a recurrence on an existing note instead of adding a copy |
+| `flow reflect move <id> --code` | moves a note to the other section |
+| `flow reflect done <id> "<what>"` | checks a note off as fixed. `done r3,r4,r7 "<what>"` closes several at once; one bad id closes none. |
+| `flow reflect reopen <id> "<why>"` | reopens a note closed by mistake, from the archive too |
+| `flow reflect tidy` | moves the checked-off notes to `reflections-archive.md` |
+| `flow start <slug> --reflections=r3,r7` | links notes to the flow that fixes them. `finish` closes them, except any the flow left open with `flow reflect defer <id> "<why>"`. |
 
 `flow status` and `flow doctor` show how many notes are open.
 

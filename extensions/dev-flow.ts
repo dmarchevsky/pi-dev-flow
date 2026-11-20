@@ -502,7 +502,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			const nudges = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { recurred });
 			parts.push(
 				"Next: show the operator the fold/drop list above as it stands — suggested folds grouped by plugin, playbook and code, then the drops, one short line each — and ask for one answer (the suggested 'fold … drop …' line is fine) — then STOP until they answer. " +
-					`Fold docs → flow reflect --playbook "<note>"; fold code → flow reflect --code "<note>"; fold plugin → ${selfRepo ? 'flow reflect --code "<note>" (this is the dev-flow repo)' : 'flow reflect --plugin "<note>" prints the upstream recipe (dedupe search, then gh issue create — the fold answer is the confirmation; never a reflections.md row)'}; drop → record nothing. Open items re-checked as fixed → propose checking them off.`,
+					`Fold docs → flow reflect --playbook "<note>" --evidence="<its evidence>"; fold code → flow reflect --code "<note>" --evidence="<its evidence>"; a fold whose dup names an open row (r<id>) → flow reflect --same r<id> "<its evidence>" (a recurrence counts on that row, never a new one); fold plugin → ${selfRepo ? 'flow reflect --code "<note>" (this is the dev-flow repo)' : 'flow reflect --plugin "<note>" prints the upstream recipe (dedupe search, then gh issue create — the fold answer is the confirmation; never a reflections.md row)'}; drop → record nothing. Open items re-checked as fixed → propose checking them off (flow reflect done r<id> "<where it was fixed>"); recurred → flow reflect --same r<id> "<evidence>".`,
 			);
 			if (nudges.fix) parts.push(`${nudges.fix} — offer it after the fold/drop answer.`);
 			if (nudges.tidy) parts.push(`${nudges.tidy} — offer it after the fold/drop answer.`);
