@@ -162,10 +162,14 @@ On GitHub, the same `flow release` call then publishes. Your Release? answer is 
    wrote one, else the changelog entry. If the repo has a pull-request template
    (`.github/pull_request_template.md`), the gate refuses until `pr-body.md` exists, before
    Release? is asked, so the template's sections are filled before the merge.
-2. Waits for the PR's CI, up to 30 minutes. A repo with no CI is given a minute for checks to show up.
-3. Merges in the playbook's `merge` style.
-4. Creates an annotated tag on the PR's merge commit and pushes it (versioned flows).
-5. Records the release (below).
+2. Checks the branch merges cleanly into the default branch. On a conflict it names the files and pushes nothing.
+3. Waits for the PR's CI, up to 30 minutes. A repo with no CI is given a minute for checks to show up.
+4. Merges in the playbook's `merge` style.
+5. Waits for the merge commit's own CI to go green, because the tag publishes from that commit. If it's red, the
+   gate stops without tagging. If no CI runs on that commit, it tags after a minute. `tagWait = none` under
+   `## release` skips this wait.
+6. Creates an annotated tag on the PR's merge commit and pushes it (versioned flows).
+7. Records the release (below).
 
 Each step first asks GitHub whether it's already done, so a re-run picks up where it stopped, and a
 step you did by hand (merging a PR that needed your review, for example) is accepted. The gate stops

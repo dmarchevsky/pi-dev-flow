@@ -10,8 +10,9 @@ gate's stage line, **🚀 release · `<slug>`**; no `Done:` / `Next steps:` bloc
 
 `flow release` does the whole stage in the same call that passed Release?: it
 pushes the branch, opens the PR (changelog entry as body), waits for the PR's
-CI, merges in the playbook's style, cuts and pushes the annotated tag on the
-merge commit, then records the release (tag on origin, artifact, forge release
+CI, merges in the playbook's style, waits for the merge commit's own CI to go
+green, cuts and pushes the annotated tag on the merge commit, then records the
+release (tag on origin, artifact, forge release
 created from the changelog entry and read back). You run no git or `gh` step.
 
 It stops with one of two results, and **re-running `flow release` resumes** —

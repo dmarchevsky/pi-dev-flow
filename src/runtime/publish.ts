@@ -17,7 +17,18 @@ export const publishWait = {
 	sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
 	clock: () => Date.now(),
 	checks: (pr: number, cwd: string): Promise<PrCheck[] | null> => prChecks(pr, cwd),
+	/** the CI runs a commit started — the merge commit, before it is tagged (gh#271) */
+	commitChecks: (sha: string, cwd: string): Promise<PrCheck[] | null> => commitRuns(sha, cwd),
 };
+
+/** Workflow runs of one commit as checks; [] when none started, null when gh cannot say. */
+async function commitRuns(sha: string, cwd: string): Promise<PrCheck[] | null> {
+	const r = await sh(`gh run list --commit ${sha} --limit 50 --json status,conclusion,name,url`, cwd, 60_000);
+	if (!r.ok) return null;
+	const rows = jsonArray<{ status?: string; conclusion?: string; name?: string; url?: string }>(r.out);
+	if (rows === null) return r.out.trim() ? null : [];
+	return rows.map((x) => ({ name: x.name ?? "run", bucket: checkBucket({ status: (x.status ?? "").toUpperCase(), conclusion: (x.conclusion ?? "").toUpperCase() }), link: x.url ?? "" }));
+}
 
 export interface PrCheck { name: string; bucket: string; link: string }
 interface Pr { number: number; state: string; url: string; headRefOid: string; mergeCommit: { oid: string } | null }
@@ -70,21 +81,28 @@ async function prChecks(pr: number, cwd: string): Promise<PrCheck[] | null> {
 export type CiVerdict = { state: "green" | "none"; note: string } | { state: "red" | "running" | "unknown"; why: string };
 
 /** Wait (bounded) for the PR's checks to settle. */
-export async function awaitPrChecks(pr: number, cwd: string): Promise<CiVerdict> {
+export const awaitPrChecks = (pr: number, cwd: string): Promise<CiVerdict> =>
+	awaitChecks(() => publishWait.checks(pr, cwd), { who: `PR #${pr}`, read: `gh pr view ${pr} --json statusCheckRollup`, none: "no CI checks on the PR", green: "CI green" });
+
+/** gh#271: wait (bounded) for the CI the merge commit started — a tag publishes from it, so it is cut on green only. */
+export const awaitCommitChecks = (sha: string, cwd: string): Promise<CiVerdict> =>
+	awaitChecks(() => publishWait.commitChecks(sha, cwd), { who: `merge commit ${sha.slice(0, 9)}`, read: `gh run list --commit ${sha}`, none: "no CI ran on the merge commit", green: "merge-commit CI green" });
+
+async function awaitChecks(read: () => Promise<PrCheck[] | null>, l: { who: string; read: string; none: string; green: string }): Promise<CiVerdict> {
 	const start = publishWait.clock();
 	const mins = () => `${Math.max(1, Math.round((publishWait.clock() - start) / 60_000))} min`;
 	for (;;) {
-		const rows = await publishWait.checks(pr, cwd);
+		const rows = await read();
 		const elapsed = publishWait.clock() - start;
-		if (rows === null) return { state: "unknown", why: `cannot read the checks of PR #${pr} (gh pr view ${pr} --json statusCheckRollup)` };
+		if (rows === null) return { state: "unknown", why: `cannot read the checks of ${l.who} (${l.read})` };
 		if (!rows.length) {
-			if (elapsed >= publishWait.appearMs) return { state: "none", note: "no CI checks on the PR" };
+			if (elapsed >= publishWait.appearMs) return { state: "none", note: l.none };
 		} else {
 			const failed = rows.filter((c) => c.bucket === "fail" || c.bucket === "cancel");
-			if (failed.length) return { state: "red", why: `PR #${pr} checks failed — ${failed.map((c) => `${c.name}: ${c.bucket}${c.link ? ` (${c.link})` : ""}`).join(", ")}` };
+			if (failed.length) return { state: "red", why: `${l.who} checks failed — ${failed.map((c) => `${c.name}: ${c.bucket}${c.link ? ` (${c.link})` : ""}`).join(", ")}` };
 			const pending = rows.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
-			if (!pending.length) return { state: "green", note: `CI green (${rows.length} check${rows.length === 1 ? "" : "s"}${elapsed >= 60_000 ? `, waited ${mins()}` : ""})` };
-			if (elapsed >= publishWait.budgetMs) return { state: "running", why: `PR #${pr} checks still running after ${mins()} (${pending.map((c) => c.name).join(", ")})` };
+			if (!pending.length) return { state: "green", note: `${l.green} (${rows.length} check${rows.length === 1 ? "" : "s"}${elapsed >= 60_000 ? `, waited ${mins()}` : ""})` };
+			if (elapsed >= publishWait.budgetMs) return { state: "running", why: `${l.who} checks still running after ${mins()} (${pending.map((c) => c.name).join(", ")})` };
 		}
 		await publishWait.sleep(publishWait.pollMs);
 	}
@@ -256,6 +274,16 @@ export async function publishRelease(root: string, state: FlowState, cfg: Config
 		if (tags === null) return stop("cannot list tags on origin", "check the network and git credentials");
 		if (tags.includes(tag)) steps.push(`tag ${tag} already on origin`);
 		else {
+			// gh#271: the tag publishes from the merge commit — wait for that commit's own CI before cutting it, so a
+			// playbook rule "test green on the merge commit before the tag" is something this gate can honour
+			if (oid && cfg.release.tagWait !== "none") {
+				const ci = await awaitCommitChecks(oid, root);
+				if (!("why" in ci)) steps.push(ci.note);
+				else if (ci.state === "running") return { ok: false, text: `publish waiting — ${ci.why}; the tag waits for it${steps.length ? `\ndone so far: ${steps.join(" · ")}` : ""}\n↪ next: re-run flow release to keep waiting — do not end the turn on a promise to watch` };
+				else if (ci.state === "red")
+					return stop(`${ci.why} — merged, but the tag was not cut: it would publish a red build`, `tell the operator. A flaky job: re-run it (gh run rerun --failed <run>), then re-run flow release, which tags on green. A real failure is fixed forward in a new flow, and the tag goes on the fix by the operator's word (or tagWait = none under ## release for a project whose tag publishes nothing)`);
+				else return stop(ci.why, "check gh auth status, or tag the merge commit yourself once its CI is green");
+			}
 			if (!oid) return stop(`PR #${merged.number} shows no merge commit to tag`, `tag what shipped yourself (git tag -a ${tag}) and push it`);
 			if (!(await sh(`git cat-file -e ${sq(`${oid}^{commit}`)}`, root)).ok) return stop(`the merge commit ${oid.slice(0, 9)} of PR #${merged.number} is not in this clone after a fetch`, `git fetch origin ${cfg.defaultBranch}`);
 			if (!(await sh(`git rev-parse -q --verify ${sq(`refs/tags/${tag}`)}`, root)).ok) {

@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **`flow release` tags only once the merge commit's CI is green (gh#271).** The gate merged, then cut and pushed the tag in the same call. A playbook rule like "test green on the merge commit before the tag" could therefore never be met, and the checklist printed it as open next to "tag pushed". The gate now waits for the CI that the merge commit started.
+  - Green, or no CI on that commit after a minute: it tags.
+  - Still running: it reports `publish waiting`, and a re-run resumes at the tag step.
+  - Red: it stops with the PR merged and no tag, and says what to do: re-run a flaky job, or fix forward and tag on the operator's word.
+
+  `tagWait = none` under `## release` keeps the old behavior, for a project whose tag publishes nothing.
+
 ## [0.95.0] - 2026-11-20
 
 **Reflections are tied to the flow that fixes them: `flow start --reflections` links rows and `finish` closes them, rows have ids that never change, `tidy` archives and `reopen` undoes, repeats count on their row, evidence is kept, and `flow reflect plan` groups the open rows into flows. Also: a long reflection keeps what it found when it runs out of time, `flow release` checks for merge conflicts before waiting on CI, a fresh clone no longer blocks `finish`, and a docs flow that edits code runs the checks.**

@@ -175,6 +175,7 @@ These go under `## pre-release` or `## release`. Either section works.
 | `ask` | `on-change` | `on-change`: Release? answers itself when only release prep changed. `always`: ask every time. |
 | `finish` | `on-change` | `on-change`: Finish? answers itself when nothing is open (see [gates](gates.md#finish-finish)). `always`: ask every time. |
 | `publish` | `gate` | `gate`: on GitHub, `flow release` pushes, opens the PR, waits for CI, merges and tags itself. `manual`: the agent runs those steps. Other forges are always manual. |
+| `tagWait` | `ci` | `ci`: the gate cuts the tag only once the merge commit's CI is green. The tag publishes from that commit, so a red build is never released. `none`: tag right after the merge. |
 | `recheck` | `prep-skip` | `prep-skip`: checks stay green across a commit that holds only the version bump and changelog. `always`: re-run them. |
 | `yolo` | `all` | `until-release`: a yolo given earlier never answers Release?. The gate asks, and only your answer to that question releases. |
 | `reflect` | `on-friction` | `always`: run the closing reflection on every finish |

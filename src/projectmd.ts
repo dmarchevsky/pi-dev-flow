@@ -73,6 +73,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		finish: "release.finish", // when Finish? is asked: on-change (default, a clean flow closes itself) | always
 		publish: "release.publish", // who runs push, PR, merge and tag after Release?: gate (default on GitHub) | manual
 		recheck: "release.recheck", // checks after a release-prep-only commit: prep-skip (default, keep the green records) | always
+		tagWait: "release.tagWait", // before the gate tags: ci (default — the merge commit's CI must be green) | none (gh#271)
 	},
 };
 // pre-release owns release preparation; the release keys are accepted under both sections so
@@ -205,6 +206,10 @@ export function parseProjectMd(text: string): ParsedMd {
 						}
 						if (mapped === "release.publish" && !/^(gate|manual)$/.test(m[2].trim())) {
 							p.warn.push(`${where}: publish = "${m[2]}" — expected gate or manual, keeping gate`);
+							return;
+						}
+						if (mapped === "release.tagWait" && !/^(ci|none)$/.test(m[2].trim())) {
+							p.warn.push(`${where}: tagWait = "${m[2]}" — expected ci or none, keeping ci`);
 							return;
 						}
 						if (mapped === "release.recheck" && !/^(always|prep-skip)$/.test(m[2].trim())) {
