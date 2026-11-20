@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameS
 import path from "node:path";
 import { promisify } from "node:util";
 import { compact, SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { checklistPending, claimBlocks, classifyMergeHistory, cmpVersions, detectForge, extractSkillCore, featureBranchPrefix, healthRetry, parseMergeStyle, parseLsRemoteTags, pluginVersion, reflectItems, sessionRunsOlderBuild, listFiles, shouldSelfCompact, sq, featureTmpDir, featureTmpEnv, staleScratch, mainCheckoutRoot, type ReflectItem, type Config, type FeatureRef, type FlowState, type SessionClaim } from "../core.ts";
+import { isDocPath, checklistPending, claimBlocks, classifyMergeHistory, cmpVersions, detectForge, extractSkillCore, featureBranchPrefix, healthRetry, parseMergeStyle, parseLsRemoteTags, pluginVersion, reflectItems, sessionRunsOlderBuild, listFiles, shouldSelfCompact, sq, featureTmpDir, featureTmpEnv, staleScratch, mainCheckoutRoot, type ReflectItem, type Config, type FeatureRef, type FlowState, type SessionClaim } from "../core.ts";
 import { loadProject, parseProjectMd, setPlaybookKey } from "../projectmd.ts";
 import { bashTimeout } from "../timeouts.ts";
 import { type RunResult, type Session } from "./checks.ts";
@@ -490,6 +490,24 @@ export async function gitConsistency(root: string, cfg: Config): Promise<string[
 	if (existsSync(path.join(root, ".dev-flow", "project.md")) && !(await sh("git ls-files --error-unmatch -- .dev-flow/project.md", root)).ok)
 		out.push('.dev-flow/project.md is not tracked in git — track it: git add -f .dev-flow/project.md && DEV_FLOW_ALLOW_MAIN=1 git commit -m "track project.md" (force: a root .gitignore may exclude .dev-flow/ wholesale; the env prefix is for the installed hook — dev-flow allows a main commit whose only change is the playbook)');
 	return out;
+}
+
+/** A docs flow's changed paths that are not documentation, recorded on its state (FlowState.docsCode): the branch
+ *  against the default branch plus the uncommitted tree. Best effort — a git that cannot answer leaves it as is. */
+export async function refreshDocsCode(root: string, state: FlowState, cfg: Config): Promise<void> {
+	if (!state.docs || !state.worktree) return;
+	const cwd = gateCwd(root, state);
+	const base = await sh(`git merge-base HEAD ${sq(cfg.defaultBranch)}`, cwd);
+	if (!base.ok) return;
+	const committed = await sh(`git diff --name-only ${sq(base.out.trim())} HEAD`, cwd);
+	const dirty = await sh("git status --porcelain", cwd);
+	if (!committed.ok) return;
+	const paths = [...committed.out.split("\n"), ...(dirty.ok ? dirty.out.split("\n").map((l) => l.slice(3)) : [])].map((p) => p.trim()).filter(Boolean);
+	const code = [...new Set(paths.filter((p) => !isDocPath(p)))];
+	const before = JSON.stringify(state.docsCode ?? []);
+	if (code.length) state.docsCode = code;
+	else delete state.docsCode;
+	if (JSON.stringify(state.docsCode ?? []) !== before) writeState(root, state);
 }
 
 /** Where feature commands run: the feature worktree once it exists (that is where the

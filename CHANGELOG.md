@@ -4,6 +4,11 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **A docs flow whose diff reaches code runs the checks.** `--docs` skipped every check whatever the branch changed, and a playbook fold that also edited `scripts/harness.ts` and `scripts/verify.ts` shipped with no checks. The gates now read the branch's changed paths. Anything that isn't documentation (markdown, plain text, license files or images) puts the checks back for that flow: `flow check` runs them and names the paths, and `verify` and `release` require them green. A docs-only diff keeps the docs contract.
+- **The release gate names the version as written.** The fold-the-Unreleased refusal printed `vv0.46.2-…`. Its two version refusals now also give the unversioned way out (`flow release --no-version`, on the operator's word) when no release call is recorded or the flow is a docs flow. Before, they only offered the versioned repair.
+- **A gate no longer says "nothing bound" while the context shows the binding.** The per-turn context and the guards fall back to the session's claim when the in-memory binding is gone; the gates did not. Gates now resolve the bound flow the same way, and the binding is restored.
+
 ## [0.94.3] - 2026-11-19
 
 **Fold or drop? shows the findings you're answering about: a short list, folds grouped by plugin, playbook and code, then the drops.**

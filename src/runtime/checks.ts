@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { createServer } from "node:net";
 import { freemem } from "node:os";
 import path from "node:path";
-import { AGENT_MARK, checkFingerprint, DEFAULTS, failTail, freshenChecks, healthProbe, prepOnlyChange, listFiles, needsOperator, newestTaggedVersion, parseVersion, sq, validSlug, formatSize, sideBySide, type BranchState, type Config, type DevSlot, type FlowState, type StageCheck } from "../core.ts";
+import { skipsChecks, AGENT_MARK, checkFingerprint, DEFAULTS, failTail, freshenChecks, healthProbe, prepOnlyChange, listFiles, needsOperator, newestTaggedVersion, parseVersion, sq, validSlug, formatSize, sideBySide, type BranchState, type Config, type DevSlot, type FlowState, type StageCheck } from "../core.ts";
 import { loadProject } from "../projectmd.ts";
 import { agentText, presentGate, type GateView, type StageFacts } from "../present.ts";
 import { atomicWrite, boundFeature, buildSkew, dfDir, featDir, featureEnv, sweepScratch, flagValue, gateCwd, initiated, mergeBase, now, originUrl, readState, runHealthProbe, sh, tail, worktreeAbs, writeState } from "./base.ts";
@@ -191,7 +191,7 @@ export async function catchUp(root: string, state: FlowState, cfg: Config, confi
  * clears the records, so "run flow check first" cost three round trips to say what one could (#84).
  * `health` is left to the post-deploy probe when there is a deploy to prove: probing twice only waits twice. */
 export function pendingChecks(state: FlowState, cfg: Config): StageCheck[] {
-	if (state.docs) return [];
+	if (skipsChecks(state)) return [];
 	return cfg.checkList.filter((c) => !state.checks[c.name]?.ok && !(c.name === "health" && healthRerunsAfterDeploy(cfg)));
 }
 

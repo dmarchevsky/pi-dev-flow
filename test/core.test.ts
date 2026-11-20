@@ -53,6 +53,8 @@ import {
 	playbookTamper,
 	pluginVersion,
 	preReleaseGate,
+	isDocPath,
+	skipsChecks,
 	unreleasedPending,
 	pendingEntryLines,
 	missingFoldedLines,
@@ -288,12 +290,24 @@ test("preReleaseGate: stage, re-greened checks, bumped version, changelog mentio
 	assert.equal(buildConfig({}).release.changelog, "CHANGELOG.md");
 });
 
+test("isDocPath / skipsChecks: a docs flow skips the checks only while its diff is docs", () => {
+	for (const p of ["README.md", ".agents/skills/x/SKILL.md", "docs/a.mdx", "LICENSE", "notes.txt", "docs/shot.png", ".dev-flow/project.md"]) assert.equal(isDocPath(p), true, p);
+	for (const p of ["scripts/harness.ts", ".agents/skills/x/run.sh", "package.json", ".github/workflows/ci.yml"]) assert.equal(isDocPath(p), false, p);
+	const d = { ...newState("d", false, false, true) };
+	assert.equal(skipsChecks(d), true);
+	assert.equal(skipsChecks({ ...d, docsCode: ["scripts/verify.ts"] }), false);
+	assert.equal(skipsChecks(newState("n", false)), false);
+});
+
 test("preReleaseGate: versioned release folds the Unreleased backlog (--no-version entries)", () => {
 	const s = { ...newState("f", false), stage: "pre-release" as const, checks: { test: { ok: true, at: "" } } };
 	const c2 = buildConfig({ commands: { test: "x" }, versioning: { file: "package.json" } });
 	const base = { manifestVersion: "1.2.0", remoteTags: ["v1.1.0"], changelogChanged: true };
 	const cl = (content: string) => ({ ...base, changelog: { file: "CHANGELOG.md", content } });
-	assert.ok(preReleaseGate(s, c2, cl("# Changelog\n\n## [Unreleased]\n\n- left by a --no-version flow\n\n## [1.1.0] - 2026\n")).some((e) => e.includes("fold them under the v1.2.0 heading")));
+	assert.ok(preReleaseGate(s, c2, cl("# Changelog\n\n## [Unreleased]\n\n- left by a --no-version flow\n\n## [1.1.0] - 2026\n")).some((e) => e.includes("fold them under the 1.2.0 heading")), "the version is named as written — no extra v (vv0.46.2 in a lettuce refusal)");
+	// no release call on record, or a docs flow: the refusal names the unversioned way out too
+	assert.match(preReleaseGate({ ...s, docs: true }, c2, cl("# Changelog\n\n## [Unreleased]\n\n- x\n\n## [1.1.0] - 2026\n")).join("\n"), /or, if it ships unversioned \(a docs flow usually does\): ask the operator, and on their word run flow release --no-version/);
+	assert.doesNotMatch(preReleaseGate({ ...s, versionChoice: "minor" }, c2, cl("# Changelog\n\n## [Unreleased]\n\n- x\n\n## [1.1.0] - 2026\n")).join("\n"), /ships unversioned/, "a versioned call on record gets only the versioned repair");
 	assert.equal(preReleaseGate(s, c2, cl("# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2026\n- done\n")).length, 0, "empty Unreleased passes");
 	assert.equal(preReleaseGate(s, c2, cl("## 1.2.0\n- done\n")).length, 0, "no Unreleased section: vacuously clean");
 	assert.ok(unreleasedPending("## Unreleased\n- entry"));

@@ -61,6 +61,9 @@ export interface FlowState {
 	/** the session and its operator-message count when Verified? moved this flow to pre-release (gh#254): under
 	 *  yolo = until-release, a message after it is the operator's own Release? word, not a replayed plan-stage yolo */
 	verifiedAtMessage?: { key: string; users: number };
+	/** a docs flow's changed paths that are not documentation (its branch vs the default branch, plus uncommitted):
+	 *  any at all and the tier-1 checks apply to it as to any flow — docs mode skips them for docs, not for code */
+	docsCode?: string[];
 	verifiedHead?: string; // HEAD the operator's Verified? was given over — release names commits after it, so the word is not recorded as the verdict for a tree nobody looked at (#162)
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
@@ -415,7 +418,7 @@ export function verifyGate(state: FlowState, cfg: Config, branch?: BranchState |
 				? `nothing committed on the feature branch, and ${branch.unreleased.since ? `nothing landed on the default branch since ${branch.unreleased.since}` : "the default branch has nothing to release"} — there is nothing to verify or release`
 				: "nothing committed on the feature branch yet — commit as you go, verify proves a committed state",
 		);
-	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
+	if (!skipsChecks(state)) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check${state.docs ? ` (a docs flow whose diff reaches code: ${state.docsCode!.slice(0, 4).join(", ")}${state.docsCode!.length > 4 ? ` +${state.docsCode!.length - 4}` : ""})` : ""}`);
 	const pend = openItemsNote(cfg, state, "implement");
 	if (pend) errs.push(`tier-2 checklist not confirmed — ${pend}; confirm them with the operator, then run flow verify`);
 	return errs;
@@ -594,7 +597,7 @@ export function reviewOwed(state: FlowState, cfg: Config): string | null {
 export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep): string[] {
 	const errs: string[] = [];
 	if (state.stage !== "pre-release") errs.push(`stage is "${state.stage}", the release gate only applies to "pre-release"`);
-	if (!state.docs) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check`);
+	if (!skipsChecks(state)) for (const c of cfg.checkList) if (!state.checks[c.name]?.ok) errs.push(`check "${c.name}" has not passed — run flow check${state.docs ? ` (a docs flow whose diff reaches code: ${state.docsCode!.slice(0, 4).join(", ")}${state.docsCode!.length > 4 ? ` +${state.docsCode!.length - 4}` : ""})` : ""}`);
 	const pend = openItemsNote(cfg, state, "pre-release");
 	if (pend) errs.push(`tier-2 checklist not confirmed — ${pend}; confirm them with the operator, then run flow release`);
 	if (prep.conflictMarkers?.length && !prep.noMarkerCheck)
@@ -627,7 +630,7 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 		if (cfg.versioning.file) {
 			if (!prep.manifestVersion) errs.push(`versioning.file "${cfg.versioning.file}" has no parsable version — bump it to the version you will release`);
 			else if (prep.remoteTags.includes(cfg.versioning.pattern.replace("{version}", prep.manifestVersion)))
-				errs.push(`version ${prep.manifestVersion} is already tagged — bump the manifest to the next version`);
+				errs.push(`version ${prep.manifestVersion} is already tagged — bump the manifest to the next version${unversionedAlt(state)}`);
 		}
 		if (cfg.release.changelog) {
 			if (!prep.changelog) errs.push(`release.changelog "${cfg.release.changelog}" does not exist — prepare the changelog (a project that keeps none: set changelog = "" under ## release)`);
@@ -646,12 +649,29 @@ export function preReleaseGate(state: FlowState, cfg: Config, prep: ReleasePrep)
 						errs.push(`${prep.changelog.file} drops ${dropped.length} Unreleased entr${dropped.length === 1 ? "y" : "ies"} from the ${base.source} under the ${prep.manifestVersion ?? "new"} heading — folding means moving them in as they are (reword afterwards, or skip with --no-fold-check):\n  ${dropped.slice(0, 5).join("\n  ")}${dropped.length > 5 ? `\n  …(${dropped.length - 5} more)` : ""}`);
 				}
 				if (unreleasedPending(prep.changelog.content))
-					errs.push(`${prep.changelog.file} still has entries under Unreleased — fold them under the v${prep.manifestVersion ?? "new"} heading before releasing (they were left by --no-version flows)`);
+					errs.push(`${prep.changelog.file} still has entries under Unreleased — fold them under the ${prep.manifestVersion ?? "new"} heading before releasing (they were left by --no-version flows)${unversionedAlt(state)}`);
 			}
 		}
 	}
 	return errs;
 }
+
+/** A path a docs flow may change without the project's checks: prose, the playbook, skills' markdown. A script
+ *  under `.agents/` or `scripts/` is code, whatever the flow is called. */
+export function isDocPath(p: string): boolean {
+	const f = p.replace(/^"|"$/g, "");
+	return /\.(md|mdx|markdown|txt|rst|adoc)$/i.test(f) || /^(?:LICENSE|NOTICE|AUTHORS|CODEOWNERS)(?:\.\w+)?$/i.test(path.basename(f)) || /\.(png|jpe?g|gif|svg|webp)$/i.test(f);
+}
+
+/** Does this flow skip the project's tier-1 checks? A docs flow does — unless its diff reaches code (a docs flow
+ *  that also edited scripts/harness.ts and scripts/verify.ts shipped with no gate at all). */
+export const skipsChecks = (state: FlowState): boolean => !!state.docs && !state.docsCode?.length;
+
+/** The other way out of a versioned-release refusal, for a flow whose release call is not on record or is a docs
+ *  flow: those usually ship unversioned, and a refusal naming only the versioned repair sent the agent to cut a
+ *  tag a parallel flow already held. */
+const unversionedAlt = (state: FlowState): string =>
+	state.docs || !state.versionChoice ? ` — or, if it ships unversioned${state.docs ? " (a docs flow usually does)" : ""}: ask the operator, and on their word run flow release --no-version` : "";
 
 /** True when the changelog's Unreleased section still holds entries — --no-version flows park
  *  their lines there and a versioned release must fold them under its own heading. Matches

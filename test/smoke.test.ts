@@ -13,6 +13,7 @@ import devFlow, { compactionTakeover, reflectSeams, stageWorkerSpawn, testSeams,
 import { CHIP_KEY_HISTORY, nextChipKeys } from "../src/runtime/base.ts";
 import { tagNotesCommand } from "../src/core.ts";
 import { publishWait } from "../src/runtime/publish.ts";
+import { bindings } from "../src/runtime/base.ts";
 import { commandish, viewHeader, type GateView } from "../src/present.ts";
 
 type Handler = (event: { toolName?: string; input?: Record<string, unknown> }, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>;
@@ -560,6 +561,49 @@ test("flow check runs no tier-1 for a docs flow: an unbuilt checkout is not a fa
 	commitWt(repo, "readmeonly");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/, "verify needs no check record from a docs flow");
 	// that the same commands still run for a normal flow is covered by the check/verify tests above
+});
+
+test("a docs flow whose diff reaches code runs the checks; a pure docs diff still skips them", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	const md = (body: string) => `# dev-flow\n\n## implement\n\n\`\`\`flow\n${body}\`\`\`\n\n## release\n\n\`\`\`flow\nmerge = merge\n\`\`\`\n`;
+	await flow(["init", "--write", md("test = exit 1\n")]);
+	await flow(["start", "foldrules", "--docs", "--confirmed"]);
+	await flow(["approve", "--confirmed"]);
+	const wt = path.join(repo, ".dev-flow", "foldrules", "worktree");
+	writeFileSync(path.join(wt, "GUIDE.md"), "# rules\n");
+	commitWt(repo, "foldrules");
+	assert.match((await flow(["check"])).content[0].text, /docs mode: project commands skipped/, "a markdown-only diff keeps the docs contract");
+	// the fold also edits a gate script — the lettuce fold-playbook-rules shape
+	mkdirSync(path.join(wt, "scripts"), { recursive: true });
+	writeFileSync(path.join(wt, "scripts", "verify.ts"), "export {};\n");
+	commitWt(repo, "foldrules");
+	const c = await flow(["check"]);
+	assert.match(c.content[0].text, /docs flow, but its diff reaches code \(scripts\/verify\.ts\) — the tier-1 checks run as on any flow\ntier-1 checks:\ntest: FAIL/, c.content[0].text);
+	assert.equal(c.isError, true);
+	const v = await flow(["verify", "--confirmed"]);
+	assert.ok(v.isError, v.content[0].text);
+	assert.match(v.content[0].text, /test/, "verify will not pass a docs flow over code with a red check");
+	assert.equal(JSON.parse(readFileSync(path.join(repo, ".dev-flow", "foldrules", "state.json"), "utf8")).stage, "implement");
+});
+
+test("a binding lost from memory resolves from the session's claim, as the context does — not 'nothing bound'", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = { ...makeCtx(repo), sessionManager: { getBranch: () => [], getSessionId: () => "sess-lost", getSessionFile: () => undefined, getSessionDir: () => repo } };
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	await flow(["start", "keepme"]);
+	const key = [...bindings.keys()].find((k) => bindings.get(k) === "keepme")!;
+	assert.ok(key, "fixture: the start bound the session");
+	bindings.delete(key); // what the fold-playbook-rules session hit: the claim still names the session, memory does not
+	const inj = (await pi.handlers.before_agent_start[0]({}, ctx)) as { message?: { content: string } };
+	assert.match(inj.message?.content ?? "", /bound to: keepme/, "fixture: the context still reports the binding");
+	const st = await flow(["approve"]);
+	assert.doesNotMatch(st.content[0].text, /nothing bound/, st.content[0].text);
+	assert.match(st.content[0].text, /keepme|plan/);
 });
 
 test("a failed setup runs again on the next approve — re-approve is not a no-op (#49)", async () => {
