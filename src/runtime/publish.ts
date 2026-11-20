@@ -147,6 +147,25 @@ async function prBody(root: string, cwd: string, cfg: Config, state: FlowState):
 
 export type PublishResult = { ok: true; log: string } | { ok: false; text: string };
 
+/** gh#259: the files a merge of `HEAD` into `origin/<default>` would conflict in, from a fresh fetch — [] when it
+ *  merges clean, null when this git cannot say (merge-tree --write-tree needs git 2.38) or origin is unreachable.
+ *  A conflict was found by gh pr merge after the whole CI wait, though it was true before the push. */
+export async function mergeConflicts(wt: string, defaultBranch: string): Promise<string[] | null> {
+	if (!(await sh(`git fetch -q origin ${sq(defaultBranch)}`, wt, 5 * 60_000)).ok) return null;
+	const r = await sh(`git merge-tree --write-tree --name-only --no-messages ${sq(`origin/${defaultBranch}`)} HEAD`, wt);
+	if (r.ok) return [];
+	// exit 1 with a tree id on the first line is "conflicts"; anything else (an old git, a bad ref) is not an answer
+	const lines = r.out.split("\n").map((l) => l.trim()).filter(Boolean);
+	if (!/^[0-9a-f]{40,64}$/.test(lines[0] ?? "")) return null;
+	return [...new Set(lines.slice(1))];
+}
+
+/** GitHub's own verdict on an open PR: CONFLICTING is the one that stops; UNKNOWN (still computing) does not. */
+async function prConflicting(pr: number, cwd: string): Promise<boolean> {
+	const r = await sh(`gh pr view ${pr} --json mergeable`, cwd, 60_000);
+	return r.ok && /"mergeable"\s*:\s*"CONFLICTING"/.test(r.out);
+}
+
 /** Push, PR, CI, merge, tag — each step skipped when the forge already shows it done. On success the caller
  *  records the release (release-done's proofs). A refusal starts with `publish stopped —` (something to fix)
  *  or `publish waiting —` (CI still running: re-run to keep waiting). */
@@ -168,6 +187,11 @@ export async function publishRelease(root: string, state: FlowState, cfg: Config
 	let merged = found.merged;
 	if (merged) steps.push(`PR #${merged.number} already merged`);
 	else {
+		// gh#259: a conflict with the default branch is known before the push — never spend the CI wait to learn it
+		const d = cfg.defaultBranch;
+		const resolve = `merge origin/${d} into ${br} in the worktree (git merge origin/${d}), resolve the conflicts — keep both sides' changelog lines; a version file takes the bump past the newest release — and commit`;
+		const conflicts = await mergeConflicts(wt, d);
+		if (conflicts?.length) return stop(`${br} conflicts with origin/${d} in ${conflicts.join(", ")} — the merge would be refused after the CI wait, so nothing was pushed`, resolve);
 		const remote = await sh(`git ls-remote origin ${sq(`refs/heads/${br}`)}`, wt, 60_000);
 		if (!remote.ok) return stop(`cannot reach origin:\n${tail(remote.out, 5)}`, "check the network and git credentials");
 		if (remote.out.split(/\s/)[0] === head) steps.push("branch already on origin");
@@ -192,6 +216,8 @@ export async function publishRelease(root: string, state: FlowState, cfg: Config
 		}
 		state.publish = { ...state.publish, pr: pr.number };
 		writeState(root, state);
+		// the forge's view too: the default branch can move between the local check and the PR
+		if (await prConflicting(pr.number, wt)) return stop(`PR #${pr.number} has merge conflicts with ${d} — the merge would be refused after the CI wait`, resolve);
 		const ci = await awaitPrChecks(pr.number, wt);
 		if (!("why" in ci)) steps.push(ci.note);
 		else if (ci.state === "running") return { ok: false, text: `publish waiting — ${ci.why}${steps.length ? `\ndone so far: ${steps.join(" · ")}` : ""}\n↪ next: re-run flow release to keep waiting — do not end the turn on a promise to watch` };

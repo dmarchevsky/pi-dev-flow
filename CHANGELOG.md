@@ -4,6 +4,9 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Fixed
+- **`flow release` finds a merge conflict before the push and the CI wait (gh#259).** The gate pushed the branch, opened the PR and waited for CI to go green, and only then did `gh pr merge` report the conflict, which was there from the start. Parallel flows collide on the changelog and version file all the time. The gate now fetches the default branch and runs `git merge-tree` before pushing. On a conflict it names the files, pushes nothing, and says how to resolve. Once the PR is open, GitHub's own `mergeable` check runs before the wait, because the default branch can move after the local check. A re-run picks up from where it stopped.
+
 ## [0.94.3] - 2026-11-19
 
 **Fold or drop? shows the findings you're answering about: a short list, folds grouped by plugin, playbook and code, then the drops.**

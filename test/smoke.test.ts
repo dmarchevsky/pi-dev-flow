@@ -1113,6 +1113,10 @@ test("guard: a scratch file outside the checkout is stage-free while the worktre
 	writeFileSync(path.join(repo, ".dev-flow", "scratch", "plan", "plan.md"), "# plan\n");
 	await flow(["approve", "--confirmed"]);
 	assert.match((await write(path.join(repo, "junk.ts")))?.reason ?? "", /edit its worktree/, "the checkout stays confined to the worktree");
+	// gh#258's shape: an edit of a tracked file by its main-checkout path, relative to the session's cwd
+	const edit = (p: string) => pi.handlers.tool_call[0]({ toolName: "edit", input: { path: p, edits: [{ oldText: "# scratch", newText: "# changed" }] } }, ctx);
+	assert.match((await edit("README.md"))?.reason ?? "", /edit its worktree \(\.dev-flow\/scratch\/worktree\)/, "an edit of a tracked main-checkout file is refused and names the worktree");
+	assert.equal(await edit(".dev-flow/scratch/worktree/README.md"), undefined, "the same file in the worktree is the working area");
 	assert.equal(await write(path.join(tmpdir(), "split_skill.py")), undefined, "a throwaway in the OS temp dir is not a repo write");
 	assert.equal(await write(path.join(tmpdir(), "nested", "x.py")), undefined, "including a scratch directory the agent makes for itself");
 });
@@ -4339,6 +4343,7 @@ if (k === "pr create") {
 	console.log("https://gh/pr/" + n);
 	process.exit(0);
 }
+if (k === "pr view" && arg("--json") === "mergeable") { console.log(JSON.stringify({ mergeable: fs.existsSync(f("conflicting")) ? "CONFLICTING" : "MERGEABLE" })); process.exit(0); }
 if (k === "pr view") {
 	const script = rd("checks.json", null);
 	if (!script) { console.log(JSON.stringify({ statusCheckRollup: [] })); process.exit(0); }
@@ -4437,6 +4442,43 @@ test("flow release publishes on GitHub: push, PR, CI, merge, tag and the release
 		markReflected(p.repo, "pubone"); // the fixture's bare flow check counted as friction; the reflection is not under test
 		const fin = await p.flow(["finish", "--confirmed"]);
 		assert.match(fin.content[0].text, /feature pubone done[\s\S]*local main fast-forwarded to origin\/main/, fin.content[0].text);
+	} finally {
+		p.done();
+	}
+});
+
+test("flow release finds a merge conflict before the push and the CI wait, and resumes once it is resolved (gh#259)", async () => {
+	const p = await publishFlow("pubconf");
+	try {
+		await p.toRelease("--version=patch", "1.0.1");
+		// a parallel flow merged first: its changelog line sits where this branch's entry goes
+		const other = mkdtempSync(path.join(tmpdir(), "devflow-other-"));
+		execFileSync("git", ["clone", "-q", p.origin, other]);
+		writeFileSync(path.join(other, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- another flow ships\n");
+		p.git(["add", "-A"], other);
+		p.git(["commit", "-qm", "another flow"], other);
+		p.git(["push", "-q", "origin", "main"], other);
+		p.checks([[ck("build", "pass")]]);
+		const r = await p.flow(["release"]);
+		assert.match(r.content[0].text, /publish stopped — feat\/pubconf conflicts with origin\/main in CHANGELOG\.md — the merge would be refused after the CI wait, so nothing was pushed/, r.content[0].text);
+		assert.match(r.content[0].text, /git merge origin\/main[\s\S]*keep both sides' changelog lines/, "it says how to resolve");
+		assert.doesNotMatch(p.calls(), /pr create|pr view/, "no PR, no CI wait");
+		assert.equal(execFileSync("git", ["ls-remote", p.origin, "refs/heads/feat/pubconf"], { encoding: "utf8" }).trim(), "", "nothing was pushed");
+		// resolved: both lines kept
+		try { p.git(["merge", "-q", "origin/main"], p.wt); } catch { /* the conflict, resolved below */ }
+		writeFileSync(path.join(p.wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- another flow ships\n\n## [1.0.1]\n\n- pubconf ships\n");
+		p.git(["add", "-A"], p.wt);
+		p.git(["commit", "-qm", "merge origin/main"], p.wt);
+		// the forge's view: GitHub reporting the PR conflicting stops before the wait as well
+		writeFileSync(path.join(p.ghState, "conflicting"), "");
+		const forge = await p.flow(["release"]);
+		assert.match(forge.content[0].text, /publish stopped — PR #7 has merge conflicts with main — the merge would be refused after the CI wait/, forge.content[0].text);
+		assert.match(p.calls(), /pr create/, "the branch merged clean locally, so the PR was opened");
+		assert.doesNotMatch(p.calls(), /statusCheckRollup/, "the CI wait never started");
+		rmSync(path.join(p.ghState, "conflicting"));
+		const ok = await p.flow(["release"]);
+		assert.ok(!ok.isError, ok.content[0].text);
+		assert.match(ok.content[0].text, /PR #7 already open · CI green \(1 check\) · merged \(merge\) · tag v1\.0\.1 pushed/, ok.content[0].text);
 	} finally {
 		p.done();
 	}
