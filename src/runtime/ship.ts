@@ -7,6 +7,7 @@ import { AGENT_MARK } from "../present.ts";
 import { buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type RunResult, ago, releaseDevSlot, keepThroughPrep, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
 import { type GateCtx, markPendingAsk } from "./gates.ts";
+import { closeLinkedReflections } from "./reflect.ts";
 import { gatePublishes, prBodyOwed, publishRelease } from "./publish.ts";
 
 /** gh#198: the version question asked with Verified? — null when it is not the operator's to answer here
@@ -960,8 +961,12 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 			roadmapNote = ` roadmap: ${r.count} item(s) marked done.`;
 		}
 	}
+	// the reflection rows this flow was linked to close with it — the fix and the ledger agree the moment it ships
+	const closedRefl = closeLinkedReflections(root, state!, state!.publish?.pr ? ` (PR #${state!.publish.pr})` : "");
+	const deferred = (state!.reflections ?? []).filter((r) => r.deferred);
+	const reflNote = closedRefl.length || deferred.length ? ` reflections: ${closedRefl.length ? `closed ${closedRefl.map((n) => `r${n}`).join(", ")} as fixed by this flow` : ""}${closedRefl.length && deferred.length ? "; " : ""}${deferred.length ? `left open ${deferred.map((r) => `r${r.id} (${r.deferred})`).join(", ")}` : ""}.` : "";
 	// finish is the moment between flows: name the fix / tidy suggestion when a rule fires, nothing otherwise
 	const nudge = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { between: true });
 	const nudgeNote = [nudge.fix, nudge.tidy].filter(Boolean).map((n) => ` ${n} — offer it to the operator.`).join("");
-	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${forgeSkipNote}${reflectSkipNote}${quietNote}${releaseChecksNote}${autoNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
+	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${reflNote}${forgeSkipNote}${reflectSkipNote}${quietNote}${releaseChecksNote}${autoNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 }
