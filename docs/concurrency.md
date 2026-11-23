@@ -35,9 +35,11 @@ while your feature is at plan or implement.
 A dev deploy is machine state, not branch state, so `flow verify` keeps a small registry in
 `.dev-flow/dev-ports.json` (port → slug, commit, time). `flow status` shows it.
 
-If the flow holding your port is already past its **Verified?** (at pre-release or release, and not
-re-asking it), nobody is reviewing that deploy, so verify replaces it and says so. If the holder is
-still being reviewed or still in implement, verify doesn't deploy. Instead it asks
+If the flow holding your port isn't waiting on its **Verified?** (it's past it, still in implement,
+or gone), nobody is reviewing that deploy, so verify replaces it and says so; the holder's own
+verify redeploys before it asks you. If the holder is under review and the playbook says
+`parallelDev = yes`, verify runs alongside on the next free port by itself, as long as a second
+instance fits the measured RAM and disk. Otherwise verify doesn't deploy. Instead it asks
 **Dev port?**, showing who holds the port and how much RAM and disk are free, and offers:
 
 - **run alongside** on the next free port (`--port=<n>`). This needs `parallelDev` not set to `no`,

@@ -281,7 +281,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	/** Driver sessions with a worker running right now — one worker per session at a time. */
 	const runningWorkers = new Set<string>();
 
-	type WorkerResult = { content: { type: "text"; text: string }[]; details: { op: WorkerOp; outcome: string; verdict: string | null; commits: number; findings?: number; recorded?: boolean } | undefined; isError?: boolean };
+	type WorkerResult = { content: { type: "text"; text: string }[]; details: { op: WorkerOp; outcome: string; verdict: string | null; commits: number; findings?: number; recorded?: boolean; report?: ReturnType<typeof parseReflectReport> | null } | undefined; isError?: boolean };
 
 	/** One fresh-session worker run for a bound flow — the body of flow_stage, shared with flow finish,
 	 *  which runs the closing reflection itself before it removes anything (the worker reads the session
@@ -513,7 +513,7 @@ export default function devFlow(pi: ExtensionAPI) {
 			if (nudges.tidy) parts.push(`${nudges.tidy} — offer it after the fold/drop answer.`);
 			if (newCommits.trim() || dirty !== statusBefore) parts.push("note: the reflect worker changed the tree — inspect the change; it was told to write nothing");
 			parts.push(`transcript: ${transcript || "(unknown)"}`);
-			return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: null, commits: 0, findings: reflected?.findings.length ?? 0, recorded: report.found } };
+			return { content: [{ type: "text", text: parts.join("\n\n") }], details: { op: wop, outcome, verdict: null, commits: 0, findings: reflected?.findings.length ?? 0, recorded: report.found, report: rows ? reflected : null } };
 		}
 		parts.push(
 			report.found ? `REPORT:\n${report.body.slice(0, 6000)}` : modelError ? deadModelNote : `no REPORT — last words:\n${report.body}`,
@@ -544,7 +544,7 @@ export default function devFlow(pi: ExtensionAPI) {
 	const finishReflectHook = (id: string, ctx: ExtensionContext, root: string, signal?: AbortSignal, onUpdate?: (u: { content: { type: "text"; text: string }[]; details: unknown }) => void): FlowHooks => ({
 		reflect: async (st, note) => {
 			const r = await runStageWorker({ id, wop: "reflect", st, root, key: sessionKey(ctx), note, label: "finish reflection", signal, onUpdate, ctx });
-			return { text: r.content.map((c) => c.text).join("\n"), recorded: !!r.details?.recorded, findings: r.details?.findings ?? 0, failed: !!r.isError };
+			return { text: r.content.map((c) => c.text).join("\n"), recorded: !!r.details?.recorded, findings: r.details?.findings ?? 0, failed: !!r.isError, report: r.details?.report ?? undefined };
 		},
 	});
 

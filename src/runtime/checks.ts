@@ -131,8 +131,10 @@ export async function devSlotCheck(o: GateCtx, state: FlowState): Promise<RunRes
 	// the holder's review is over — it is past Verified? (pre-release or release) and not re-asking it, or it is
 	// gone: nobody is looking at that deploy, so taking the port asks nobody (lettuce rail-avatar-size-28 asked
 	// replace-or-wait over a flow that had already merged)
-	if (!other || ((other.stage === "pre-release" || other.stage === "release") && other.pendingAsk !== "Verified?"))
-		return { note: `dev: replaced ${slot.slug}'s deploy on ${portLabel(port)} — ${other ? `it is at ${other.stage}, past its Verified?` : "that flow is gone"}, so nobody was reviewing it` };
+	// The same holds for a holder that is not waiting on its Verified?: only that question puts a person in front
+	// of the deploy — the holder's own verify redeploys before it asks again.
+	if (!other || other.pendingAsk !== "Verified?")
+		return { note: `dev: replaced ${slot.slug}'s deploy on ${portLabel(port)} — ${other ? `it is at ${other.stage}, not waiting on its Verified?` : "that flow is gone"}, so nobody was reviewing it` };
 	const taken = new Set(Object.keys(reg).map(Number).filter(Number.isFinite));
 	const nextPort = port !== undefined ? await nextFreePort(port, taken) : null;
 	const mem = memAvailable();
@@ -142,6 +144,12 @@ export async function devSlotCheck(o: GateCtx, state: FlowState): Promise<RunRes
 		`RAM available ${mem !== null ? formatSize(mem) : "unknown"}${cfg.instanceMem !== undefined ? ` (one instance needs ${formatSize(cfg.instanceMem)})` : ""}`,
 		`disk free ${disk !== null ? formatSize(disk) : "unknown"}${cfg.instanceDisk !== undefined ? ` (one instance needs ${formatSize(cfg.instanceDisk)})` : ""}`,
 	].join(", ");
+	// under review, and a second instance is known to fit: run alongside — nothing of the other flow is touched
+	if (side.ok && cfg.parallelDev === true && nextPort !== null) {
+		state.devPort = nextPort;
+		writeState(root, state);
+		return { note: `dev: ${portLabel(port)} is serving ${slot.slug} under review — deployed alongside on port ${nextPort} (parallelDev = yes)` };
+	}
 	const caveat = side.ok
 		? cfg.parallelDev === undefined
 			? " The playbook does not say whether two instances can share this machine (parallelDev = yes|no) — tell the operator that when you ask."

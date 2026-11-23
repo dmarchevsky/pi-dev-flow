@@ -43,8 +43,12 @@ transcript and every worker's. It checks the findings against the open notes and
 issues, then gives you a numbered list. Each finding is marked docs, code or plugin, with a
 suggestion to **fold** (keep) or **drop** it.
 
-You answer per item, for example `fold 1,3 drop 2`. Folding records a note, or files the issue for a
-plugin finding. Dropping records nothing.
+Finish files the reviewer's own recommendation for each finding, without asking: a fold records a
+note (or counts a recurrence on the note it duplicates), a drop records nothing. The output lists
+each one with how to undo it (`flow reflect done <id> "dropped"`, or `flow reflect --playbook|--code
+"<note>"` to keep a drop). A plugin finding outside the dev-flow repo is an upstream issue, which is
+public, so it's named for you to file and never filed by the gate. Set `finish = always` in
+`## release` to answer fold/drop yourself, for example `fold 1,3 drop 2`.
 
 The review is skipped when the flow ran into no friction: no guard block, no gate refusing for a
 process reason (wrong stage, a missing plan, a proof that doesn't hold), no gate refusing twice in a

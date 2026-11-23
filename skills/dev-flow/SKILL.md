@@ -19,10 +19,10 @@ criteria hold. Call it with an args array — `["start", "dark-mode"]`,
 - **The flow tool is the only invocation.** There is no `flow` shell command —
   never bash, `npx` or a path.
 - **You run the gates; the operator says words.** Never ask the operator to
-  type a `flow` or `/flow` command. A checkpoint is one word asked in plain
+  type a `flow` or `/flow` command. A checkpoint is one word asked in
   chat — **Approve? / Verified? / Release? / Finish?** — mentioning that
-  *yolo* is an answer, then stop. Their word (or a clear equivalent) in chat →
-  run that gate with `--confirmed`. A structured question tool is not chat;
+  *yolo* is an answer, then stop. Their word (or an equivalent, even "ok") in chat →
+  run that gate with `--confirmed`; never re-ask. A structured question tool is not chat;
   never infer the answer — the flow tool refuses a `--confirmed` with no
   operator message since the gate asked. A gate returning `NEEDS-OPERATOR <Question?>` means:
   ask exactly that, in chat. `/flow` is the operator's own override; mention it

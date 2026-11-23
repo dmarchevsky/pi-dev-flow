@@ -52,21 +52,22 @@ and settle the scheme with the operator; never invent one.
 6. **Run `flow release` before asking anything.** Never ask Release? in
    chat ahead of the call: the gate did not see that question, and when it
    needs the word it asks again, so the operator answers twice. By default (`ask = on-change`) it answers
-   Release? itself when the release call is on record and only the prep
-   landed since Verified? — say in a few lines what the PR delivers (the
+   Release? itself when the release call is on record and only the prep,
+   docs or tests landed since Verified? — the operator's Verified? is the
+   release word. Say in a few lines what the PR delivers (the
    changelog entry usually is that) and the version, and carry on with the
    release stage.
 7. **It returned `NEEDS-OPERATOR Release?`** (it says why: code after
-   Verified?, no call on record, a stale build, `yolo = until-release`, a
-   major bump, or the playbook's `ask = always`) → **ask Release? and
+   Verified?, no call on record, a standing yolo under `yolo =
+   until-release`, a major bump, or the playbook's `ask = always`) → **ask Release? and
    stop**, with the same summary and the version. Report opening:
    **🔍 pre-release · `<slug>`** (the gate's stage line; the version field
    reads `pending` until decided — never invent a bump or a no-version
    decision). Answer → `flow release --confirmed`.
    - Standing yolo → run `flow release` bare, without asking. It still returns
-     `NEEDS-OPERATOR Release?` when commits landed after Verified?, the
-     playbook says `yolo = until-release`, or the session build is stale —
-     then ask. A `--confirmed` passed before the gate asked is not an answer
+     `NEEDS-OPERATOR Release?` when commits landed after Verified? or the
+     playbook says `yolo = until-release` — then ask. A stale session build is
+     a note in the output, never a question. A `--confirmed` passed before the gate asked is not an answer
      there: the gate asks first. Never carry the standing yolo onto the call
      as `--yolo`: the operator's answer is `flow release --confirmed`.
    - Operator ships **without a version** → `flow release --no-version

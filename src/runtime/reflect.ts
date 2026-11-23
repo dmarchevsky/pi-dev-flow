@@ -1,7 +1,7 @@
 /** dev-flow runtime — Reflections and the upstream issue fold. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { ensureReflectIds as ensureReflectIdsFor, appendReflection, doneItemCount, githubSlug, pluginVersion, guessReflectSections, reflectItems, reflectMove, reflectDone, reflectRow, reflectLegacyPluginCount, reflectionNudges, pluginIssueRecipe, reflectionLine, reflectionsTidy, openChecklistItems, parseRowIds, reflectSame, reflectReopen, closedRowsBySection, archiveAppend, archiveTake, reflectFixPlan, rowId, type ReflectTarget, type ReflectItem, type ReflectSection, type FlowState } from "../core.ts";
+import { ensureReflectIds as ensureReflectIdsFor, appendReflection, doneItemCount, githubSlug, pluginVersion, guessReflectSections, reflectItems, reflectMove, reflectDone, reflectRow, reflectLegacyPluginCount, reflectionNudges, pluginIssueRecipe, reflectionLine, reflectionsTidy, openChecklistItems, parseRowIds, reflectSame, reflectReopen, closedRowsBySection, archiveAppend, archiveTake, reflectFixPlan, rowId, shortFindingNote, type ReflectFinding, type ReflectOpenCheck, type ReflectTarget, type ReflectItem, type ReflectSection, type FlowState } from "../core.ts";
 import { dedupeReflections, linkedTag, parseGhIssues, similarNote, type FoldResult, type GhIssue } from "../fold.ts";
 import { dfDir, now, originUrl, readState, writeState, readReflectArchive, readReflections, readReflectionsText, reflectArchiveFile, sh } from "./base.ts";
 import { type RunResult, type Session } from "./checks.ts";
@@ -105,6 +105,54 @@ export function reflectDeferNote(root: string, sess: Session, args: string[]): R
 		writeFileSync(path.join(dfDir(root), "reflections.md"), lines.join("\n"));
 	}
 	return { text: `reflect: r${id} deferred by ${sess.slug} — it stays open (${why}); finish closes the rest of the linked rows as fixed` };
+}
+
+/** finish's closing reflection, settled without a question: the reviewer's own fold/drop recommendation is
+ *  applied — a fold is recorded (a recurrence on the row its dup names), a drop records nothing — and the lines
+ *  say what happened and how to undo it. A plugin fold outside the dev-flow repo is an upstream issue, which is
+ *  public: it is named for the operator, never filed from here. */
+export async function applyReflectFindings(root: string, sess: Session, report: { findings: ReflectFinding[]; open: ReflectOpenCheck[] }): Promise<string[]> {
+	const self = isSelfRepo(root);
+	const out: string[] = [];
+	const upstream: string[] = [];
+	for (const f of report.findings) {
+		const short = shortFindingNote(f.note);
+		if (f.rec === "drop") {
+			out.push(`  ${f.n}. dropped: ${short}`);
+			continue;
+		}
+		const dupRow = /^r(\d+)$/i.exec(f.dup.trim());
+		if (dupRow) {
+			const same = reflectSameNote(root, sess, [`r${dupRow[1]}`, f.evidence]);
+			if (!same.isError) {
+				out.push(`  ${f.n}. folded as a recurrence of r${dupRow[1]}: ${short}`);
+				continue;
+			}
+		}
+		if (/^gh#\d+$/i.test(f.dup.trim())) {
+			out.push(`  ${f.n}. already filed as ${f.dup.trim()}: ${short}`);
+			continue;
+		}
+		if (f.kind === "plugin" && !self) {
+			upstream.push(`  ${f.n}. ${short}`);
+			continue;
+		}
+		const r = await reflectNote(root, sess, [f.note], f.kind === "docs" ? "playbook" : "code", f.evidence);
+		const id = /reflected as (r\d+)/.exec(r.text)?.[1] ?? /as (r\d+)/.exec(r.text)?.[1];
+		out.push(`  ${f.n}. folded${id ? ` as ${id}` : ""} (${f.kind === "docs" ? "playbook" : "code"}): ${short}`);
+	}
+	for (const o of report.open) {
+		if (o.status === "recurred") {
+			const same = reflectSameNote(root, sess, [`r${o.n}`, o.reason]);
+			if (!same.isError) out.push(`  r${o.n} seen again: ${shortFindingNote(o.reason)}`);
+		} else if (o.status === "fixed") out.push(`  r${o.n} looks fixed${o.reason ? ` (${shortFindingNote(o.reason)})` : ""} — close it on the operator's word: flow reflect done r${o.n} "<where>"`);
+	}
+	if (!out.length && !upstream.length) return ["closing reflection: nothing new to fold."];
+	return [
+		`closing reflection — the reviewer's recommendations were applied (no question; to undo a fold: flow reflect done <id> "dropped"; to keep a drop: flow reflect --playbook|--code "<note>"):`,
+		...out,
+		...(upstream.length ? ["  dev-flow feedback to file upstream on the operator's word (flow reflect --plugin \"<note>\" prints the recipe):", ...upstream] : []),
+	];
 }
 
 /** Close the rows a flow was linked to and did not defer — finish's half of the link. Returns the ids closed. */
