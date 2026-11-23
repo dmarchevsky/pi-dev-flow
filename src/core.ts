@@ -612,6 +612,13 @@ export function releaseCallQuestion(now: string | null, file: string, docs?: boo
 	};
 }
 
+/** A fold flow — one started with `--reflections`, fixing reflection rows — always merges unreleased: the fix rides
+ *  under Unreleased until the next versioned release. Null when `choice` is allowed. */
+export function foldCallError(state: FlowState, choice: string | null | undefined): string | null {
+	if (!state.reflections?.length || !choice || choice === "unreleased") return null;
+	return `a fold flow (linked reflections ${state.reflections.map((r) => `r${r.id}`).join(", ")}) always merges unreleased — the fix rides under Unreleased until the next versioned release`;
+}
+
 /** Does `manifest` carry the operator's release call? `newest` is the newest tagged release, `base` the manifest the
  *  branch started from. Null when it does; otherwise what to fix, with the number the call means today. */
 export function releaseCallProof(choice: string, manifest: string | null, newest: string | null, base: string | null, file: string): { error: string; want?: string } | null {
@@ -2282,8 +2289,8 @@ export interface ReflectionRoute {
 	route: string;
 }
 
-const DOCS_ROUTE = "docs flow (flow start fold-<topic> --docs) — project.md edits only pass its worktree";
-const CODE_ROUTE = "patch flow (flow start fix-<topic> --patch), normal flow when bigger";
+const DOCS_ROUTE = "docs flow (flow reflect plan prints its --reflections start) — project.md edits only pass its worktree";
+const CODE_ROUTE = "patch flow (flow reflect plan prints its --reflections start), normal flow when bigger";
 
 export function reflectionRoutes(items: ReflectItem[], selfRepo: boolean): ReflectionRoute[] {
 	return items.map((it) => {
@@ -2454,8 +2461,8 @@ export function reflectionNudges(text: string, today: string, opts: { recurred?:
 	if (code && opts.between) why.push("between flows");
 	let fix: string | null = null;
 	if (open.length && why.length) {
-		const split = [docs ? `${docs} playbook item(s) → one docs flow (flow start fold-<topic> --docs)` : "", code ? `${code} code item(s) → patch flow (flow start fix-<topic> --patch)` : ""].filter(Boolean).join("; ");
-		fix = `⚑ fix the open reflections now? (${why.join(", ")}) — ${split}; flow reflect plan groups them into flows`;
+		const split = [docs ? `${docs} playbook item(s) → one docs flow` : "", code ? `${code} code item(s) → patch flow(s)` : ""].filter(Boolean).join("; ");
+		fix = `⚑ fix the open reflections now? (${why.join(", ")}) — ${split}; flow reflect plan groups them into flows and prints each start command`;
 	}
 	const closedLines = text.split("\n").filter(isDoneItem);
 	const closed = closedLines.length;

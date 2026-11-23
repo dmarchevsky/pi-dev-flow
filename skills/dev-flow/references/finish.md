@@ -8,7 +8,9 @@ unbinds the session — so anything that needs them runs first.
 1. **`flow finish [--note="<friction the operator mentioned>"]`**
    - Published by hand and not recorded yet → it runs the release record
      first (no question).
-   - **Closing reflection** — while none is recorded, a read-only worker
+   - **Closing reflection** — skipped on a fold flow (started with
+     `--reflections`: it fixes reflections, it doesn't review for new ones).
+     Otherwise, while none is recorded, a read-only worker
      reviews this session's transcript and every worker transcript, dedupes
      against `.dev-flow/reflections.md` and upstream issues, and returns
      numbered findings, each **docs** / **code** / **plugin** with a **fold**

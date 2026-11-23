@@ -861,7 +861,7 @@ test("reflectionNudges: fix fires on recurrence, age, a docs batch or code betwe
 	assert.match(reflectionNudges(q(["- [ ] a — s 2026-10-10"]), today).fix ?? "", /1 open ≥ 14 days/);
 	const batch = reflectionNudges(q(["- [ ] a — s 2026-11-01", "- [ ] b — s 2026-11-01", "- [ ] c — s 2026-11-01"]), today).fix ?? "";
 	assert.match(batch, /3 playbook items batch into one docs flow/);
-	assert.match(batch, /3 playbook item\(s\) → one docs flow \(flow start fold-<topic> --docs\)/);
+	assert.match(batch, /3 playbook item\(s\) → one docs flow; flow reflect plan groups them into flows and prints each start command/);
 	const code = "## code\n\n- [ ] seed — s 2026-11-01\n";
 	assert.equal(reflectionNudges(code, today).fix, null, "a code item mid-flow is not a reason to divert");
 	assert.match(reflectionNudges(code, today, { between: true }).fix ?? "", /\(between flows\) — 1 code item\(s\) → patch flow/);
@@ -2056,6 +2056,15 @@ test("release order reads the x.y.z core first — a v prefix or a project suffi
 	assert.ok(cmpRelease("0.10.0", "0.9.0") > 0);
 	assert.equal(newestTaggedVersion("{version}", ["v0.49.1-letta_0.34.68", "v0.49.2-letta_0.34.67", "v0.49.0-letta_0.34.67"]), "v0.49.2-letta_0.34.67");
 	assert.ok(majorBump("v0.9.0", "v1.0.0") && !majorBump("1.4.0", "1.5.0"));
+});
+
+test("foldCallError: a fold flow (linked reflections) takes only the unreleased call", async () => {
+	const { foldCallError } = await import("../src/core.ts");
+	const fold = { reflections: [{ id: 3, body: "a" }, { id: 7, body: "b" }] } as unknown as Parameters<typeof foldCallError>[0];
+	assert.match(foldCallError(fold, "minor") ?? "", /a fold flow \(linked reflections r3, r7\) always merges unreleased/);
+	assert.equal(foldCallError(fold, "unreleased"), null);
+	assert.equal(foldCallError(fold, null), null, "no call passed is no change");
+	assert.equal(foldCallError({} as Parameters<typeof foldCallError>[0], "major"), null, "any other flow takes any call");
 });
 
 test("releaseCallProof holds the manifest to the call, counted from the newest tag (the lettuce collision)", async () => {
