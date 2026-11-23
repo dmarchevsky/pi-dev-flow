@@ -69,7 +69,7 @@ kept. Only the kind of step is recorded, never a number: the number is counted f
 when the release runs, so a flow that released first moves yours along instead of colliding with it.
 No later gate asks the call again. You can change it at any point until the tag is cut: say so,
 and the agent runs `flow bump <patch|minor|major|none> --confirmed`, or passes
-`--version=<kind>` / `--no-version` on a confirmed `verify` or `release` call. A flow approved by an
+`--version=<kind>` / `--no-version` on a confirmed `verify` or `release` call. A fold flow — one started with `--reflections`, as `flow reflect plan` prints it — is never asked the call: on a versioned project it always merges unreleased, and `--version=<kind>` or `flow bump <kind>` is refused. A flow approved by an
 older dev-flow, with no call on record, is asked at Verified? instead.
 
 ## test, check, health

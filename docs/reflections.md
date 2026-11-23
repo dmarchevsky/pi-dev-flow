@@ -50,7 +50,7 @@ The review is skipped when the flow ran into no friction: no guard block, no gat
 process reason (wrong stage, a missing plan, a proof that doesn't hold), no gate refusing twice in a
 row, no code change after Verified?, and no `--note`. A failing test or build is not friction by
 itself: finding it is what the checks are for. Set `reflect = always` in the playbook's `## release` section to run it every time. Only
-your explicit `--no-reflect` skips it; *yolo* doesn't.
+your explicit `--no-reflect` skips it; *yolo* doesn't. A fold flow (started with `--reflections`) never runs it: it fixes notes, it doesn't review for new ones.
 
 ## Nudges
 

@@ -1004,12 +1004,53 @@ test("reflections are linked to the flow that fixes them: start --reflections, d
 	commitWt(repo, "fixh");
 	await flow(["verify", "--confirmed"]);
 	await flow(["release", "--confirmed"]);
-	markReflected(repo, "fixh");
-	const done = await flow(["finish", "--confirmed"]);
+	const done = await flow(["finish", "--confirmed"]); // a fold flow: no closing reflection (the spawn would throw)
 	assert.match(done.content[0].text, /reflections: closed r2, r3 as fixed by this flow; left open r4 \(flaky test is its own flow\)/, done.content[0].text);
 	const after = readFileSync(file, "utf8");
 	assert.match(after, /- \[x\] \[r2\][^\n]*fixed: \d{4}-\d\d-\d\d fixh — fixed by this flow/);
 	assert.match(after, /- \[ \] \[r4\][^\n]*deferred by fixh \d{4}-\d\d-\d\d: flaky test is its own flow/);
+});
+
+test("a fold flow (--reflections) merges unreleased with no release call, refuses a versioned one, and finishes without the closing reflection", async (t) => {
+	const origSpawn = stageWorkerSpawn.run;
+	stageWorkerSpawn.run = async () => { throw new Error("a fold flow must not spawn the reflect worker"); };
+	t.after(() => { stageWorkerSpawn.run = origSpawn; });
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", "# dev-flow\n\n## release\n\n```flow\nmerge = merge\nversionFile = package.json\nversionTag = v{version}\nreflect = always\n```\n"]);
+	trackPlaybook(repo);
+	const file = path.join(repo, ".dev-flow", "reflections.md");
+	writeFileSync(file, "# dev-flow reflections\n\n## code\n\n- [ ] `src/a.ts` lacks a guard — s 2026-01-02\n");
+	await flow(["reflect", "list"]);
+	const started = await flow(["start", "fixa", "--patch", "--reflections=r1"]);
+	assert.match(started.content[0].text, /fold flow: it merges unreleased[\s\S]*finishes without a closing reflection/, started.content[0].text);
+	assert.ok(!/release call/.test(started.content[0].text.split("next:")[1] ?? ""), "the Approve? hint asks no release call");
+	const st = () => JSON.parse(readFileSync(path.join(repo, ".dev-flow", "fixa", "state.json"), "utf8"));
+	assert.equal(st().versionChoice, "unreleased");
+	const minor = await flow(["approve", "--confirmed", "--version=minor"]);
+	assert.ok(minor.isError && /a fold flow \(linked reflections r1\) always merges unreleased/.test(minor.content[0].text), minor.content[0].text);
+	const ok = await flow(["approve", "--confirmed"]);
+	assert.ok(!ok.isError, ok.content[0].text);
+	const bump = await flow(["bump", "minor", "--confirmed"]);
+	assert.ok(bump.isError && /bump FAILED[\s\S]*always merges unreleased/.test(bump.content[0].text), bump.content[0].text);
+	commitWt(repo, "fixa");
+	const vmajor = await flow(["verify", "--confirmed", "--version=major"]);
+	assert.ok(vmajor.isError && /verify gate FAILED[\s\S]*always merges unreleased/.test(vmajor.content[0].text), vmajor.content[0].text);
+	assert.ok(!(await flow(["verify", "--confirmed"])).isError);
+	const wt = path.join(repo, ".dev-flow", "fixa", "worktree");
+	writeFileSync(path.join(wt, "CHANGELOG.md"), "# Changelog\n\n## [Unreleased]\n\n- the guard\n");
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "add", "-A"]);
+	execFileSync("git", ["-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "changelog"]);
+	const rel = await flow(["release", "--confirmed"]);
+	assert.ok(!rel.isError, rel.content[0].text);
+	// friction and reflect = always would run the worker on any other flow
+	writeFileSync(path.join(repo, ".dev-flow", "fixa", "state.json"), JSON.stringify({ ...st(), friction: 3 }, null, 2));
+	const done = await flow(["finish", "--confirmed"]);
+	assert.ok(!done.isError, done.content[0].text);
+	assert.match(done.content[0].text, /closing reflection skipped: a fold flow/, done.content[0].text);
+	assert.match(readFileSync(file, "utf8"), /- \[x\] \[r1\][^\n]*fixed by this flow/);
 });
 
 test("reflect tidy: drops closed items; the nudge fires once the pile is worth a tidy", async () => {
@@ -2174,7 +2215,7 @@ test("flow doctor reviews open reflections with routing and briefs a fresh note"
 	);
 	const d = await flow(["doctor"]);
 	assert.match(d.content[0].text, /reflection review — 3 open item\(s\)/);
-	assert.match(d.content[0].text, /docs flow \(flow start fold-<topic> --docs\)/, "playbook items route to a docs flow");
+	assert.match(d.content[0].text, /docs flow \(flow reflect plan prints its --reflections start\)/, "playbook items route to a docs flow");
 	assert.match(d.content[0].text, /\[code\] seed skips admins[^\n]*\n\s*→ patch flow/, "code items route to a patch flow");
 	assert.match(d.content[0].text, /legacy ## plugin row — belongs on GitHub/, "a legacy plugin row is sent upstream in a foreign repo");
 	assert.match(d.content[0].text, /doctor never implements/);

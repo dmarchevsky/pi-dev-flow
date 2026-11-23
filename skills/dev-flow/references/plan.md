@@ -59,6 +59,7 @@ No code edits before approval. Reads are always allowed.
    `--no-version` (yolo → add `--yolo`); without the call the gate refuses and keeps nothing.
    The call is not asked again. The operator can change it at any later point until the tag: `flow bump
    <patch|minor|major|none> --confirmed`, or `--version=<kind>` / `--no-version` on a confirmed verify or release call.
+   A fold flow — one started with `--reflections`, as `flow reflect plan` prints it — carries no call: on a versioned project it always merges unreleased, and `--version=<kind>` or `flow bump <kind>` is refused.
 
 Approval creates the worktree and branch and runs `commands.setup` there; a
 failing setup fails the gate and the next approve retries it. `(ui)` playbook

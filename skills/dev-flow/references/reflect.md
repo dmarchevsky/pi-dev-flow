@@ -8,8 +8,8 @@ friction only, never the same issue twice. `.dev-flow/reflections.md` holds
 
 | Command | Files under | Fixed by |
 | --- | --- | --- |
-| `flow reflect --playbook "<note>"` | `## playbook` (fix lives in `project.md`) | a docs flow: `flow start fold-<topic> --docs` |
-| `flow reflect --code "<note>"` | `## code` (this project's code, maybe the playbook) | a patch flow: `flow start fix-<topic> --patch` (normal when bigger) |
+| `flow reflect --playbook "<note>"` | `## playbook` (fix lives in `project.md`) | a docs fold flow: the `--reflections` start `flow reflect plan` prints |
+| `flow reflect --code "<note>"` | `## code` (this project's code, maybe the playbook) | a patch fold flow: the `--reflections` start `flow reflect plan` prints (normal when bigger) |
 | `flow reflect --plugin "<note>"` | nothing — prints the upstream recipe | a GitHub issue, filed only on the operator's word |
 
 - `--plugin`: search first (`gh issue list --repo <dev-flow repo> --state all
@@ -46,7 +46,10 @@ rows it fixes: `flow start fix-<topic> --patch --reflections=r3,r7`. Fix them
 on the branch, and run `flow reflect defer <id> "<why>"` for any linked row
 the flow won't fix. `finish` closes the others as fixed by the flow, so never
 check linked rows off by hand. Rows not linked to a flow are closed with
-`flow reflect done <id> "<what>"`. Never edit `reflections.md`.
+`flow reflect done <id> "<what>"`. Never edit `reflections.md`. A fold flow
+always merges unreleased on a versioned project (no release call at
+Approve?, the entry goes under Unreleased) and finishes without a closing
+reflection.
 
 **GitHub issues** fold into `flow doctor` / `reflect list` when the repo has a
 GitHub remote: a local row an open issue covers shows `⟷ gh#NNN` (check it off

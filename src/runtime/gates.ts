@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gate runner and the gates that do not ship anything. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { skipsChecks, approveGate, versionArg, playbookVersionChoice, releaseCallQuestion, describeVersionChoice, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState, parseRowIds, DF_GITIGNORE } from "../core.ts";
+import { foldCallError, skipsChecks, approveGate, versionArg, playbookVersionChoice, releaseCallQuestion, describeVersionChoice, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState, parseRowIds, DF_GITIGNORE } from "../core.ts";
 import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, ghostInfo, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
 import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
@@ -412,8 +412,13 @@ export async function gateStart(o: GateCtx): Promise<RunResult> {
 	const state = newState(slugArg, flag("ui"), flag("patch"), flag("docs"), loadedVersion() ?? undefined);
 	if (linked.length) {
 		state.reflections = linked;
+		// a fold flow fixes rows: on a versioned project it always merges unreleased, so no release call is asked
+		if (cfg.versioning.file) {
+			state.versionChoice = "unreleased";
+			state.noVersion = true;
+		}
 		const rows = readReflections(root).filter((i) => linked.some((l) => l.id === i.n));
-		notes.push(`linked reflections (finish closes each as fixed by this flow; one it does not fix: flow reflect defer <id> "<why>"):\n${rows.map((i) => `  r${i.n}. ${i.line.replace(/^- \[ \] /, "").replace(/^\[r\d+\]\s*/, "")}`).join("\n")}`);
+		notes.push(`linked reflections (finish closes each as fixed by this flow; one it does not fix: flow reflect defer <id> "<why>"):\n${rows.map((i) => `  r${i.n}. ${i.line.replace(/^- \[ \] /, "").replace(/^\[r\d+\]\s*/, "")}`).join("\n")}\nfold flow: it merges unreleased (entry under Unreleased, no bump, no tag — no release call is asked) and finishes without a closing reflection`);
 	}
 	const planDir = path.join(featDir(root, slugArg), "plan");
 	if (ghost) notes.push(gi!.plan ? `adopted ghost .dev-flow/${slugArg}/ — its plan/ (${listFiles(planDir).join(", ") || "empty"}) is this feature's draft` : `adopted ghost .dev-flow/${slugArg}/ — kept ${gi!.entries.join(", ") || "nothing (it was empty)"}`);
@@ -451,6 +456,8 @@ export async function gateApprove(o: GateCtx): Promise<RunResult> {
 	// the release call is made here, with the plan: only the kind of step is recorded, never a number
 	const relArg = versionArg(flagValue(o.rest, "version"), flag("no-version"));
 	if ("error" in relArg) return { text: `plan gate FAILED:\n- ${relArg.error}`, isError: true };
+	const foldErr = foldCallError(state!, relArg.choice);
+	if (foldErr) return { text: `plan gate FAILED:\n- ${foldErr}`, isError: true };
 	const call = relArg.choice ?? state!.versionChoice ?? playbookVersionChoice(cfg);
 	const callQ = cfg.versioning.file && !call ? releaseCallQuestion(manifestAt(root, cfg.versioning.file), cfg.versioning.file, state!.docs) : null;
 	if (relArg.choice && relArg.choice !== "unreleased" && !cfg.versioning.file) return { text: "plan gate FAILED:\n- --version needs a version file to bump: the playbook sets none (versionFile under ## release)", isError: true };
@@ -528,6 +535,8 @@ export async function gateBump(o: GateCtx): Promise<RunResult> {
 	const { state, err } = needState(root, sess, slug);
 	if (err) return err;
 	const choice = arg.choice!;
+	const foldErr = foldCallError(state!, choice);
+	if (foldErr) return { text: `bump FAILED:\n- ${foldErr}`, isError: true };
 	if (!cfg.versioning.file && choice !== "unreleased") return { text: "bump FAILED:\n- the playbook sets no version file (versionFile under ## release), so there is nothing to bump — set one first", isError: true };
 	if (state!.publish?.tag || state!.approvals.release) return { text: `bump FAILED:\n- ${state!.publish?.tag ?? "the release"} is already ${state!.publish?.tag ? "tagged" : "recorded"} — the call cannot change after the tag`, isError: true };
 	const was = state!.versionChoice;

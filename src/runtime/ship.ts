@@ -1,7 +1,7 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { skipsChecks, applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, releaseCallQuestion, releaseCallProof, cmpRelease, versionCore, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail, operatorDirt } from "../core.ts";
+import { foldCallError, skipsChecks, applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, releaseCallQuestion, releaseCallProof, cmpRelease, versionCore, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail, operatorDirt } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { manifestAt, recordReleaseCall, refreshDocsCode, buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
@@ -25,6 +25,8 @@ export async function gateVerify(o: GateCtx): Promise<RunResult> {
 	// the release call is made at Approve?; a --version/--no-version on the Verified? answer changes it (or makes it, for an older flow)
 	const verArg = versionArg(flagValue(o.rest, "version"), flag("no-version"));
 	if ("error" in verArg) return { text: `verify gate FAILED:\n- ${verArg.error}`, isError: true };
+	const foldErr = foldCallError(state!, verArg.choice);
+	if (foldErr) return { text: `verify gate FAILED:\n- ${foldErr}`, isError: true };
 	// the operator reviews the tree that ships: catch up with the default branch before anything runs
 	const caught = state!.stage === "implement" ? await catchUp(root, state!, cfg, flag("confirmed")) : { note: "" };
 	if ("text" in caught) return caught;
@@ -226,6 +228,8 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// call before the tag, a resumed publish included
 	const relArg = versionArg(flagValue(o.rest, "version"), flag("no-version"));
 	if ("error" in relArg) return { text: `release gate FAILED:\n- ${relArg.error}`, isError: true };
+	const foldErr = foldCallError(state!, relArg.choice);
+	if (foldErr) return { text: `release gate FAILED:\n- ${foldErr}`, isError: true };
 	if (state!.stage === "release" && state!.approvals["pre-release"]) {
 		if (state!.approvals.release) return { text: `release already recorded.\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 		let callNote = "";
@@ -853,19 +857,21 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	// transcripts and .dev-flow/<slug>/tmp, and finish is about to drop that folder and the binding — a
 	// reflection asked for after finish has nothing bound to run against. Only the operator's explicit
 	// --no-reflect skips it; yolo never does (it answers checkpoints, it does not waive the review).
-	const skipReflect = flag("no-reflect");
+	// a fold flow fixes reflections; it does not review for new ones — it never runs the closing reflection
+	const fold = !!state!.reflections?.length;
+	const skipReflect = flag("no-reflect") && !fold;
 	if (skipReflect && !flag("confirmed")) return { text: "--no-reflect is the operator's word — ask them whether to skip the closing reflection, then re-run with --no-reflect --confirmed", isError: true };
 	// a flow that never hit a refusal, a guard block or a change shipped after Verified?, with no friction note
 	// from the operator, has nothing
 	// for the reflection worker to find — skip the worker run unless the playbook says reflect = always
 	const note = flagValue(o.rest, "note") ?? "";
-	const quiet = !state!.reflectedAt && !skipReflect && cfg.release.reflect !== "always" && !(state!.friction ?? 0) && !note.trim();
+	const quiet = !state!.reflectedAt && !skipReflect && (fold || (cfg.release.reflect !== "always" && !(state!.friction ?? 0) && !note.trim()));
 	if (quiet) {
 		state!.reflectedAt = now();
 		state!.reflectQuiet = true;
 		writeState(root, state!);
 	}
-	const quietNote = quiet ? " closing reflection skipped: no refusals, guard blocks or unverified changes this flow (playbook reflect = always runs it anyway)." : "";
+	const quietNote = quiet && fold ? " closing reflection skipped: a fold flow (it fixes reflections, it does not review for new ones)." : quiet ? " closing reflection skipped: no refusals, guard blocks or unverified changes this flow (playbook reflect = always runs it anyway)." : "";
 	if (!state!.reflectedAt && !skipReflect) {
 		const skipHint = "or — only on the operator's explicit word — flow finish --no-reflect --confirmed";
 		if (!o.hooks.reflect) return { text: `finish: no reflection recorded for ${state!.slug} and no reflect worker available here — run flow_stage(op: "reflect") first, ${skipHint}`, isError: true };
