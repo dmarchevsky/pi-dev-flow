@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.96.1] - 2026-11-23
+
+**A fold flow (started with `--reflections`) always merges unreleased with no release call, and finishes without the closing reflection.**
+
 ### Changed
 - **A fold flow merges unreleased and skips the closing reflection.** A flow started with `--reflections` (the start `flow reflect plan` prints) fixes reflection notes. On a versioned project it now always merges unreleased: Approve? asks no release call, the entry goes under Unreleased, and `--version=<kind>` or `flow bump <kind>` is refused. `flow finish` no longer runs the closing reflection on it, whatever the friction or `reflect = always`, so a clean fold flow's Finish? answers itself. `flow doctor` and the "fix the open reflections now?" nudge point at `flow reflect plan` instead of a bare `flow start … --docs|--patch`, so every fold flow is linked to the notes it closes.
 
