@@ -4,6 +4,10 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+## [0.96.0] - 2026-11-23
+
+**The release call is a kind of bump (patch, minor, major or unreleased) made at Approve?, changeable until the tag; the tag takes the number the merge commit's version file carries. Also: lettuce-style versions order and bump by their x.y.z part, and a tag-push run no longer counts as the merge commit's CI.**
+
 ### Changed
 - **The release call is a kind of bump, made at Approve?, and no number is fixed before the tag.** On a versioned project, Approve? now also asks *patch, minor or major, or merge unreleased?* (`flow approve --confirmed --version=<kind>` or `--no-version`). An Approve? answer without the call is refused and nothing is kept. No later gate asks it again. The operator can change it at any point until the tag: `flow bump <patch|minor|major|none> --confirmed`, or `--version` / `--no-version` on a confirmed `verify` or `release` call, including a resumed publish. An exact number (`--version=1.2.0`) is no longer accepted, because the number is always counted from the newest tag. A flow approved by an older dev-flow, with no call on record, is still asked at Verified?.
 
