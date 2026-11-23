@@ -4,7 +4,7 @@
  *  the forge whether it is already done, so a re-run resumes and a step done by hand is accepted. */
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { pickReleaseNotes, prepOnlyChange, sq } from "../core.ts";
+import { newestTaggedVersion, parseVersion, pickReleaseNotes, prepOnlyChange, releaseCallProof, sq } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { featDir, gateCwd, mergeBase, releaseTags, sh, tail, writeState } from "./base.ts";
 
@@ -18,7 +18,7 @@ export const publishWait = {
 	clock: () => Date.now(),
 	checks: (pr: number, cwd: string): Promise<PrCheck[] | null> => prChecks(pr, cwd),
 	/** the CI runs a commit started — the merge commit, before it is tagged (gh#271) */
-	commitChecks: (sha: string, cwd: string): Promise<PrCheck[] | null> => commitRuns(sha, cwd),
+	commitChecks: (sha: string, cwd: string, branch?: string): Promise<PrCheck[] | null> => commitRuns(sha, cwd, branch),
 	/** gh#275: a check pending this long has its Actions job asked directly — GitHub can leave a check run
 	 *  `in_progress` for good after its job concluded */
 	staleMs: 5 * 60_000,
@@ -39,12 +39,14 @@ async function actionsConclusion(link: string, cwd: string): Promise<string | nu
 }
 
 /** Workflow runs of one commit as checks; [] when none started, null when gh cannot say. */
-async function commitRuns(sha: string, cwd: string): Promise<PrCheck[] | null> {
-	const r = await sh(`gh run list --commit ${sha} --limit 50 --json status,conclusion,name,url`, cwd, 60_000);
+async function commitRuns(sha: string, cwd: string, branch?: string): Promise<PrCheck[] | null> {
+	const r = await sh(`gh run list --commit ${sha} --limit 50 --json status,conclusion,name,url,headBranch`, cwd, 60_000);
 	if (!r.ok) return null;
-	const rows = jsonArray<{ status?: string; conclusion?: string; name?: string; url?: string }>(r.out);
+	const rows = jsonArray<{ status?: string; conclusion?: string; name?: string; url?: string; headBranch?: string }>(r.out);
 	if (rows === null) return r.out.trim() ? null : [];
-	return rows.map((x) => ({ name: x.name ?? "run", bucket: checkBucket({ status: (x.status ?? "").toUpperCase(), conclusion: (x.conclusion ?? "").toUpperCase() }), link: x.url ?? "" }));
+	// the merge commit's own CI ran on the default branch: a run a tag push started on the same commit is the
+	// release's publish job, not a check on the merge — a refused tag's red run must not hold the next tag back
+	return rows.filter((x) => !branch || !x.headBranch || x.headBranch === branch).map((x) => ({ name: x.name ?? "run", bucket: checkBucket({ status: (x.status ?? "").toUpperCase(), conclusion: (x.conclusion ?? "").toUpperCase() }), link: x.url ?? "" }));
 }
 
 export interface PrCheck { name: string; bucket: string; link: string }
@@ -108,8 +110,8 @@ export const awaitPrChecks = (pr: number, cwd: string): Promise<CiVerdict> =>
 	});
 
 /** gh#271: wait (bounded) for the CI the merge commit started — a tag publishes from it, so it is cut on green only. */
-export const awaitCommitChecks = (sha: string, cwd: string): Promise<CiVerdict> =>
-	awaitChecks(() => publishWait.commitChecks(sha, cwd), cwd, { who: `merge commit ${sha.slice(0, 9)}`, read: `gh run list --commit ${sha}`, none: "no CI ran on the merge commit", green: "merge-commit CI green" });
+export const awaitCommitChecks = (sha: string, cwd: string, branch?: string): Promise<CiVerdict> =>
+	awaitChecks(() => publishWait.commitChecks(sha, cwd, branch), cwd, { who: `merge commit ${sha.slice(0, 9)}`, read: `gh run list --commit ${sha}`, none: "no CI ran on the merge commit", green: "merge-commit CI green" });
 
 async function awaitChecks(read: () => Promise<PrCheck[] | null>, cwd: string, l: { who: string; read: string; none: string; green: string; stuck?: string }): Promise<CiVerdict> {
 	const start = publishWait.clock();
@@ -203,11 +205,28 @@ async function prBody(root: string, cwd: string, cfg: Config, state: FlowState):
 	const authored = prBodyFile(root, state.slug);
 	if (existsSync(authored)) return readFileSync(authored, "utf8").trim();
 	const file = cfg.release.changelog ? path.join(cwd, cfg.release.changelog) : "";
-	const entry = pickReleaseNotes({ changelog: file && existsSync(file) ? readFileSync(file, "utf8") : null, version: state.releaseVersion ?? null, annotation: "" }).notes;
+	const entry = pickReleaseNotes({ changelog: file && existsSync(file) ? readFileSync(file, "utf8") : null, version: state.releaseVersion ?? (cfg.versioning.file ? await versionAt("HEAD", cfg.versioning.file, cwd) : null), annotation: "" }).notes;
 	if (entry) return entry;
 	const base = await mergeBase(cwd, cfg.defaultBranch);
 	const log = await sh(`git log -n 30 --format='- %s' ${base ? `${sq(base)}..HEAD` : "HEAD"}`, cwd);
 	return log.ok ? log.out.trim() : "";
+}
+
+/** The version `file` says at `ref`, or null when it is not there. */
+async function versionAt(ref: string, file: string, cwd: string): Promise<string | null> {
+	const r = await sh(`git show ${sq(`${ref}:${file}`)} 2>/dev/null`, cwd);
+	return r.ok && r.out.trim() ? parseVersion(file, r.out) : null;
+}
+
+/** The release call against the version `file` says at `ref` — what the tag would be — counted from the newest
+ *  tag. Null when it holds (or there is no call to prove); `version` is what `ref` carries. */
+async function callAt(ref: string, base: string | null, state: FlowState, cfg: Config, tags: string[], cwd: string): Promise<{ version: string | null; bad: { error: string; want?: string } | null }> {
+	const file = cfg.versioning.file!;
+	const version = await versionAt(ref, file, cwd);
+	const newest = newestTaggedVersion(cfg.versioning.pattern, tags);
+	const baseVer = base ? await versionAt(base, file, cwd) : null;
+	const bad = state.versionChoice ? releaseCallProof(state.versionChoice, version, newest ? cfg.versioning.pattern.replace("{version}", newest) : null, baseVer, file) : null;
+	return { version, bad };
 }
 
 export type PublishResult = { ok: true; log: string } | { ok: false; text: string };
@@ -254,9 +273,17 @@ export async function publishRelease(root: string, state: FlowState, cfg: Config
 	else {
 		// gh#259: a conflict with the default branch is known before the push — never spend the CI wait to learn it
 		const d = cfg.defaultBranch;
-		const resolve = `merge origin/${d} into ${br} in the worktree (git merge origin/${d}), resolve the conflicts — keep both sides' changelog lines; a version file takes the bump past the newest release — and commit`;
 		const conflicts = await mergeConflicts(wt, d);
+		// the call, proven on what would merge: a flow that released since Release? moves the number, and the branch
+		// must say so before anything is pushed — never a tag that disagrees with the version file it lands on
+		const versioned = !state.noVersion && !!cfg.versioning.file;
+		const tagsNow = versioned ? await releaseTags(root) : [];
+		if (tagsNow === null) return stop("cannot list tags on origin", "check the network and git credentials");
+		const atHead = versioned ? await callAt("HEAD", await mergeBase(wt, d), state, cfg, tagsNow, wt) : null;
+		const want = atHead?.bad?.want ? ` and set ${cfg.versioning.file} to ${atHead.bad.want} (the release call, ${state.versionChoice}, counted from the newest tag)${cfg.release.changelog ? ` with its ${cfg.release.changelog} heading` : ""}` : "";
+		const resolve = `merge origin/${d} into ${br} in the worktree (git merge origin/${d}), resolve the conflicts — keep both sides' changelog lines${want || (versioned ? "; the version file stays one step of the release call past the newest tag" : "")} — and commit`;
 		if (conflicts?.length) return stop(`${br} conflicts with origin/${d} in ${conflicts.join(", ")} — the merge would be refused after the CI wait, so nothing was pushed`, resolve);
+		if (atHead?.bad) return stop(`${atHead.bad.error} — nothing was merged`, atHead.bad.want ? `set ${cfg.versioning.file} to ${atHead.bad.want}${cfg.release.changelog ? ` and its ${cfg.release.changelog} heading` : ""} on ${br} (merge origin/${d} first if it moved) and commit` : "fix the version on the branch and commit");
 		const remote = await sh(`git ls-remote origin ${sq(`refs/heads/${br}`)}`, wt, 60_000);
 		if (!remote.ok) return stop(`cannot reach origin:\n${tail(remote.out, 5)}`, "check the network and git credentials");
 		if (remote.out.split(/\s/)[0] === head) steps.push("branch already on origin");
@@ -315,25 +342,40 @@ export async function publishRelease(root: string, state: FlowState, cfg: Config
 	state.publish = { ...state.publish, pr: merged.number, merged: oid };
 	writeState(root, state);
 	await sh(`git fetch -q origin ${sq(cfg.defaultBranch)}`, root, 5 * 60_000);
-	if (state.releaseVersion && !state.noVersion) {
-		const tag = cfg.versioning.pattern.replace("{version}", state.releaseVersion);
+	if (!state.noVersion && cfg.versioning.file) {
 		const tags = await releaseTags(root);
 		if (tags === null) return stop("cannot list tags on origin", "check the network and git credentials");
-		if (tags.includes(tag)) steps.push(`tag ${tag} already on origin`);
-		else {
+		// the version of record is the merged tree's own: read now, never pinned at Release? (a merge of the default
+		// branch after it may have re-bumped), and held to the release call once more before anything is tagged
+		if (!oid) return stop(`PR #${merged.number} shows no merge commit to tag`, "tag what shipped yourself (git tag -a <tag>) and push it");
+		if (!(await sh(`git cat-file -e ${sq(`${oid}^{commit}`)}`, root)).ok) return stop(`the merge commit ${oid.slice(0, 9)} of PR #${merged.number} is not in this clone after a fetch`, `git fetch origin ${cfg.defaultBranch}`);
+		const atMerge = await callAt(oid, `${oid}^1`, state, cfg, tags, root);
+		if (!atMerge.version) return stop(`${cfg.versioning.file} has no parsable version at the merge commit ${oid.slice(0, 9)} — the tag was not cut`, "fix it forward on the default branch, then tag by hand");
+		const tag = cfg.versioning.pattern.replace("{version}", atMerge.version);
+		if (tags.includes(tag)) {
+			// a resume finds its own tag on the merge commit; the same name on another commit is another flow's release
+			const at = await sh(`git ls-remote origin ${sq(`refs/tags/${tag}`)} ${sq(`refs/tags/${tag}^{}`)}`, root, 60_000);
+			const rows = at.out.split("\n").map((l) => l.split(/\s+/)).filter((r) => r.length >= 2);
+			const sha = (rows.find((r) => r[1].endsWith("^{}")) ?? rows[0])?.[0] ?? "";
+			if (at.ok && sha && sha !== oid) return stop(`merged, but the tag was not cut: ${tag} is already on origin at ${sha.slice(0, 9)}, not on the merge commit ${oid.slice(0, 9)} — another release took that number`, "tell the operator; fix the version forward in a new flow");
+			state.releaseVersion = atMerge.version;
+			steps.push(`tag ${tag} already on origin`);
+		} else {
+			if (atMerge.bad) return stop(`merged, but the tag was not cut: ${atMerge.bad.error} (at the merge commit ${oid.slice(0, 9)})`, "tell the operator — a release landed since this branch was checked; fix the version forward in a new flow, or tag by hand on their word");
+			state.releaseVersion = atMerge.version;
 			// gh#271: the tag publishes from the merge commit — wait for that commit's own CI before cutting it, so a
 			// playbook rule "test green on the merge commit before the tag" is something this gate can honour
 			if (oid && cfg.release.tagWait !== "none") {
-				const ci = await awaitCommitChecks(oid, root);
+				const ci = await awaitCommitChecks(oid, root, cfg.defaultBranch);
 				if (!("why" in ci)) steps.push(ci.note);
 				else if (ci.state === "running") return { ok: false, text: `publish waiting — ${ci.why}; the tag waits for it${steps.length ? `\ndone so far: ${steps.join(" · ")}` : ""}\n↪ next: re-run flow release to keep waiting — do not end the turn on a promise to watch` };
 				else if (ci.state === "red")
 					return stop(`${ci.why} — merged, but the tag was not cut: it would publish a red build`, `tell the operator. A flaky job: re-run it (gh run rerun --failed <run>), then re-run flow release, which tags on green. A real failure is fixed forward in a new flow, and the tag goes on the fix by the operator's word (or tagWait = none under ## release for a project whose tag publishes nothing)`);
 				else return stop(ci.why, "check gh auth status, or tag the merge commit yourself once its CI is green");
 			}
-			if (!oid) return stop(`PR #${merged.number} shows no merge commit to tag`, `tag what shipped yourself (git tag -a ${tag}) and push it`);
-			if (!(await sh(`git cat-file -e ${sq(`${oid}^{commit}`)}`, root)).ok) return stop(`the merge commit ${oid.slice(0, 9)} of PR #${merged.number} is not in this clone after a fetch`, `git fetch origin ${cfg.defaultBranch}`);
-			if (!(await sh(`git rev-parse -q --verify ${sq(`refs/tags/${tag}`)}`, root)).ok) {
+			const local = await sh(`git rev-parse -q --verify ${sq(`refs/tags/${tag}^{commit}`)}`, root);
+			if (local.ok && local.out.trim() !== oid) return stop(`a local tag ${tag} points at ${local.out.trim().slice(0, 9)}, not the merge commit ${oid.slice(0, 9)}`, `git tag -d ${tag} if it is a leftover`);
+			if (!local.ok) {
 				// the merge commit by sha, not origin/<default>: a parallel flow that landed after it stays out of the tag
 				const mk = await sh(`git tag -a ${sq(tag)} -m ${sq(tag)} ${sq(oid)}`, root);
 				if (!mk.ok) return stop(`creating tag ${tag} failed:\n${tail(mk.out, 5)}`, "fix what git reports");

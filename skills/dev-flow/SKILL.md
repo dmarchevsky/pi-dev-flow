@@ -42,7 +42,7 @@ criteria hold. Call it with an args array — `["start", "dark-mode"]`,
   internal identifiers; give depth when asked.
 - **yolo** at a checkpoint → that gate with `--yolo --confirmed`; run the
   remaining gates back to back without asking, honoring guidance attached to
-  the word ("yolo, patch bump", "yolo, no tag" → `--no-version`). Checks,
+  the word ("yolo, patch bump" → `--version=patch`, "yolo, no tag" → `--no-version`). Checks,
   guard rules and any `NEEDS-OPERATOR` still apply.
 - **One session = one feature** (flow + branch + worktree). `flow start <slug>`
   binds a new one, `flow use <slug>` takes one over; nothing auto-binds, and an

@@ -52,8 +52,13 @@ No code edits before approval. Reads are always allowed.
      verify the state in the DOM and move on.
 5. **Ask Approve? and stop.** Report opening: **📝 plan · `<slug>`** (the
    gate's stage line). A `--patch` / `--docs` flow: name the mode and the
-   one-line change in the question — the answer grants the mode. Answer → `flow approve --confirmed` (yolo → `flow
-   approve --yolo --confirmed`).
+   one-line change in the question — the answer grants the mode. Versioned project with playbook `version = ask`
+   (the default): the same question asks the **release call** — a patch, minor or major release (propose one by
+   the playbook's versioning rule) or merge unreleased. Only the kind is recorded, never a number: the gate counts
+   it from the newest tag when the release runs. Answer → `flow approve --confirmed --version=patch|minor|major` or
+   `--no-version` (yolo → add `--yolo`); without the call the gate refuses and keeps nothing.
+   The call is not asked again. The operator can change it at any later point until the tag: `flow bump
+   <patch|minor|major|none> --confirmed`, or `--version=<kind>` / `--no-version` on a confirmed verify or release call.
 
 Approval creates the worktree and branch and runs `commands.setup` there; a
 failing setup fails the gate and the next approve retries it. `(ui)` playbook

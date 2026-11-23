@@ -19,11 +19,17 @@ and settle the scheme with the operator; never invent one.
      `flow release` refuses while that re-verify is unanswered.
 2. **Docs**: update them to match the change.
 3. **Changelog + bump** — manifest, changelog heading and tag must agree;
-   commit the prep on the feature branch. The release call recorded with
-   Verified? decides which: its kind, counted from the newest tag (the gate
-   names the number — another flow that released first moves it), an exact
-   version (taken by another flow → ask again, never pick one), or
-   *merge unreleased* — no bump, the line goes under `Unreleased`.
+   commit the prep on the feature branch. The release call made at Approve?
+   decides which: its kind of step, counted from the newest tag (the gate
+   names the number — another flow that released first moves it, and the
+   gate re-checks it before the merge and again at the tag), or *merge
+   unreleased* — no bump, the line goes under `Unreleased`. A project whose
+   versions carry more than x.y.z (a `v` prefix, a suffix) keeps those parts;
+   the call governs the x.y.z.
+   - **Another release landed first** (`flow release` stops: conflict, or "must
+     be <x.y.z>") → merge the default branch in, set the version file and its
+     changelog heading to the number the gate names, commit, re-run. Never
+     tag by hand around it: the gate tags the merged tree's own version.
    - **The changelog writer reviews the branch, not its commit list**: read
      `git log <default>..HEAD` *and* `git diff <default>...HEAD`, then write
      what the branch delivers in the reader's terms (what was broken, what
@@ -65,8 +71,9 @@ and settle the scheme with the operator; never invent one.
      as `--yolo`: the operator's answer is `flow release --confirmed`.
    - Operator ships **without a version** → `flow release --no-version
      --confirmed`: no bump or tag, but the branch must add its line under
-     `Unreleased`. A changed call is `--version=<v>` / `--no-version` with
-     `--confirmed`, on their word.
+     `Unreleased`. A changed call is `--version=<kind>` / `--no-version` with
+     `--confirmed` (or `flow bump <kind> --confirmed`), on their word — taken
+     on any call until the tag, a resumed publish included.
 
 The gate runs any tier-1 check that is stale, requires the manifest ahead of the last tag and a
 changelog **heading** for that version written on this branch.

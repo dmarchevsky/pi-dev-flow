@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Changed
+- **The release call is a kind of bump, made at Approve?, and no number is fixed before the tag.** On a versioned project, Approve? now also asks *patch, minor or major, or merge unreleased?* (`flow approve --confirmed --version=<kind>` or `--no-version`). An Approve? answer without the call is refused and nothing is kept. No later gate asks it again. The operator can change it at any point until the tag: `flow bump <patch|minor|major|none> --confirmed`, or `--version` / `--no-version` on a confirmed `verify` or `release` call, including a resumed publish. An exact number (`--version=1.2.0`) is no longer accepted, because the number is always counted from the newest tag. A flow approved by an older dev-flow, with no call on record, is still asked at Verified?.
+
+### Fixed
+- **`flow release` no longer tags a number the merged tree doesn't carry.** Release? used to fix the version it saw at that moment. If another flow released first, the publish step stopped on a conflict and the agent re-bumped the branch, as told. The gate then tagged the old number anyway, on a merge commit whose version file said otherwise. CI refused to publish it, and every re-run pushed the stale tag again. Now no number is fixed at Release?. Before the merge, the gate checks the branch's version against the newest tag and names the number to re-bump to (alongside the conflict, when there is one). At the tag, it reads the version file at the merge commit and checks it against the call once more. A tag of the same name already on another commit stops the release instead of being taken as done.
+- **Release-gate version checks read the x.y.z part.** A version such as `v0.49.1-letta_0.34.68` broke the bump arithmetic (the call went unchecked) and the newest-tag ordering (the suffix decided which tag was newest). Versions now order and bump by their x.y.z core, with any prefix or suffix kept by the project.
+- **A failed run started by a tag push no longer counts as the merge commit's CI.** That run is the release's publish job, not a check on the merge. A refused tag used to block the next tag attempt as "merge commit checks failed".
+
 ## [0.95.2] - 2026-11-20
 
 **`flow release` stops waiting on a check that GitHub left stuck at "in progress" after its job finished.**

@@ -49,15 +49,15 @@ export interface FlowState {
 	yolo?: boolean; // operator said "yolo" at any gate question: that one answered, every later one pre-confirmed; checks and guardrails stay
 	setupAt?: string; // commands.setup exited 0 in this worktree — a reused worktree reruns it only when unset (#49)
 	publish?: { pr?: number; merged?: string; tag?: string }; // set when the release gate publishes itself (GitHub): what it has done so far — every step re-probes the forge, this only feeds the hint and the result
-	releaseVersion?: string; // the manifest version the release gate approved — release-done publishes this, not whatever a checkout says later (#52)
+	releaseVersion?: string; // the version that was tagged — read from the merge commit (or the branch head) when the tag is cut, never pinned earlier; release-done publishes this, not whatever a checkout says later (#52)
 	forgeReleaseSkipped?: string; // a gh/glab release create that failed: release-done says so, finish names it so the missing forge release cannot slip past (#63)
 	staleBuild?: string; // release ran under an older dev-flow than the checkout by operator choice ("<loaded> (checkout <disk>)"); release-done repeats the acknowledgement
 	pendingAsk?: string; // the checkpoint word a gate asked for and has not been given ("Approve?", "Verified?", …) — presentation only (💬 in the footer), it never gates
 	/** when flow verify at pre-release asked Verified? over review fixes; cleared by the answer — flow release refuses while it is set */
 	reverifyAsked?: string;
 	releaseOnly?: boolean; // verify found nothing on the branch but unreleased work on main: this flow only cuts the version (#161)
-	versionChoice?: string; // the operator's release call, recorded with Verified? (gh#198): patch | minor | major (counted from the newest tag at release, so a parallel flow taking the number moves it), an exact version, "next" (playbook version = versioned: any bump past the last tag) or "unreleased"
-	versionFrom?: string; // the manifest version when the call was recorded — what a patch/minor/major call was counted from at Verified?
+	versionChoice?: string; // the operator's release call, recorded with Approve?: patch | minor | major (a decision, never a number: counted from the newest tag at release, so a parallel flow taking the number moves it), "next" (playbook version = versioned: any bump past the last tag) or "unreleased"; any gate call before the tag can change it
+	versionFrom?: string; // the manifest version when the call was recorded — only for the hint's "as things stand" number; the gate counts from the newest tag
 	/** the session and its operator-message count when Verified? moved this flow to pre-release (gh#254): under
 	 *  yolo = until-release, a message after it is the operator's own Release? word, not a replayed plan-stage yolo */
 	verifiedAtMessage?: { key: string; users: number };
@@ -537,18 +537,37 @@ export function pickReleaseNotes(src: { changelog: string | null; version: strin
 	return { notes: "", source: "none" };
 }
 
-/** gh#198 — the operator's release call: a bump kind (`patch|minor|major`, turned into a number at release from
- *  the newest tag), an exact version (`1.2.0`, a pre-release suffix allowed), `next` (the playbook says
- *  versioned: any bump past the last tag) or `unreleased` (merge + changelog only). */
-export const VERSION_ARG_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+/** The operator's release call — a decision about the bump, never a number: a bump kind (`patch|minor|major`),
+ *  `next` (the playbook says versioned: any bump past the last tag) or `unreleased` (merge + changelog only).
+ *  Made at Approve? and changeable on any later gate call until the tag is cut. The number it means is counted
+ *  from the newest tag whenever the gate needs it, so a flow that released first moves this one along instead
+ *  of colliding with it (a pinned number was tagged onto a tree whose manifest said otherwise). */
 export type BumpKind = "patch" | "minor" | "major";
 export const isBumpKind = (c: string | null | undefined): c is BumpKind => c === "patch" || c === "minor" || c === "major";
 
-/** `from` bumped by one `kind` step (a pre-release suffix is dropped), or null when `from` is not x.y.z. */
+/** The x.y.z a version carries, wherever it sits: `v0.49.1-letta_0.34.68` → [0, 49, 1]. Null when there is none. */
+export function versionCore(v: string | null | undefined): [number, number, number] | null {
+	const m = v?.match(/(\d+)\.(\d+)\.(\d+)/);
+	return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** Release order: the x.y.z core first (a `v` prefix or a project suffix such as `-letta_0.34.68` must not reorder
+ *  releases), what follows the core only to break a tie. */
+export function cmpRelease(a: string, b: string): number {
+	const ca = versionCore(a);
+	const cb = versionCore(b);
+	if (!ca || !cb) return cmpVersions(a, b);
+	for (let i = 0; i < 3; i++) if (ca[i] !== cb[i]) return ca[i] - cb[i];
+	// same core: what follows it decides (lettuce's -letta_0.34.68 over -letta_0.34.67); a prefix never does
+	const rest = (v: string) => v.slice(v.search(/\d+\.\d+\.\d+/)).replace(/^\d+\.\d+\.\d+/, "");
+	return cmpVersions(rest(a), rest(b));
+}
+
+/** `from`'s x.y.z bumped by one `kind` step — the bare core, any prefix or suffix dropped — or null when `from` has none. */
 export function bumpVersion(from: string | null | undefined, kind: BumpKind): string | null {
-	const m = from?.match(/^(\d+)\.(\d+)\.(\d+)/);
-	if (!m) return null;
-	const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+	const c = versionCore(from);
+	if (!c) return null;
+	const [maj, min, pat] = c;
 	return kind === "major" ? `${maj + 1}.0.0` : kind === "minor" ? `${maj}.${min + 1}.0` : `${maj}.${min}.${pat + 1}`;
 }
 
@@ -558,8 +577,9 @@ export const playbookVersionChoice = (cfg: Config): string | undefined =>
 
 /** `to` raises the major version over `from` (1.x → 2.0, and 0.x → 1.0). */
 export function majorBump(from: string, to: string): boolean {
-	const maj = (v: string) => Number.parseInt(v.split(".")[0] ?? "", 10);
-	return Number.isFinite(maj(from)) && Number.isFinite(maj(to)) && maj(to) > maj(from);
+	const a = versionCore(from);
+	const b = versionCore(to);
+	return !!a && !!b && b[0] > a[0];
 }
 
 /** A recorded call in the operator's words. */
@@ -572,12 +592,47 @@ export const describeVersionChoice = (c: string, from?: string | null): string =
 				? `a ${c} release${bumpVersion(from, c) ? ` (${from} → ${bumpVersion(from, c)})` : ""}`
 				: `release ${c}`;
 
-/** Does the version flag pair on a verify/release call parse? Returns the call it makes, null for none, or an error. */
+/** Does the version flag pair on a gate call parse? Returns the call it makes, null for none, or an error. */
 export function versionArg(value: string | null, noVersion: boolean): { choice: string | null } | { error: string } {
-	if (value !== null && noVersion) return { error: "--version=<v> and --no-version contradict each other — pass the one the operator chose" };
-	if (value !== null && !isBumpKind(value.trim()) && !VERSION_ARG_RE.test(value.trim()))
-		return { error: `--version=${value} is not a release call — pass what the operator chose: patch, minor, major, or an exact version such as 1.4.0` };
-	return { choice: value !== null ? value.trim() : noVersion ? "unreleased" : null };
+	if (value !== null && noVersion) return { error: "--version=<kind> and --no-version contradict each other — pass the one the operator chose" };
+	const v = value?.trim() ?? null;
+	if (v !== null && !isBumpKind(v)) {
+		const exact = versionCore(v) ? ` — the number is not chosen up front: it is counted from the newest tag when the release runs, so pass the kind of step ${v} would be` : "";
+		return { error: `--version=${value} is not a release call — pass what the operator chose: patch, minor or major (or --no-version to merge unreleased)${exact}` };
+	}
+	return { choice: v !== null ? v : noVersion ? "unreleased" : null };
+}
+
+/** The question that collects the release call (asked with Approve?); `now` is the manifest's current version. */
+export function releaseCallQuestion(now: string | null, file: string, docs?: boolean): { ask: string; flags: string } {
+	const kinds = (["patch", "minor", "major"] as const).map((k) => `${k}${bumpVersion(now, k) ? ` (→ ${bumpVersion(now, k)} as things stand)` : ""}`).join(", ");
+	return {
+		ask: `also ask the release call: a ${kinds} release — propose one by the playbook's versioning rule${now ? ` (${file} is at ${now})` : ""} — or merge unreleased (no bump, no tag)${docs ? "; a docs flow usually merges unreleased" : ""}. Only the kind of step is recorded: the number is counted from the newest tag at release, and the operator can change the call on any gate call before the tag`,
+		flags: "--version=patch|minor|major or --no-version (merge unreleased)",
+	};
+}
+
+/** Does `manifest` carry the operator's release call? `newest` is the newest tagged release, `base` the manifest the
+ *  branch started from. Null when it does; otherwise what to fix, with the number the call means today. */
+export function releaseCallProof(choice: string, manifest: string | null, newest: string | null, base: string | null, file: string): { error: string; want?: string } | null {
+	if (choice === "unreleased") {
+		if (manifest && base && base !== manifest) return { error: `the release call is to merge unreleased, but the branch bumps ${file} ${base} → ${manifest} — revert the bump (the entry goes under Unreleased), or change the call (--version=<kind>) on the operator's word` };
+		return null;
+	}
+	if (isBumpKind(choice)) {
+		const from = newest ?? base;
+		const want = bumpVersion(from, choice);
+		if (!want) return null; // nothing to count from: the generic proofs (a version past the last tag) still run
+		const have = versionCore(manifest);
+		if (!have || have.join(".") !== want) {
+			const extra = manifest && manifest.replace(/\d+\.\d+\.\d+/, "") ? " (its x.y.z part — keep the project's own prefix and suffix)" : "";
+			return { error: `the release call is a ${choice} release: ${file} must be ${want}${extra} — ${choice} past ${newest ? `the newest tag, ${newest}` : from} — it says ${manifest ?? "no version"}`, want };
+		}
+		return null;
+	}
+	if (choice === "next" && manifest && newest && cmpRelease(manifest, newest) <= 0)
+		return { error: `${file} says ${manifest}, which is not past the newest tag ${newest} — bump it past ${newest}` };
+	return null;
 }
 
 /**
@@ -883,7 +938,7 @@ export function newestTaggedVersion(pattern: string, tags: string[]): string | n
 	let best: string | null = null;
 	for (const t of tags) {
 		const m = t.match(re);
-		if (m && (best === null || cmpVersions(m[1], best) > 0)) best = m[1];
+		if (m && (best === null || cmpRelease(m[1], best) > 0)) best = m[1];
 	}
 	return best;
 }
@@ -2597,11 +2652,15 @@ export function nextHint(state: FlowState, cfg: Config): string {
 	return `${base} — linked reflections ${open.map((r) => `r${r.id}`).join(", ")}: fix each on this branch (finish closes them as fixed), or flow reflect defer <id> "<why>" for one it will not fix`;
 }
 
+/** The release call still to be asked with Approve? — "" when the playbook makes it or it is on record. */
+const callAsk = (state: FlowState, cfg: Config): string =>
+	cfg.versioning.file && !playbookVersionChoice(cfg) && !state.versionChoice ? " together with the release call (patch, minor or major — the kind of step, not a number — or merge unreleased)" : "";
+
 function stageHint(state: FlowState, cfg: Config): string {
 	switch (state.stage) {
 		case "plan":
-			if (state.patch || state.docs) return `${state.patch ? "patch" : "docs"} (proposed — the Approve? answer grants the mode): describe the change in one line, ask Approve? in chat naming the mode, then flow approve --confirmed — no plan file${state.docs ? ", no tier-1 checks" : ""}`;
-			return `clarify the direction in chat, write .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask Approve? and run flow approve --confirmed on the answer`;
+			if (state.patch || state.docs) return `${state.patch ? "patch" : "docs"} (proposed — the Approve? answer grants the mode): describe the change in one line, ask Approve? in chat naming the mode${callAsk(state, cfg)}, then flow approve --confirmed${callAsk(state, cfg) ? " --version=<kind>|--no-version" : ""} — no plan file${state.docs ? ", no tier-1 checks" : ""}`;
+			return `clarify the direction in chat, write .dev-flow/${state.slug}/plan/plan.md${state.ui ? ` and render mockups to plan/mockups/ (${cfg.mockupGlobs.join(", ")}) with headless chromium, embedded in plan.md` : ""}, then ask Approve?${callAsk(state, cfg)} and run flow approve --confirmed${callAsk(state, cfg) ? " --version=<kind>|--no-version" : ""} on the answer`;
 		case "implement":
 			if (state.docs) {
 				const open = openItemsNote(cfg, state, "implement");
@@ -2611,7 +2670,7 @@ function stageHint(state: FlowState, cfg: Config): string {
 			const rv = reviewOwed(state, cfg) ? `; then the review — ${cfg.release.review}, fix what it finds and record it (flow review done "<verdict>"; a flow_stage review worker records itself)` : "";
 			return `build and test in ${state.worktree}, commit as you go, flow check${rv}; then flow verify (deploys for review), look yourself, keep the app running, ask Verified? and run flow verify --confirmed on the answer`;
 		case "pre-release": {
-			// gh#198: the release call made with Verified? decides which prep this is
+			// the release call (made with Approve?, changeable until the tag) decides which prep this is
 			const vc = state.versionChoice;
 			// gh#233: flow release refuses until the review is on record — the hint says how it gets there
 			const rv = reviewOwed(state, cfg) ? `${cfg.release.review} (then record it: flow review done "<verdict>")` : cfg.release.review && state.review ? "review on record" : "";
@@ -2622,7 +2681,7 @@ function stageHint(state: FlowState, cfg: Config): string {
 			const gateAsks = `${auto} — the gate asks Release? when it needs the operator's word (NEEDS-OPERATOR Release?): ask it then, never before the call`;
 			if (vc === "unreleased")
 				return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${cfg.release.changelog && !state.docs ? `, add this flow's line under Unreleased in ${cfg.release.changelog} (the call is merge unreleased: no bump)` : ""}; show the PR summary, then run flow release${gateAsks}`;
-			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}${isBumpKind(vc) ? ` to ${bumpVersion(state.versionFrom, vc) ?? `the next ${vc}`} (a ${vc} release, the operator's call — the gate counts it from the newest tag, so a flow that released first moves the number)` : vc && vc !== "next" ? ` to ${vc} (the operator's call)` : ""}` : ""].filter(Boolean).join(" and ");
+			const prep = [cfg.release.changelog ? `prepare ${cfg.release.changelog} (fold Unreleased lines verbatim)` : "", cfg.versioning.file ? `bump version in ${cfg.versioning.file}${isBumpKind(vc) ? ` one ${vc} step past the newest tag (${bumpVersion(state.versionFrom, vc) ?? `the next ${vc}`} as of approval — a flow that released since moves it; flow release names the number)` : ""}` : ""].filter(Boolean).join(" and ");
 			if (vc && prep) return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs, ${prep}; show the PR summary, version and changelog, then run flow release${gateAsks}`;
 			if (state.docs && prep) return `${review}fix must/should; a docs flow usually ships unversioned — ask the operator (flow release --no-version on their word); versioned instead: ${prep}; then run flow release${gateAsks}`;
 			return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, then run flow release${gateAsks}`;

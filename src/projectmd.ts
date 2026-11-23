@@ -68,7 +68,7 @@ const KEYMAP: Record<string, Record<string, string>> = {
 		merge: "release.merge", // how a merged branch lands: squash | merge | rebase | any
 		yolo: "release.yolo", // how far a standing yolo reaches: all (default) | until-release (gh#176)
 		reflect: "release.reflect", // when finish runs the closing reflection: on-friction (default) | always
-		version: "release.version", // who decides versioned vs unreleased: ask (with Verified?, default) | versioned | unversioned (gh#198)
+		version: "release.version", // who makes the release call: ask (with Approve?, default) | versioned | unversioned (gh#198)
 		ask: "release.ask", // when Release? is asked: on-change (default) | always (gh#198)
 		finish: "release.finish", // when Finish? is asked: on-change (default, a clean flow closes itself) | always
 		publish: "release.publish", // who runs push, PR, merge and tag after Release?: gate (default on GitHub) | manual
