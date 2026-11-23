@@ -49,13 +49,11 @@ note). Other sessions' worktrees are theirs.
    — say what changed for the user and how to see it, not which modules
    changed.
    Report opening: **🔨 implement · `<slug>`** (the gate's stage line).
-   - Versioned project, playbook `version = ask` (the default): the gate's
-     question also asks the **release call** — a patch, minor or major
-     release (propose one by the playbook's versioning rule) or merge
-     unreleased. Record the kind, not a number, unless the operator names one:
-     the gate counts it from the newest tag, so a parallel release moves it.
-3. Answer → `flow verify --confirmed` (yolo → `--yolo --confirmed`), plus
-   `--version=patch|minor|major` (or `--version=<exact>`) or `--no-version`. It does not
+   - The release call was made at Approve? and is not asked again. Only a flow
+     approved by an older dev-flow, with no call on record, gets it asked here.
+     If the operator changes it now, pass `--version=<kind>` / `--no-version`
+     with the answer.
+3. Answer → `flow verify --confirmed` (yolo → `--yolo --confirmed`). It does not
    deploy again when the tree is the one it deployed for review — it only
    probes that the app still answers. If the
    default branch moved since the review deploy it refuses: run `flow verify`

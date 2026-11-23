@@ -1,12 +1,12 @@
 /** dev-flow runtime — The gate runner and the gates that do not ship anything. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { skipsChecks, approveGate, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState, parseRowIds, DF_GITIGNORE } from "../core.ts";
+import { skipsChecks, approveGate, versionArg, playbookVersionChoice, releaseCallQuestion, describeVersionChoice, applicableItems, appendRoadmapItem, checklistHash, claimBlocks, doneItemCount, detectForge, gateHelpJson, healthProbe, parseMergeStyle, investigationBrief, pluginVersion, reflectProtocol, reflectUnfiledCount, reflectionNudges, reflectionRoutes, listFiles, needsOperator, newState, nextHint, openChecklistItems, releaseGate, roadmapDone, roadmapDrop, roadmapOpenCount, roadmapOpenRows, roadmapBriefFor, roadmapPick, roadmapTidy, statusJson, subst, sq, featureTmpDir, foreignWorktreeLinks, validSlug, verifyGate, STAGE_EMOJI, type ReflectTarget, type Config, type FlowState, parseRowIds, DF_GITIGNORE } from "../core.ts";
 import { applyAnswers, buildDraft, doctorFindings, ghostFeatureDirs, ghostInfo, lineDiff, loadProject, mdDigest, parseAnswers, parseProjectMd } from "../projectmd.ts";
 import { linkedTag } from "../fold.ts";
 import { detectProject } from "../detect.ts";
 import { AGENT_MARK } from "../present.ts";
-import { GATE_HELP, SELF_BUILD, refreshDocsCode, type Ui, buildSkew, copyWarning, currentBranch, dfDir, featDir, featureEnv, flagValue, gateCwd, gitConsistency, initiated, loadedVersion, mergeHistoryEvidence, needState, now, originUrl, publishedVersion, readClaim, readReflections, readReflectionsText, readRoadmap, readState, roadmapFile, sh, stateFile, tail, unfinishedStates, writePlaybookMergePolicy, writeState } from "./base.ts";
+import { GATE_HELP, SELF_BUILD, refreshDocsCode, type Ui, manifestAt, recordReleaseCall, buildSkew, copyWarning, currentBranch, dfDir, featDir, featureEnv, flagValue, gateCwd, gitConsistency, initiated, loadedVersion, mergeHistoryEvidence, needState, now, originUrl, publishedVersion, readClaim, readReflections, readReflectionsText, readRoadmap, readState, roadmapFile, sh, stateFile, tail, unfinishedStates, writePlaybookMergePolicy, writeState } from "./base.ts";
 import { type RunResult, type Session, ago, behindNote, releaseDevSlot, pendingChecks, probeHealth, readDevPorts, runChecks, stampChecks, triedNote } from "./checks.ts";
 import { GIT_TRACK_NOTE, isSelfRepo, renderQuestions, setupQuestions, tagPatternEvidence } from "./setup.ts";
 import { foldRows, foldView, legacyPluginRows, pluginUpstream, reflectDeferNote, reflectDoneNote, reflectList, reflectMoveNote, reflectNote, reflectPlanNote, reflectReopenNote, reflectSameNote, reflectTidy } from "./reflect.ts";
@@ -80,6 +80,9 @@ export async function runFlow(args: string[], root: string, ui: Ui, sess: Sessio
 
 		case "approve":
 			return gateApprove(o);
+
+		case "bump":
+			return gateBump(o);
 
 		case "test":
 			return gateTest(o);
@@ -445,7 +448,18 @@ export async function gateApprove(o: GateCtx): Promise<RunResult> {
 	const errs = approveGate(state!, cfg, planFiles, existsSync(planMd) ? readFileSync(planMd, "utf8") : undefined, foreignWorktreeLinks(dfDir(root), state!.slug, mockupHtml));
 	if (errs.length) return { text: `plan gate FAILED:\n- ${errs.join("\n- ")}`, isError: true };
 	const planItems = applicableItems(cfg, state!, "plan");
+	// the release call is made here, with the plan: only the kind of step is recorded, never a number
+	const relArg = versionArg(flagValue(o.rest, "version"), flag("no-version"));
+	if ("error" in relArg) return { text: `plan gate FAILED:\n- ${relArg.error}`, isError: true };
+	const call = relArg.choice ?? state!.versionChoice ?? playbookVersionChoice(cfg);
+	const callQ = cfg.versioning.file && !call ? releaseCallQuestion(manifestAt(root, cfg.versioning.file), cfg.versioning.file, state!.docs) : null;
+	if (relArg.choice && relArg.choice !== "unreleased" && !cfg.versioning.file) return { text: "plan gate FAILED:\n- --version needs a version file to bump: the playbook sets none (versionFile under ## release)", isError: true };
 	let audit = flag("confirmed") ? " (confirmed by operator instruction)" : "";
+	// the /flow dialog is yes/no: a call it cannot carry comes on the command line, before anything is asked
+	if (!flag("confirmed") && ui.hasUI && callQ) return { text: `plan gate FAILED:\n- the release call rides on Approve? — run /flow approve ${callQ.flags}`, isError: true };
+	// an answer to Approve? without the call answers half the question: ask the call, keep nothing
+	if (flag("confirmed") && callQ)
+		return { text: needsOperator(`Approve? on this versioned project carries the release call, and none was passed — ${callQ.ask}`, "Approve?", `ask the operator the release call, then re-run flow approve --confirmed ${callQ.flags}`), isError: true };
 	const askPending = !flag("confirmed");
 	if (askPending) {
 		markPendingAsk(root, state!, "Approve?");
@@ -456,7 +470,7 @@ export async function gateApprove(o: GateCtx): Promise<RunResult> {
 			: state!.docs
 				? "this is proposed as a docs flow — no written plan and no build checks; your answer grants that"
 				: "the plan is waiting for your approval";
-		return { text: needsOperator(what, "Approve?", `${state!.patch || state!.docs ? "say the mode and the one-line change when you ask; " : ""}re-run with --confirmed once the operator answered in chat`), isError: true };
+		return { text: needsOperator(`${what}${callQ ? ` — ${callQ.ask}` : ""}`, "Approve?", `${state!.patch || state!.docs ? "say the mode and the one-line change when you ask; " : ""}re-run with --confirmed${callQ ? ` ${callQ.flags}` : ""} once the operator answered in chat`), isError: true };
 		}
 		const ok = await ui.confirm("Approve plan", `Approve ${state!.slug}${state!.ui ? " (UI)" : ""}${state!.patch ? " (patch)" : state!.docs ? " (docs)" : ""}? Creates the worktree.${flag("yolo") ? " YOLO: all later gate questions (Verified?/Release?/Finish?) are pre-confirmed — checks and guardrails stay in place." : ""}`);
 		if (!ok) {
@@ -495,9 +509,34 @@ export async function gateApprove(o: GateCtx): Promise<RunResult> {
 	state!.worktree = wtRel;
 	state!.stage = "implement";
 	state!.approvals.plan = now();
+	if (call) recordReleaseCall(root, state!, cfg, call);
 	delete state!.pendingAsk;
 	writeState(root, state!);
-	return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${setupNote}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
+	return { text: `plan approved${audit}${state!.yolo ? " — yolo: later gate questions pre-confirmed" : ""}; worktree ${wtRel} on branch ${branch}.${call ? `\nrelease call: ${describeVersionChoice(call, state!.versionFrom)} — the number is counted from the newest tag at release; the operator can change the call on any gate call (or flow bump <kind>) until the tag` : ""}${setupNote}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
+}
+
+/** `flow bump <patch|minor|major|none> [slug]`: the operator changes the release call at any stage before the tag.
+ *  Only the kind of step is recorded; the number is counted from the newest tag when the release runs. */
+export async function gateBump(o: GateCtx): Promise<RunResult> {
+	const { root, cfg, flag, sess } = o;
+	const words = o.rest.filter((a) => !a.startsWith("--"));
+	const [kind, slug] = words;
+	const usage = "usage: flow bump <patch|minor|major|none> [slug] --confirmed — none merges unreleased (no bump, no tag)";
+	if (!kind) return { text: usage, isError: true };
+	const arg = kind === "none" || kind === "unreleased" ? versionArg(null, true) : versionArg(kind, false);
+	if ("error" in arg) return { text: `bump FAILED:\n- ${arg.error}\n${usage}`, isError: true };
+	const { state, err } = needState(root, sess, slug);
+	if (err) return err;
+	const choice = arg.choice!;
+	if (!cfg.versioning.file && choice !== "unreleased") return { text: "bump FAILED:\n- the playbook sets no version file (versionFile under ## release), so there is nothing to bump — set one first", isError: true };
+	if (state!.publish?.tag || state!.approvals.release) return { text: `bump FAILED:\n- ${state!.publish?.tag ?? "the release"} is already ${state!.publish?.tag ? "tagged" : "recorded"} — the call cannot change after the tag`, isError: true };
+	const was = state!.versionChoice;
+	if (was === choice) return { text: `release call unchanged: ${describeVersionChoice(choice, state!.versionFrom)}` };
+	if (!flag("confirmed")) return { text: needsOperator(`change the release call from ${was ? describeVersionChoice(was) : "none"} to ${describeVersionChoice(choice)}`, "Release call?", `this is the operator's word — on it, re-run flow bump ${kind}${slug ? ` ${slug}` : ""} --confirmed`), isError: true };
+	recordReleaseCall(root, state!, cfg, choice);
+	writeState(root, state!);
+	const prep = state!.stage === "pre-release" || state!.stage === "release" ? ` — redo the release prep to match (${choice === "unreleased" ? "revert any bump; the entry goes under Unreleased" : "the version file and its changelog heading"}); flow release names the number` : "";
+	return { text: `release call changed (confirmed by operator instruction): ${was ? describeVersionChoice(was) : "none"} → ${describeVersionChoice(choice, state!.versionFrom)}${prep}` };
 }
 
 export async function gateStatus(o: GateCtx): Promise<RunResult> {

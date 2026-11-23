@@ -171,7 +171,7 @@ These go under `## pre-release` or `## release`. Either section works.
 | `versionTag` | `v{version}` | tag format |
 | `changelog` | `CHANGELOG.md` | set it empty (`changelog =` or `changelog = ""`) to opt out |
 | `merge` | *(asked)* | how a PR lands: `squash`, `merge`, `rebase` or `any`. See below. |
-| `version` | `ask` | who makes the release call: `ask` (you, at Verified?), or `versioned` / `unversioned` for every flow |
+| `version` | `ask` | who makes the release call: `ask` (you, at Approve? — the kind of bump, changeable until the tag), or `versioned` / `unversioned` for every flow |
 | `ask` | `on-change` | `on-change`: Release? answers itself when only release prep changed. `always`: ask every time. |
 | `finish` | `on-change` | `on-change`: Finish? answers itself when nothing is open (see [gates](gates.md#finish-finish)). `always`: ask every time. |
 | `publish` | `gate` | `gate`: on GitHub, `flow release` pushes, opens the PR, waits for CI, merges and tags itself. `manual`: the agent runs those steps. Other forges are always manual. |

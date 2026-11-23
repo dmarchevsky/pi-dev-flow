@@ -53,7 +53,7 @@ the session. It also takes over a feature another session holds. Nothing binds a
 
 ## approve: Approve?
 
-`flow approve [--yolo]`
+`flow approve [--yolo] [--version=patch|minor|major | --no-version]`
 
 - `plan/plan.md` must exist with exactly that name.
 - For a `--ui` feature, every screenshot under `plan/` must be embedded in plan.md, every
@@ -61,6 +61,16 @@ the session. It also takes over a feature another session holds. Nothing binds a
   feature's worktree.
 - On yes, it creates the worktree and the `feat/<slug>` branch, then runs `setup` there. If setup
   fails, the next `approve` retries it.
+
+**The release call rides on Approve?** On a versioned project with `version = ask` (the default),
+the question also asks: *patch, minor or major release, or merge unreleased?* Your answer is recorded
+with `--version=<kind>` or `--no-version`; an Approve? answer without it is refused and nothing is
+kept. Only the kind of step is recorded, never a number: the number is counted from the newest tag
+when the release runs, so a flow that released first moves yours along instead of colliding with it.
+No later gate asks the call again. You can change it at any point until the tag is cut: say so,
+and the agent runs `flow bump <patch|minor|major|none> --confirmed`, or passes
+`--version=<kind>` / `--no-version` on a confirmed `verify` or `release` call. A flow approved by an
+older dev-flow, with no call on record, is asked at Verified? instead.
 
 ## test, check, health
 
@@ -94,10 +104,6 @@ It refuses if:
 - a check, the build or the post-deploy health probe fails;
 - `servedBuild` is set and the running app isn't serving this commit.
 
-**The release call rides on Verified?** On a versioned project with `version = ask` (the default),
-the question also asks: *patch, minor or major release, or merge unreleased?* Your answer is recorded
-with `--version=…` or `--no-version`.
-
 With `--confirmed`, it never rewrites history. If main moved since the review deploy, re-run
 `flow verify`. It also doesn't build or deploy a second time: when the tree is the one it deployed for
 your review, it only checks that the app still answers. If the tree changed, or the app stopped
@@ -117,12 +123,14 @@ probes on the current tree and asks Verified? again. A standing yolo never answe
 
 ## release: Release?
 
-`flow release [--yolo] [--version=<v> | --no-version] [--no-fold-check] [--no-marker-check]`
+`flow release [--yolo] [--version=<kind> | --no-version] [--no-fold-check] [--no-marker-check]`
 
 Proves the branch is ready to ship:
 
 - **The version** matches your release call. Patch, minor or major is counted from the newest tag
-  at release time, so if a parallel flow shipped first, yours moves to the next number.
+  at release time, so if a parallel flow shipped first, yours moves to the next number. Versions
+  that carry more than x.y.z (a `v` prefix, a suffix such as `-letta_0.34.68`) are ordered and
+  bumped by their x.y.z part.
 - **The version is new**: the manifest's version isn't tagged yet.
 - **The changelog** has a heading for this version, this branch edited it, every entry that was
   pending under `Unreleased` is kept in the new section, and `Unreleased` is now empty.
@@ -163,12 +171,18 @@ On GitHub, the same `flow release` call then publishes. Your Release? answer is 
    (`.github/pull_request_template.md`), the gate refuses until `pr-body.md` exists, before
    Release? is asked, so the template's sections are filled before the merge.
 2. Checks the branch merges cleanly into the default branch. On a conflict it names the files and pushes nothing.
+   It also checks the version again against the newest tag: if another release landed since Release?, it
+   names the number to re-bump to (with the conflict, when there is one) and merges nothing until the branch
+   carries it.
 3. Waits for the PR's CI, up to 30 minutes. A repo with no CI is given a minute for checks to show up. A check pending for 5 minutes has its Actions job asked directly: GitHub can leave a check run `in_progress` after its job finished, and the job's result is used then.
 4. Merges in the playbook's `merge` style.
 5. Waits for the merge commit's own CI to go green, because the tag publishes from that commit. If it's red, the
    gate stops without tagging. If no CI runs on that commit, it tags after a minute. `tagWait = none` under
    `## release` skips this wait.
-6. Creates an annotated tag on the PR's merge commit and pushes it (versioned flows).
+6. Creates an annotated tag on the PR's merge commit and pushes it (versioned flows). The tag is the version
+   file **at that merge commit**, checked against your call one last time. No number is fixed earlier, so a
+   re-bump after a merge of the default branch is what gets tagged. A tag of the same name on another commit
+   stops it. A failed run that a tag push started does not count as the merge commit's CI.
 7. Records the release (below).
 
 Each step first asks GitHub whether it's already done, so a re-run picks up where it stopped, and a

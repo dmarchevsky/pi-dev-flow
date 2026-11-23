@@ -2033,15 +2033,45 @@ test("sideBySide offers a second instance only when the playbook and the machine
 	assert.match(sideBySide({ cfg: md("dev = x\n"), nextPort: null, memAvail: null, diskFree: null }).why.join(), /names no `port`/);
 });
 
-test("bumpVersion steps x.y.z by kind and versionArg reads the release call (gh#198)", async () => {
+test("bumpVersion steps x.y.z by kind and versionArg reads the release call — a kind, never a number", async () => {
 	const { bumpVersion, versionArg } = await import("../src/core.ts");
 	assert.deepEqual(["patch", "minor", "major"].map((k) => bumpVersion("1.4.2-beta.1", k as "patch")), ["1.4.3", "1.5.0", "2.0.0"]);
+	assert.equal(bumpVersion("v0.49.1-letta_0.34.68", "patch"), "0.49.2", "the x.y.z core, wherever it sits");
 	assert.equal(bumpVersion("v1", "patch"), null);
 	assert.deepEqual(versionArg("minor", false), { choice: "minor" });
 	assert.deepEqual(versionArg(null, true), { choice: "unreleased" });
 	assert.deepEqual(versionArg(null, false), { choice: null });
-	assert.ok("error" in versionArg("1.2.0", true));
+	assert.ok("error" in versionArg("minor", true));
 	assert.ok("error" in versionArg("soon", false));
+	const exact = versionArg("1.2.0", false);
+	assert.ok("error" in exact && /counted from the newest tag when the release runs/.test(exact.error), "an exact number is not a call");
+});
+
+test("release order reads the x.y.z core first — a v prefix or a project suffix must not reorder releases", async () => {
+	const { cmpRelease, versionCore, majorBump } = await import("../src/core.ts");
+	assert.deepEqual(versionCore("v0.49.1-letta_0.34.68"), [0, 49, 1]);
+	assert.equal(versionCore("soon"), null);
+	assert.ok(cmpRelease("v0.49.2-letta_0.34.67", "v0.49.1-letta_0.34.68") > 0, "0.49.2 is newer, whatever the suffix says");
+	assert.ok(cmpRelease("v0.49.1-letta_0.34.68", "v0.49.1-letta_0.34.67") > 0, "a tie on the core falls back to the whole string");
+	assert.ok(cmpRelease("0.10.0", "0.9.0") > 0);
+	assert.equal(newestTaggedVersion("{version}", ["v0.49.1-letta_0.34.68", "v0.49.2-letta_0.34.67", "v0.49.0-letta_0.34.67"]), "v0.49.2-letta_0.34.67");
+	assert.ok(majorBump("v0.9.0", "v1.0.0") && !majorBump("1.4.0", "1.5.0"));
+});
+
+test("releaseCallProof holds the manifest to the call, counted from the newest tag (the lettuce collision)", async () => {
+	const { releaseCallProof } = await import("../src/core.ts");
+	// bff-retry-after-close: prepped v0.49.1-letta_0.34.67, then a sync flow tagged v0.49.1-letta_0.34.68 first
+	const stale = releaseCallProof("patch", "v0.49.1-letta_0.34.67", "v0.49.1-letta_0.34.68", "v0.49.0-letta_0.34.67", "VERSION");
+	assert.equal(stale?.want, "0.49.2");
+	assert.match(stale?.error ?? "", /a patch release: VERSION must be 0\.49\.2 \(its x\.y\.z part — keep the project's own prefix and suffix\) — patch past the newest tag, v0\.49\.1-letta_0\.34\.68 — it says v0\.49\.1-letta_0\.34\.67/);
+	assert.equal(releaseCallProof("patch", "v0.49.2-letta_0.34.68", "v0.49.1-letta_0.34.68", null, "VERSION"), null, "re-bumped past it: holds");
+	assert.equal(releaseCallProof("minor", "1.1.0", null, "1.0.0", "VERSION"), null, "no tag yet: counted from the branch base");
+	assert.match(releaseCallProof("minor", "1.0.1", null, "1.0.0", "VERSION")?.error ?? "", /must be 1\.1\.0/);
+	assert.equal(releaseCallProof("patch", "9.9.9", null, null, "package.json"), null, "nothing to count from: the generic proofs decide");
+	assert.match(releaseCallProof("unreleased", "1.1.0", null, "1.0.0", "VERSION")?.error ?? "", /merge unreleased, but the branch bumps VERSION 1\.0\.0 → 1\.1\.0/);
+	assert.equal(releaseCallProof("unreleased", "1.0.0", "v1.0.0", "1.0.0", "VERSION"), null);
+	assert.match(releaseCallProof("next", "1.0.0", "v1.0.0", "1.0.0", "VERSION")?.error ?? "", /not past the newest tag v1\.0\.0/);
+	assert.equal(releaseCallProof("next", "3.0.0", "v1.0.0", "1.0.0", "VERSION"), null);
 });
 
 test("resolvedDevEnv names the DEV_FLOW_* values a dev command read and the compose project it hit (gh#204)", () => {
