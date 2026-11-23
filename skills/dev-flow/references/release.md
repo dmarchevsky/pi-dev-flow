@@ -57,5 +57,5 @@ git (merge, tag, push on the default branch) is allowed only in this stage.
 - `release.artifact` set and CI publishes from the tag: the record step waits
   for that CI (up to 15 min) — no hand-run `gh run watch`.
 - After-merge work: `flow-check` blocks under `## release` are run by
-  `flow finish` from the main checkout; `- [ ]` items there close with the
-  Finish? answer.
+  `flow finish` from the main checkout; `- [ ]` items there are work — the
+  first `flow finish` stops once to list them, the next one closes out.

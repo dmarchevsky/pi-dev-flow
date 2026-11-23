@@ -2058,6 +2058,12 @@ test("release order reads the x.y.z core first — a v prefix or a project suffi
 	assert.ok(majorBump("v0.9.0", "v1.0.0") && !majorBump("1.4.0", "1.5.0"));
 });
 
+test("nonBehaviourPath: docs and tests ride under Verified?, product files (skill markdown included) do not", async () => {
+	const { nonBehaviourPath } = await import("../src/core.ts");
+	for (const f of ["docs/gates.md", "README.md", "CHANGELOG.md", "test/smoke.test.ts", "src/x.test.ts", "web/__tests__/a.tsx", "pkg/spec/a.rb"]) assert.ok(nonBehaviourPath(f), f);
+	for (const f of ["src/core.ts", "skills/dev-flow/SKILL.md", "package.json", "web/app.tsx", "latest.ts"]) assert.ok(!nonBehaviourPath(f), f);
+});
+
 test("foldCallError: a fold flow (linked reflections) takes only the unreleased call", async () => {
 	const { foldCallError } = await import("../src/core.ts");
 	const fold = { reflections: [{ id: 3, body: "a" }, { id: 7, body: "b" }] } as unknown as Parameters<typeof foldCallError>[0];

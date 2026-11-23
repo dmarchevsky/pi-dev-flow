@@ -4,6 +4,14 @@ Format: newest first. `Unreleased` collects what's merged but not yet tagged.
 
 ## [Unreleased]
 
+### Changed
+- **A standard flow asks two questions: Approve? and Verified?** The rest runs to done unless something new comes up. Measured over ~50 real flows, the operator also answered Release? most of the time, "fold as suggested" at nearly every fold/drop list, and Finish? in chat.
+  - **Verified? is the release word.** Release? (`ask = on-change`) now also answers itself when the only commits after Verified? are docs (`docs/`, README, CHANGELOG) or tests, and the release output names those commits. `yolo = until-release` now holds back only a standing yolo, not a Verified? the operator gave themselves. A session running an older dev-flow build is a note on the release output instead of a question. Release? is still asked for a code change after Verified?, a major bump the playbook made, and `ask = always`.
+  - **Finish files the closing reflection's own fold/drop recommendations** instead of asking. A fold records a note, or counts a recurrence on the row it duplicates. A drop records nothing. The output lists each one with how to undo it. A plugin finding outside the dev-flow repo is named for the operator to file upstream, never filed by the gate. `finish = always` asks fold/drop as before.
+  - **Release-stage checklist items are work, not a question.** The first `flow finish` stops once to list them, to be done from the main checkout. The next `flow finish` closes out, and Finish? then answers itself.
+  - **Dev port? is asked only while another flow's deploy is under review and running alongside is not possible.** A holder that isn't waiting on its Verified? is replaced with a note, as one past Verified? already was. A holder under review gets a second instance next to it on the next free port when `parallelDev = yes` and the measured RAM and disk fit.
+  - **Skill rules:** a bare "continue", "proceed", "ok" or "yes" at a pending checkpoint is its answer. Never ask before `flow start`. Never pre-ask Release? or Finish?: run the gate, which asks only when something is open.
+
 ## [0.96.1] - 2026-11-23
 
 **A fold flow (started with `--reflections`) always merges unreleased with no release call, and finishes without the closing reflection.**

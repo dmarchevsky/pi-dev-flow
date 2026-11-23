@@ -14,29 +14,35 @@ unbinds the session — so anything that needs them runs first.
      reviews this session's transcript and every worker transcript, dedupes
      against `.dev-flow/reflections.md` and upstream issues, and returns
      numbered findings, each **docs** / **code** / **plugin** with a **fold**
-     or **drop** recommendation. Finish then stops.
+     or **drop** recommendation. Finish files those recommendations itself
+     (a fold is a note or a recurrence on the row it duplicates; a drop
+     records nothing) and goes on — no fold/drop question. Relay the list it
+     prints, with its undo line. A plugin finding outside the dev-flow repo
+     is listed for the operator to file upstream on their word — never file
+     it yourself.
    - A flow with **no friction** (no guard block, no process refusal, no gate
      stuck twice in a row, no `--note`) skips the worker, unless the playbook
      says `reflect = always`. A red test or build is not friction.
    - Worker failed or died → the gate says so and nothing is removed: re-run, or review inline (bare `flow
      reflect` prints the protocol). Only the operator's explicit word skips
      it: `flow finish --no-reflect --confirmed` — yolo never does.
-2. **Findings → ask fold or drop** per item — one plain line each — with
-   your recommendation (`fold
-   1,3 drop 2` is a fine answer), and stop. That answer **is** Finish?.
-3. **Apply it**: fold docs → `flow reflect --playbook "<note>"`; fold code →
-   `flow reflect --code "<note>"`; fold plugin → `flow reflect --plugin
-   "<note>"` prints the upstream recipe — search first, then `gh issue create`
-   and report the URL. Plugin findings never go into `reflections.md`. Open
-   items the reviewer found fixed → propose checking them off.
-4. **`flow finish --confirmed`** without asking again. Nothing found → ask
-   **Finish?** first.
-   - **A clean flow needs no question**: no friction, no open release-stage
-     item, nothing skipped → the first `flow finish` closes the feature and
-     says Finish? answered itself (`finish = always` in the playbook asks
-     every time). Report it; do not ask afterwards.
+   - `finish = always` in the playbook, or a report whose rows did not parse →
+     the gate asks **Fold or drop?** / **Finish?** as before: ask it, apply the
+     answer (`flow reflect --playbook|--code "<note>"`, `--same r<id>`,
+     `--plugin` prints the upstream recipe), then `flow finish --confirmed`.
+2. **Release-stage checklist items** (`- [ ]` under `## release`) are work:
+   the first `flow finish` stops once (`release-stage work —`, not a
+   question) and lists them. Do each from the main checkout, then run `flow
+   finish` again — no question to ask; report what each showed.
    - A red after-merge check (`flow-check` under `## release`, run from the
      main checkout) stops finish with its output: fix, re-run.
+3. **Never ask Finish? before calling the gate.** Run `flow finish` as soon
+   as the release is recorded; it answers Finish? itself when nothing is left
+   open, and returns `NEEDS-OPERATOR Finish?` only when something is (a
+   skipped forge release, `finish = always`). Report it; do not ask
+   afterwards.
+4. Open items the reviewer found fixed are listed as proposals — check them
+   off only on the operator's word (`flow reflect done r<id> "<where>"`).
 5. Offer the printed suggestions (`⚑ fix the open reflections now?`, `↻ N
    closed reflection(s)`) in one line each; never start a fix flow without
    the operator's word.

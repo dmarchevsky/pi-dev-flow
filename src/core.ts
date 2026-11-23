@@ -71,6 +71,7 @@ export interface FlowState {
 	reflectedAt?: string; // a reflect worker reported for this flow — finish runs one first while this is unset (only --no-reflect --confirmed skips it)
 	devPort?: number; // the port the operator chose for this flow's dev deploy when the default was held by another flow — finish stops it (devDown)
 	friction?: number; // process refusals, a gate refusing twice in a row, guard blocks and post-Verified? code changes this feature hit (isFriction; a red check alone is not one) — finish skips the closing reflection at 0 (playbook reflect = on-friction)
+	reflectApplied?: boolean; // finish filed the closing reflection's own fold/drop recommendations (no question) — like reflectQuiet, nothing is left open for Finish?
 	reflectQuiet?: boolean; // finish skipped the closing reflection because the flow had no friction — with nothing else open, Finish? answers itself (release.finish = on-change)
 	reviewDeploy?: { wt: string; slot: string; at: string }; // the tree (checkFingerprint) and dev slot `flow verify` deployed for the operator's review — a --confirmed over the same tree does not build and deploy it a second time
 	review?: FlowReview; // the review step ran (worker or inline) or the operator skipped it — flow verify (before Verified?) and flow release refuse without one (gh#233)
@@ -756,6 +757,13 @@ export function checklistHash(items: ChecklistItem[]): string {
 /** The files a release-prep commit is made of: the version manifest, the changelog, and npm's lock beside a package.json. */
 export function prepFiles(cfg: Config): Set<string> {
 	return new Set([cfg.versioning.file, cfg.release.changelog, cfg.versioning.file === "package.json" ? "package-lock.json" : ""].filter(Boolean) as string[]);
+}
+
+/** A path that ships no behaviour an operator's look at the running app could have judged: docs and tests. A
+ *  commit touching only these after Verified? rides under that word (named in the release output) instead of
+ *  asking Release? again. Markdown outside docs/ is not here: a skill or prompt file is product in some repos. */
+export function nonBehaviourPath(f: string): boolean {
+	return /^docs\//.test(f) || /^(README|CONTRIBUTING|CHANGELOG)(\.[a-z]+)?$/i.test(f) || /(^|\/)(test|tests|__tests__|spec)\//.test(f) || /\.(test|spec)\.[a-z0-9]+$/i.test(f);
 }
 
 /** True when every changed path is a release-prep file (and something changed): the bump and the changelog
@@ -2694,7 +2702,7 @@ function stageHint(state: FlowState, cfg: Config): string {
 			return `${review}fix must/should${state.docs ? "" : " (a fix that changes behaviour: flow verify redeploys and re-asks Verified? over it)"}, update docs${prep ? `, ${prep}` : ""}; show the PR summary, version and changelog, then run flow release${gateAsks}`;
 		}
 		case "release":
-			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then flow finish (closing reflection first; its fold/drop answer is Finish?)`;
+			if (state.approvals.release) return `release recorded — commit and push any release chores in the main checkout (DEV_FLOW_ALLOW_MAIN=1 for the pre-commit hook), then run flow finish right away — do not ask Finish? first: it runs the closing reflection, files its suggestions and closes out, and asks only when something is left open`;
 			if (state.publish) return `flow release publishes (push, PR, CI wait, merge${state.noVersion ? "" : ", tag"}) and records the release — re-run it after a "publish stopped" or "publish waiting" result; then flow finish`;
 			return `publish: push the branch, open the PR, merge once CI is green (gh pr checks <n> --watch)${mergeHintFor(cfg)}${state.noVersion ? " — unversioned: no bump, no tag" : ", push the annotated tag"}; then flow finish records the release and closes out`;
 	}

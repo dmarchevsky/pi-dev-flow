@@ -35,6 +35,8 @@ knobs · merge-policy state.
   adds the mockup gate, so don't ask. Turning it **off** is the operator's:
   `flow start <slug> --no-ui --confirmed` at plan, after they say so, and
   aborting a ui feature at plan asks the same.
+- **Never ask before `flow start`**: starting only creates the plan stage;
+  the operator's first word is Approve?.
 - **A mode is a proposal, not a grant**: pass `--patch` or `--docs` on the
   start call when the work fits (no `--confirmed`, no question). The
   operator grants it with their **Approve?** answer — say the mode and why

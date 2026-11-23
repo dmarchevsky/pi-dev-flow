@@ -1,13 +1,13 @@
 /** dev-flow runtime — The gates that ship: verify, release, release-done, finish. Moved out of extensions/dev-flow.ts as is (exports added). */
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { foldCallError, skipsChecks, applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, releaseCallQuestion, releaseCallProof, cmpRelease, versionCore, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail, operatorDirt } from "../core.ts";
+import { foldCallError, nonBehaviourPath, skipsChecks, applicableItems, changelogVersionsBetween, normalizeReleaseBody, pendingEntryLines, pickReleaseNotes, checklistHash, checklistPending, cmpVersions, freshenChecks, healthProbe, mergeShapeProof, preReleaseGate, reflectionNudges, conflictMarkerLines, isReleaseOnly, looksLikeShellError, needsOperator, newestTaggedVersion, nextHint, releaseGate, parseVersion, roadmapDoneForSlug, sq, tagNotesCommand, verifyGate, versionTagGate, servedBuildMatches, prepFiles, versionArg, playbookVersionChoice, describeVersionChoice, majorBump, releaseCallQuestion, releaseCallProof, cmpRelease, versionCore, resolvedDevEnv, reviewOwed, localDefaultAhead, failTail, operatorDirt } from "../core.ts";
 import type { Config, FlowState } from "../core.ts";
 import { AGENT_MARK } from "../present.ts";
 import { manifestAt, recordReleaseCall, refreshDocsCode, buildSkew, copyWarning, currentBranch, featDir, flagValue, forgeMergeStyle, forgeOf, gateCwd, mergeBase, needState, now, originUrl, readReflectionsText, readRoadmap, readState, releaseTags, roadmapFile, sh, tail, worktreeAbs, writeState } from "./base.ts";
 import { type RunResult, ago, releaseDevSlot, keepThroughPrep, branchState, catchUp, describeBranchState, devEnv, devPortOf, devSlotCheck, healthRerunsAfterDeploy, pendingChecks, probeHealth, readDevPorts, runChecks, slotKey, triedNote, unreleasedOnMain, worktreeFingerprint, writeDevPorts } from "./checks.ts";
 import { type GateCtx, markPendingAsk } from "./gates.ts";
-import { closeLinkedReflections } from "./reflect.ts";
+import { applyReflectFindings, closeLinkedReflections } from "./reflect.ts";
 import { gatePublishes, prBodyOwed, publishRelease } from "./publish.ts";
 
 /** The release call, asked with Verified? only for a flow approved before Approve? carried it — null when the
@@ -374,22 +374,17 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// truly behind, not merely different: a session whose loaded build is NEWER than the checkout's manifest
 	// has every proof the checkout would run, and asking about it would be noise.
 	const stale = !!behind && !!selfBuild.version && cmpVersions(behind, selfBuild.version) < 0;
-	let staleAsk = "";
 	let staleNote = "";
 	if (stale) {
 		const clPath = path.join(selfBuild.dir, "CHANGELOG.md");
 		const missing = existsSync(clPath) && selfBuild.version ? changelogVersionsBetween(readFileSync(clPath, "utf8"), behind, selfBuild.version) : [];
-		staleAsk =
-			` This session runs dev-flow ${behind}, ${selfBuild.label} ships ${selfBuild.version ?? "?"} — gate proofs shipped between the two will NOT run. ` +
-			(missing.length
-				? `Shipped since ${behind}: ${missing.slice(0, 8).join(", ")}${missing.length > 8 ? ` …(${missing.length} total)` : ""} — see ${clPath}. `
-				: `What shipped between them is not readable from the checkout's CHANGELOG.md — read it before deciding. `) +
-			`Update (/reload, then re-run flow release on the current build) or proceed with the old release?`;
-		staleNote = `released under dev-flow ${behind} (${selfBuild.label} ${selfBuild.version ?? "?"}) — the operator was asked update-or-proceed and chose to proceed; proofs newer than ${behind} did not run`;
+		// advisory, never a question: the operator chose the build when they loaded the session, and /reload is theirs
+		staleNote = `released under dev-flow ${behind} (${selfBuild.label} ships ${selfBuild.version ?? "?"}) — proofs newer than ${behind} did not run${missing.length ? ` (shipped since: ${missing.slice(0, 8).join(", ")}${missing.length > 8 ? ` …(${missing.length} total)` : ""})` : ""}; /reload picks up the newer build for the next flow`;
 	}
 	// #162: Verified? was answered over one tree; commits after it ship under that word unless someone says
 	// so. A warning, never a refusal — doc-only moves after verify are normal; the operator decides.
 	let postVerify = "";
+	let quietAfterVerify = "";
 	let unverifiedChange = false;
 	if (state!.verifiedHead) {
 		// gh#180: upstream work merged in after the verdict was approved on its own branch — only the branch's
@@ -410,7 +405,10 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 		const prepSet = prepFiles(cfg);
 		const isPrep = (c: { files: string[] }) => (!!cfg.versioning.file && c.files.includes(cfg.versioning.file)) || (c.files.length > 0 && c.files.every((f) => prepSet.has(f)));
 		const prep = commits.filter(isPrep);
-		const changed = commits.filter((c) => !isPrep(c));
+		// docs and tests ship no behaviour the operator's look could have caught: they ride under the verdict, named
+		const quiet = commits.filter((c) => !isPrep(c) && c.files.length > 0 && c.files.every(nonBehaviourPath));
+		const changed = commits.filter((c) => !isPrep(c) && !quiet.includes(c));
+		if (quiet.length) quietAfterVerify = `${quiet.length} docs/test-only commit(s) after Verified? (${quiet.map((c) => c.line.split(" ")[0]).join(", ")}) ride under it`;
 		// changed code shipping under an earlier word is friction the closing reflection should look at
 		unverifiedChange = changed.length > 0;
 		if (changed.length)
@@ -430,9 +428,7 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 			? "the playbook sets yolo = until-release: a yolo given earlier never answers Release? — ask it"
 			: postVerify
 				? "a yolo given earlier does not cover commits that landed after Verified? — ask Release? with them named"
-				: stale
-					? "a yolo given earlier does not choose to release under an older dev-flow build — ask Release? with the update-or-proceed question"
-					: "";
+				: "";
 	// gh#206: a yolo held back only by the playbook's until-release knob carries nothing new for the operator
 	// to weigh — it just means "Release? is asked like on any flow". Their chat answer (a plain --confirmed)
 	// stands on the first call, as it does on a flow without yolo; asking first made them repeat a word already
@@ -444,8 +440,8 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	// this session after that point lets the flag stand, and only a true replay is asked first.
 	const vm = state!.verifiedAtMessage;
 	const spokeSinceVerify = !!vm && vm.key === sess.key && typeof sess.operatorMessages === "number" && sess.operatorMessages > vm.users;
-	const untilReleaseOnly = cfg.release.yolo === "until-release" && !postVerify && !stale;
-	const mustAskFirst = (!!holdWhy && !(untilReleaseOnly && (!flag("yolo") || spokeSinceVerify))) || stale;
+	const untilReleaseOnly = cfg.release.yolo === "until-release" && !postVerify;
+	const mustAskFirst = !!holdWhy && !(untilReleaseOnly && (!flag("yolo") || spokeSinceVerify));
 	const confirmed = flag("confirmed") && !(mustAskFirst && !ui.hasUI && state!.pendingAsk !== "Release?");
 	const yoloHeld = confirmed ? "" : holdWhy;
 	// gh#198: release.ask = on-change — Release? answers itself when it would only re-confirm Verified?: the call
@@ -461,23 +457,19 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 					? `the release call changes (${state!.versionChoice ?? "none"} → ${relArg.choice}) — changing it is the operator's word`
 				: postVerify
 					? "commits beyond release prep landed after Verified?"
-					: stale
-						? "the session build is behind the checkout"
-						: cfg.release.yolo === "until-release"
-							? "the playbook sets yolo = until-release"
-							: choice === "next" && newest && manifestVer && majorBump(newest, manifestVer)
+					: choice === "next" && newest && manifestVer && majorBump(newest, manifestVer)
 								? `${newest} → ${manifestVer} is a major bump — the playbook's versioned call does not choose that`
 								: "";
 	const auto = onChange && !askWhy;
-	let audit = confirmed ? " (confirmed by operator instruction)" : auto ? ` (auto-answered: release.ask = on-change — ${describeVersionChoice(choice ?? "next", state!.versionFrom)} is the call on record, and only release prep landed since Verified?)` : state!.yolo ? " (yolo: pre-confirmed)" : "";
+	let audit = confirmed ? " (confirmed by operator instruction)" : auto ? ` (auto-answered: release.ask = on-change — ${describeVersionChoice(choice ?? "next", state!.versionFrom)} is the call on record, and only release prep${quietAfterVerify ? ", docs or tests" : ""} landed since Verified?)` : state!.yolo ? " (yolo: pre-confirmed)" : "";
 	const askPending = !auto && !confirmed && (!state!.yolo || !!yoloHeld);
 	if (askPending) {
 		markPendingAsk(root, state!, "Release?");
 		if (!ui.hasUI) {
 			const callAsk = cfg.versioning.file && !choice ? " — also ask the release call: a patch, minor or major release, or merge unreleased (no bump, no tag)?" : "";
-			return { text: needsOperator(`ready to publish${yoloHeld ? ` (${yoloHeld})` : ""}${askWhy ? ` (asked: ${askWhy})` : ""}${stale ? ` — also: ${staleAsk}` : ""}${postVerify ? ` — ${postVerify}` : ""}${callAsk}`, "Release?", `re-run with --confirmed once the operator answered 'Release?' in chat${stale ? " (and the stale-build question)" : ""}${callAsk ? " (add --version=patch|minor|major or --no-version for their release call)" : ""}`), isError: true };
+			return { text: needsOperator(`ready to publish${yoloHeld ? ` (${yoloHeld})` : ""}${askWhy ? ` (asked: ${askWhy})` : ""}${postVerify ? ` — ${postVerify}` : ""}${callAsk}`, "Release?", `re-run with --confirmed once the operator answered 'Release?' in chat${callAsk ? " (add --version=patch|minor|major or --no-version for their release call)" : ""}`), isError: true };
 		}
-		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleAsk ? `\n\n${staleAsk}` : ""}${postVerify ? `\n\n${postVerify}` : ""}${yoloHeld ? `\n\n(${yoloHeld})` : ""}`);
+		const ok = await ui.confirm("Enter release", `Release ${state!.slug}${manifestVer ? ` v${manifestVer}` : ""}${noVersion ? " (unversioned — merge + changelog entry only: no bump, no tag for this flow)" : ""}? Publishing starts: PR, merge${noVersion ? "" : ", tag"} — release-done afterwards needs no further answer.${staleNote ? `\n\n${staleNote}` : ""}${postVerify ? `\n\n${postVerify}` : ""}${yoloHeld ? `\n\n(${yoloHeld})` : ""}`);
 		if (!ok) {
 			delete state!.pendingAsk;
 			writeState(root, state!);
@@ -511,7 +503,7 @@ export async function gateRelease(o: GateCtx): Promise<RunResult> {
 	if (selfPublish) state!.publish = {};
 	else delete state!.publish;
 	writeState(root, state!);
-	const approved = `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${checksNote}${foldNote}${staleNote ? ` ${staleNote}.` : ""}${postVerify ? ` Warning: ${postVerify}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}`;
+	const approved = `release approved${audit}${state!.noVersion ? " — unversioned: no bump or tag; your changelog entry rides under Unreleased until the next versioned release folds it" : ""} — entering release stage.${manifestVer ? ` Version ${manifestVer}.` : ""}${checksNote}${foldNote}${staleNote ? ` ${staleNote}.` : ""}${postVerify ? ` Warning: ${postVerify}.` : ""}${quietAfterVerify ? ` ${quietAfterVerify}.` : ""}\n${describeBranchState(branchProof, cfg.defaultBranch)}`;
 	if (selfPublish) return publishAndRecord(o, state!, approved);
 	return { text: `${approved}\n${AGENT_MARK}next: ${nextHint(state!, cfg)}` };
 }
@@ -717,7 +709,7 @@ export async function gateReleaseDone(o: GateCtx): Promise<RunResult> {
 	const tailNote = [
 		// a session that shipped from behind: the code it runs is not the code the checkout just released
 		state!.staleBuild
-			? `stale build acknowledged at release gate: this session ran dev-flow ${state!.staleBuild} — proofs newer than it did not run.`
+			? `stale build noted at the release gate: this session ran dev-flow ${state!.staleBuild} — proofs newer than it did not run.`
 			: skew.behind
 				// #117: the pair (session vs what the disk ships) makes the warning actionable where it prints;
 				// a second registered copy is what made the skew confusing on the report — name it too
@@ -745,15 +737,6 @@ export async function gateFinish(o: GateCtx): Promise<RunResult> {
 	// gh#205: release-stage items (a post-merge build, a deploy check from the default branch) are work done after
 	// the merge. A separate release-done names them while the worktree still stands; folded into finish, one
 	// call recorded the release and removed everything, so an unversioned flow never saw them. Stop once here.
-	const cur = readState(o.root, state.slug) ?? state;
-	if (checklistPending(o.cfg, cur, "release")) {
-		markPendingAsk(o.root, cur, "Finish?");
-		const items = applicableItems(o.cfg, cur, "release").map((i) => `"${i.text}"`).join(" | ");
-		return {
-			text: `${recorded}\n\n${needsOperator(`release recorded — nothing was removed yet: the release-stage checklist (## release in .dev-flow/project.md) is still open: ${items}`, "Finish?", `do each release-stage item now (they run after the merge, from ${o.cfg.defaultBranch} — not the worktree), tell the operator what each showed, then ask Finish? and run flow finish --confirmed when they answer`)}`,
-			isError: true,
-		};
-	}
 	const fin = await gateFinishCore(o);
 	return { ...fin, text: `${recorded}\n\n${fin.text}` };
 }
@@ -853,6 +836,17 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	// yolo works uniformly at every gate: at Finish? nothing later remains to pre-confirm, the flag just answers this one
 	const yoloWord = takeYoloWord(state!);
 	if (yoloWord) return { text: yoloWord, isError: true };
+	// gh#205: release-stage items are work done after the merge, from the main checkout — stop once so it is done
+	// while the worktree still stands. It is work, not a question: the next finish goes on (finish = always asks).
+	const relItems = applicableItems(cfg, state!, "release");
+	if (checklistPending(cfg, state!, "release") && cfg.release.finish !== "always") {
+		state!.confirmations = { ...state!.confirmations, release: { hash: checklistHash(relItems), at: now() } };
+		writeState(root, state!);
+		return {
+			text: `release-stage work — the release is recorded and nothing was removed yet: the release-stage checklist (## release in .dev-flow/project.md) is work to do now, from ${cfg.defaultBranch} (the main checkout, not the worktree): ${relItems.map((i) => `"${i.text}"`).join(" | ")}\n${AGENT_MARK}next: do each item, then run flow finish again — no question to ask; say in your report what each showed`,
+			isError: true,
+		};
+	}
 	// The closing reflection runs here, before anything is removed: the worker reads this session's
 	// transcripts and .dev-flow/<slug>/tmp, and finish is about to drop that folder and the binding — a
 	// reflection asked for after finish has nothing bound to run against. Only the operator's explicit
@@ -872,6 +866,7 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 		writeState(root, state!);
 	}
 	const quietNote = quiet && fold ? " closing reflection skipped: a fold flow (it fixes reflections, it does not review for new ones)." : quiet ? " closing reflection skipped: no refusals, guard blocks or unverified changes this flow (playbook reflect = always runs it anyway)." : "";
+	let appliedLines: string[] = [];
 	if (!state!.reflectedAt && !skipReflect) {
 		const skipHint = "or — only on the operator's explicit word — flow finish --no-reflect --confirmed";
 		if (!o.hooks.reflect) return { text: `finish: no reflection recorded for ${state!.slug} and no reflect worker available here — run flow_stage(op: "reflect") first, ${skipHint}`, isError: true };
@@ -887,12 +882,20 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 		const cur = readState(root, state!.slug) ?? state!; // the worker stamped reflectedAt on disk
 		if (!r.recorded)
 			return { text: `finish: the closing reflection did not report — nothing was removed.\n\n${r.text}\n\nNext: re-run flow finish to retry, or review inline (bare flow reflect prints the protocol) and then flow_stage(op: "reflect"), ${skipHint}.`, isError: true };
-		if (!r.findings) {
+		// the reviewer's own fold/drop recommendation is applied, and reported with how to undo it: the operator
+		// answered "fold as suggested" to nearly every list. finish = always, or rows that did not parse, still ask.
+		if (r.report && cfg.release.finish !== "always") {
+			appliedLines = await applyReflectFindings(root, sess, r.report);
+			Object.assign(state!, readState(root, state!.slug) ?? cur);
+			state!.reflectApplied = true;
+			writeState(root, state!);
+		} else if (!r.findings) {
 			markPendingAsk(root, cur, "Finish?");
 			return { text: needsOperator(`the closing reflection found nothing new to fold — nothing was removed yet; on your word the worktree, branch and .dev-flow/${state!.slug}/ go.\n\n${r.text}`, "Finish?", "ask the operator Finish? and run flow finish --confirmed when they answer"), isError: true };
+		} else {
+			markPendingAsk(root, cur, "Fold or drop?");
+			return { text: needsOperator(`the closing reflection has findings — nothing was removed yet; your fold/drop answer also finishes the feature.\n\n${r.text}`, "Fold or drop?", `the fold/drop answer is the Finish? answer: apply it, then run flow finish --confirmed without asking again — the worktree, branch and .dev-flow/${state!.slug}/ go on that run`), isError: true };
 		}
-		markPendingAsk(root, cur, "Fold or drop?");
-		return { text: needsOperator(`the closing reflection has findings — nothing was removed yet; your fold/drop answer also finishes the feature.\n\n${r.text}`, "Fold or drop?", `the fold/drop answer is the Finish? answer: apply it, then run flow finish --confirmed without asking again — the worktree, branch and .dev-flow/${state!.slug}/ go on that run`), isError: true };
 	}
 	const reflectSkipNote = skipReflect && !state!.reflectedAt ? ` Reflection skipped on the operator's word — nothing re-checked this session or the open reflections.` : "";
 	// Finish? answers itself on a clean flow (release.finish = on-change, the default): the release is recorded,
@@ -900,7 +903,7 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	// the question had no decision left in it. Anything open (a reflection that ran, release-stage items, a
 	// forge release that failed, a skipped reflection) still asks.
 	const openReleaseItems = checklistPending(cfg, state!, "release");
-	const autoFinish = cfg.release.finish !== "always" && !flag("confirmed") && !state!.yolo && !!state!.reflectQuiet && !openReleaseItems && !forgeSkipNote && !skipReflect;
+	const autoFinish = cfg.release.finish !== "always" && !flag("confirmed") && !state!.yolo && (!!state!.reflectQuiet || !!state!.reflectApplied) && !openReleaseItems && !forgeSkipNote && !skipReflect;
 	const autoNote = autoFinish ? " Finish? answered itself (finish = on-change): the release is recorded, nothing was skipped and nothing is open." : "";
 	const askPending = !flag("confirmed") && !state!.yolo && !autoFinish;
 	if (askPending) {
@@ -965,5 +968,5 @@ export async function gateFinishCore(o: GateCtx): Promise<RunResult> {
 	// finish is the moment between flows: name the fix / tidy suggestion when a rule fires, nothing otherwise
 	const nudge = reflectionNudges(readReflectionsText(root), now().slice(0, 10), { between: true });
 	const nudgeNote = [nudge.fix, nudge.tidy].filter(Boolean).map((n) => ` ${n} — offer it to the operator.`).join("");
-	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${reflNote}${forgeSkipNote}${reflectSkipNote}${quietNote}${releaseChecksNote}${autoNote}${syncNote}${nudgeNote} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
+	return { text: `feature ${state!.slug} done — ${closeNote}${remoteNote}; .dev-flow/${state!.slug}/ removed.${devDownNote}${roadmapNote}${reflNote}${forgeSkipNote}${reflectSkipNote}${quietNote}${releaseChecksNote}${autoNote}${syncNote}${nudgeNote}${appliedLines.length ? `\n${appliedLines.join("\n")}\n` : ""} Re-read flow status before reporting open flows — a sibling feature may have finished while this session ran.` };
 }

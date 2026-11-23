@@ -79,8 +79,9 @@ export function grantRecord(args: readonly string[], key: string, users: number 
 
 /** A refusal that is the work failing, not the process: a red test, a broken build, a deploy that did not come up. */
 const WORK_FAILURE = /check run at the gate failed|\bbuild FAILED\b|dev deploy FAILED|probe FAILED|served-build check FAILED|after-merge check "[^"]*" failed|has not passed|publish stopped — PR #\d+ checks failed/;
-/** The release gate still waiting on CI: re-running it is the instruction, never a sign the agent is stuck. */
-const WAITING = /(?:^|\n)publish waiting —/;
+/** The release gate still waiting on CI, or finish handing over the release-stage items: re-running it is the
+ *  instruction, never a sign the agent is stuck. */
+const WAITING = /(?:^|\n)(?:publish waiting|release-stage work) —/;
 /** `flow check|test|health` reporting a red run — the answer those tools exist to give. A refusal from them that
  *  is not a run (nothing configured, no feature bound) stays friction. */
 const RED_RUN = /^(?:tier-1 checks:|test: FAIL|health: FAIL)/;

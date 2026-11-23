@@ -1143,12 +1143,12 @@ test("checkpoint contract: --confirmed walks every gate with zero dialogs", asyn
 	assert.equal(dialogs, 0, "still zero dialogs at the end");
 });
 
-test("release with a stale session build: warn and ask, never block; the operator's proceed is recorded", async () => {
+test("release with a stale session build: a note, never a question or a block; stamped for release-done", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
 	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
-	await flow(["init", "--write", TEST_MD_ASK]);
+	await flow(["init", "--write", TEST_MD]);
 	await flow(["start", "stale"]);
 	mkdirSync(path.join(repo, ".dev-flow", "stale", "plan"), { recursive: true });
 	writeFileSync(path.join(repo, ".dev-flow", "stale", "plan", "plan.md"), "# plan\n");
@@ -1156,29 +1156,20 @@ test("release with a stale session build: warn and ask, never block; the operato
 	await flow(["check"]);
 	commitWt(repo, "stale");
 	assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
-	// pretend this session loaded a long-ago build: the release gate must ask, not refuse outright
 	try {
-		// a session NEWER than the checkout's manifest has every proof it would run — no question
-		process.env.DEV_FLOW_LOADED_VERSION = "99.0.0";
-		const ahead = await flow(["release"]);
-		assert.ok(ahead.isError, "Release? still needs the operator's word even for a fresh build");
-		assert.ok(!/will NOT run/.test(ahead.content[0].text), "a head build gets no stale-build question — nothing is missing");
 		process.env.DEV_FLOW_LOADED_VERSION = "0.0.1";
-		const head = await flow(["version"]);
-		assert.match(head.content[0].text, /this session runs 0\.0\.1/, "flow version names the stale build");
-		const refused = await flow(["release"]);
-		assert.ok(refused.isError, "a stale headless release waits for the operator's word");
-		assert.match(refused.content[0].text, /runs dev-flow 0\.0\.1, the dev-flow install ships \d/, "names both builds");
-		assert.match(refused.content[0].text, /proofs shipped between the two will NOT run/, "says what will not run");
-		assert.match(refused.content[0].text, /Update \(\/reload.*proceed with the old release/, "asks update-or-proceed, and never refuses the choice itself");
-		const ok = await flow(["release", "--confirmed"]);
-		assert.match(ok.content[0].text, /release approved/, "the operator's proceed walks the gate");
-		assert.match(ok.content[0].text, /released under dev-flow 0\.0\.1.*chose to proceed/, "the decision is recorded in the gate output");
+		assert.match((await flow(["version"])).content[0].text, /this session runs 0\.0\.1/, "flow version names the stale build");
+		// the session build was the operator's choice when they loaded it: Release? still answers itself
+		const ok = await flow(["release"]);
+		assert.ok(!ok.isError, ok.content[0].text);
+		assert.match(ok.content[0].text, /release approved \(auto-answered/, "a stale build asks nothing");
+		assert.match(ok.content[0].text, /released under dev-flow 0\.0\.1 \(the dev-flow install ships \d[^)]*\) — proofs newer than 0\.0\.1 did not run/, "the note names both builds and what did not run");
+		assert.match(ok.content[0].text, /\/reload picks up the newer build/);
 		const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "stale", "state.json"), "utf8"));
 		assert.match(st.staleBuild, /^0\.0\.1 \(the dev-flow install /, "stamped for release-done's backstop");
 		const rd = await flow(["release-done"]);
 		assert.match(rd.content[0].text, /release recorded as complete/, "the release records normally");
-		assert.match(rd.content[0].text, /stale build acknowledged at release gate/, "release-done repeats the operator's choice instead of the bare warning");
+		assert.match(rd.content[0].text, /stale build noted at the release gate/, "release-done repeats the note");
 	} finally {
 		delete process.env.DEV_FLOW_LOADED_VERSION;
 	}
@@ -1561,35 +1552,57 @@ test("finish closes a released feature only: refuses early, then removes worktre
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "state.json")), "a refused finish removes nothing");
 	await flow(["release", "--confirmed"]);
 	await flow(["release-done", "--confirmed"]);
-	// the first finish — even with the operator's --confirmed — runs the closing reflection before it touches anything
-	const worker = fakeWorker([() => "REPORT\nF1 | fold | docs | the release chore push surprised the operator | dup: none | why: real friction | evidence: driver.jsonl:9"]);
+	// three open playbook items: finish (the moment between flows) suggests one docs flow for them
+	writeFileSync(path.join(repo, ".dev-flow", "reflections.md"), "# dev-flow reflections\n\n## playbook\n\n- [ ] a — s 2099-01-01\n- [ ] b — s 2099-01-01\n- [ ] c — s 2099-01-01\n");
+	// finish runs the closing reflection before it touches anything, files the reviewer's own fold/drop and closes out
+	const worker = fakeWorker([() => "REPORT\nF1 | fold | docs | the release chore push surprised the operator | dup: none | why: real friction | evidence: driver.jsonl:9\nF2 | drop | code | a one-off typo | dup: none | why: one-off | evidence: driver.jsonl:12"]);
 	const orig = stageWorkerSpawn.run;
 	let spawned: { work: string } | undefined;
 	stageWorkerSpawn.run = async (o) => { spawned = o; return worker as never; };
-	let ask: { content: [{ text: string }]; isError?: boolean };
+	let done: { content: [{ text: string }]; isError?: boolean };
 	try {
-		ask = await flow(["finish", "--confirmed", "--note=the operator disliked the double prompt"]);
+		done = await flow(["finish", "--note=the operator disliked the double prompt"]);
 	} finally {
 		stageWorkerSpawn.run = orig;
 	}
 	assert.equal(spawned?.work, repo, "finish ran the reflect worker in the main checkout");
 	assert.match(worker.prompts[0], /Operator context: the operator disliked the double prompt/, "--note reaches the worker");
-	assert.ok(ask.isError && /NEEDS-OPERATOR Fold or drop\?/.test(ask.content[0].text), `finish stops for fold/drop: ${ask.content[0].text}`);
-	assert.match(ask.content[0].text, /1\. \[fold\] docs: the release chore push surprised the operator/, "the findings are shown");
-	assert.match(ask.content[0].text, /nothing was removed yet/);
-	assert.ok(existsSync(path.join(repo, ".dev-flow", "fin", "worktree")), "the reflection ran before cleanup: worktree still there");
-	const st = JSON.parse(readFileSync(path.join(repo, ".dev-flow", "fin", "state.json"), "utf8"));
-	assert.ok(st.reflectedAt, "the reflection is recorded");
-	assert.equal(st.pendingAsk, "Fold or drop?");
-	// three open playbook items: finish (the moment between flows) suggests one docs flow for them
-	writeFileSync(path.join(repo, ".dev-flow", "reflections.md"), "# dev-flow reflections\n\n## playbook\n\n- [ ] a — s 2099-01-01\n- [ ] b — s 2099-01-01\n- [ ] c — s 2099-01-01\n");
-	const done = await flow(["finish", "--confirmed"]); // reflectedAt is set: no second worker, straight to cleanup
+	assert.ok(!done.isError && !/NEEDS-OPERATOR/.test(done.content[0].text), `no fold/drop question: ${done.content[0].text}`);
+	assert.match(done.content[0].text, /closing reflection — the reviewer's recommendations were applied[\s\S]*1\. folded as r4 \(playbook\): the release chore push surprised the operator[\s\S]*2\. dropped: a one-off typo/, done.content[0].text);
+	assert.match(readFileSync(path.join(repo, ".dev-flow", "reflections.md"), "utf8"), /- \[ \] \[r4\] the release chore push surprised the operator[^\n]*evidence: driver\.jsonl:9/, "the fold is recorded");
+	assert.ok(!/one-off typo/.test(readFileSync(path.join(repo, ".dev-flow", "reflections.md"), "utf8")), "a drop records nothing");
 	assert.match(done.content[0].text, /feature fin done — worktree and branch feat\/fin removed.*roadmap: 1 item\(s\) marked done/, "finish checks off the picked backlog item");
-	assert.match(done.content[0].text, /⚑ fix the open reflections now\? \(3 playbook items batch into one docs flow\)/, "finish suggests the fix when a rule fires");
+	assert.match(done.content[0].text, /Finish\? answered itself/, "nothing was left open");
+	assert.match(done.content[0].text, /⚑ fix the open reflections now\? \(4 playbook items batch into one docs flow\)/, "finish suggests the fix when a rule fires");
 	assert.ok(!/Reflection skipped/.test(done.content[0].text), "a reflected flow names no skip");
 	assert.match(readFileSync(path.join(repo, ".dev-flow", "roadmap.md"), "utf8"), /- \[x\] the finishing move \(fin\) — done: \d{4}-\d{2}-\d{2}/);
 	assert.ok(!existsSync(path.join(repo, ".dev-flow", "fin")), "the flow state folder is gone");
 	assert.throws(() => execFileSync("git", ["-C", repo, "rev-parse", "--verify", "feat/fin"]));
+});
+
+test("finish files the reviewer's recommendations: a dup row counts a recurrence, gh# is already filed, plugin is named for the operator, fixed rows are proposed", async () => {
+	const { applyReflectFindings } = await import("../src/runtime/reflect.ts");
+	const { parseReflectReport } = await import("../src/core.ts");
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	await flow(["init", "--write", TEST_MD]);
+	const file = path.join(repo, ".dev-flow", "reflections.md");
+	writeFileSync(file, "# dev-flow reflections\n\n## code\n\n- [ ] [r1] the seed skips admins — s 2026-01-02\n- [ ] [r2] the port guard is loose — s 2026-01-02\n");
+	const report = parseReflectReport(
+		["F1 | fold | code | the seed skips admins again | dup: r1 | why: recurred | evidence: d.jsonl:3", "F2 | fold | plugin | finish asked twice | dup: none | why: dev-flow | evidence: d.jsonl:5", "F3 | fold | docs | the playbook names a dead script | dup: gh#12 | why: filed | evidence: d.jsonl:7", "O2 | fixed | the guard was tightened in this flow"].join("\n"),
+	);
+	const sess = { slug: "fx", key: "k" } as never;
+	const lines = (await applyReflectFindings(repo, sess, report)).join("\n");
+	assert.match(lines, /1\. folded as a recurrence of r1/);
+	assert.match(lines, /3\. already filed as gh#12/);
+	assert.match(lines, /dev-flow feedback to file upstream on the operator's word[\s\S]*2\. finish asked twice/, "a public issue is never filed from here");
+	assert.match(lines, /r2 looks fixed \(the guard was tightened in this flow\) — close it on the operator's word/);
+	const text = readFileSync(file, "utf8");
+	assert.match(text, /\[r1\] the seed skips admins[^\n]*seen again/, "the recurrence lands on its row");
+	assert.ok(!/finish asked twice|dead script/.test(text), "neither the plugin note nor the filed one became a row");
+	assert.match(text, /- \[ \] \[r2\]/, "a fixed row stays open until the operator says so");
 });
 
 test("finish reflection: a failed worker removes nothing, yolo never skips it, only --no-reflect --confirmed does", async () => {
@@ -1863,6 +1876,9 @@ test("release opt-out: per-release flag and per-project config skip forge releas
 	assert.match(manual.content[0].text, /Forge release skipped \(forge=self/);
 	assert.match(manual.content[0].text, /release recorded as complete/);
 	markReflected(repo, "chores"); // the closing reflection already ran — this test is about the cleanup
+	const work = await flow(["finish", "--confirmed"]);
+	assert.match(work.content[0].text, /release-stage checklist \(## release in \.dev-flow\/project\.md\) is work to do now[^\n]*dogfood the shim/, "the release-stage item stops finish once, as work");
+	assert.ok(!/NEEDS-OPERATOR/.test(work.content[0].text), "it is not a question");
 	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature chores done/, "a manual-publication project finishes clean");
 });
 
@@ -2651,7 +2667,7 @@ test("a clone that lost .dev-flow/.gitignore: the next gate restores it, finish 
 	assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }).trim(), "", "flow state is ignored again");
 });
 
-test("Finish? answers itself on a clean flow; finish = always, an open release item or a red after-merge check still stop it", async (t) => {
+test("Finish? answers itself on a clean flow; finish = always asks, an open release item stops once as work, a red after-merge check blocks", async (t) => {
 	// no path in this test may reach a real reflection worker
 	const origSpawn = stageWorkerSpawn.run;
 	stageWorkerSpawn.run = async () => { throw new Error("this test must not spawn a worker"); };
@@ -2687,11 +2703,15 @@ test("Finish? answers itself on a clean flow; finish = always, an open release i
 	assert.ok(asked.isError && /NEEDS-OPERATOR Finish\?/.test(asked.content[0].text), asked.content[0].text);
 	assert.ok(!always.gone());
 	assert.match((await always.flow(["finish", "--confirmed"])).content[0].text, /feature always done/);
-	// an open release-stage item is the operator's to close
+	// an open release-stage item is work: finish stops once (no question) so it is done, then closes out
 	const item = await run("item", "", "\n- [ ] smoke the deployed build\n");
 	const open = await item.flow(["finish"]);
-	assert.ok(open.isError && /NEEDS-OPERATOR Finish\?[\s\S]*smoke the deployed build/.test(open.content[0].text), open.content[0].text);
+	assert.ok(open.isError && /is work to do now[\s\S]*smoke the deployed build/.test(open.content[0].text), open.content[0].text);
+	assert.ok(!/NEEDS-OPERATOR/.test(open.content[0].text), "not a question");
 	assert.ok(!item.gone());
+	const after = await item.flow(["finish"]);
+	assert.match(after.content[0].text, /feature item done[\s\S]*Finish\? answered itself/, after.content[0].text);
+	assert.ok(item.gone());
 	// a scripted after-merge check: run from the main checkout before anything is removed
 	const chk = await run("chk", "", "\n\`\`\`flow-check deployed\ntest -f .dev-flow/deployed-ok\n\`\`\`\n");
 	const red = await chk.flow(["finish"]);
@@ -4160,6 +4180,35 @@ async function walkToImplement(flow: (a: string[]) => Promise<{ content: [{ text
 	commitWt(repo, slug);
 }
 
+test("Verified? is the release word: docs/test-only commits after it ride under it, a code change asks Release?, until-release holds back only a yolo", async () => {
+	const pi = makePi();
+	const repo = makeRepo();
+	const ctx = makeCtx(repo);
+	const flow = (args: string[]) => pi.tools.flow.execute("id", { args }, undefined, undefined, ctx) as Promise<{ content: [{ text: string }]; isError?: boolean }>;
+	// yolo = until-release is in the playbook: it holds back a standing yolo, never a Verified? the operator gave
+	await flow(["init", "--write", TEST_MD.replace("merge = merge\n", "merge = merge\nyolo = until-release\n")]);
+	trackPlaybook(repo);
+	const after = async (slug: string, files: Record<string, string>) => {
+		await walkToImplement(flow, repo, slug);
+		assert.match((await flow(["verify", "--confirmed"])).content[0].text, /entering pre-release/);
+		const wt = path.join(repo, ".dev-flow", slug, "worktree");
+		for (const [f, body] of Object.entries(files)) {
+			mkdirSync(path.dirname(path.join(wt, f)), { recursive: true });
+			writeFileSync(path.join(wt, f), body);
+		}
+		commitWt(repo, slug, "after verify");
+		return flow(["release"]);
+	};
+	const docs = await after("quiet", { "docs/guide.md": "# guide\n", "test/a.test.ts": "// t\n", "README.md": "# r\n" });
+	assert.ok(!docs.isError, docs.content[0].text);
+	assert.match(docs.content[0].text, /release approved \(auto-answered[\s\S]*?only release prep, docs or tests landed since Verified\?\)/, docs.content[0].text);
+	assert.match(docs.content[0].text, /1 docs\/test-only commit\(s\) after Verified\? \([0-9a-f]{7}\) ride under it/);
+	await flow(["release-done"]);
+	await flow(["finish", "--confirmed"]);
+	const code = await after("loud", { "src/app.ts": "export {};\n" });
+	assert.ok(code.isError && /NEEDS-OPERATOR Release\? — ready to publish \(asked: commits beyond release prep landed after Verified\?\)/.test(code.content[0].text), code.content[0].text);
+});
+
 test("the agent's flow call never opens a dialog; the /flow command does and says who answered (#181)", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
@@ -4214,7 +4263,7 @@ test("verify rebases a branch that fell behind main before the review deploy; --
 	assert.equal(execFileSync("git", ["-C", cwt, "status", "--porcelain"], { encoding: "utf8" }), "", "and no half-applied state");
 });
 
-test("a dev port held by another flow is asked about, with the resources; --port runs alongside and finish stops it", async () => {
+test("a dev port held by another flow under review: alongside when it fits, else asked with the resources; finish stops the side instance", async () => {
 	const pi = makePi();
 	const repo = makeRepo();
 	const ctx = makeCtx(repo);
@@ -4230,16 +4279,13 @@ test("a dev port held by another flow is asked about, with the resources; --port
 	const a = await flow(["verify"]);
 	assert.match(a.content[0].text, new RegExp(`deployed for review on port ${port}`));
 	await walkToImplement(flow, repo, "pb");
-	const clash = await flow(["verify"]);
-	assert.ok(clash.isError, "another flow's review stack is not taken silently");
-	assert.match(clash.content[0].text, new RegExp(`^NEEDS-OPERATOR Dev port\\? — port ${port} is serving pa \\(stage implement, waiting on Verified\\?`));
-	assert.match(clash.content[0].text, /RAM available \S+ \(one instance needs 1K\)/, "the question carries the measured resources");
-	const alongside = clash.content[0].text.match(/run alongside on port (\d+): flow verify --port=\1/);
-	assert.ok(alongside, clash.content[0].text);
-	assert.match(clash.content[0].text, /nothing was built or deployed yet/);
+	// pa is under review and a second instance fits (parallelDev = yes): pb runs alongside, no question
+	const b = await flow(["verify"]);
+	assert.ok(!b.isError, b.content[0].text);
+	const alongside = b.content[0].text.match(new RegExp(`port ${port} is serving pa under review — deployed alongside on port (\\d+) \\(parallelDev = yes\\)`));
+	assert.ok(alongside, b.content[0].text);
 	const side = Number(alongside![1]);
-	const b = await flow(["verify", `--port=${side}`]);
-	assert.ok(!b.isError && new RegExp(`deployed for review on port ${side}`).test(b.content[0].text), b.content[0].text);
+	assert.match(b.content[0].text, new RegExp(`deployed for review on port ${side}`));
 	assert.equal(readFileSync(path.join(repo, ".dev-flow", "pb", "worktree", "dev-port"), "utf8").trim(), `${side}-pb`, "dev got the side port and a suffix that keeps the instance names apart");
 	assert.equal(readFileSync(path.join(repo, ".dev-flow", "pa", "worktree", "dev-port"), "utf8").trim(), `${port}`, "pa's stack was left alone");
 	const st = (await flow(["status"])).content[0].text;
@@ -4251,11 +4297,14 @@ test("a dev port held by another flow is asked about, with the resources; --port
 	await walkToImplement(flow, repo, "pc");
 	const no = await flow(["verify"]);
 	assert.ok(no.isError && !/run alongside/.test(no.content[0].text) && /parallelDev = no/.test(no.content[0].text), no.content[0].text);
+	assert.match(no.content[0].text, new RegExp(`^NEEDS-OPERATOR Dev port\\? — port ${port} is serving pa \\(stage implement, waiting on Verified\\?`), "a deploy under review is never taken silently");
+	assert.match(no.content[0].text, /RAM available \S+ \(one instance needs 1K\)/, "the question carries the measured resources");
+	assert.match(no.content[0].text, /nothing was built or deployed yet/);
 	assert.match(no.content[0].text, /replace pa's deploy: flow verify --replace/);
 	// a holder past its Verified? is not asked about: nobody reviews that deploy any more
 	writeFileSync(path.join(repo, ".dev-flow", "pa", "state.json"), JSON.stringify({ ...JSON.parse(readFileSync(path.join(repo, ".dev-flow", "pa", "state.json"), "utf8")), stage: "release", pendingAsk: undefined }));
 	const took = await flow(["verify"]);
-	assert.match(took.content[0].text, new RegExp(`replaced pa's deploy on port ${port} — it is at release, past its Verified\\?`), took.content[0].text);
+	assert.match(took.content[0].text, new RegExp(`replaced pa's deploy on port ${port} — it is at release, not waiting on its Verified\\?`), took.content[0].text);
 	assert.match(took.content[0].text, new RegExp(`deployed for review on port ${port}`), took.content[0].text);
 	// finish of the side-by-side flow stops its instance and frees its slot
 	await flow(["use", "pb"]);
@@ -4590,10 +4639,9 @@ test("finish that records the release stops once on open release-stage items bef
 	const stop = await flow(["finish", "--confirmed"]);
 	assert.equal(stop.isError, true);
 	assert.match(stop.content[0].text, /release recorded as complete/);
-	assert.match(stop.content[0].text, /NEEDS-OPERATOR Finish\? — release recorded — nothing was removed yet: the release-stage checklist .* is still open: "post-merge: bun run build && bun run deploy-check from main"/, stop.content[0].text);
+	assert.match(stop.content[0].text, /release-stage work — the release is recorded and nothing was removed yet: the release-stage checklist .* is work to do now, from main [^\n]*"post-merge: bun run build && bun run deploy-check from main"/, stop.content[0].text);
+	assert.ok(!/NEEDS-OPERATOR/.test(stop.content[0].text), "the items are work, not a question");
 	assert.ok(existsSync(path.join(repo, ".dev-flow", "tailx", "worktree")), "the worktree still stands");
-	const ask = await flow(["finish"]);
-	assert.match(ask.content[0].text, /Release-stage checklist to close with this answer: "post-merge: bun run build/, "the Finish? question names the items it closes");
 	assert.match((await flow(["finish", "--confirmed"])).content[0].text, /feature tailx done/, "the second call closes out");
 });
 

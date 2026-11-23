@@ -90,9 +90,10 @@ Run without `--confirmed`, it deploys for your review:
 
 1. Fetches, and rebases the branch if main moved ahead. Conflicts or uncommitted tracked edits
    refuse, and the branch is left untouched.
-2. Checks the dev port. If another flow that is past its Verified? holds it, verify takes it over
-   and says so. If one still under review holds it, it asks **Dev port?**: run alongside on
-   another port, replace that deploy, or wait. See [concurrency](concurrency.md).
+2. Checks the dev port. If the flow holding it isn't waiting on its Verified?, nobody is reviewing
+   that deploy, so verify takes it over and says so. If it is under review, verify runs alongside on
+   the next free port when `parallelDev = yes` and a second instance fits; otherwise it asks
+   **Dev port?**: replace that deploy, or wait. See [concurrency](concurrency.md).
 3. Runs the checks (re-running any that are stale or missing), the build, the `dev` deploy, and then
    the health probe against what it just deployed.
 4. Asks **Verified?**
@@ -146,16 +147,20 @@ Proves the branch is ready to ship:
 - **No re-verify is waiting.** When `flow verify` at pre-release asked Verified? again, the answer
   has to be recorded (`flow verify --confirmed`) before the release ships under it.
 
-**Release? often answers itself** (`ask = on-change`, the default). That happens when your call is
-on record and only release prep (bump, changelog) changed since Verified?. A `--confirmed` given before the gate asked doesn't count where a question carries news you haven't
+**Release? usually answers itself** (`ask = on-change`, the default): your Verified? is the release
+word. That happens when your call is on record and only release prep (bump, changelog), docs
+(`docs/`, README, CHANGELOG) or tests changed since Verified?; the output names any docs/test commit
+that rode under it. A `--confirmed` given before the gate asked doesn't count where a question carries news you haven't
 seen (commits after Verified? on a yolo flow, or a stale build): the gate asks first. A yolo held back
 only by `yolo = until-release` is asked like any flow, so your chat answer stands on the first call.
 
 It still asks when:
-- code changed after Verified?;
-- the session runs an old build (proceeding is allowed, and it says what you'd miss);
-- the playbook sets `yolo = until-release`;
+- code changed after Verified? (a CI fix, a late review fix: news you haven't seen);
+- a standing yolo reaches it and the playbook sets `yolo = until-release` (a Verified? you gave yourself is not held back);
 - it's a major bump the playbook made rather than you.
+
+A session running an older dev-flow build than the install is a note on the release output, not a
+question: it names both builds and what didn't run, and `/reload` picks up the newer one.
 
 Set `ask = always` in `## release` to be asked every time.
 
@@ -220,7 +225,10 @@ call it.
    items, it stops and lists them.
 2. Runs the after-merge checks (`flow-check` blocks under `## release`) from the main checkout. A red
    one stops finish and removes nothing.
-3. Runs the **closing reflection** (see [reflections](reflections.md)) and waits for your fold/drop.
+3. Runs the **closing reflection** (see [reflections](reflections.md)) and files the reviewer's own
+   fold/drop recommendations: a fold becomes a note (or a recurrence on the note it duplicates), a
+   drop records nothing. The output lists each with how to undo it. dev-flow feedback for upstream is
+   named for you, never filed by the gate. `finish = always` asks fold/drop as before.
 4. Cleans up, on `--confirmed` or when Finish? answers itself: removes the worktree, the branch and `.dev-flow/<slug>/`. It deletes
    the remote branch only once it's proven merged. If local main is just behind origin, it
    fast-forwards it.
@@ -232,10 +240,11 @@ Playbook commits from `flow init --track` are only noted: they reach origin thro
 never a direct push. Under `merge = merge`, commits missing from main are a policy violation that
 yolo can't answer.
 
-**Finish? answers itself on a clean flow** (`finish = on-change`, the default): the release is
-recorded, the flow had no friction so no reflection ran, no `## release` checklist item is open, and
-no forge release was skipped. It still asks when any of those is open, and always with
-`finish = always` in `## release`.
+**Finish? answers itself** (`finish = on-change`, the default) once the release is recorded, the
+closing reflection was skipped or filed, and no forge release was skipped. `## release` checklist
+items are work, not a question: the first `finish` stops once and lists them (run from the main
+checkout), and the next `finish` closes out. It still asks when a forge release was skipped or the
+reflection's report didn't parse, and always with `finish = always` in `## release`.
 
 To drop an unreleased feature, use `flow abort` instead.
 
@@ -269,7 +278,6 @@ Answering **yolo** at any checkpoint runs that gate with `--yolo --confirmed`. T
 question and pre-confirms the rest, so the agent runs the remaining gates back to back, following
 any wishes you added ("yolo, patch bump"). Every check and guard still applies. Yolo never answers:
 - the re-verify at pre-release;
-- Release? when code changed after Verified?, when the playbook sets `yolo = until-release`, or
-  when the session runs an older build than the install;
+- Release? when code changed after Verified?, or when the playbook sets `yolo = until-release`;
 - a `merge = merge` policy violation at finish;
 - skipping the closing reflection.
